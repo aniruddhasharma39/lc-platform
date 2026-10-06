@@ -1,14 +1,10 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-const { Pool } = require('pg');
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+const db = require('../src/config/db');
 
 async function runMigrations() {
-  const client = await pool.connect();
+  const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
     

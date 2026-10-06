@@ -1,10 +1,6 @@
 require('dotenv').config();
-const { Pool } = require('pg');
+const db = require('../src/config/db');
 const bcrypt = require('bcrypt');
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
 
 const defaultPermissions = [
   'users:view', 'users:create', 'users:update', 'users:delete',
@@ -17,7 +13,7 @@ const defaultPermissions = [
 ];
 
 async function runSeed() {
-  const client = await pool.connect();
+  const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
 
@@ -90,7 +86,7 @@ async function runSeed() {
     process.exit(1);
   } finally {
     client.release();
-    await pool.end();
+    // process.exit(0);
   }
 }
 

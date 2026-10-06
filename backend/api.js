@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -29,9 +30,16 @@ app.use('/api/v1/masterdata', masterdataRoutes);
 
 app.use(errorHandler);
 
+const db = require('./src/config/db');
+
 if (require.main === module) {
-  app.listen(port, () => {
-    console.log(`API Server listening on port ${port}`);
+  db.testConnection().then(isConnected => {
+    app.listen(port, () => {
+      console.log(`API Server listening on port ${port}`);
+      if (!isConnected) {
+        console.warn('WARNING: Starting server without a working database connection!');
+      }
+    });
   });
 }
 
