@@ -6,6 +6,7 @@ const rateLimit = require('express-rate-limit');
 const errorHandler = require('./src/middlewares/errorHandler');
 const authRoutes = require('./src/auth/authRoutes');
 const masterdataRoutes = require('./src/masterdata/masterdataRoutes');
+const deviceRoutes = require('./src/devices/deviceRoutes');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -27,6 +28,7 @@ app.get('/health', (req, res) => res.json({ status: 'ok', component: 'api' }));
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1', authRoutes); // for /me/config
 app.use('/api/v1/masterdata', masterdataRoutes);
+app.use('/api/v1/devices', deviceRoutes);
 
 app.use(errorHandler);
 

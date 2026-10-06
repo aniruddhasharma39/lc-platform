@@ -10,6 +10,11 @@
   "scripts": {
     "start:backend": "npm run start --workspace=backend",
     "start:console": "npm run dev --workspace=console",
-    "start:simulator": "npm run start --workspace=simulator"
+    "start:simulator": "npm run start --workspace=simulator",
+    "simulator:create": "node simulator/cli.js create",
+    "simulator:list": "node simulator/cli.js list",
+    "simulator:start": "node simulator/cli.js start",
+    "simulator:stop": "node simulator/cli.js stop",
+    "simulator:restart": "node simulator/cli.js restart"
   }
 }
