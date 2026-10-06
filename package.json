@@ -1,0 +1,15 @@
+{
+  "name": "lc-platform",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "console",
+    "simulator"
+  ],
+  "scripts": {
+    "start:backend": "npm run start --workspace=backend",
+    "start:console": "npm run dev --workspace=console",
+    "start:simulator": "npm run start --workspace=simulator"
+  }
+}
