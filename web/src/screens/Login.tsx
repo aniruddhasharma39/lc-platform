@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User } from '../types';
+import type { User } from '../types';
 
 type Props = {
   onLogin: (user: User, token: string) => void;

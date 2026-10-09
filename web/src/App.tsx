@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Login from './screens/Login';
 import Register from './screens/Register';
 import Dashboard from './screens/Dashboard';
-import { User } from './types';
+import type { User } from './types';
 
 function App() {
   const [currentScreen, setCurrentScreen] = useState<'login' | 'register' | 'dashboard'>('login');

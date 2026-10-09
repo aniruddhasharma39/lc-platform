@@ -17,6 +17,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<dynamic> _users = [];
   List<dynamic> _roles = [];
   bool _isLoading = false;
+  String _currentView = 'home';
 
   @override
   void initState() {
@@ -94,14 +95,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ],
               )
             ),
-            ListTile(title: const Text('Home'), leading: const Icon(Icons.home), onTap: () => Navigator.pop(context)),
+            ListTile(title: const Text('Home'), leading: const Icon(Icons.home), onTap: () {
+              setState(() { _currentView = 'home'; });
+              Navigator.pop(context);
+            }),
             if (isDev)
-              ListTile(title: const Text('Manage Users'), leading: const Icon(Icons.people), onTap: () => Navigator.pop(context)),
+              ListTile(title: const Text('Manage Users'), leading: const Icon(Icons.people), onTap: () {
+                setState(() { _currentView = 'manageUsers'; });
+                Navigator.pop(context);
+              }),
             ListTile(title: const Text('Logout', style: TextStyle(color: AppColors.danger)), leading: const Icon(Icons.logout, color: AppColors.danger), onTap: widget.onLogout),
           ],
         )
       ),
-      body: isDev ? _buildAdminDashboard() : _buildUserDashboard(),
+      body: (isDev && _currentView == 'manageUsers') ? _buildAdminDashboard() : _buildUserDashboard(),
     );
   }
 

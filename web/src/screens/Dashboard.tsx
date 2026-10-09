@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { User } from '../types';
+import type { User } from '../types';
 
 type Props = {
   user: User;
@@ -10,6 +10,7 @@ export default function Dashboard({ user, onLogout }: Props) {
   const [users, setUsers] = useState<any[]>([]);
   const [roles, setRoles] = useState<any[]>([]);
   const [openSection, setOpenSection] = useState<string | null>(null);
+  const [currentView, setCurrentView] = useState<'home' | 'manageUsers'>('home');
 
   const fetchUsers = async () => {
     if (user.role !== 'Developer') return;
@@ -83,9 +84,9 @@ export default function Dashboard({ user, onLogout }: Props) {
           </div>
         </div>
         <nav className="sidebar-nav">
-          <a href="#" className="nav-item active">Home</a>
+          <a href="#" className={`nav-item ${currentView === 'home' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentView('home'); }}>Home</a>
           {user.role === 'Developer' && (
-            <a href="#" className="nav-item">Manage Users</a>
+            <a href="#" className={`nav-item ${currentView === 'manageUsers' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentView('manageUsers'); }}>Manage Users</a>
           )}
           <a href="#" className="nav-item text-danger mt-4" onClick={(e) => { e.preventDefault(); onLogout(); }}>Logout</a>
         </nav>
@@ -93,11 +94,11 @@ export default function Dashboard({ user, onLogout }: Props) {
 
       <div className="main-content">
         <header className="header">
-          <h3>Manage Users</h3>
+          <h3>{currentView === 'manageUsers' ? 'Manage Users' : 'Home'}</h3>
         </header>
 
         <main className="content-area">
-          {user.role === 'Developer' ? (
+          {currentView === 'manageUsers' && user.role === 'Developer' ? (
             <>
               <div className="flex gap-4 mb-4">
                 <button 
