@@ -129,6 +129,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading && _systemModules.isEmpty) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     final isDev = widget.user['role'] == 'Developer';
     
     IconData getIconForModule(String slug) {
