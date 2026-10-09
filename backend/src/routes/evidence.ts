@@ -5,7 +5,9 @@ import { authenticate } from '../middleware/auth';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+// @ts-ignore
 import { Jimp, loadFont } from 'jimp';
+// @ts-ignore
 import { SANS_16_WHITE, SANS_16_BLACK } from 'jimp/fonts';
 
 const router = Router();
