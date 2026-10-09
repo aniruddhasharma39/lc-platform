@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Role {
+  id             Int    @id @default(autoincrement())
+  name           String @unique
+  users          User[] @relation("FinalRole")
+  requestedUsers User[] @relation("RequestedRole")
+}
+
+model User {
+  id                  Int       @id @default(autoincrement())
+  fullName            String
+  mobile              String    @unique
+  email               String    @unique
+  employeeId          String    @unique
+  department          String
+  passwordHash        String
+  roleId              Int?
+  role                Role?     @relation("FinalRole", fields: [roleId], references: [id])
+  requestedRoleId     Int?
+  requestedRole       Role?     @relation("RequestedRole", fields: [requestedRoleId], references: [id])
+  status              String    @default("PENDING") // PENDING, APPROVED, REJECTED, DEACTIVATED
+  failedLoginAttempts Int       @default(0)
+  lockoutUntil        DateTime?
+  mustChangePassword  Boolean   @default(false)
+  rejectionReason     String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  refreshTokens       RefreshToken[]
+  auditLogs           AuditLog[]
+}
+
+model RefreshToken {
+  id        Int      @id @default(autoincrement())
+  token     String   @unique
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id])
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  details   String?
+  createdAt DateTime @default(now())
+}
