@@ -70,7 +70,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final endpoint = isRequest ? 'request/$id/$action' : '$id/$action';
     try {
       await http.put(
-        Uri.parse('http://10.0.2.2:5001/api/v1/users/$endpoint'),
+        Uri.parse('http://localhost:5001/api/v1/users/$endpoint'),
         headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
         body: body != null ? json.encode(body) : null
       ).catchError((_) => http.put(
@@ -81,6 +81,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _fetchData();
     } catch (e) {
       print(e);
+    }
+  }
+
+  Future<void> _confirmAction(Map<String, dynamic> user, String action) async {
+    final isDeactivate = action == 'deactivate';
+    bool confirm = await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(isDeactivate ? 'Deactivate User?' : 'Reactivate User?'),
+        content: Text(isDeactivate 
+          ? 'Are you sure you want to deactivate ${user['fullName']}? They will not be able to log in.' 
+          : 'Are you sure you want to reactivate ${user['fullName']}?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: isDeactivate ? Colors.red : Colors.green),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(isDeactivate ? 'Deactivate' : 'Reactivate'),
+          ),
+        ],
+      ),
+    ) ?? false;
+
+    if (confirm) {
+      await _actionUser(user['id'], action);
     }
   }
 
@@ -288,7 +313,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   IconButton(
                     icon: Icon(u['status'] == 'DEACTIVATED' ? Icons.check_circle : Icons.block, color: u['status'] == 'DEACTIVATED' ? AppColors.success : AppColors.danger),
-                    onPressed: () => _actionUser(u['id'], u['status'] == 'DEACTIVATED' ? 'reactivate' : 'deactivate'),
+                    onPressed: () => _confirmAction(u, u['status'] == 'DEACTIVATED' ? 'reactivate' : 'deactivate'),
                   )
                 ],
               )

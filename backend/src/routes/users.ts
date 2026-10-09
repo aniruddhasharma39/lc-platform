@@ -165,6 +165,10 @@ router.put('/:id/deactivate', requireModule('manage-users'), async (req: any, re
   try {
     const id = parseInt(req.params.id, 10);
 
+    if (id === req.user.id) {
+      return res.status(400).json({ error: 'You cannot deactivate your own account' });
+    }
+
     const user = await prisma.user.update({
       where: { id },
       data: {

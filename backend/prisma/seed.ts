@@ -44,8 +44,14 @@ async function main() {
     throw new Error('Developer role not found after seed.');
   }
 
-  const devEmail = process.env.DEFAULT_ADMIN_EMAIL || 'admin@lcgate.in';
-  const devPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'admin123';
+  const devEmail = process.env.DEFAULT_ADMIN_EMAIL;
+  const devPassword = process.env.DEFAULT_ADMIN_PASSWORD;
+
+  if (!devEmail || !devPassword) {
+    console.warn('Skipping Developer user seed: DEFAULT_ADMIN_EMAIL or DEFAULT_ADMIN_PASSWORD not set in environment.');
+    return;
+  }
+
   const hashedPassword = await bcrypt.hash(devPassword, 10);
 
   console.log('Seeding default Developer user...');

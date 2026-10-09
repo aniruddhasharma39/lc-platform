@@ -31,6 +31,7 @@ export default function Dashboard({ user, onLogout }: Props) {
   };
 
   const [pendingRequests, setPendingRequests] = useState<any[]>([]);
+  const [confirmModal, setConfirmModal] = useState<{ id: number, action: string, name: string } | null>(null);
 
   const fetchRoles = async () => {
     try {
@@ -276,9 +277,9 @@ export default function Dashboard({ user, onLogout }: Props) {
                                 <div className="flex items-center gap-4">
                                   <span className={`badge ${u.status.toLowerCase()}`}>{u.status}</span>
                                   {u.status === 'DEACTIVATED' ? (
-                                    <button className="primary" onClick={() => handleAction(u.id, 'reactivate')}>Reactivate</button>
+                                    <button className="primary" onClick={() => setConfirmModal({ id: u.id, action: 'reactivate', name: u.fullName })}>Reactivate</button>
                                   ) : (
-                                    <button className="danger outline" onClick={() => handleAction(u.id, 'deactivate')}>Deactivate</button>
+                                    <button className="danger outline" onClick={() => setConfirmModal({ id: u.id, action: 'deactivate', name: u.fullName })}>Deactivate</button>
                                   )}
                                 </div>
                               </div>
@@ -319,6 +320,31 @@ export default function Dashboard({ user, onLogout }: Props) {
           )}
         </main>
       </div>
+
+      {confirmModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div className="card" style={{ width: '400px' }}>
+            <h3 style={{ marginTop: 0 }}>Confirm Action</h3>
+            <p>
+              Are you sure you want to <strong>{confirmModal.action}</strong> user <strong>{confirmModal.name}</strong>?
+              {confirmModal.action === 'deactivate' && ' They will no longer be able to log in.'}
+            </p>
+            <div className="flex gap-4" style={{ marginTop: '2rem', justifyContent: 'flex-end' }}>
+              <button className="outline" onClick={() => setConfirmModal(null)}>Cancel</button>
+              <button 
+                className={confirmModal.action === 'deactivate' ? 'danger' : 'primary'}
+                style={confirmModal.action === 'reactivate' ? { backgroundColor: 'var(--success)', color: 'white' } : {}}
+                onClick={() => {
+                  handleAction(confirmModal.id, confirmModal.action);
+                  setConfirmModal(null);
+                }}
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
