@@ -2,7 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import '../config.dart';
 import '../main.dart';
+import 'roles_screen.dart';
+import 'branding_screen.dart';
+import 'registration_builder_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -16,6 +20,7 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   List<dynamic> _users = [];
   List<dynamic> _roles = [];
+  List<dynamic> _systemModules = [];
   bool _isLoading = false;
   String _currentView = 'home';
 
@@ -36,13 +41,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() => _isLoading = true);
     final token = await _getToken();
     try {
-      final baseUrl = 'http://10.0.2.2:5001/api/v1';
-      var resUsers = await http.get(Uri.parse('$baseUrl/users'), headers: {'Authorization': 'Bearer $token'}).catchError((_) => http.get(Uri.parse('http://localhost:5001/api/v1/users'), headers: {'Authorization': 'Bearer $token'}));
-      var resRoles = await http.get(Uri.parse('$baseUrl/users/roles')).catchError((_) => http.get(Uri.parse('http://localhost:5001/api/v1/users/roles')));
+      var resUsers = await http.get(Uri.parse('$baseUrl/users'), headers: {'Authorization': 'Bearer $token'});
+      var resRoles = await http.get(Uri.parse('$baseUrl/roles'), headers: {'Authorization': 'Bearer $token'});
+      var resMods = await http.get(Uri.parse('$baseUrl/modules'), headers: {'Authorization': 'Bearer $token'});
       
       setState(() {
-        _users = json.decode(resUsers.body);
-        _roles = json.decode(resRoles.body);
+        final data = json.decode(resUsers.body);
+        _users = data is Map && data['users'] != null ? data['users'] : [];
+        _pendingRequests = data is Map && data['pendingRequests'] != null ? data['pendingRequests'] : [];
+        
+        final rolesData = json.decode(resRoles.body);
+        _roles = rolesData is List ? rolesData : [];
+        
+        final modsData = json.decode(resMods.body);
+        _systemModules = modsData is List ? modsData : [];
       });
     } catch (e) {
       print(e);
@@ -51,15 +63,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  Future<void> _actionUser(int id, String action, [Map<String, dynamic>? body]) async {
+  List<dynamic> _pendingRequests = [];
+
+  Future<void> _actionUser(int id, String action, [Map<String, dynamic>? body, bool isRequest = false]) async {
     final token = await _getToken();
+    final endpoint = isRequest ? 'request/$id/$action' : '$id/$action';
     try {
       await http.put(
-        Uri.parse('http://10.0.2.2:5001/api/v1/users/$id/$action'),
+        Uri.parse('http://10.0.2.2:5001/api/v1/users/$endpoint'),
         headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
         body: body != null ? json.encode(body) : null
       ).catchError((_) => http.put(
-        Uri.parse('http://localhost:5001/api/v1/users/$id/$action'),
+        Uri.parse('$baseUrl/users/$endpoint'),
         headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
         body: body != null ? json.encode(body) : null
       ));
@@ -72,6 +87,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     final isDev = widget.user['role'] == 'Developer';
+    
+    IconData getIconForModule(String slug) {
+      switch (slug) {
+        case 'manage-users': return Icons.group;
+        case 'roles': return Icons.security;
+        case 'branding': return Icons.brush;
+        case 'registration': return Icons.build;
+        case 'cluster': return Icons.device_hub;
+        default: return Icons.extension;
+      }
+    }
+
     return Scaffold(
       appBar: AppBar(title: const Text('LC Platform'), backgroundColor: AppColors.surface),
       drawer: Drawer(
@@ -99,17 +126,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
               setState(() { _currentView = 'home'; });
               Navigator.pop(context);
             }),
-            if (isDev)
-              ListTile(title: const Text('Manage Users'), leading: const Icon(Icons.people), onTap: () {
-                setState(() { _currentView = 'manageUsers'; });
-                Navigator.pop(context);
-              }),
+            ..._systemModules.where((m) => (widget.user['allowedModules'] as List).contains(m['slug'])).map((m) {
+              return ListTile(
+                title: Text(m['name']),
+                leading: Icon(getIconForModule(m['slug'])),
+                onTap: () {
+                  setState(() { _currentView = m['slug']; });
+                  Navigator.pop(context);
+                }
+              );
+            }).toList(),
+
             ListTile(title: const Text('Logout', style: TextStyle(color: AppColors.danger)), leading: const Icon(Icons.logout, color: AppColors.danger), onTap: widget.onLogout),
           ],
         )
       ),
-      body: (isDev && _currentView == 'manageUsers') ? _buildAdminDashboard() : _buildUserDashboard(),
+      body: _buildBody(),
     );
+  }
+
+  Widget _buildBody() {
+    if (_currentView == 'home') return _buildUserDashboard();
+    if (_currentView == 'manage-users') return _buildAdminDashboard();
+    if (_currentView == 'roles') return RolesScreen(user: widget.user);
+    if (_currentView == 'branding') return BrandingScreen(user: widget.user);
+    if (_currentView == 'registration') return RegistrationBuilderScreen(user: widget.user);
+    
+    return Center(child: Text('Module $_currentView not implemented yet.'));
   }
 
   Widget _buildUserDashboard() {
@@ -126,8 +169,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildAdminDashboard() {
-    final pending = _users.where((u) => u['status'] == 'PENDING').toList();
-    
     return DefaultTabController(
       length: 2,
       child: Column(
@@ -136,14 +177,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
             labelColor: AppColors.primary,
             tabs: [
               const Tab(text: 'Existing Users'),
-              Tab(text: 'Pending Approval (${pending.length})'),
+              Tab(text: 'Pending Approval (${_pendingRequests.length})'),
             ]
           ),
           Expanded(
             child: TabBarView(
               children: [
                 _buildExistingUsersTab(),
-                _buildPendingUsersTab(pending),
+                _buildPendingUsersTab(_pendingRequests),
               ]
             )
           )
@@ -154,14 +195,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildPendingUsersTab(List<dynamic> pending) {
     if (_isLoading) return const Center(child: CircularProgressIndicator());
-    if (pending.isEmpty) return const Center(child: Text('No pending users.'));
+    if (pending.isEmpty) return const Center(child: Text('No pending requests.'));
     
     return ListView.builder(
       padding: const EdgeInsets.all(16),
       itemCount: pending.length,
       itemBuilder: (c, i) {
-        final u = pending[i];
-        int selectedRole = u['requestedRoleId'];
+        final req = pending[i];
+        final reqData = json.decode(req['data'] ?? '{}');
+        int selectedRole = req['requestedRoleId'] ?? (_roles.isNotEmpty ? _roles[0]['id'] : 0);
+        
         return Card(
           color: Colors.white,
           margin: const EdgeInsets.only(bottom: 16),
@@ -170,10 +213,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('${u['fullName']} (${u['employeeId']})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                Text('${u['mobile']} | ${u['email']} | ${u['department']}', style: const TextStyle(color: Colors.grey)),
+                Text('${reqData['fullName'] ?? 'Unknown'}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                Text('${reqData.entries.where((e) => e.key != 'password').map((e) => '${e.key}: ${e.value}').join(' | ')}', style: const TextStyle(color: Colors.grey)),
                 const SizedBox(height: 8),
-                Text('Requested Role: ${u['requestedRole']?['name']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                Text('Requested Role ID: ${req['requestedRoleId']}', style: const TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<int>(
                   value: selectedRole,
@@ -186,13 +229,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   children: [
                     Expanded(child: ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: AppColors.success),
-                      onPressed: () => _actionUser(u['id'], 'approve', {'roleId': selectedRole}),
+                      onPressed: () => _actionUser(req['id'], 'approve', {'roleId': selectedRole}, true),
                       child: const Text('Approve'),
                     )),
                     const SizedBox(width: 16),
                     Expanded(child: ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
-                      onPressed: () => _actionUser(u['id'], 'reject', {'reason': 'Rejected by admin'}),
+                      onPressed: () => _actionUser(req['id'], 'reject', {'reason': 'Rejected by admin'}, true),
                       child: const Text('Reject'),
                     )),
                   ],

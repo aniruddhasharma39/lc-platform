@@ -1,148 +1,139 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import FormRenderer from '../components/FormBuilder/FormRenderer';
 
 type Props = {
   onGoToLogin: () => void;
 };
 
 export default function Register({ onGoToLogin }: Props) {
-  const [formData, setFormData] = useState({
-    fullName: '',
-    mobile: '',
-    email: '',
-    employeeId: '',
-    department: 'IT',
-    requestedRoleId: 0,
-    password: '',
-    confirmPassword: '',
-  });
-  
+  const [schema, setSchema] = useState<any>(null);
   const [roles, setRoles] = useState<any[]>([]);
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [formId, setFormId] = useState<number | null>(null);
 
   useEffect(() => {
-    fetch('http://localhost:5001/api/v1/users/roles', {
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('token')}` // Although not strictly needed for this open endpoint if we changed it, but let's just fetch open roles
-      }
-    })
-      .then(res => res.json())
-      .then(data => {
-        // Exclude Developer
-        const filteredRoles = data.filter((r: any) => r.name !== 'Developer');
-        setRoles(filteredRoles);
-        if (filteredRoles.length > 0) {
-          setFormData(f => ({ ...f, requestedRoleId: filteredRoles[0].id }));
+    const fetchForm = async () => {
+      try {
+        const res = await fetch('http://localhost:5001/api/v1/auth/registration-form');
+        const data = await res.json();
+        
+        if (data.form) {
+          setFormId(data.form.id);
+          const parsed = JSON.parse(data.form.schema);
+          if (Array.isArray(parsed)) {
+            // Backward compatibility for old array schema
+            setSchema({ fields: parsed, allowRoles: true });
+          } else {
+            setSchema(parsed);
+          }
         }
-      })
-      .catch(err => console.error(err));
+        if (data.roles) {
+          setRoles(data.roles);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+    fetchForm();
   }, []);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (formData: any) => {
+    setIsLoading(true);
     setError('');
 
-    if (formData.password !== formData.confirmPassword) {
-      return setError('Passwords do not match');
-    }
-
-    setLoading(true);
+    // If schema has image files, we'd need FormData. 
+    // For simplicity, we assume we send JSON if no files, or FormData if files exist.
+    // Let's check if there are any File objects.
+    const hasFiles = Object.values(formData).some(v => v instanceof File);
 
     try {
-      const res = await fetch('http://localhost:5001/api/v1/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...formData,
-          requestedRoleId: Number(formData.requestedRoleId)
-        }),
-      });
+      let fetchOptions: RequestInit = {};
 
-      const data = await res.json();
+      if (hasFiles) {
+        const payload = new FormData();
+        const plainData = { ...formData };
+        
+        Object.entries(formData).forEach(([key, val]) => {
+          if (val instanceof File) {
+            payload.append(key, val);
+            delete plainData[key];
+          }
+        });
+        
+        payload.append('data', JSON.stringify(plainData));
+        if (formData.roleId) payload.append('roleId', formData.roleId);
+        if (formId) payload.append('formId', formId.toString());
 
-      if (!res.ok) {
-        throw new Error(data.error || 'Registration failed');
+        fetchOptions = {
+          method: 'POST',
+          body: payload, // no content type, browser sets it to multipart/form-data with boundary
+        };
+      } else {
+        fetchOptions = {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            data: formData, 
+            roleId: formData.roleId ? parseInt(formData.roleId) : undefined,
+            formId: formId
+          })
+        };
       }
 
-      setSuccess(true);
-    } catch (err: any) {
-      setError(err.message);
+      const res = await fetch('http://localhost:5001/api/v1/auth/register', fetchOptions);
+      const data = await res.json();
+
+      if (res.ok) {
+        setSuccess(true);
+      } else {
+        setError(data.error || 'Registration failed');
+      }
+    } catch (err) {
+      setError('Network error');
     } finally {
-      setLoading(false);
+      setIsLoading(false);
     }
   };
 
   if (success) {
     return (
-      <div className="flex items-center justify-center w-full" style={{ minHeight: '100vh' }}>
-        <div className="card text-center" style={{ width: '100%', maxWidth: '400px' }}>
-          <h2 style={{ color: 'var(--success)' }}>Registration Successful</h2>
-          <p className="mt-4 mb-4">Your request has been sent to the admin for approval. You cannot log in until it is approved.</p>
-          <button className="primary" onClick={onGoToLogin}>Go to Login</button>
+      <div className="bg-light" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', width: '100%', padding: '40px 24px', overflowY: 'auto' }}>
+        <div className="card text-center" style={{ width: 400 }}>
+          <h2 className="text-primary mb-4">Registration Submitted!</h2>
+          <p className="text-muted mb-6">Your registration request has been submitted and is pending administrator approval. You will be notified once your account is activated.</p>
+          <button className="primary outline" onClick={onGoToLogin} style={{ width: '100%' }}>Return to Login</button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex items-center justify-center w-full" style={{ minHeight: '100vh', padding: '2rem 0' }}>
-      <div className="card" style={{ width: '100%', maxWidth: '500px' }}>
-        <h2 className="text-center" style={{ color: 'var(--primary)', marginBottom: '1.5rem' }}>Register</h2>
+    <div className="bg-light" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', width: '100%', padding: '40px 24px', overflowY: 'auto' }}>
+      <div className="card" style={{ width: 500, maxWidth: '100%' }}>
+        <h2 className="text-center text-primary mb-6">Create an Account</h2>
         
         {error && (
-          <div className="card mb-4" style={{ backgroundColor: 'rgba(214, 69, 69, 0.1)', borderColor: 'var(--danger)', color: 'var(--danger)', padding: '0.75rem' }}>
+          <div className="bg-danger text-white mb-4" style={{ padding: 12, borderRadius: 4 }}>
             {error}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="flex-col gap-2">
-          <label className="text-sm text-muted">Full Name</label>
-          <input name="fullName" value={formData.fullName} onChange={handleChange} required />
-          
-          <label className="text-sm text-muted">Mobile Number</label>
-          <input name="mobile" value={formData.mobile} onChange={handleChange} required />
-          
-          <label className="text-sm text-muted">Email</label>
-          <input type="email" name="email" value={formData.email} onChange={handleChange} required />
-          
-          <label className="text-sm text-muted">Employee ID</label>
-          <input name="employeeId" value={formData.employeeId} onChange={handleChange} required />
-          
-          <label className="text-sm text-muted">Department</label>
-          <select name="department" value={formData.department} onChange={handleChange}>
-            <option value="IT">IT</option>
-            <option value="Operations">Operations</option>
-            <option value="Maintenance">Maintenance</option>
-          </select>
+        {!schema ? (
+          <div className="text-center text-muted">Loading registration form...</div>
+        ) : (
+          <FormRenderer 
+            schema={schema} 
+            roles={roles} 
+            onSubmit={handleSubmit} 
+            isSubmitting={isLoading} 
+          />
+        )}
 
-          <label className="text-sm text-muted">Role Requested</label>
-          <select name="requestedRoleId" value={formData.requestedRoleId} onChange={handleChange}>
-            {roles.map(r => (
-              <option key={r.id} value={r.id}>{r.name}</option>
-            ))}
-          </select>
-          
-          <label className="text-sm text-muted">Password</label>
-          <input type="password" name="password" value={formData.password} onChange={handleChange} required />
-          
-          <label className="text-sm text-muted">Confirm Password</label>
-          <input type="password" name="confirmPassword" value={formData.confirmPassword} onChange={handleChange} required />
-
-          <button type="submit" className="primary w-full mt-4" disabled={loading}>
-            {loading ? 'Registering...' : 'Register'}
-          </button>
-        </form>
-
-        <div className="text-center mt-4">
-          <span className="text-muted text-sm">Already have an account? </span>
-          <button className="outline" style={{ border: 'none', color: 'var(--secondary)', padding: 0 }} onClick={onGoToLogin}>
-            Login
-          </button>
+        <div className="text-center mt-6">
+          <span className="text-muted">Already have an account? </span>
+          <button className="icon-btn text-primary fw-bold" onClick={onGoToLogin}>Login</button>
         </div>
       </div>
     </div>

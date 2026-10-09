@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { User } from '../types';
 
 type Props = {
@@ -12,6 +12,15 @@ export default function Login({ onLogin, onGoToRegister }: Props) {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const [branding, setBranding] = useState({ appName: 'LC Platform', wallpaperUrl: '' });
+
+  useEffect(() => {
+    fetch('http://localhost:5001/api/v1/settings/branding')
+      .then(res => res.json())
+      .then(data => setBranding(data))
+      .catch(err => console.error(err));
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -40,9 +49,14 @@ export default function Login({ onLogin, onGoToRegister }: Props) {
   };
 
   return (
-    <div className="flex items-center justify-center w-full" style={{ minHeight: '100vh' }}>
-      <div className="card" style={{ width: '100%', maxWidth: '400px' }}>
-        <h2 className="text-center" style={{ color: 'var(--primary)', marginBottom: '1.5rem' }}>Login to LC Platform</h2>
+    <div className="flex items-center justify-center w-full" style={{ 
+      minHeight: '100vh', 
+      backgroundImage: branding.wallpaperUrl ? `url(${branding.wallpaperUrl})` : 'none',
+      backgroundSize: 'cover',
+      backgroundPosition: 'center',
+    }}>
+      <div className="card" style={{ width: '100%', maxWidth: '400px', backgroundColor: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(10px)' }}>
+        <h2 className="text-center" style={{ color: 'var(--primary)', marginBottom: '1.5rem' }}>Login to {branding.appName}</h2>
         
         {error && (
           <div className="card mb-4" style={{ backgroundColor: 'rgba(214, 69, 69, 0.1)', borderColor: 'var(--danger)', color: 'var(--danger)', padding: '0.75rem' }}>

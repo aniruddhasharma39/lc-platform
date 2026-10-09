@@ -1,29 +1,26 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
-import { authenticate, requireAdmin } from '../middleware/auth';
+import { authenticate, requireModule } from '../middleware/auth';
 
 const router = Router();
 
-router.get('/roles', async (req, res, next) => {
-  try {
-    const roles = await prisma.role.findMany();
-    res.json(roles);
-  } catch (error) {
-    next(error);
-  }
-});
-
 router.use(authenticate);
 
-
-router.get('/', requireAdmin, async (req, res, next) => {
+router.get('/', requireModule('manage-users'), async (req, res, next) => {
   try {
     const users = await prisma.user.findMany({
       include: { role: true, requestedRole: true },
       orderBy: { createdAt: 'desc' }
     });
-    res.json(users);
+    
+    const pendingRequests = await prisma.registrationRequest.findMany({
+      where: { status: 'PENDING' },
+      include: { form: true },
+      orderBy: { createdAt: 'desc' }
+    });
+    
+    res.json({ users, pendingRequests });
   } catch (error) {
     next(error);
   }
@@ -33,24 +30,97 @@ const approveSchema = z.object({
   roleId: z.number().int(),
 });
 
-router.put('/:id/approve', requireAdmin, async (req: any, res, next) => {
+router.put('/request/:id/approve', requireModule('manage-users'), async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const data = approveSchema.parse(req.body);
 
-    const user = await prisma.user.update({
+    const request = await prisma.registrationRequest.findUnique({ 
       where: { id },
+      include: { form: true }
+    });
+    if (!request || request.status !== 'PENDING') {
+      return res.status(404).json({ error: 'Request not found or not pending' });
+    }
+
+    const formData = JSON.parse(request.data);
+    let schema: any = null;
+    try {
+      if (request.form?.schema) schema = JSON.parse(request.form.schema);
+    } catch {}
+
+    const extract = (keywords: string[]): string | undefined => {
+      // First check if direct key exists
+      for (const kw of keywords) {
+        if (formData[kw]) return formData[kw];
+      }
+      
+      // Then check schema labels
+      if (!schema?.fields) return undefined;
+      const allFields: any[] = [];
+      const walk = (fields: any[]) => {
+        for (const f of fields) {
+          if (f.type === 'section' && f.children) walk(f.children);
+          else allFields.push(f);
+        }
+      };
+      walk(schema.fields);
+      
+      for (const f of allFields) {
+        const label = (f.label || '').toLowerCase();
+        if (keywords.some(kw => label.includes(kw))) {
+          if (formData[f.name]) return formData[f.name];
+        }
+      }
+      return undefined;
+    };
+    
+    // Map all formData fields to their actual labels for metadata storage
+    const mappedMetadata: Record<string, any> = {};
+    const allFields: any[] = [];
+    if (schema?.fields) {
+      const walk = (fields: any[]) => {
+        for (const f of fields) {
+          if (f.type === 'section' && f.children) walk(f.children);
+          else allFields.push(f);
+        }
+      };
+      walk(schema.fields);
+    }
+
+    for (const [k, v] of Object.entries(formData)) {
+      if (k === 'password') continue;
+      const field = allFields.find(f => f.name === k);
+      const label = field ? field.label : k;
+      mappedMetadata[label] = v;
+    }
+    
+    // Create the actual user
+    const user = await prisma.user.create({
       data: {
-        status: 'APPROVED',
+        fullName: extract(['name', 'fullname']) || 'Unknown',
+        email: extract(['email']) || `temp-${Date.now()}@example.com`,
+        mobile: extract(['phone', 'mobile', 'contact']) || `${Date.now()}`.slice(-10),
+        employeeId: extract(['emp', 'employee id']) || `EMP-${Date.now()}`,
+        department: extract(['department', 'dept', 'designation']) || 'Unknown',
+        requestedRoleId: request.requestedRoleId,
         roleId: data.roleId,
-      },
+        passwordHash: formData.password || '', // password was hashed in auth.ts
+        status: 'APPROVED',
+        metadata: JSON.stringify(mappedMetadata)
+      }
+    });
+
+    await prisma.registrationRequest.update({
+      where: { id },
+      data: { status: 'APPROVED' }
     });
 
     await prisma.auditLog.create({
       data: {
         userId: req.user.id,
-        action: 'APPROVE_USER',
-        details: `Approved user ${id} with role ${data.roleId}`,
+        action: 'APPROVE_USER_REQUEST',
+        details: `Approved registration request ${id} and created user ${user.id} with role ${data.roleId}`,
       },
     });
 
@@ -64,12 +134,12 @@ const rejectSchema = z.object({
   reason: z.string().optional(),
 });
 
-router.put('/:id/reject', requireAdmin, async (req: any, res, next) => {
+router.put('/request/:id/reject', requireModule('manage-users'), async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const data = rejectSchema.parse(req.body);
 
-    const user = await prisma.user.update({
+    await prisma.registrationRequest.update({
       where: { id },
       data: {
         status: 'REJECTED',
@@ -80,18 +150,18 @@ router.put('/:id/reject', requireAdmin, async (req: any, res, next) => {
     await prisma.auditLog.create({
       data: {
         userId: req.user.id,
-        action: 'REJECT_USER',
-        details: `Rejected user ${id}`,
+        action: 'REJECT_USER_REQUEST',
+        details: `Rejected registration request ${id}`,
       },
     });
 
-    res.json(user);
+    res.json({ success: true });
   } catch (error) {
     next(error);
   }
 });
 
-router.put('/:id/deactivate', requireAdmin, async (req: any, res, next) => {
+router.put('/:id/deactivate', requireModule('manage-users'), async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
 
@@ -116,7 +186,7 @@ router.put('/:id/deactivate', requireAdmin, async (req: any, res, next) => {
   }
 });
 
-router.put('/:id/reactivate', requireAdmin, async (req: any, res, next) => {
+router.put('/:id/reactivate', requireModule('manage-users'), async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
 

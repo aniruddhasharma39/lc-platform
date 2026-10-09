@@ -2,60 +2,103 @@ import { Router } from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
+import multer from 'multer';
+import { v2 as cloudinary } from 'cloudinary';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 
 const router = Router();
+const upload = multer({ storage: multer.memoryStorage() });
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'dixdw1mus',
+  api_key: process.env.CLOUDINARY_API_KEY || '647788876868715',
+  api_secret: process.env.CLOUDINARY_API_SECRET || 'Aku2U6rp22oHgQQEESnZ7w3YaUI'
+});
 
 const loginSchema = z.object({
   identifier: z.string().min(1),
   password: z.string().min(1),
 });
 
-const registerSchema = z.object({
-  fullName: z.string().min(2),
-  mobile: z.string().min(10),
-  email: z.string().email(),
-  employeeId: z.string().min(2),
-  department: z.string().min(2),
-  requestedRoleId: z.number().int(),
-  password: z.string().min(6),
-});
-
-router.post('/register', async (req, res, next) => {
+router.post('/register', upload.any(), async (req, res, next) => {
   try {
-    const data = registerSchema.parse(req.body);
+    let parsedData: any;
+    let requestedRoleId: number;
+    let formId: number;
 
-    const existingUser = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { email: data.email },
-          { mobile: data.mobile },
-          { employeeId: data.employeeId },
-        ],
-      },
-    });
-
-    if (existingUser) {
-      return res.status(400).json({ error: 'Email, Mobile or Employee ID already in use' });
+    // Support both application/json and multipart/form-data
+    if (req.is('multipart/form-data')) {
+      parsedData = JSON.parse(req.body.data);
+      requestedRoleId = req.body.roleId ? parseInt(req.body.roleId) : -1;
+      formId = parseInt(req.body.formId);
+    } else {
+      parsedData = req.body.data;
+      requestedRoleId = req.body.requestedRoleId || -1;
+      formId = req.body.formId;
     }
 
-    const hashedPassword = await bcrypt.hash(data.password, 10);
+    if (!formId) return res.status(400).json({ error: 'Missing formId' });
 
-    const user = await prisma.user.create({
+    // Verify form is LIVE
+    const form = await prisma.registrationForm.findUnique({ where: { id: formId } });
+    if (!form || form.status !== 'LIVE') {
+      return res.status(400).json({ error: 'Invalid or inactive registration form' });
+    }
+
+    // Upload files to Cloudinary
+    if (req.files && Array.isArray(req.files)) {
+      for (const file of req.files) {
+        const fileUrl = await new Promise<string>((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            { folder: 'lc-platform-registration' },
+            (error, result) => {
+              if (error) reject(error);
+              else resolve(result!.secure_url);
+            }
+          );
+          stream.end(file.buffer);
+        });
+        parsedData[file.fieldname] = fileUrl; // Add URL to the JSON payload mapped by fieldName
+      }
+    }
+
+    // Hash password if it exists in data
+    let dataToStore = { ...parsedData };
+    if (dataToStore.password) {
+      dataToStore.password = await bcrypt.hash(dataToStore.password, 10);
+    }
+
+    const request = await prisma.registrationRequest.create({
       data: {
-        fullName: data.fullName,
-        email: data.email,
-        mobile: data.mobile,
-        employeeId: data.employeeId,
-        department: data.department,
-        requestedRoleId: data.requestedRoleId,
-        passwordHash: hashedPassword,
-        status: 'PENDING',
-      },
+        formId,
+        data: JSON.stringify(dataToStore),
+        requestedRoleId: requestedRoleId !== -1 ? requestedRoleId : null,
+        status: 'PENDING'
+      }
     });
 
-    res.status(201).json({ message: 'Registration successful, pending approval.' });
+    res.status(201).json({ message: 'Registration submitted, pending approval.', requestId: request.id });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/registration-form', async (req, res, next) => {
+  try {
+    const form = await prisma.registrationForm.findFirst({
+      where: { status: 'LIVE' }
+    });
+    
+    if (!form) {
+      return res.status(404).json({ error: 'No active registration form available.' });
+    }
+    
+    const roles = await prisma.role.findMany({
+      where: { name: { not: 'Developer' } } // Don't allow registering as Developer
+    });
+    
+    res.json({ form, roles });
   } catch (error) {
     next(error);
   }
@@ -73,7 +116,15 @@ router.post('/login', async (req, res, next) => {
           { employeeId: data.identifier },
         ],
       },
-      include: { role: true },
+      include: { 
+        role: {
+          include: {
+            roleModules: {
+              include: { module: true }
+            }
+          }
+        } 
+      },
     });
 
     if (!user) {
@@ -133,6 +184,12 @@ router.post('/login', async (req, res, next) => {
       },
     });
 
+    let allowedModules = user.role?.roleModules.map((rm: any) => rm.module.slug) || [];
+    if (user.role?.name === 'Developer') {
+      const allModules = await prisma.module.findMany();
+      allowedModules = allModules.map(m => m.slug);
+    }
+
     res.json({
       token,
       refreshToken,
@@ -142,6 +199,7 @@ router.post('/login', async (req, res, next) => {
         email: user.email,
         role: user.role?.name,
         mustChangePassword: user.mustChangePassword,
+        allowedModules
       }
     });
   } catch (error) {

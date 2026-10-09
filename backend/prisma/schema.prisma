@@ -10,8 +10,9 @@ datasource db {
 model Role {
   id             Int    @id @default(autoincrement())
   name           String @unique
-  users          User[] @relation("FinalRole")
-  requestedUsers User[] @relation("RequestedRole")
+  users          User[]       @relation("FinalRole")
+  requestedUsers User[]       @relation("RequestedRole")
+  roleModules    RoleModule[]
 }
 
 model User {
@@ -35,6 +36,7 @@ model User {
   updatedAt           DateTime  @updatedAt
   refreshTokens       RefreshToken[]
   auditLogs           AuditLog[]
+  metadata            String?    // JSON string for dynamic registration fields
 }
 
 model RefreshToken {
@@ -53,4 +55,51 @@ model AuditLog {
   action    String
   details   String?
   createdAt DateTime @default(now())
+}
+
+model Module {
+  id          Int          @id @default(autoincrement())
+  slug        String       @unique
+  name        String
+  roleModules RoleModule[]
+}
+
+model RoleModule {
+  id       Int    @id @default(autoincrement())
+  roleId   Int
+  role     Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  moduleId Int
+  module   Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, moduleId])
+}
+
+model AppSetting {
+  id    Int    @id @default(autoincrement())
+  key   String @unique
+  value String
+}
+
+model RegistrationForm {
+  id        Int      @id @default(autoincrement())
+  name      String
+  schema    String   // JSON representing fields and sections
+  status    String   @default("DRAFT") // DRAFT, LIVE, ARCHIVED
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  requests  RegistrationRequest[]
+}
+
+model RegistrationRequest {
+  id              Int               @id @default(autoincrement())
+  formId          Int
+  form            RegistrationForm  @relation(fields: [formId], references: [id], onDelete: Restrict)
+  data            String            // JSON representing submitted values
+  status          String            @default("PENDING") // PENDING, APPROVED, REJECTED
+  requestedRoleId Int?
+  rejectionReason String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 }

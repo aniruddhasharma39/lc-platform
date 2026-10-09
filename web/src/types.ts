@@ -3,4 +3,5 @@ export type User = {
   fullName: string;
   email: string;
   role: string;
+  allowedModules: string[];
 };

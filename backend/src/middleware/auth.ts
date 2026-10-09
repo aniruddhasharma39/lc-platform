@@ -6,6 +6,7 @@ export interface AuthRequest extends Request {
   user?: {
     id: number;
     role: string;
+    allowedModules: string[];
   };
 }
 
@@ -22,16 +23,29 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
     
     const user = await prisma.user.findUnique({
       where: { id: decoded.userId },
-      include: { role: true }
+      include: { 
+        role: {
+          include: {
+            roleModules: {
+              include: {
+                module: true
+              }
+            }
+          }
+        } 
+      }
     });
 
     if (!user || user.status !== 'APPROVED') {
       return res.status(401).json({ error: 'User is invalid or not approved' });
     }
 
+    const allowedModules = user.role?.roleModules.map((rm: any) => rm.module.slug) || [];
+
     req.user = {
       id: user.id,
-      role: user.role?.name || ''
+      role: user.role?.name || '',
+      allowedModules
     };
     next();
   } catch (error) {
@@ -44,4 +58,16 @@ export const requireAdmin = (req: AuthRequest, res: Response, next: NextFunction
     return res.status(403).json({ error: 'Forbidden: Admin access required' });
   }
   next();
+};
+
+export const requireModule = (moduleSlug: string) => {
+  return (req: AuthRequest, res: Response, next: NextFunction) => {
+    if (req.user?.role === 'Developer') {
+      return next(); // Developer always has access
+    }
+    if (!req.user?.allowedModules.includes(moduleSlug)) {
+      return res.status(403).json({ error: `Forbidden: Access to ${moduleSlug} is required` });
+    }
+    next();
+  };
 };

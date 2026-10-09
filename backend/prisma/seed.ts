@@ -12,6 +12,23 @@ async function main() {
     'Gatesman',
   ];
 
+  const modules = [
+    { name: 'Manage Users', slug: 'manage-users' },
+    { name: 'Roles', slug: 'roles' },
+    { name: 'Registration Builder', slug: 'registration' },
+    { name: 'Branding', slug: 'branding' },
+    { name: 'Cluster', slug: 'cluster' },
+  ];
+
+  console.log('Seeding modules...');
+  for (const mod of modules) {
+    await prisma.module.upsert({
+      where: { slug: mod.slug },
+      update: {},
+      create: { name: mod.name, slug: mod.slug },
+    });
+  }
+
   console.log('Seeding roles...');
   for (const roleName of roles) {
     await prisma.role.upsert({
