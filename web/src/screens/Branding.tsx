@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { User } from '../types';
+import { API_URL } from '../config';
 
 type Props = {
   user: User;
@@ -12,7 +13,7 @@ export default function Branding({}: Props) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetch('http://localhost:5001/api/v1/settings/branding')
+    fetch(`${API_URL}/api/v1/settings/branding`)
       .then(res => res.json())
       .then(data => {
         if (data.appName) setAppName(data.appName);
@@ -31,7 +32,7 @@ export default function Branding({}: Props) {
     }
 
     try {
-      const res = await fetch('http://localhost:5001/api/v1/settings/branding', {
+      const res = await fetch(`${API_URL}/api/v1/settings/branding`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`

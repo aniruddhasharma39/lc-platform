@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { User } from '../types';
+import { API_URL } from '../config';
 
 type Props = {
   onLogin: (user: User, token: string) => void;
@@ -16,7 +17,7 @@ export default function Login({ onLogin, onGoToRegister }: Props) {
   const [branding, setBranding] = useState({ appName: 'LC Platform', wallpaperUrl: '' });
 
   useEffect(() => {
-    fetch('http://localhost:5001/api/v1/settings/branding')
+    fetch(`${API_URL}/api/v1/settings/branding`)
       .then(res => res.json())
       .then(data => setBranding(data))
       .catch(err => console.error(err));
@@ -28,7 +29,7 @@ export default function Login({ onLogin, onGoToRegister }: Props) {
     setLoading(true);
 
     try {
-      const res = await fetch('http://localhost:5001/api/v1/auth/login', {
+      const res = await fetch(`${API_URL}/api/v1/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ identifier, password }),

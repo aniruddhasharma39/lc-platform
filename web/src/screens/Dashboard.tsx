@@ -3,6 +3,7 @@ import type { User } from '../types';
 import Roles from './Roles';
 import RegistrationBuilder from './RegistrationBuilder';
 import Branding from './Branding';
+import { API_URL } from '../config';
 
 type Props = {
   user: User;
@@ -21,7 +22,7 @@ export default function Dashboard({ user, onLogout }: Props) {
   const fetchUsers = async () => {
     if (user.role !== 'Developer') return;
     try {
-      const res = await fetch('http://localhost:5001/api/v1/users', {
+      const res = await fetch(`${API_URL}/api/v1/users`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       const data = await res.json();
@@ -42,7 +43,7 @@ export default function Dashboard({ user, onLogout }: Props) {
 
   const fetchRoles = async () => {
     try {
-      const res = await fetch('http://localhost:5001/api/v1/roles', {
+      const res = await fetch(`${API_URL}/api/v1/roles`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       const data = await res.json();
@@ -54,7 +55,7 @@ export default function Dashboard({ user, onLogout }: Props) {
 
   const fetchSystemModules = async () => {
     try {
-      const res = await fetch('http://localhost:5001/api/v1/modules', {
+      const res = await fetch(`${API_URL}/api/v1/modules`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       const data = await res.json();
@@ -71,7 +72,7 @@ export default function Dashboard({ user, onLogout }: Props) {
 
   const fetchBranding = async () => {
     try {
-      const res = await fetch('http://localhost:5001/api/v1/branding');
+      const res = await fetch(`${API_URL}/api/v1/branding`);
       const data = await res.json();
       if(data && data.appName) setBranding(data);
     } catch (err) {
@@ -122,8 +123,8 @@ export default function Dashboard({ user, onLogout }: Props) {
   const handleAction = async (id: number, action: string, body = {}, isRequest = false) => {
     try {
       const endpoint = isRequest 
-        ? `http://localhost:5001/api/v1/users/request/${id}/${action}`
-        : `http://localhost:5001/api/v1/users/${id}/${action}`;
+        ? `${API_URL}/api/v1/users/request/${id}/${action}`
+        : `${API_URL}/api/v1/users/${id}/${action}`;
       
       await fetch(endpoint, {
         method: 'PUT',
