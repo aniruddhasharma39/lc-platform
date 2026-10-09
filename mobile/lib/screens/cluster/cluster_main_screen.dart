@@ -4,9 +4,11 @@ import 'dart:convert';
 import 'create_gate_screen.dart';
 import 'gate_detail_screen.dart';
 
+import 'package:shared_preferences/shared_preferences.dart';
+import '../../config.dart';
+
 class ClusterMainScreen extends StatefulWidget {
-  final String token;
-  const ClusterMainScreen({super.key, required this.token});
+  const ClusterMainScreen({super.key});
 
   @override
   State<ClusterMainScreen> createState() => _ClusterMainScreenState();
@@ -15,6 +17,7 @@ class ClusterMainScreen extends StatefulWidget {
 class _ClusterMainScreenState extends State<ClusterMainScreen> {
   List<dynamic> _gates = [];
   bool _isLoading = true;
+  String _token = '';
 
   @override
   void initState() {
@@ -25,9 +28,13 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
   Future<void> _fetchGates() async {
     setState(() => _isLoading = true);
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('token') ?? '';
+      _token = token;
+      
       final res = await http.get(
-        Uri.parse('http://localhost:5001/api/v1/lcgate'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
+        Uri.parse('$baseUrl/lcgate'),
+        headers: {'Authorization': 'Bearer $_token'},
       );
       if (res.statusCode == 200) {
         setState(() {
@@ -82,8 +89,8 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
     setState(() => _isLoading = true);
     try {
       final res = await http.delete(
-        Uri.parse('http://localhost:5001/api/v1/lcgate/${gate['id']}'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
+        Uri.parse('$baseUrl/lcgate/${gate['id']}'),
+        headers: {'Authorization': 'Bearer $_token'},
       );
       if (res.statusCode == 204) {
         _fetchGates();
@@ -112,7 +119,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           final result = await Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (_) => CreateGateScreen(token: widget.token),
+              builder: (_) => CreateGateScreen(token: _token),
             ),
           );
           if (result == true) _fetchGates();
@@ -147,7 +154,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                           final result = await Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (_) => GateDetailScreen(token: widget.token, gate: gate),
+                              builder: (_) => GateDetailScreen(token: _token, gate: gate),
                             ),
                           );
                           if (result == true) _fetchGates();

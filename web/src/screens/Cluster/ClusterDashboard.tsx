@@ -85,15 +85,15 @@ export default function ClusterDashboard(_props: Props) {
           ) : (
             <div className="grid">
               {gates.map(gate => (
-                <div key={gate.id} className="gate-card glass-card hover-lift" onClick={() => { setSelectedGate(gate); setView('gate_detail'); }}>
-                  <div className="gate-header flex justify-between items-start">
-                    <div>
-                      <h3 className="m-0 mb-2">{gate.name || 'Unnamed Gate'}</h3>
-                      <span className="badge badge-blue">{gate.lcNumber || 'No LC#'}</span>
+                <div key={gate.id} className="gate-card glass-card hover-lift" onClick={() => { setSelectedGate(gate); setView('gate_detail'); }} style={{ padding: '24px', cursor: 'pointer' }}>
+                  <div className="gate-header flex justify-between items-start" style={{ marginBottom: '28px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-start' }}>
+                      <h3 className="m-0" style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--text-main)', lineHeight: '1.2' }}>{gate.name || 'Unnamed Gate'}</h3>
+                      <span className="badge badge-blue" style={{ fontSize: '0.85rem', padding: '6px 12px', letterSpacing: '0.5px' }}>{gate.lcNumber || 'No LC#'}</span>
                     </div>
                     <button 
-                      className="transition flex items-center justify-center rounded-full"
-                      style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', padding: '8px' }}
+                      className="transition flex items-center justify-center rounded-full hover-lift"
+                      style={{ backgroundColor: 'rgba(239, 68, 68, 0.08)', color: '#ef4444', padding: '12px', cursor: 'pointer', border: 'none' }}
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedGate(gate);
@@ -101,14 +101,30 @@ export default function ClusterDashboard(_props: Props) {
                       }}
                       title="Delete Gate"
                       onMouseOver={(e) => { e.currentTarget.style.backgroundColor = '#ef4444'; e.currentTarget.style.color = '#ffffff'; }}
-                      onMouseOut={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.1)'; e.currentTarget.style.color = '#ef4444'; }}
+                      onMouseOut={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.08)'; e.currentTarget.style.color = '#ef4444'; }}
                     >
-                      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                     </button>
                   </div>
-                  <div className="gate-body text-sm text-muted">
-                    <p className="flex items-center gap-2"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> {gate.locationName}</p>
-                    <p>Masters: <strong>{gate.masters?.length || 0}</strong></p>
+                  <div className="gate-body text-sm" style={{ display: 'flex', flexDirection: 'column', gap: '20px', color: 'var(--text-main)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                      <div style={{ backgroundColor: 'var(--secondary)', color: 'white', width: '42px', height: '42px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> 
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 700 }}>Location</span>
+                        <span style={{ fontWeight: 500, fontSize: '1.05rem' }}>{gate.locationName}</span>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                      <div style={{ backgroundColor: 'var(--primary)', color: 'white', width: '42px', height: '42px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 700 }}>Master Units</span>
+                        <span style={{ fontWeight: 500, fontSize: '1.05rem' }}>{gate.masters?.length || 0} Registered</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -329,15 +345,20 @@ function GateDetailView({ gate, onBack, onUpdate }: any) {
     <div className="slide-up">
       <div className="flex justify-between items-center mb-8 border-b pb-4" style={{ borderColor: 'rgba(0,0,0,0.05)' }}>
         <div className="flex items-center gap-4">
-          <button className="btn-icon-circular" onClick={onBack} aria-label="Go Back">
-            <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+          <button 
+            className="transition flex items-center justify-center rounded-full hover-lift" 
+            style={{ backgroundColor: 'white', border: '1px solid var(--border)', width: '48px', height: '48px', color: 'var(--text-main)', boxShadow: '0 4px 6px rgba(0,0,0,0.05)', cursor: 'pointer' }}
+            onClick={onBack} 
+            aria-label="Go Back"
+          >
+            <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
           </button>
           <div>
             <h2 className="m-0" style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--text-main)' }}>
               {gate.name || 'Unnamed Gate'}
             </h2>
             {gate.lcNumber && (
-              <div className="badge badge-indigo mt-2 inline-block">LC # {gate.lcNumber}</div>
+              <div className="badge badge-indigo mt-2 inline-block" style={{ fontSize: '0.9rem', padding: '6px 12px', fontWeight: 600 }}>{gate.lcNumber}</div>
             )}
           </div>
         </div>
@@ -353,7 +374,7 @@ function GateDetailView({ gate, onBack, onUpdate }: any) {
             </button>
           </div>
 
-          <div className="masters-grid">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', width: '100%' }}>
             {gate.masters?.length === 0 ? (
               <div className="empty-state-dashed col-span-full">
                 <div className="empty-icon text-4xl mb-3">⚙️</div>
@@ -362,22 +383,22 @@ function GateDetailView({ gate, onBack, onUpdate }: any) {
               </div>
             ) : (
               gate.masters?.map((master: any) => (
-                <div key={master.id} className="master-card glass-card">
-                  <div className="flex justify-between items-start mb-2">
+                <div key={master.id} className="master-card glass-card" style={{ width: '100%' }}>
+                  <div className="flex justify-between items-center mb-4">
                     <div>
-                      <h4 className="m-0 text-xl">{master.serialNumber}</h4>
-                      <span className="badge badge-blue mt-1 inline-block">ESP Active</span>
+                      <h4 className="m-0 mb-2" style={{ fontSize: '1.4rem', fontWeight: 700 }}>{master.serialNumber}</h4>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex items-center gap-3">
                       <button 
-                        className="btn-small btn-outline flex items-center gap-1" 
+                        className="btn-small btn-outline flex items-center gap-2 hover-lift" 
+                        style={{ padding: '8px 12px', fontSize: '0.85rem', cursor: 'pointer' }}
                         onClick={() => setUploadingEvidenceFor(master)}
                       >
-                        📷 Upload Evidence
+                        <span style={{ fontSize: '1rem' }}>📷</span> Upload Evidence
                       </button>
                       <button 
-                        className="transition flex items-center justify-center rounded-md" 
-                        style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', padding: '6px' }}
+                        className="transition flex items-center justify-center rounded-md hover-lift" 
+                        style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', padding: '10px', border: 'none', cursor: 'pointer' }}
                         onClick={() => setMasterToDelete(master)} 
                         title="Delete Master Unit"
                         onMouseOver={(e) => { e.currentTarget.style.backgroundColor = '#ef4444'; e.currentTarget.style.color = '#ffffff'; }}
@@ -388,40 +409,50 @@ function GateDetailView({ gate, onBack, onUpdate }: any) {
                     </div>
                   </div>
                   
-                  <div className="mb-4 text-sm text-muted">
-                    Power Source: <strong>{master.powerSource === 'SOLAR' ? '☀️ Solar Power' : '🔌 Direct Current'}</strong>
+                  <div className="mb-6 text-sm flex items-center gap-2" style={{ color: 'var(--text-main)', fontSize: '0.95rem' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Power Source:</span> 
+                    <span style={{ fontWeight: 600 }}>{master.powerSource === 'SOLAR' ? '☀️ Solar Power' : '🔌 Direct Current'}</span>
                   </div>
                   
-                  <div className="child-devices-panel glass-panel p-3 rounded-lg">
-                    <div className="flex justify-between items-center mb-2 border-b border-gray-200 pb-2 border-opacity-20">
-                      <h5 className="m-0">Slave Devices</h5>
-                      <button className="btn-small btn-primary" onClick={() => setAddingDeviceToMaster(master)}>+ Add Slave</button>
+                  <div className="child-devices-panel p-4 rounded-xl" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+                    <div className="flex justify-between items-center mb-4">
+                      <h5 className="m-0" style={{ fontSize: '1.1rem', fontWeight: 700 }}>Slave Devices</h5>
+                      <button className="btn-small btn-primary hover-lift" style={{ padding: '6px 12px', fontSize: '0.85rem', cursor: 'pointer' }} onClick={() => setAddingDeviceToMaster(master)}>+ Add Slave</button>
                     </div>
                     {master.childDevices?.length === 0 ? (
-                      <div className="text-sm text-muted italic p-2">No slave devices connected.</div>
+                      <div className="text-sm text-muted italic p-6 text-center border-dashed rounded-lg" style={{ borderWidth: '2px', borderColor: 'var(--border)' }}>No slave devices connected yet.</div>
                     ) : (
-                      <ul className="device-list">
+                      <ul className="device-list" style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '16px' }}>
                         {master.childDevices?.map((dev: any) => (
-                          <li key={dev.id} className="device-item flex items-center justify-between gap-2 text-sm p-3 bg-black bg-opacity-5 rounded mb-2 border" style={{ borderColor: 'rgba(0,0,0,0.05)' }}>
-                            <div className="flex items-center gap-3">
-                              <span className="text-xl">🔌</span>
-                              <div>
-                                <strong style={{ fontSize: '1.1em' }}>{dev.serialNumber}</strong>
-                                <div className="text-muted text-xs mt-1">{dev.type === 'DEVICE_1' ? 'Hall Effect + Limit Switch' : 'Tilt Sensor'}</div>
+                          <li key={dev.id} className="device-item p-4 rounded-xl transition hover-lift" style={{ backgroundColor: 'var(--background)', border: '1px solid var(--border)', boxShadow: '0 2px 8px rgba(0,0,0,0.03)', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                            <div className="flex justify-between items-start gap-4">
+                              <div className="flex items-center gap-3">
+                                <div style={{ backgroundColor: 'rgba(11, 60, 122, 0.08)', padding: '8px', borderRadius: '8px', display: 'flex' }}>
+                                  <span className="text-xl" role="img" aria-label="plugin">🔌</span>
+                                </div>
+                                <strong style={{ fontSize: '1.05rem', color: 'var(--text-main)', whiteSpace: 'nowrap' }}>{dev.serialNumber}</strong>
                               </div>
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <span className="badge badge-blue">{dev.type === 'DEVICE_1' ? 'Type A' : 'Type B'}</span>
                               <button 
-                                className="transition flex items-center justify-center rounded-full" 
-                                style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', padding: '6px' }}
+                                className="transition flex items-center justify-center rounded-md flex-shrink-0" 
+                                style={{ backgroundColor: 'rgba(239, 68, 68, 0.08)', color: '#ef4444', padding: '6px', border: 'none', cursor: 'pointer', width: '32px', height: '32px' }}
                                 onClick={() => executeDeleteDevice(dev.id)} 
                                 title="Delete Slave Device"
                                 onMouseOver={(e) => { e.currentTarget.style.backgroundColor = '#ef4444'; e.currentTarget.style.color = '#ffffff'; }}
-                                onMouseOut={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.1)'; e.currentTarget.style.color = '#ef4444'; }}
+                                onMouseOut={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.08)'; e.currentTarget.style.color = '#ef4444'; }}
                               >
-                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                               </button>
+                            </div>
+                            
+                            <div className="flex justify-between items-center gap-4">
+                              <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 500, lineHeight: '1.3' }}>
+                                {dev.type === 'DEVICE_1' ? 'Hall Effect + Limit Switch' : 'Tilt Sensor'}
+                              </span>
+                              <div style={{ display: 'flex', alignItems: 'center' }}>
+                                <span className="badge badge-blue" style={{ whiteSpace: 'nowrap', fontWeight: 700, padding: '4px 10px', fontSize: '0.75rem', letterSpacing: '0.5px', textTransform: 'uppercase', borderRadius: '6px' }}>
+                                  {dev.type === 'DEVICE_1' ? 'Type A' : 'Type B'}
+                                </span>
+                              </div>
                             </div>
                           </li>
                         ))}

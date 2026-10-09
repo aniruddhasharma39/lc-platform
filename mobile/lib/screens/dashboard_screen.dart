@@ -7,6 +7,7 @@ import '../main.dart';
 import 'roles_screen.dart';
 import 'branding_screen.dart';
 import 'registration_builder_screen.dart';
+import 'cluster/cluster_main_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -176,6 +177,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_currentView == 'roles') return RolesScreen(user: widget.user);
     if (_currentView == 'branding') return BrandingScreen(user: widget.user);
     if (_currentView == 'registration') return RegistrationBuilderScreen(user: widget.user);
+    if (_currentView == 'cluster') return const ClusterMainScreen();
     
     return Center(child: Text('Module $_currentView not implemented yet.'));
   }

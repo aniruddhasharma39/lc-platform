@@ -274,11 +274,6 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                             Text(master['serialNumber'], style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                             Row(
                               children: [
-                                const Chip(
-                                  label: Text('ESP Active', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold)),
-                                  backgroundColor: Color(0xFFE3F2FD),
-                                  padding: EdgeInsets.zero,
-                                ),
                                 Container(
                                   decoration: BoxDecoration(
                                     color: Colors.red.withOpacity(0.1),

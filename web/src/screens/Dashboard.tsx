@@ -3,6 +3,7 @@ import type { User } from '../types';
 import Roles from './Roles';
 import RegistrationBuilder from './RegistrationBuilder';
 import Branding from './Branding';
+import ClusterDashboard from './Cluster/ClusterDashboard';
 
 type Props = {
   user: User;
@@ -175,6 +176,7 @@ export default function Dashboard({ user, onLogout }: Props) {
           {currentView === 'roles' && <Roles user={user} />}
           {currentView === 'registration' && <RegistrationBuilder />}
           {currentView === 'branding' && <Branding user={user} />}
+          {currentView === 'cluster' && <ClusterDashboard user={user} />}
           
           {currentView === 'manage-users' ? (
             <>
