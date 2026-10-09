@@ -15,7 +15,7 @@ for root, _, files in os.walk(src_dir):
             with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read()
             
-            if 'http://localhost:5001' in content:
+            if 'http://localhost:5001' in content or 'https://lc-platform.onrender.com' in content:
                 # Add import if not exists
                 if 'import { API_URL }' not in content:
                     lines = content.split('\n')
@@ -35,6 +35,11 @@ for root, _, files in os.walk(src_dir):
                 content = re.sub(r"'http://localhost:5001([^']*)'", r"`${API_URL}\1`", content)
                 # Replace `http://localhost:5001/...` with `${API_URL}/...`
                 content = re.sub(r"`http://localhost:5001([^`]*)`", r"`${API_URL}\1`", content)
+
+                # Replace 'https://lc-platform.onrender.com/...' with `${API_URL}/...`
+                content = re.sub(r"'https://lc-platform.onrender.com([^']*)'", r"`${API_URL}\1`", content)
+                # Replace `https://lc-platform.onrender.com/...` with `${API_URL}/...`
+                content = re.sub(r"`https://lc-platform.onrender.com([^`]*)`", r"`${API_URL}\1`", content)
                 
                 with open(filepath, 'w', encoding='utf-8') as f:
                     f.write(content)

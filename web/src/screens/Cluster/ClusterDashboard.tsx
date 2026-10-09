@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import type { User } from '../../types';
 import './ClusterDashboard.css';
+import { API_URL } from '../../config';
 
 type Props = {
   user: User;
@@ -19,7 +20,7 @@ export default function ClusterDashboard(_props: Props) {
   const fetchGates = async () => {
     setLoading(true);
     try {
-      const res = await fetch('https://lc-platform.onrender.com/api/v1/lcgate', {
+      const res = await fetch(`${API_URL}/api/v1/lcgate`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       if (res.ok) {
@@ -46,7 +47,7 @@ export default function ClusterDashboard(_props: Props) {
       return;
     }
     try {
-      const res = await fetch(`https://lc-platform.onrender.com/api/v1/lcgate/${selectedGate.id}`, {
+      const res = await fetch(`${API_URL}/api/v1/lcgate/${selectedGate.id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
@@ -216,7 +217,7 @@ function CreateGateForm({ onCancel, onSuccess }: any) {
     e.preventDefault();
     setSubmitting(true);
     try {
-      const res = await fetch('https://lc-platform.onrender.com/api/v1/lcgate', {
+      const res = await fetch(`${API_URL}/api/v1/lcgate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -308,7 +309,7 @@ function GateDetailView({ gate, onBack, onUpdate }: any) {
 
   const executeDeleteMaster = async (masterId: number) => {
     try {
-      const res = await fetch(`https://lc-platform.onrender.com/api/v1/lcgate/masters/${masterId}`, {
+      const res = await fetch(`${API_URL}/api/v1/lcgate/masters/${masterId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
@@ -327,7 +328,7 @@ function GateDetailView({ gate, onBack, onUpdate }: any) {
   const executeDeleteDevice = async (deviceId: number) => {
     if (!window.confirm("Are you sure you want to delete this Slave Device?")) return;
     try {
-      const res = await fetch(`https://lc-platform.onrender.com/api/v1/lcgate/devices/${deviceId}`, {
+      const res = await fetch(`${API_URL}/api/v1/lcgate/devices/${deviceId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
@@ -519,7 +520,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    fetch(`https://lc-platform.onrender.com/api/v1/lcgate/${gate.id}/next-master-sequence`, {
+    fetch(`${API_URL}/api/v1/lcgate/${gate.id}/next-master-sequence`, {
       headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
     })
       .then(r => r.json())
@@ -533,7 +534,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
     e.preventDefault();
     setSubmitting(true);
     try {
-      const res = await fetch(`https://lc-platform.onrender.com/api/v1/lcgate/${gate.id}/masters`, {
+      const res = await fetch(`${API_URL}/api/v1/lcgate/${gate.id}/masters`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -595,7 +596,7 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    fetch(`https://lc-platform.onrender.com/api/v1/lcgate/masters/${master.id}/next-device-sequence?type=${type}`, {
+    fetch(`${API_URL}/api/v1/lcgate/masters/${master.id}/next-device-sequence?type=${type}`, {
       headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
     })
       .then(r => r.json())
@@ -609,7 +610,7 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
     e.preventDefault();
     setSubmitting(true);
     try {
-      const res = await fetch(`https://lc-platform.onrender.com/api/v1/lcgate/masters/${master.id}/devices`, {
+      const res = await fetch(`${API_URL}/api/v1/lcgate/masters/${master.id}/devices`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -736,7 +737,7 @@ function EvidenceItem({ title, description, isDone, masterId, childDeviceId, cat
 
         // Auto-fetch GPS
         navigator.geolocation.getCurrentPosition(async (pos) => {
-          const res = await fetch('https://lc-platform.onrender.com/api/v1/evidence', {
+          const res = await fetch(`${API_URL}/api/v1/evidence`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
