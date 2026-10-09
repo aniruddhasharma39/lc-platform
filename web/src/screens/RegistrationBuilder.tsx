@@ -25,7 +25,7 @@ export default function RegistrationBuilder() {
 
   const fetchForms = async () => {
     try {
-      const res = await fetch('http://localhost:5001/api/v1/registration-forms', {
+      const res = await fetch('https://lc-platform.onrender.com/api/v1/registration-forms', {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       const data = await res.json();
@@ -37,7 +37,7 @@ export default function RegistrationBuilder() {
 
   const fetchRoles = async () => {
     try {
-      const res = await fetch('http://localhost:5001/api/v1/roles', {
+      const res = await fetch('https://lc-platform.onrender.com/api/v1/roles', {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       const data = await res.json();
@@ -54,7 +54,7 @@ export default function RegistrationBuilder() {
 
   const createForm = async () => {
     try {
-      const res = await fetch('http://localhost:5001/api/v1/registration-forms', {
+      const res = await fetch('https://lc-platform.onrender.com/api/v1/registration-forms', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -72,7 +72,7 @@ export default function RegistrationBuilder() {
   const deleteForm = async (id: number) => {
     if (!confirm('Are you sure you want to delete this form?')) return;
     try {
-      const res = await fetch(`http://localhost:5001/api/v1/registration-forms/${id}`, {
+      const res = await fetch(`https://lc-platform.onrender.com/api/v1/registration-forms/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
@@ -152,7 +152,7 @@ export default function RegistrationBuilder() {
 
     try {
       const payload: FormSchema = { fields, allowRoles };
-      const res = await fetch(`http://localhost:5001/api/v1/registration-forms/${editingForm.id}`, {
+      const res = await fetch(`https://lc-platform.onrender.com/api/v1/registration-forms/${editingForm.id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -185,7 +185,7 @@ export default function RegistrationBuilder() {
         const payload: FormSchema = { fields, allowRoles };
         
         // Save first
-        await fetch(`http://localhost:5001/api/v1/registration-forms/${editingForm.id}`, {
+        await fetch(`https://lc-platform.onrender.com/api/v1/registration-forms/${editingForm.id}`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -195,7 +195,7 @@ export default function RegistrationBuilder() {
         });
 
         // Publish
-        const res = await fetch(`http://localhost:5001/api/v1/registration-forms/${editingForm.id}/publish`, {
+        const res = await fetch(`https://lc-platform.onrender.com/api/v1/registration-forms/${editingForm.id}/publish`, {
           method: 'PUT',
           headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
         });

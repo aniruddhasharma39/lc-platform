@@ -16,7 +16,7 @@ export default function Login({ onLogin, onGoToRegister }: Props) {
   const [branding, setBranding] = useState({ appName: 'LC Platform', wallpaperUrl: '' });
 
   useEffect(() => {
-    fetch('http://localhost:5001/api/v1/settings/branding')
+    fetch('https://lc-platform.onrender.com/api/v1/settings/branding')
       .then(res => res.json())
       .then(data => setBranding(data))
       .catch(err => console.error(err));
@@ -28,7 +28,7 @@ export default function Login({ onLogin, onGoToRegister }: Props) {
     setLoading(true);
 
     try {
-      const res = await fetch('http://localhost:5001/api/v1/auth/login', {
+      const res = await fetch('https://lc-platform.onrender.com/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ identifier, password }),

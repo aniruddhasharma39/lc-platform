@@ -47,7 +47,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       var resRoles = await http.get(Uri.parse('$baseUrl/roles'), headers: {'Authorization': 'Bearer $token'});
       var resMods = await http.get(Uri.parse('$baseUrl/modules'), headers: {'Authorization': 'Bearer $token'});
       
-      var resBranding = await http.get(Uri.parse('$baseUrl/branding'));
+      var resBranding = await http.get(Uri.parse('$baseUrl/settings/branding'));
 
       setState(() {
         final data = json.decode(resUsers.body);
@@ -81,7 +81,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final endpoint = isRequest ? 'request/$id/$action' : '$id/$action';
     try {
       await http.put(
-        Uri.parse('http://localhost:5001/api/v1/users/$endpoint'),
+        Uri.parse('https://lc-platform.onrender.com/api/v1/users/$endpoint'),
         headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
         body: body != null ? json.encode(body) : null
       ).catchError((_) => http.put(

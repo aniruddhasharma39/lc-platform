@@ -12,7 +12,7 @@ export default function Branding({}: Props) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetch('http://localhost:5001/api/v1/settings/branding')
+    fetch('https://lc-platform.onrender.com/api/v1/settings/branding')
       .then(res => res.json())
       .then(data => {
         if (data.appName) setAppName(data.appName);
@@ -31,7 +31,7 @@ export default function Branding({}: Props) {
     }
 
     try {
-      const res = await fetch('http://localhost:5001/api/v1/settings/branding', {
+      const res = await fetch('https://lc-platform.onrender.com/api/v1/settings/branding', {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`

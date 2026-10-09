@@ -68,7 +68,7 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> {
 
       // Send to backend
       final res = await http.post(
-        Uri.parse('http://localhost:5001/api/v1/evidence'),
+        Uri.parse('https://lc-platform.onrender.com/api/v1/evidence'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${widget.token}',

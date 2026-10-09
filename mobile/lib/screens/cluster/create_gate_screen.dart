@@ -58,7 +58,7 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
     setState(() => _isLoading = true);
     try {
       final res = await http.post(
-        Uri.parse('http://localhost:5001/api/v1/lcgate'),
+        Uri.parse('https://lc-platform.onrender.com/api/v1/lcgate'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${widget.token}',

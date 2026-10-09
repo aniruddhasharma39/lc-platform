@@ -16,8 +16,8 @@ export default function Roles({}: Props) {
   const fetchData = async () => {
     try {
       const [rolesRes, modsRes] = await Promise.all([
-        fetch('http://localhost:5001/api/v1/roles', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }}),
-        fetch('http://localhost:5001/api/v1/modules', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }})
+        fetch('https://lc-platform.onrender.com/api/v1/roles', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }}),
+        fetch('https://lc-platform.onrender.com/api/v1/modules', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }})
       ]);
       setRoles(await rolesRes.json());
       setModules(await modsRes.json());
@@ -32,7 +32,7 @@ export default function Roles({}: Props) {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    const url = editingRole ? `http://localhost:5001/api/v1/roles/${editingRole.id}` : 'http://localhost:5001/api/v1/roles';
+    const url = editingRole ? `https://lc-platform.onrender.com/api/v1/roles/${editingRole.id}` : 'https://lc-platform.onrender.com/api/v1/roles';
     const method = editingRole ? 'PUT' : 'POST';
     
     try {
@@ -59,7 +59,7 @@ export default function Roles({}: Props) {
   const handleDelete = async (id: number) => {
     if (!window.confirm('Are you sure you want to delete this role?')) return;
     try {
-      const res = await fetch(`http://localhost:5001/api/v1/roles/${id}`, {
+      const res = await fetch(`https://lc-platform.onrender.com/api/v1/roles/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });

@@ -16,7 +16,7 @@ export default function Register({ onGoToLogin }: Props) {
   useEffect(() => {
     const fetchForm = async () => {
       try {
-        const res = await fetch('http://localhost:5001/api/v1/auth/registration-form');
+        const res = await fetch('https://lc-platform.onrender.com/api/v1/auth/registration-form');
         const data = await res.json();
         
         if (data.form) {
@@ -82,7 +82,7 @@ export default function Register({ onGoToLogin }: Props) {
         };
       }
 
-      const res = await fetch('http://localhost:5001/api/v1/auth/register', fetchOptions);
+      const res = await fetch('https://lc-platform.onrender.com/api/v1/auth/register', fetchOptions);
       const data = await res.json();
 
       if (res.ok) {

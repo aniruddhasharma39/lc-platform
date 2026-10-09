@@ -26,7 +26,7 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
   Future<void> _fetchSequence() async {
     try {
       final res = await http.get(
-        Uri.parse('http://localhost:5001/api/v1/lcgate/${widget.gate['id']}/next-master-sequence'),
+        Uri.parse('https://lc-platform.onrender.com/api/v1/lcgate/${widget.gate['id']}/next-master-sequence'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
       if (res.statusCode == 200) {
@@ -46,7 +46,7 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
 
     try {
       final res = await http.post(
-        Uri.parse('http://localhost:5001/api/v1/lcgate/${widget.gate['id']}/masters'),
+        Uri.parse('https://lc-platform.onrender.com/api/v1/lcgate/${widget.gate['id']}/masters'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${widget.token}',
