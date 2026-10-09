@@ -48,18 +48,24 @@ button {
   font-family: var(--font-family);
   border-radius: var(--radius);
   border: none;
-  padding: 0.5rem 1rem;
-  font-weight: 500;
-  transition: all 0.2s;
+  padding: 0.6rem 1.2rem;
+  font-weight: 600;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 button.primary {
   background-color: var(--primary);
   color: white;
+  box-shadow: 0 4px 6px -1px rgba(11, 60, 122, 0.2), 0 2px 4px -1px rgba(11, 60, 122, 0.1);
 }
 
 button.primary:hover {
-  background-color: #082d5a;
+  filter: brightness(1.15);
+  box-shadow: 0 6px 8px -1px rgba(11, 60, 122, 0.25), 0 3px 6px -1px rgba(11, 60, 122, 0.15);
+  transform: translateY(-1px);
 }
 
 button.secondary {
@@ -68,12 +74,19 @@ button.secondary {
 }
 
 button.secondary:hover {
-  background-color: #0a7c87;
+  filter: brightness(1.15);
 }
 
 button.danger {
   background-color: var(--danger);
   color: white;
+  box-shadow: 0 4px 6px -1px rgba(214, 69, 69, 0.2), 0 2px 4px -1px rgba(214, 69, 69, 0.1);
+}
+
+button.danger:hover {
+  filter: brightness(1.15);
+  box-shadow: 0 6px 8px -1px rgba(214, 69, 69, 0.25), 0 3px 6px -1px rgba(214, 69, 69, 0.15);
+  transform: translateY(-1px);
 }
 
 button.outline {
@@ -82,9 +95,17 @@ button.outline {
   color: var(--text-main);
 }
 
+button.outline:hover {
+  background-color: var(--surface);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
 button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 input, select {
@@ -96,20 +117,26 @@ input, select {
   color: var(--text-main);
   font-family: var(--font-family);
   margin-bottom: 1rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 input:focus, select:focus {
   outline: none;
   border-color: var(--secondary);
-  box-shadow: 0 0 0 2px rgba(14, 154, 167, 0.2);
+  box-shadow: 0 0 0 3px rgba(14, 154, 167, 0.2);
 }
 
 .card {
-  background-color: var(--surface);
-  border-radius: var(--radius);
-  padding: 1.5rem;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  background-color: var(--background);
+  border-radius: 12px;
+  padding: 24px;
   border: 1px solid var(--border);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+  transition: box-shadow 0.3s ease;
+}
+
+.card:hover {
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
 }
 
 .flex { display: flex; }
@@ -143,7 +170,9 @@ input:focus, select:focus {
 /* Layout Shell */
 .app-container {
   display: flex;
-  min-height: 100vh;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -225,7 +254,7 @@ input:focus, select:focus {
 
 .accordion-header {
   background-color: var(--surface);
-  padding: 1rem;
+  padding: 1.25rem 1.5rem;
   cursor: pointer;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -233,27 +262,44 @@ input:focus, select:focus {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-weight: bold;
+  font-weight: 600;
+  font-size: 1.1rem;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+
+.accordion-header:hover {
+  border-color: var(--secondary);
+  background-color: #f8fafc;
 }
 
 .accordion-content {
-  padding: 1rem;
+  padding: 1.5rem;
   border: 1px solid var(--border);
   border-top: none;
   border-radius: 0 0 var(--radius) var(--radius);
   margin-top: -0.5rem;
-  margin-bottom: 1rem;
+  margin-bottom: 1.5rem;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 1.25rem;
+  background-color: #fafafa;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);
 }
 
 .user-card {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  padding: 1rem;
+  align-items: flex-start;
+  padding: 1.25rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background-color: var(--background);
+  box-shadow: 0 2px 5px rgba(0,0,0,0.04);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.user-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
 }
