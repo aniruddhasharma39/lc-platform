@@ -23,6 +23,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<dynamic> _systemModules = [];
   bool _isLoading = false;
   String _currentView = 'home';
+  String _appName = 'LC Platform';
 
   @override
   void initState() {
@@ -45,6 +46,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       var resRoles = await http.get(Uri.parse('$baseUrl/roles'), headers: {'Authorization': 'Bearer $token'});
       var resMods = await http.get(Uri.parse('$baseUrl/modules'), headers: {'Authorization': 'Bearer $token'});
       
+      var resBranding = await http.get(Uri.parse('$baseUrl/branding'));
+
       setState(() {
         final data = json.decode(resUsers.body);
         _users = data is Map && data['users'] != null ? data['users'] : [];
@@ -55,6 +58,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         
         final modsData = json.decode(resMods.body);
         _systemModules = modsData is List ? modsData : [];
+
+        try {
+          final brandingData = json.decode(resBranding.body);
+          if (brandingData is Map && brandingData['appName'] != null) {
+            _appName = brandingData['appName'];
+          }
+        } catch (e) {}
       });
     } catch (e) {
       print(e);
@@ -79,6 +89,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         body: body != null ? json.encode(body) : null
       ));
       _fetchData();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Action completed successfully!'),
+          backgroundColor: AppColors.success,
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
     } catch (e) {
       print(e);
     }
@@ -100,7 +117,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('LC Platform'), backgroundColor: AppColors.surface),
+      appBar: AppBar(
+        title: Text(_appName, style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primary)), 
+        backgroundColor: AppColors.surface,
+        actions: [
+          if (_currentView == 'manage-users')
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh',
+              onPressed: _fetchData,
+            )
+        ],
+      ),
       drawer: Drawer(
         child: ListView(
           padding: EdgeInsets.zero,
@@ -206,6 +234,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         int selectedRole = req['requestedRoleId'] ?? (_roles.isNotEmpty ? _roles[0]['id'] : 0);
         
         return Card(
+          elevation: 2,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           color: Colors.white,
           margin: const EdgeInsets.only(bottom: 16),
           child: Padding(
@@ -213,30 +243,57 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('${reqData['fullName'] ?? 'Unknown'}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                Text('${reqData.entries.where((e) => e.key != 'password').map((e) => '${e.key}: ${e.value}').join(' | ')}', style: const TextStyle(color: Colors.grey)),
-                const SizedBox(height: 8),
-                Text('Requested Role ID: ${req['requestedRoleId']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('${reqData['fullName'] ?? 'Pending User'}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: AppColors.primary)),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(color: Colors.orange.shade100, borderRadius: BorderRadius.circular(16)),
+                      child: Text('PENDING', style: TextStyle(color: Colors.orange.shade900, fontSize: 10, fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
+                const Divider(height: 24),
+                ...reqData.entries.where((e) => !e.key.toLowerCase().contains('password')).map((e) {
+                  // No fallback needed anymore since the DB contains proper labels
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(flex: 2, child: Text(e.key, style: TextStyle(color: Colors.grey.shade600, fontSize: 12, fontWeight: FontWeight.w500))),
+                        Expanded(flex: 3, child: Text(e.value.toString(), style: const TextStyle(fontSize: 13))),
+                      ],
+                    ),
+                  );
+                }),
+                const SizedBox(height: 12),
+                Text('Requested Role ID: ${req['requestedRoleId']}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.secondary)),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<int>(
                   value: selectedRole,
-                  decoration: const InputDecoration(labelText: 'Assign Role'),
+                  decoration: InputDecoration(
+                    labelText: 'Assign Role',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8)
+                  ),
                   items: _roles.map((e) => DropdownMenuItem<int>(value: e['id'], child: Text(e['name']))).toList(),
                   onChanged: (v) => selectedRole = v!,
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 20),
                 Row(
                   children: [
                     Expanded(child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: AppColors.success),
+                      style: ElevatedButton.styleFrom(backgroundColor: AppColors.success, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)), padding: const EdgeInsets.symmetric(vertical: 12)),
                       onPressed: () => _actionUser(req['id'], 'approve', {'roleId': selectedRole}, true),
-                      child: const Text('Approve'),
+                      child: const Text('Approve', style: TextStyle(fontWeight: FontWeight.bold)),
                     )),
-                    const SizedBox(width: 16),
-                    Expanded(child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
+                    const SizedBox(width: 12),
+                    Expanded(child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(foregroundColor: AppColors.danger, side: const BorderSide(color: AppColors.danger), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)), padding: const EdgeInsets.symmetric(vertical: 12)),
                       onPressed: () => _actionUser(req['id'], 'reject', {'reason': 'Rejected by admin'}, true),
-                      child: const Text('Reject'),
+                      child: const Text('Reject', style: TextStyle(fontWeight: FontWeight.bold)),
                     )),
                   ],
                 )
@@ -247,6 +304,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
     );
   }
+
+  String? _expandedRole;
 
   Widget _buildExistingUsersTab() {
     if (_isLoading) return const Center(child: CircularProgressIndicator());
@@ -262,38 +321,133 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: grouped.entries.map((e) {
-        return ExpansionTile(
-          title: Row(
+        final isExpanded = _expandedRole == e.key;
+        return Card(
+          margin: const EdgeInsets.only(bottom: 8),
+          child: Column(
             children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(color: AppColors.secondary, borderRadius: BorderRadius.circular(16)),
-                child: Text('${e.value.length}', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+              ListTile(
+                onTap: () {
+                  setState(() {
+                    _expandedRole = isExpanded ? null : e.key;
+                  });
+                },
+                leading: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(color: AppColors.secondary, borderRadius: BorderRadius.circular(16)),
+                  child: Text('${e.value.length}', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
+                title: Text(e.key, style: const TextStyle(fontWeight: FontWeight.bold)),
+                trailing: Icon(isExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down),
               ),
-              const SizedBox(width: 12),
-              Text(e.key, style: const TextStyle(fontWeight: FontWeight.bold)),
-            ],
-          ),
-          children: e.value.map((u) {
-            return ListTile(
-              title: Text(u['fullName']),
-              subtitle: Text('${u['employeeId']} | ${u['department']}'),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(color: u['status'] == 'APPROVED' ? AppColors.success : Colors.grey, borderRadius: BorderRadius.circular(16)),
-                    child: Text(u['status'], style: const TextStyle(color: Colors.white, fontSize: 10)),
+              if (isExpanded)
+                Container(
+                  color: Colors.grey[50],
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    children: e.value.map((u) {
+                      Map<String, dynamic> metadata = {};
+                      try {
+                        if (u['metadata'] != null) {
+                          metadata = json.decode(u['metadata']);
+                        }
+                      } catch (_) {}
+                      
+                      List<Widget> metaWidgets = [];
+                      metadata.forEach((k, v) {
+                        if (k.toLowerCase().contains('password')) return;
+                        if (k.startsWith('field_')) return; // Just in case, skip unmapped legacy keys
+                        
+                        metaWidgets.add(
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(flex: 2, child: Text(k, style: const TextStyle(color: Colors.grey, fontSize: 12))),
+                                Expanded(flex: 3, child: Text(v.toString(), style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 12))),
+                              ],
+                            ),
+                          )
+                        );
+                      });
+
+                      return Card(
+                        elevation: 0,
+                        margin: const EdgeInsets.only(bottom: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          side: BorderSide(color: Colors.grey.shade300)
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(u['fullName'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                        Text('${u['employeeId']} | ${u['department']}', style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                                      ],
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                    decoration: BoxDecoration(color: u['status'] == 'APPROVED' ? AppColors.success : Colors.grey, borderRadius: BorderRadius.circular(16)),
+                                    child: Text(u['status'], style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                                  ),
+                                ],
+                              ),
+                              if (metaWidgets.isNotEmpty) ...[
+                                const Divider(height: 24),
+                                ...metaWidgets
+                              ],
+                              const SizedBox(height: 12),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: TextButton.icon(
+                                  style: TextButton.styleFrom(foregroundColor: u['status'] == 'DEACTIVATED' ? AppColors.success : AppColors.danger),
+                                  icon: Icon(u['status'] == 'DEACTIVATED' ? Icons.check_circle : Icons.block, size: 18),
+                                  label: Text(u['status'] == 'DEACTIVATED' ? 'Reactivate User' : 'Deactivate User'),
+                                  onPressed: () async {
+                                    final isDeactivated = u['status'] == 'DEACTIVATED';
+                                    final actionName = isDeactivated ? 'reactivate' : 'deactivate';
+                                    
+                                    final confirm = await showDialog<bool>(
+                                      context: context,
+                                      builder: (context) => AlertDialog(
+                                        title: Text('Confirm ${isDeactivated ? 'Reactivation' : 'Deactivation'}'),
+                                        content: Text('Are you sure you want to $actionName this user?'),
+                                        actions: [
+                                          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                                          ElevatedButton(
+                                            onPressed: () => Navigator.pop(context, true),
+                                            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
+                                            child: const Text('Confirm', style: TextStyle(color: Colors.white)),
+                                          ),
+                                        ],
+                                      )
+                                    );
+                                    if (confirm == true) {
+                                      _actionUser(u['id'], actionName);
+                                    }
+                                  },
+                                ),
+                              )
+                            ],
+                          ),
+                        ),
+                      );
+                    }).toList(),
                   ),
-                  IconButton(
-                    icon: Icon(u['status'] == 'DEACTIVATED' ? Icons.check_circle : Icons.block, color: u['status'] == 'DEACTIVATED' ? AppColors.success : AppColors.danger),
-                    onPressed: () => _actionUser(u['id'], u['status'] == 'DEACTIVATED' ? 'reactivate' : 'deactivate'),
-                  )
-                ],
-              )
-            );
-          }).toList(),
+                )
+            ],
+          )
         );
       }).toList(),
     );

@@ -15,6 +15,8 @@ export default function Dashboard({ user, onLogout }: Props) {
   const [openSection, setOpenSection] = useState<string | null>(null);
   const [currentView, setCurrentView] = useState<string>('home');
   const [systemModules, setSystemModules] = useState<any[]>([]);
+  const [branding, setBranding] = useState({ appName: 'LC Platform' });
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
   const fetchUsers = async () => {
     if (user.role !== 'Developer') return;
@@ -31,6 +33,12 @@ export default function Dashboard({ user, onLogout }: Props) {
   };
 
   const [pendingRequests, setPendingRequests] = useState<any[]>([]);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
 
   const fetchRoles = async () => {
     try {
@@ -61,10 +69,21 @@ export default function Dashboard({ user, onLogout }: Props) {
     }
   };
 
+  const fetchBranding = async () => {
+    try {
+      const res = await fetch('http://localhost:5001/api/v1/branding');
+      const data = await res.json();
+      if(data && data.appName) setBranding(data);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   useEffect(() => {
     fetchRoles();
     fetchUsers();
     fetchSystemModules();
+    fetchBranding();
   }, []);
 
   const getDisplayData = (req: any, reqData: any) => {
@@ -115,6 +134,7 @@ export default function Dashboard({ user, onLogout }: Props) {
         body: JSON.stringify(body)
       });
       fetchUsers();
+      showToast('Action completed successfully!');
     } catch (err) {
       console.error(err);
     }
@@ -132,19 +152,58 @@ export default function Dashboard({ user, onLogout }: Props) {
 
   return (
     <div className="app-container">
-      <div className="sidebar">
-        <div className="sidebar-header">
-          LC Platform
+      {toastMessage && (
+        <div style={{ 
+          position: 'fixed', top: 20, right: 20, 
+          backgroundColor: 'var(--success)', color: 'white', 
+          padding: '12px 24px', borderRadius: 8, 
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)', 
+          zIndex: 9999, fontWeight: 'bold',
+          transition: 'all 0.3s ease-in-out'
+        }}>
+          {toastMessage}
         </div>
-        <div className="sidebar-profile">
-          <div className="avatar">
-            {user.fullName.substring(0, 2).toUpperCase()}
-          </div>
-          <div>
-            <div style={{ fontWeight: 'bold' }}>{user.fullName}</div>
-            <div className="text-sm text-muted">{user.role}</div>
+      )}
+      <header className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#fff', borderBottom: '1px solid var(--border)', padding: '0.75rem 1.5rem' }}>
+        <h2 style={{ margin: 0, color: 'var(--primary)' }}>
+          {branding.appName}
+        </h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
+          <div 
+            style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+            onMouseEnter={() => setIsDropdownOpen(true)}
+            onMouseLeave={() => setIsDropdownOpen(false)}
+          >
+            <div className="avatar" style={{ margin: 0 }}>
+              {user.fullName.substring(0, 2).toUpperCase()}
+            </div>
+            
+            {isDropdownOpen && (
+              <div className="card" style={{ 
+                position: 'absolute', top: '100%', right: 0, marginTop: '0.5rem',
+                minWidth: 220, padding: 16, zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 12,
+                boxShadow: '0 10px 25px rgba(0,0,0,0.1)'
+              }}>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ fontWeight: 'bold', fontSize: '1.1rem', lineHeight: 1.2 }}>{user.fullName}</div>
+                  <div className="text-sm text-muted" style={{ lineHeight: 1.2, marginTop: 4 }}>{user.role}</div>
+                </div>
+                <hr style={{ margin: '4px 0', borderColor: 'var(--border)', borderStyle: 'solid' }} />
+                <button 
+                  className="danger w-full" 
+                  style={{ padding: '8px 16px', fontWeight: 'bold' }}
+                  onClick={(e) => { e.stopPropagation(); if(window.confirm('Are you sure you want to logout?')) onLogout(); }}
+                >
+                  Logout
+                </button>
+              </div>
+            )}
           </div>
         </div>
+      </header>
+
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+        <div className="sidebar" style={{ height: '100%', overflowY: 'auto' }}>
         <nav className="sidebar-nav">
           <a href="#" className={`nav-item ${currentView === 'home' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentView('home'); }}>Home</a>
           
@@ -158,14 +217,12 @@ export default function Dashboard({ user, onLogout }: Props) {
               {mod.name}
             </a>
           ))}
-
-          <a href="#" className="nav-item text-danger mt-4" onClick={(e) => { e.preventDefault(); onLogout(); }}>Logout</a>
         </nav>
       </div>
 
-      <div className="main-content">
-        <header className="header">
-          <h3>
+      <div className="main-content" style={{ height: '100%', overflowY: 'auto', flex: 1 }}>
+        <header className="header" style={{ borderBottom: '1px solid var(--border)', paddingBottom: '1rem', marginBottom: '1.5rem', backgroundColor: 'transparent' }}>
+          <h3 style={{ margin: 0 }}>
             {currentView === 'home' ? 'Home' : systemModules.find(m => m.slug === currentView)?.name || 'Dashboard'}
           </h3>
         </header>
@@ -175,20 +232,30 @@ export default function Dashboard({ user, onLogout }: Props) {
           {currentView === 'registration' && <RegistrationBuilder />}
           {currentView === 'branding' && <Branding user={user} />}
           
-          {currentView === 'manage-users' ? (
+          {currentView === 'manage-users' && (
             <>
-              <div className="flex gap-4 mb-4">
+              <div className="flex justify-between items-center mb-4">
+                <div className="flex gap-4">
+                  <button 
+                    className={activeTab === 'existing' ? 'primary' : 'outline'} 
+                    onClick={() => setActiveTab('existing')}
+                  >
+                    Existing Users
+                  </button>
+                  <button 
+                    className={activeTab === 'pending' ? 'primary' : 'outline'} 
+                    onClick={() => setActiveTab('pending')}
+                  >
+                    Pending Approval ({pendingRequests.length})
+                  </button>
+                </div>
                 <button 
-                  className={activeTab === 'existing' ? 'primary' : 'outline'} 
-                  onClick={() => setActiveTab('existing')}
+                  className="outline" 
+                  style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                  onClick={fetchUsers}
                 >
-                  Existing Users
-                </button>
-                <button 
-                  className={activeTab === 'pending' ? 'primary' : 'outline'} 
-                  onClick={() => setActiveTab('pending')}
-                >
-                  Pending Approval ({pendingRequests.length})
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                  Refresh
                 </button>
               </div>
 
@@ -276,23 +343,31 @@ export default function Dashboard({ user, onLogout }: Props) {
                                 <div className="flex items-center gap-4">
                                   <span className={`badge ${u.status.toLowerCase()}`}>{u.status}</span>
                                   {u.status === 'DEACTIVATED' ? (
-                                    <button className="primary" onClick={() => handleAction(u.id, 'reactivate')}>Reactivate</button>
+                                    <button className="primary" onClick={() => { if(window.confirm('Are you sure you want to reactivate this user?')) handleAction(u.id, 'reactivate'); }}>Reactivate</button>
                                   ) : (
-                                    <button className="danger outline" onClick={() => handleAction(u.id, 'deactivate')}>Deactivate</button>
+                                    <button className="danger outline" onClick={() => { if(window.confirm('Are you sure you want to deactivate this user?')) handleAction(u.id, 'deactivate'); }}>Deactivate</button>
                                   )}
                                 </div>
                               </div>
-                              <div className="text-sm bg-gray-50" style={{ padding: 12, borderRadius: 8, backgroundColor: '#f9f9f9', border: '1px solid #eee' }}>
+                              <div className="text-sm bg-gray-50" style={{ padding: 16, borderRadius: 8, backgroundColor: '#fdfdfd', border: '1px solid #e0e0e0', boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.02)' }}>
                                 {(() => {
                                   try {
                                     const meta = JSON.parse(u.metadata || '{}');
-                                    if (Object.keys(meta).length === 0) return <span className="text-muted">No additional details</span>;
+                                    const cleanedMeta: Record<string, any> = {};
+                                    for (const [k, v] of Object.entries(meta)) {
+                                      if (k.toLowerCase().includes('password')) continue;
+                                      if (k.startsWith('field_')) continue; // Should not exist, but just in case skip them
+                                      cleanedMeta[k] = v;
+                                    }
+
+                                    if (Object.keys(cleanedMeta).length === 0) return <span className="text-muted">No additional details</span>;
+                                    
                                     return (
-                                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                                        {Object.entries(meta).map(([k, v]) => (
-                                          <div key={k}>
-                                            <span className="text-muted">{k}:</span>{' '}
-                                            <strong>{Array.isArray(v) ? v.join(', ') : String(v)}</strong>
+                                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                                        {Object.entries(cleanedMeta).map(([k, v]) => (
+                                          <div key={k} style={{ display: 'flex', flexDirection: 'column' }}>
+                                            <span className="text-muted" style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{k}</span>
+                                            <strong style={{ color: '#333' }}>{Array.isArray(v) ? v.join(', ') : String(v)}</strong>
                                           </div>
                                         ))}
                                       </div>
@@ -311,13 +386,16 @@ export default function Dashboard({ user, onLogout }: Props) {
                 </div>
               )}
             </>
-          ) : (
-            <div className="card text-center">
-              <h2>Welcome to LC Platform</h2>
-              <p className="text-muted mt-4">You are logged in as {user.role}.</p>
+          )}
+
+          {currentView === 'home' && (
+            <div className="card text-center" style={{ padding: 64, marginTop: 32 }}>
+              <h2 style={{ fontSize: '2rem', color: 'var(--primary)', marginBottom: 16 }}>Welcome to LC Platform</h2>
+              <p className="text-muted" style={{ fontSize: '1.2rem' }}>You are logged in as <strong>{user.role}</strong>.</p>
             </div>
           )}
         </main>
+      </div>
       </div>
     </div>
   );

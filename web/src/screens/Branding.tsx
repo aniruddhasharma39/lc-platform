@@ -57,8 +57,8 @@ export default function Branding({}: Props) {
   };
 
   return (
-    <div className="card" style={{ maxWidth: '600px' }}>
-      <h2 style={{ marginBottom: '1rem' }}>App Branding</h2>
+    <div className="card" style={{ maxWidth: '800px', margin: '0 auto', marginTop: '2rem' }}>
+      <h2 style={{ marginBottom: '1.5rem', color: 'var(--primary)', textAlign: 'center' }}>App Branding</h2>
       
       <form onSubmit={handleSubmit} className="flex-col gap-4">
         <div>
