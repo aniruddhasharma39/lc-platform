@@ -7,6 +7,7 @@ import { v2 as cloudinary } from 'cloudinary';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { send2FactorSmsOtp } from '../lib/twofactor';
+import { extractRegistrationUserFields, checkRegistrationUniqueness } from '../lib/userExtract';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -20,6 +21,24 @@ cloudinary.config({
 const loginSchema = z.object({
   identifier: z.string().min(1),
   password: z.string().min(1),
+});
+
+router.post('/check-availability', async (req, res, next) => {
+  try {
+    const { email, mobile, employeeId, formId } = req.body;
+    let schemaStr: string | null = null;
+    if (formId) {
+      const form = await prisma.registrationForm.findUnique({ where: { id: parseInt(formId) } });
+      if (form) schemaStr = form.schema;
+    }
+    const result = await checkRegistrationUniqueness({ email, mobile, employeeId }, undefined, schemaStr);
+    res.json({
+      available: !result.hasConflict,
+      ...result
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.post('/register', upload.any(), async (req, res, next) => {
@@ -53,6 +72,17 @@ router.post('/register', upload.any(), async (req, res, next) => {
     const form = await prisma.registrationForm.findUnique({ where: { id: formId } });
     if (!form || form.status !== 'LIVE') {
       return res.status(400).json({ error: 'Invalid or inactive registration form' });
+    }
+
+    // Check duplicate email, mobile number, or employee ID against existing users and pending requests
+    const extractedFields = extractRegistrationUserFields(parsedData, form.schema);
+    const uniquenessCheck = await checkRegistrationUniqueness(extractedFields, undefined, form.schema);
+    if (uniquenessCheck.hasConflict) {
+      return res.status(400).json({
+        error: uniquenessCheck.errorMessage || 'A user with matching credentials already exists.',
+        conflictType: uniquenessCheck.conflictType,
+        conflictSource: uniquenessCheck.conflictSource
+      });
     }
 
     // Upload files to Cloudinary

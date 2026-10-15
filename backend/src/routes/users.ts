@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { authenticate, requireModule } from '../middleware/auth';
+import { extractRegistrationUserFields } from '../lib/userExtract';
 
 const router = Router();
 
@@ -32,19 +33,43 @@ router.get('/', requireModule('manage-users'), async (req, res, next) => {
 
     const roleMap = new Map(roles.map(r => [r.id, r.name]));
 
+    const existingEmails = new Set(users.map(u => (u.email || '').toLowerCase().trim()).filter(Boolean));
+    const existingMobiles = new Set(users.map(u => (u.mobile || '').replace(/\D/g, '').slice(-10)).filter(Boolean));
+    const existingEmpIds = new Set(users.map(u => (u.employeeId || '').toLowerCase().trim()).filter(Boolean));
+
     const enhancedPendingRequests = pendingRequests.map(r => {
       let resolvedRoleId = r.requestedRoleId;
-      if (!resolvedRoleId && r.data) {
+      let reqData: any = {};
+      if (r.data) {
         try {
-          const parsed = JSON.parse(r.data);
-          if (parsed.roleId) resolvedRoleId = parseInt(parsed.roleId);
-          else if (parsed.requestedRoleId) resolvedRoleId = parseInt(parsed.requestedRoleId);
+          reqData = JSON.parse(r.data);
+          if (reqData.roleId) resolvedRoleId = parseInt(reqData.roleId);
+          else if (reqData.requestedRoleId) resolvedRoleId = parseInt(reqData.requestedRoleId);
         } catch (_) {}
       }
+
+      const extracted = extractRegistrationUserFields(reqData, r.form?.schema);
+      const conflictReasons: string[] = [];
+
+      if (extracted.email && existingEmails.has(extracted.email.toLowerCase().trim())) {
+        conflictReasons.push(`Email "${extracted.email}" is already registered`);
+      }
+      if (extracted.mobile) {
+        const cleanMobile = extracted.mobile.replace(/\D/g, '').slice(-10);
+        if (existingMobiles.has(cleanMobile)) {
+          conflictReasons.push(`Mobile "${cleanMobile}" is already registered`);
+        }
+      }
+      if (extracted.employeeId && existingEmpIds.has(extracted.employeeId.toLowerCase().trim())) {
+        conflictReasons.push(`Employee ID "${extracted.employeeId}" is already registered`);
+      }
+
       return {
         ...r,
         requestedRoleId: resolvedRoleId,
         requestedRoleName: resolvedRoleId ? roleMap.get(resolvedRoleId) || null : null,
+        hasConflict: conflictReasons.length > 0,
+        conflictReasons,
       };
     });
     
@@ -77,32 +102,48 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
       if (request.form?.schema) schema = JSON.parse(request.form.schema);
     } catch {}
 
-    const extract = (keywords: string[]): string | undefined => {
-      // First check if direct key exists
-      for (const kw of keywords) {
-        if (formData[kw]) return formData[kw];
+    const extracted = extractRegistrationUserFields(formData, request.form?.schema);
+    const targetEmail = extracted.email || `temp-${Date.now()}@example.com`;
+    const targetMobile = extracted.mobile ? extracted.mobile.replace(/\D/g, '').slice(-10) : `${Date.now()}`.slice(-10);
+    const targetEmpId = extracted.employeeId || `EMP-${Date.now()}`;
+    const targetName = extracted.fullName || 'Unknown';
+    const targetDept = extracted.department || 'Unknown';
+
+    // Verify uniqueness against existing users before attempting to approve
+    if (extracted.email) {
+      const dupEmail = await prisma.user.findFirst({
+        where: { email: { equals: extracted.email.trim(), mode: 'insensitive' } }
+      });
+      if (dupEmail) {
+        return res.status(400).json({
+          error: `Cannot approve request: A user with Email Address "${extracted.email}" already exists (${dupEmail.fullName}).`
+        });
       }
-      
-      // Then check schema labels
-      if (!schema?.fields) return undefined;
-      const allFields: any[] = [];
-      const walk = (fields: any[]) => {
-        for (const f of fields) {
-          if (f.type === 'section' && f.children) walk(f.children);
-          else allFields.push(f);
-        }
-      };
-      walk(schema.fields);
-      
-      for (const f of allFields) {
-        const label = (f.label || '').toLowerCase();
-        if (keywords.some(kw => label.includes(kw))) {
-          if (formData[f.name]) return formData[f.name];
-        }
+    }
+
+    if (extracted.mobile) {
+      const cleanMob = extracted.mobile.replace(/\D/g, '').slice(-10);
+      const dupMobile = await prisma.user.findFirst({
+        where: { mobile: cleanMob }
+      });
+      if (dupMobile) {
+        return res.status(400).json({
+          error: `Cannot approve request: A user with Mobile Number "${cleanMob}" already exists (${dupMobile.fullName}).`
+        });
       }
-      return undefined;
-    };
-    
+    }
+
+    if (extracted.employeeId) {
+      const dupEmp = await prisma.user.findFirst({
+        where: { employeeId: { equals: extracted.employeeId.trim(), mode: 'insensitive' } }
+      });
+      if (dupEmp) {
+        return res.status(400).json({
+          error: `Cannot approve request: A user with Employee ID "${extracted.employeeId}" already exists (${dupEmp.fullName}).`
+        });
+      }
+    }
+
     // Map all formData fields to their actual labels for metadata storage
     const mappedMetadata: Record<string, any> = {};
     const allFields: any[] = [];
@@ -124,22 +165,33 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
     }
     
     // Create the actual user
-    const user = await prisma.user.create({
-      data: {
-        fullName: extract(['name', 'fullname']) || 'Unknown',
-        email: extract(['email']) || `temp-${Date.now()}@example.com`,
-        mobile: extract(['phone', 'mobile', 'contact']) || `${Date.now()}`.slice(-10),
-        employeeId: extract(['emp', 'employee id']) || `EMP-${Date.now()}`,
-        department: extract(['department', 'dept', 'designation']) || 'Unknown',
-        requestedRoleId: request.requestedRoleId,
-        roleId: data.roleId,
-        passwordHash: (formData.password && formData.password.trim().length > 0)
-          ? formData.password
-          : await bcrypt.hash('123456', 10),
-        status: 'APPROVED',
-        metadata: JSON.stringify(mappedMetadata)
+    let user;
+    try {
+      user = await prisma.user.create({
+        data: {
+          fullName: targetName,
+          email: targetEmail,
+          mobile: targetMobile,
+          employeeId: targetEmpId,
+          department: targetDept,
+          requestedRoleId: request.requestedRoleId,
+          roleId: data.roleId,
+          passwordHash: (formData.password && formData.password.trim().length > 0)
+            ? formData.password
+            : await bcrypt.hash('123456', 10),
+          status: 'APPROVED',
+          metadata: JSON.stringify(mappedMetadata)
+        }
+      });
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        const targets = (err.meta?.target || []).join(', ');
+        return res.status(400).json({
+          error: `Cannot approve request: Duplicate user detected on unique field (${targets || 'email/mobile/employeeId'}).`
+        });
       }
-    });
+      throw err;
+    }
 
     await prisma.registrationRequest.update({
       where: { id },

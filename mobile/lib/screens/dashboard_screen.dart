@@ -707,29 +707,38 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final token = await _getToken();
     final endpoint = isRequest ? 'request/$id/$action' : '$id/$action';
     try {
-      await http.put(
-        Uri.parse('https://lc-platform.onrender.com/api/v1/users/$endpoint'),
-        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-        body: body != null ? json.encode(body) : null
-      ).catchError((_) => http.put(
+      final res = await http.put(
         Uri.parse('$baseUrl/users/$endpoint'),
         headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
         body: body != null ? json.encode(body) : null
-      ));
-      _fetchData();
-      if (mounted) {
-        final name = targetName != null && targetName.trim().isNotEmpty ? targetName.trim() : 'User';
-        if (action == 'approve') {
-          final roleSuffix = roleName != null && roleName.isNotEmpty ? ' with role "$roleName"' : '';
-          AppFeedback.showSuccess(context, 'Registration for "$name" approved successfully$roleSuffix!');
-        } else if (action == 'reject') {
-          AppFeedback.showInfo(context, 'Registration request for "$name" has been rejected.');
-        } else if (action == 'deactivate') {
-          AppFeedback.showWarning(context, 'User "$name" has been deactivated and access revoked.');
-        } else if (action == 'reactivate') {
-          AppFeedback.showSuccess(context, 'User "$name" has been reactivated successfully.');
-        } else {
-          AppFeedback.showSuccess(context, 'Action completed for "$name".');
+      );
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        _fetchData();
+        if (mounted) {
+          final name = targetName != null && targetName.trim().isNotEmpty ? targetName.trim() : 'User';
+          if (action == 'approve') {
+            final roleSuffix = roleName != null && roleName.isNotEmpty ? ' with role "$roleName"' : '';
+            AppFeedback.showSuccess(context, 'Registration for "$name" approved successfully$roleSuffix!');
+          } else if (action == 'reject') {
+            AppFeedback.showInfo(context, 'Registration request for "$name" has been rejected.');
+          } else if (action == 'deactivate') {
+            AppFeedback.showWarning(context, 'User "$name" has been deactivated and access revoked.');
+          } else if (action == 'reactivate') {
+            AppFeedback.showSuccess(context, 'User "$name" has been reactivated successfully.');
+          } else {
+            AppFeedback.showSuccess(context, 'Action completed for "$name".');
+          }
+        }
+      } else {
+        String errMsg = 'Failed to perform $action on user (HTTP ${res.statusCode})';
+        try {
+          final data = json.decode(res.body);
+          if (data is Map && (data['error'] != null || data['message'] != null)) {
+            errMsg = (data['error'] ?? data['message']).toString();
+          }
+        } catch (_) {}
+        if (mounted) {
+          AppFeedback.showError(context, errMsg);
         }
       }
     } catch (e) {
@@ -1105,6 +1114,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     padding: const EdgeInsets.only(top: 4),
                     child: Text('Form: ${form['name']}', style: TextStyle(fontSize: 12, color: Colors.grey.shade600, fontStyle: FontStyle.italic)),
                   ),
+                if (req['hasConflict'] == true) ...[
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(top: 10, bottom: 2),
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEE2E2),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFFCA5A5)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.warning_amber_rounded, size: 18, color: Color(0xFFB91C1C)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Conflict: ${((req['conflictReasons'] as List?) ?? []).join(" • ")}',
+                            style: const TextStyle(color: Color(0xFFB91C1C), fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 const Divider(height: 24),
                 ...reqData.entries.where((e) {
                   final kLower = e.key.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
@@ -1181,11 +1215,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     }
                   },
                 ),
-                const SizedBox(height: 20),                Row(
+                const SizedBox(height: 20),
+                Row(
                   children: [
                     Expanded(child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: AppColors.success, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)), padding: const EdgeInsets.symmetric(vertical: 12)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: req['hasConflict'] == true ? Colors.grey : AppColors.success, 
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)), 
+                        padding: const EdgeInsets.symmetric(vertical: 12)
+                      ),
                       onPressed: () {
+                        if (req['hasConflict'] == true) {
+                          final reasons = ((req['conflictReasons'] as List?) ?? []).join('; ');
+                          AppFeedback.showError(
+                            context,
+                            'Cannot approve: $reasons. Please reject this request or resolve the duplicate user first.',
+                          );
+                          return;
+                        }
                         String assignedRoleName = 'Selected Role';
                         final matchedRole = _roles.firstWhere((r) => r['id'] == selectedRole, orElse: () => null);
                         if (matchedRole != null && matchedRole['name'] != null) {

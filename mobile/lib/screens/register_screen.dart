@@ -83,8 +83,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
         if (!RegExp(v['pattern']).hasMatch(strVal)) return v['customError'] ?? 'Invalid format';
       }
     } else {
-      if (field['type'] == 'email' && !RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(val.toString())) return 'Invalid email format';
-      if (field['type'] == 'phone' && !RegExp(r'^\d{10}$').hasMatch(val.toString())) return 'Phone number must be 10 digits';
+      if (field['type'] == 'email' && !RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(val.toString().trim())) {
+        return 'Invalid email format (must include @ and valid domain)';
+      }
+      if (field['type'] == 'phone' && !RegExp(r'^[6-9]\d{9}$').hasMatch(val.toString().trim())) {
+        return 'Mobile number must be a 10-digit Indian number starting with 6, 7, 8, or 9';
+      }
     }
     return null;
   }
@@ -154,6 +158,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       
       final dataToStore = Map<String, dynamic>.from(_formData);
       dataToStore.removeWhere((key, value) => value is XFile); // Handled separately
+      dataToStore.updateAll((key, value) => value is String ? value.trim() : value);
       
       dataToStore['password'] = _passwordCtrl.text;
 
@@ -205,8 +210,32 @@ class _RegisterScreenState extends State<RegisterScreen> {
           );
         }
       } else {
-        final err = data['error'] ?? 'Registration failed';
-        setState(() => _error = err);
+        final err = (data is Map ? (data['error'] ?? data['message']) : null)?.toString() ?? 'Registration failed';
+        setState(() {
+          _error = err;
+          final errLower = err.toLowerCase();
+          void markField(List<dynamic> list) {
+            for (var f in list) {
+              if (f['type'] == 'section' && f['children'] != null) {
+                markField(f['children']);
+                continue;
+              }
+              final fType = (f['type'] ?? '').toString().toLowerCase();
+              final fName = (f['name'] ?? '').toString().toLowerCase();
+              final fLabel = (f['label'] ?? '').toString().toLowerCase();
+              if (errLower.contains('email') && (fType == 'email' || fName.contains('email') || fLabel.contains('email'))) {
+                _errors[f['name']] = err;
+              } else if ((errLower.contains('mobile') || errLower.contains('phone')) &&
+                  (fType == 'phone' || fName.contains('mobile') || fName.contains('phone') || fLabel.contains('mobile') || fLabel.contains('phone'))) {
+                _errors[f['name']] = err;
+              } else if (errLower.contains('employee') &&
+                  (fName.contains('emp') || fLabel.contains('employee') || fLabel.contains('badge'))) {
+                _errors[f['name']] = err;
+              }
+            }
+          }
+          markField(_fields);
+        });
         if (mounted) {
           AppFeedback.showError(context, err);
         }

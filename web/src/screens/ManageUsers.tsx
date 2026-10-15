@@ -48,6 +48,8 @@ interface RegistrationRequestItem {
   data: string;
   requestedRoleId?: number;
   requestedRoleName?: string;
+  hasConflict?: boolean;
+  conflictReasons?: string[];
   status: string;
   createdAt?: string;
   form?: {
@@ -252,6 +254,12 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
   };
 
   const handleApproveRequest = async (reqId: number, applicantName: string) => {
+    const targetReq = pendingRequests.find(r => r.id === reqId);
+    if (targetReq?.hasConflict) {
+      toastError(`Cannot approve: ${(targetReq.conflictReasons || []).join('; ')}. Please reject this request or resolve the duplicate user first.`, 'Conflict Detected');
+      return;
+    }
+
     const roleId = pendingRoleSelection[reqId] || roles[0]?.id;
     if (!roleId) {
       toastWarning('Please select an operational role to assign before approving.', 'Role Required');
@@ -1106,6 +1114,16 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
                           {req.createdAt && (
                             <span className="request-meta-badge">
                               Submitted: {new Date(req.createdAt).toLocaleDateString()}
+                            </span>
+                          )}
+                          {req.hasConflict && (
+                            <span
+                              className="request-meta-badge"
+                              style={{ backgroundColor: '#fee2e2', color: '#b91c1c', fontWeight: 600, border: '1px solid #fca5a5' }}
+                              title={(req.conflictReasons || []).join('; ')}
+                            >
+                              <FaExclamationTriangle style={{ marginRight: 4 }} />
+                              Conflict: {(req.conflictReasons || []).join(' • ')}
                             </span>
                           )}
                         </div>
