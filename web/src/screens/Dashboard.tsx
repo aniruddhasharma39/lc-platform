@@ -81,7 +81,6 @@ export default function Dashboard({ user, onLogout }: Props) {
   const [systemModules, setSystemModules] = useState<any[]>(DEFAULT_SYSTEM_MODULES);
   const [branding, setBranding] = useState({ appName: 'LC Platform' });
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
     try {
       return localStorage.getItem('lc_sidebar_collapsed') === 'true';
@@ -91,17 +90,13 @@ export default function Dashboard({ user, onLogout }: Props) {
   });
 
   const handleToggleSidebar = () => {
-    if (typeof window !== 'undefined' && window.innerWidth <= 768) {
-      setIsMobileMenuOpen(prev => !prev);
-    } else {
-      setIsSidebarCollapsed(prev => {
-        const next = !prev;
-        try {
-          localStorage.setItem('lc_sidebar_collapsed', String(next));
-        } catch {}
-        return next;
-      });
-    }
+    setIsSidebarCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('lc_sidebar_collapsed', String(next));
+      } catch {}
+      return next;
+    });
   };
 
   // Notifications State
@@ -573,36 +568,16 @@ export default function Dashboard({ user, onLogout }: Props) {
         </div>
       </header>
 
-      {/* Mobile Drawer Backdrop */}
-      <div 
-        className={`sidebar-backdrop ${isMobileMenuOpen ? 'active' : ''}`}
-        onClick={() => setIsMobileMenuOpen(false)}
-      />
-
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <div 
-          className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''} ${isMobileMenuOpen ? 'mobile-open' : ''}`} 
+          className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`} 
           style={{ height: '100%', overflowY: 'auto' }}
         >
-          {/* Mobile-only drawer header */}
-          <div className="mobile-drawer-header">
-            <span style={{ fontWeight: 'bold', color: 'var(--primary)', fontSize: '1.1rem' }}>{branding.appName}</span>
-            <button 
-              type="button" 
-              onClick={() => setIsMobileMenuOpen(false)} 
-              aria-label="Close menu"
-              className="drawer-close-btn"
-              title="Close menu"
-            >
-              <FaTimes />
-            </button>
-          </div>
-
           <nav className="sidebar-nav">
             <a 
               href="#" 
               className={`nav-item ${currentView === 'home' ? 'active' : ''}`} 
-              onClick={(e) => { e.preventDefault(); setCurrentView('home'); setIsMobileMenuOpen(false); }}
+              onClick={(e) => { e.preventDefault(); setCurrentView('home'); }}
               title="Home"
             >
               <FaHome style={{ fontSize: '1.15rem', flexShrink: 0 }} />
@@ -625,7 +600,7 @@ export default function Dashboard({ user, onLogout }: Props) {
                     key={mod.slug} 
                     href="#" 
                     className={`nav-item ${currentView === mod.slug ? 'active' : ''}`} 
-                    onClick={(e) => { e.preventDefault(); setCurrentView(mod.slug); setIsMobileMenuOpen(false); }}
+                    onClick={(e) => { e.preventDefault(); setCurrentView(mod.slug); }}
                     title={mod.name}
                   >
                     <IconComp style={{ fontSize: '1.15rem', flexShrink: 0 }} />
