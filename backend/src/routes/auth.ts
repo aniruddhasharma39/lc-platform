@@ -8,6 +8,7 @@ import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { send2FactorSmsOtp } from '../lib/twofactor';
 import { extractRegistrationUserFields, checkRegistrationUniqueness } from '../lib/userExtract';
+import { validateRegistrationUniqueness } from '../lib/uniqueness';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -74,11 +75,23 @@ router.post('/register', upload.any(), async (req, res, next) => {
       return res.status(400).json({ error: 'Invalid or inactive registration form' });
     }
 
-    // Check duplicate email, mobile number, or employee ID against existing users and pending requests
+    // Verify Uniqueness Constraints (Primary identity fields & builder-specified unique fields)
+    const uniquenessResult = await validateRegistrationUniqueness(form.schema, parsedData);
+    if (!uniquenessResult.isValid) {
+      const firstConflict = uniquenessResult.conflicts?.[0];
+      return res.status(409).json({
+        error: uniquenessResult.error,
+        conflicts: uniquenessResult.conflicts,
+        conflictType: firstConflict?.field,
+        conflictSource: firstConflict?.source === 'PENDING_REQUEST' ? 'pending_request' : 'active_user'
+      });
+    }
+
+    // Additional check with normalized extraction against existing users & pending requests
     const extractedFields = extractRegistrationUserFields(parsedData, form.schema);
     const uniquenessCheck = await checkRegistrationUniqueness(extractedFields, undefined, form.schema);
     if (uniquenessCheck.hasConflict) {
-      return res.status(400).json({
+      return res.status(409).json({
         error: uniquenessCheck.errorMessage || 'A user with matching credentials already exists.',
         conflictType: uniquenessCheck.conflictType,
         conflictSource: uniquenessCheck.conflictSource
@@ -133,9 +146,9 @@ router.get('/registration-form', async (req, res, next) => {
       const defaultSchema = {
         fields: [
           { id: '1', type: 'text', name: 'fullName', label: 'Full Name', required: true, placeholder: 'Enter your full name' },
-          { id: '2', type: 'phone', name: 'mobile', label: 'Mobile Number', required: true, placeholder: '10-digit mobile number' },
-          { id: '3', type: 'email', name: 'email', label: 'Email Address', required: true, placeholder: 'name@example.com' },
-          { id: '4', type: 'text', name: 'employeeId', label: 'Employee ID', required: true, placeholder: 'e.g. EMP-101' },
+          { id: '2', type: 'phone', name: 'mobile', label: 'Mobile Number', required: true, unique: true, placeholder: '10-digit mobile number' },
+          { id: '3', type: 'email', name: 'email', label: 'Email Address', required: true, unique: true, placeholder: 'name@example.com' },
+          { id: '4', type: 'text', name: 'employeeId', label: 'Employee ID', required: true, unique: true, placeholder: 'e.g. EMP-101' },
           { id: '5', type: 'text', name: 'department', label: 'Department', required: true, placeholder: 'e.g. Engineering' },
           { id: '6', type: 'password', name: 'password', label: 'Password', required: true, placeholder: 'Create a password' }
         ],
@@ -172,9 +185,9 @@ router.get('/registration-form', async (req, res, next) => {
     const defaultSchema = {
       fields: [
         { id: '1', type: 'text', name: 'fullName', label: 'Full Name', required: true, placeholder: 'Enter your full name' },
-        { id: '2', type: 'phone', name: 'mobile', label: 'Mobile Number', required: true, placeholder: '10-digit mobile number' },
-        { id: '3', type: 'email', name: 'email', label: 'Email Address', required: true, placeholder: 'name@example.com' },
-        { id: '4', type: 'text', name: 'employeeId', label: 'Employee ID', required: true, placeholder: 'e.g. EMP-101' },
+        { id: '2', type: 'phone', name: 'mobile', label: 'Mobile Number', required: true, unique: true, placeholder: '10-digit mobile number' },
+        { id: '3', type: 'email', name: 'email', label: 'Email Address', required: true, unique: true, placeholder: 'name@example.com' },
+        { id: '4', type: 'text', name: 'employeeId', label: 'Employee ID', required: true, unique: true, placeholder: 'e.g. EMP-101' },
         { id: '5', type: 'text', name: 'department', label: 'Department', required: true, placeholder: 'e.g. Engineering' },
         { id: '6', type: 'password', name: 'password', label: 'Password', required: true, placeholder: 'Create a password' }
       ],
@@ -620,6 +633,11 @@ router.get('/me', authenticate, async (req: any, res, next) => {
       color: sg.scopeGroup.color,
       description: sg.scopeGroup.description
     })) || [];
+
+    // If user has assigned scope groups, ensure 'lc-gates' is available in allowedModules
+    if (scopeGroups.length > 0 && !allowedModules.includes('lc-gates')) {
+      allowedModules.unshift('lc-gates');
+    }
 
     res.json({
       id: user.id,

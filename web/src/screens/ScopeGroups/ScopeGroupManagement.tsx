@@ -19,7 +19,11 @@ import {
   FaPlug,
   FaTrain,
   FaCogs,
-  FaMapMarkerAlt
+  FaMapMarkerAlt,
+  FaFolder,
+  FaFolderOpen,
+  FaFolderPlus,
+  FaInfoCircle
 } from 'react-icons/fa';
 import type { User, ScopeGroupItem } from '../../types';
 import { API_URL } from '../../config';
@@ -70,15 +74,34 @@ export default function ScopeGroupManagement({ user }: Props) {
   const zones = RAILWAY_ZONES;
   const divisionsByZone = RAILWAY_DATA;
 
+  // Expandable/Collapsible state for folder groups
+  const [expandedGroupIds, setExpandedGroupIds] = useState<Set<number>>(new Set());
+
+  const toggleExpand = (groupId: number, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setExpandedGroupIds(prev => {
+      const next = new Set(prev);
+      if (next.has(groupId)) {
+        next.delete(groupId);
+      } else {
+        next.add(groupId);
+      }
+      return next;
+    });
+  };
+
   // Modal State for Create / Edit
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [modalTab, setModalTab] = useState<'details' | 'gates' | 'users'>('details');
+  const [modalTab, setModalTab] = useState<'details' | 'subgroups' | 'gates' | 'users'>('details');
   const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
 
   // Form State
   const [formName, setFormName] = useState('');
   const [formDesc, setFormDesc] = useState('');
   const [formColor, setFormColor] = useState('#0B3C7A');
+  const [formParentId, setFormParentId] = useState<number | null>(null);
+  const [formSubGroupInput, setFormSubGroupInput] = useState('');
+  const [formSubGroupsList, setFormSubGroupsList] = useState<string[]>([]);
   const [selectedGateIds, setSelectedGateIds] = useState<Set<number>>(new Set());
   const [selectedUserIds, setSelectedUserIds] = useState<Set<number>>(new Set());
   const [submitting, setSubmitting] = useState(false);
@@ -150,6 +173,139 @@ export default function ScopeGroupManagement({ user }: Props) {
     loadInitialData();
   }, []);
 
+  // Check if a group represents a Railway Zone
+  const isRailwayZone = (name: string) => {
+    const lower = name.toLowerCase();
+    return lower.includes('railway') || zones.some(z => lower.includes(z.toLowerCase().replace(/s$/, '')));
+  };
+
+  // Helper to determine if a group is a child Division/Subgroup under a Zone
+  const isDivisionOrSubGroup = (group: ScopeGroupItem) => {
+    if (group.parentId && scopeGroups.some(p => p.id === group.parentId)) {
+      return true;
+    }
+    const gName = group.name.toLowerCase();
+    for (const potentialParent of scopeGroups) {
+      if (potentialParent.id === group.id) continue;
+      if (isRailwayZone(potentialParent.name)) {
+        const zoneDivs = divisionsByZone[potentialParent.name] || [];
+        const matchesDiv = zoneDivs.some(d => gName.includes(d.toLowerCase())) ||
+          gName.includes('division') ||
+          gName.includes('section');
+        if (matchesDiv) return true;
+      }
+    }
+    return false;
+  };
+
+  // Helper to resolve effective parent for a group
+  const resolveParent = (group: ScopeGroupItem | null): ScopeGroupItem | undefined => {
+    if (!group) return undefined;
+    if (group.parent) return group.parent as ScopeGroupItem;
+    if (group.parentId) {
+      const p = scopeGroups.find(g => g.id === group.parentId);
+      if (p) return p;
+    }
+    const gName = group.name.toLowerCase();
+    for (const zoneGroup of scopeGroups) {
+      if (zoneGroup.id === group.id) continue;
+      if (isRailwayZone(zoneGroup.name)) {
+        const zoneDivs = divisionsByZone[zoneGroup.name] || [];
+        if (zoneDivs.some(d => gName.includes(d.toLowerCase())) || gName.includes('division')) {
+          return zoneGroup;
+        }
+      }
+    }
+    return undefined;
+  };
+
+  // Root Scope Groups (top-level Railway Zones only; divisions will NEVER appear at same time)
+  const rootGroups = useMemo(() => {
+    return scopeGroups.filter(g => !isDivisionOrSubGroup(g));
+  }, [scopeGroups]);
+
+  // Displayed Scope Groups for List View
+  // When no search query: only show top-level ROOT groups (nested sub-groups appear inside parent folders)
+  // When search query is entered: search across all levels and show matching groups with parent path
+  const displayedGroups = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    if (!q) return rootGroups;
+    return scopeGroups.filter(g => {
+      const parentObj = resolveParent(g);
+      return g.name.toLowerCase().includes(q) ||
+        (g.description && g.description.toLowerCase().includes(q)) ||
+        (parentObj && parentObj.name.toLowerCase().includes(q));
+    });
+  }, [scopeGroups, rootGroups, searchQuery]);
+
+  // Helper to get direct children of any group from loaded scopeGroups
+  const getDirectChildren = (parentId: number) => {
+    const parent = scopeGroups.find(g => g.id === parentId);
+    if (!parent) return [];
+    const isParentZone = isRailwayZone(parent.name);
+    const zoneDivs = divisionsByZone[parent.name] || [];
+
+    return scopeGroups.filter(g => {
+      if (g.id === parentId) return false;
+      if (g.parentId === parentId) return true;
+      if (!g.parentId && isParentZone) {
+        const gName = g.name.toLowerCase();
+        if (zoneDivs.some(d => gName.includes(d.toLowerCase()))) return true;
+        if (gName.includes('division')) {
+          const otherZones = scopeGroups.filter(z => z.id !== parentId && isRailwayZone(z.name));
+          if (otherZones.length === 0) return true;
+        }
+      }
+      return false;
+    });
+  };
+
+  // Helper to get recursive gates across a group and all its descendant groups
+  const getRecursiveGates = (groupId: number) => {
+    const descendantIds = new Set<number>([groupId]);
+    let queue = [groupId];
+    while (queue.length > 0) {
+      const curr = queue.shift()!;
+      const children = getDirectChildren(curr);
+      children.forEach(c => {
+        if (!descendantIds.has(c.id)) {
+          descendantIds.add(c.id);
+          queue.push(c.id);
+        }
+      });
+    }
+    const gateMap = new Map<number, any>();
+    scopeGroups
+      .filter(g => descendantIds.has(g.id))
+      .forEach(g => {
+        g.gates?.forEach(item => {
+          if (!gateMap.has(item.gate.id)) {
+            gateMap.set(item.gate.id, item.gate);
+          }
+        });
+      });
+    return Array.from(gateMap.values());
+  };
+
+  // Breadcrumb path for active group
+  const getBreadcrumbs = (group: ScopeGroupItem | null) => {
+    if (!group) return [];
+    const crumbs: ScopeGroupItem[] = [];
+    let curr: ScopeGroupItem | undefined = group;
+    const visited = new Set<number>();
+    while (curr && !visited.has(curr.id)) {
+      visited.add(curr.id);
+      crumbs.unshift(curr);
+      const parent = resolveParent(curr);
+      if (parent && parent.id !== curr.id) {
+        curr = parent;
+      } else {
+        curr = undefined;
+      }
+    }
+    return crumbs;
+  };
+
   // Compute Aggregate Stats
   const stats = useMemo(() => {
     const totalGroups = scopeGroups.length;
@@ -163,20 +319,12 @@ export default function ScopeGroupManagement({ user }: Props) {
 
     return {
       totalGroups,
+      rootCount: rootGroups.length,
+      subGroupCount: Math.max(0, totalGroups - rootGroups.length),
       totalGates: uniqueScopedGates.size,
       totalUsers: uniqueUsersInScopes.size
     };
-  }, [scopeGroups]);
-
-  // Filtered Scope Groups for List View
-  const filteredGroups = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
-    if (!q) return scopeGroups;
-    return scopeGroups.filter(g =>
-      g.name.toLowerCase().includes(q) ||
-      (g.description && g.description.toLowerCase().includes(q))
-    );
-  }, [scopeGroups, searchQuery]);
+  }, [scopeGroups, rootGroups]);
 
   // Open Group Detail Page
   const handleCardClick = (group: ScopeGroupItem) => {
@@ -241,15 +389,40 @@ export default function ScopeGroupManagement({ user }: Props) {
     });
   }, [activeGroup, activeGateSearch]);
 
+  // Sub-Group Builder handlers
+  const handleAddSubGroup = () => {
+    const trimmed = formSubGroupInput.trim();
+    if (!trimmed) return;
+    if (formSubGroupsList.some(s => s.toLowerCase() === trimmed.toLowerCase())) {
+      setFormError(`"${trimmed}" is already queued in the sub-groups list`);
+      return;
+    }
+    if (formName.trim() && formName.trim().toLowerCase() === trimmed.toLowerCase()) {
+      setFormError('A sub-group cannot have the exact same name as its parent group');
+      return;
+    }
+    setFormSubGroupsList(prev => [...prev, trimmed]);
+    setFormSubGroupInput('');
+    setFormError(null);
+  };
+
+  const handleRemoveSubGroup = (index: number) => {
+    setFormSubGroupsList(prev => prev.filter((_, i) => i !== index));
+  };
+
   // Open Create Modal
-  const handleOpenCreate = () => {
+  const handleOpenCreate = (preselectedParentId?: number | null | React.MouseEvent) => {
     if (!canManage) return;
     setEditingGroupId(null);
     setFormName('');
     setFormDesc('');
     setFormColor('#0B3C7A');
+    const pId = typeof preselectedParentId === 'number' ? preselectedParentId : null;
+    setFormParentId(pId);
     setSelectedGateIds(new Set());
     setSelectedUserIds(new Set());
+    setFormSubGroupInput('');
+    setFormSubGroupsList([]);
     setFormError(null);
     setModalTab('details');
     setIsModalOpen(true);
@@ -262,8 +435,11 @@ export default function ScopeGroupManagement({ user }: Props) {
     setFormName(group.name);
     setFormDesc(group.description || '');
     setFormColor(group.color || '#0B3C7A');
+    setFormParentId(group.parentId ?? null);
     setSelectedGateIds(new Set(group.gates?.map(g => g.gate.id) || []));
     setSelectedUserIds(new Set(group.users?.map(u => u.user.id) || []));
+    setFormSubGroupInput('');
+    setFormSubGroupsList([]);
     setFormError(null);
     setModalTab('details');
     setIsModalOpen(true);
@@ -375,8 +551,10 @@ export default function ScopeGroupManagement({ user }: Props) {
       name: trimmedName,
       description: formDesc.trim() || null,
       color: formColor,
+      parentId: formParentId,
       gateIds: Array.from(selectedGateIds),
-      userIds: Array.from(selectedUserIds)
+      userIds: Array.from(selectedUserIds),
+      subGroupNames: formSubGroupsList
     };
 
     try {
@@ -539,7 +717,7 @@ export default function ScopeGroupManagement({ user }: Props) {
               <FaSyncAlt className="spin" size={32} style={{ marginBottom: 12, color: 'var(--primary)' }} />
               <div>Loading scope groups...</div>
             </div>
-          ) : filteredGroups.length === 0 ? (
+          ) : displayedGroups.length === 0 ? (
             <div className="sg-empty-state">
               <FaLayerGroup className="sg-empty-icon" />
               <h3 style={{ margin: '0 0 8px 0', color: '#1e293b' }}>
@@ -564,11 +742,14 @@ export default function ScopeGroupManagement({ user }: Props) {
             </div>
           ) : (
             <div className="sg-groups-grid">
-              {filteredGroups.map(group => {
-                const gateCount = group.gates?.length || group._count?.gates || 0;
+              {displayedGroups.map(group => {
+                const childSubGroups = getDirectChildren(group.id);
+                const directGateCount = group.gates?.length || group._count?.gates || 0;
+                const recursiveGates = getRecursiveGates(group.id);
                 const userCount = group.users?.length || group._count?.users || 0;
+                const isExpanded = expandedGroupIds.has(group.id);
                 const previewGates = group.gates?.slice(0, 4) || [];
-                const remainingGates = gateCount - previewGates.length;
+                const remainingGates = directGateCount - previewGates.length;
 
                 return (
                   <div
@@ -584,6 +765,22 @@ export default function ScopeGroupManagement({ user }: Props) {
 
                     <div className="sg-card-top">
                       <div>
+                        {(() => {
+                          const p = resolveParent(group);
+                          return p ? (
+                            <div style={{ marginBottom: 4 }}>
+                              <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f1f5f9', padding: '2px 8px', borderRadius: 4 }}>
+                                <FaFolder size={11} color="#64748b" /> {p.name} /
+                              </span>
+                            </div>
+                          ) : (
+                            <div style={{ marginBottom: 4 }}>
+                              <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#0369a1', display: 'inline-flex', alignItems: 'center', gap: 4, background: '#e0f2fe', padding: '2px 8px', borderRadius: 4 }}>
+                                <FaFolderOpen size={11} color="#0369a1" /> Railway Zone (Main Scope)
+                              </span>
+                            </div>
+                          );
+                        })()}
                         <h3 className="sg-card-title">{group.name}</h3>
                       </div>
                     </div>
@@ -594,8 +791,24 @@ export default function ScopeGroupManagement({ user }: Props) {
 
                     <div className="sg-card-meta">
                       <span className="sg-pill gates">
-                        <FaMicrochip /> {gateCount} {gateCount === 1 ? 'Gate' : 'Gates'}
+                        <FaMicrochip /> {directGateCount} {directGateCount === 1 ? 'Gate' : 'Gates'}
                       </span>
+                      {childSubGroups.length > 0 && (
+                        <button
+                          type="button"
+                          className="sg-pill"
+                          style={{
+                            background: '#ede9fe',
+                            color: '#6d28d9',
+                            borderColor: '#ddd6fe',
+                            cursor: 'pointer'
+                          }}
+                          onClick={(e) => toggleExpand(group.id, e)}
+                          title="Click to expand/collapse nested sub-groups"
+                        >
+                          <FaFolderPlus /> {childSubGroups.length} {childSubGroups.length === 1 ? 'Sub-Division' : 'Sub-Divisions'} {isExpanded ? '▴' : '▾'}
+                        </button>
+                      )}
                       {canManage && (
                         <span className="sg-pill users">
                           <FaUsers /> {userCount} {userCount === 1 ? 'User' : 'Users'}
@@ -603,11 +816,187 @@ export default function ScopeGroupManagement({ user }: Props) {
                       )}
                     </div>
 
-                    {/* Gate Preview */}
+                    {/* Expandable/Collapsible Sub-Groups Section right inside the card */}
+                    {childSubGroups.length > 0 && (
+                      <div
+                        className="sg-card-folder-toggle"
+                        onClick={(e) => toggleExpand(group.id, e)}
+                        title={isExpanded ? 'Click to collapse nested folders' : 'Click to expand nested folders'}
+                      >
+                        <div className="sg-folder-toggle-left">
+                          {isExpanded ? <FaFolderOpen color="#6366f1" /> : <FaFolder color="#6366f1" />}
+                          <span>
+                            <strong>{childSubGroups.length}</strong> {childSubGroups.length === 1 ? 'Sub-Group' : 'Sub-Groups'} ({recursiveGates.length} total gates)
+                          </span>
+                        </div>
+                        <span className="sg-folder-toggle-indicator">
+                          {isExpanded ? 'Collapse ▴' : 'Expand Folder ▾'}
+                        </span>
+                      </div>
+                    )}
+
+                    {isExpanded && childSubGroups.length > 0 && (
+                      <div className="sg-nested-subgroups-drawer" onClick={(e) => e.stopPropagation()}>
+                        <div className="sg-drawer-header">
+                          <span className="sg-drawer-title">
+                            <FaFolderOpen color="#6366f1" /> Sub-Divisions in {group.name}
+                          </span>
+                          {canManage && (
+                            <button
+                              type="button"
+                              className="btn btn-xs btn-secondary"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenCreate(group.id);
+                              }}
+                              title={`Create a sub-group directly in ${group.name}`}
+                              style={{ color: '#0B3C7A' }}
+                            >
+                              <FaPlus /> Sub-Group
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="sg-nested-subgroups-list">
+                          {childSubGroups.map(child => {
+                            const grandChildren = getDirectChildren(child.id);
+                            const childGateCount = child.gates?.length || child._count?.gates || 0;
+                            const childPreviewGates = child.gates?.slice(0, 3) || [];
+                            const isChildExpanded = expandedGroupIds.has(child.id);
+
+                            return (
+                              <div
+                                key={child.id}
+                                className="sg-nested-subgroup-card"
+                                onClick={() => handleCardClick(child)}
+                              >
+                                <div className="sg-nested-card-top">
+                                  <div className="sg-nested-card-left">
+                                    <span
+                                      className="sg-folder-icon-circle"
+                                      style={{
+                                        backgroundColor: `${child.color || group.color || '#0B3C7A'}15`,
+                                        color: child.color || group.color || '#0B3C7A'
+                                      }}
+                                    >
+                                      <FaFolder />
+                                    </span>
+                                    <div>
+                                      <h4 className="sg-nested-card-title">{child.name}</h4>
+                                      {child.description && (
+                                        <p className="sg-nested-card-desc">{child.description}</p>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="sg-nested-card-badges">
+                                    <span className="sg-pill gates">
+                                      <FaMicrochip size={10} /> {childGateCount} {childGateCount === 1 ? 'Gate' : 'Gates'}
+                                    </span>
+                                    {grandChildren.length > 0 && (
+                                      <button
+                                        type="button"
+                                        className="sg-pill"
+                                        style={{ background: '#ede9fe', color: '#6d28d9', cursor: 'pointer', border: 'none' }}
+                                        onClick={(e) => toggleExpand(child.id, e)}
+                                      >
+                                        <FaFolderPlus size={10} /> {grandChildren.length} Sub {isChildExpanded ? '▴' : '▾'}
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Child Gate Chips Preview */}
+                                {childGateCount > 0 && (
+                                  <div className="sg-nested-preview-chips">
+                                    {childPreviewGates.map(item => (
+                                      <span key={item.gate.id} className="sg-gate-chip">
+                                        {item.gate.lcNumber}
+                                      </span>
+                                    ))}
+                                    {childGateCount > childPreviewGates.length && (
+                                      <span className="sg-more-chip">+{childGateCount - childPreviewGates.length}</span>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* GrandChildren (Subgroup within Subgroup) */}
+                                {isChildExpanded && grandChildren.length > 0 && (
+                                  <div className="sg-grandchild-drawer" onClick={e => e.stopPropagation()}>
+                                    <div style={{ fontSize: '0.74rem', fontWeight: 700, color: '#64748b', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                      <FaFolderOpen size={11} color="#8b5cf6" /> Sub-Units in {child.name}:
+                                    </div>
+                                    {grandChildren.map(gc => (
+                                      <div
+                                        key={gc.id}
+                                        className="sg-grandchild-item"
+                                        onClick={() => handleCardClick(gc)}
+                                      >
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                          <FaFolder size={11} color="#8b5cf6" />
+                                          <strong>{gc.name}</strong>
+                                        </div>
+                                        <span className="sg-pill gates" style={{ fontSize: '0.7rem', padding: '2px 6px' }}>
+                                          {gc.gates?.length || gc._count?.gates || 0} Gates
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Child Card Footer Actions */}
+                                <div className="sg-nested-card-footer" onClick={e => e.stopPropagation()}>
+                                  <span
+                                    style={{ fontSize: '0.78rem', color: '#0B3C7A', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
+                                    onClick={() => handleCardClick(child)}
+                                  >
+                                    Open Sub-Division <FaChevronRight size={10} />
+                                  </span>
+                                  {canManage && (
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                      <button
+                                        type="button"
+                                        className="btn btn-xs btn-secondary"
+                                        onClick={() => handleOpenCreate(child.id)}
+                                        title={`Add sub-group inside ${child.name}`}
+                                      >
+                                        <FaPlus size={10} /> Sub-Group
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="btn btn-xs btn-secondary"
+                                        onClick={() => handleOpenEdit(child)}
+                                        title="Edit sub-group"
+                                      >
+                                        <FaEdit size={10} />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="btn btn-xs"
+                                        style={{ color: '#ef4444', borderColor: '#fecaca', background: '#fef2f2' }}
+                                        onClick={() => setDeleteConfirmGroup(child)}
+                                        title="Delete sub-group"
+                                      >
+                                        <FaTrash size={10} />
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Direct Gate Preview for this card */}
                     <div className="sg-gates-preview">
-                      <div className="sg-preview-label">Included Gates</div>
-                      {gateCount === 0 ? (
-                        <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>No gates assigned yet</span>
+                      <div className="sg-preview-label">Direct Included Gates</div>
+                      {directGateCount === 0 ? (
+                        <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
+                          {childSubGroups.length > 0
+                            ? 'Assigned via sub-divisions above'
+                            : 'No gates assigned directly'}
+                        </span>
                       ) : (
                         <div className="sg-preview-chips">
                           {previewGates.map(item => (
@@ -625,7 +1014,7 @@ export default function ScopeGroupManagement({ user }: Props) {
 
                     {/* Open Hint CTA */}
                     <div className="sg-card-footer-cta">
-                      <span>View Included Gates ({gateCount})</span>
+                      <span>View Scope Group & Gates ({directGateCount})</span>
                       <FaChevronRight size={13} />
                     </div>
 
@@ -637,6 +1026,19 @@ export default function ScopeGroupManagement({ user }: Props) {
                         onClick={(e) => e.stopPropagation()}
                       >
                         <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenCreate(group.id);
+                          }}
+                          title="Create a child Sub-Division inside this Scope Group"
+                          style={{ color: '#0B3C7A' }}
+                        >
+                          <FaPlus /> Sub-Group
+                        </button>
+                        <button
+                          type="button"
                           className="btn btn-sm btn-secondary"
                           onClick={(e) => {
                             e.stopPropagation();
@@ -647,6 +1049,7 @@ export default function ScopeGroupManagement({ user }: Props) {
                           <FaEdit /> Edit
                         </button>
                         <button
+                          type="button"
                           className="btn btn-sm"
                           style={{ color: '#ef4444', borderColor: '#fecaca', background: '#fef2f2' }}
                           onClick={(e) => {
@@ -677,8 +1080,25 @@ export default function ScopeGroupManagement({ user }: Props) {
                 <FaArrowLeft /> Back
               </button>
               <span className="sg-breadcrumb-crumb" onClick={handleBackToList}>Scope Groups</span>
-              <span className="sg-breadcrumb-sep">/</span>
-              <span className="sg-breadcrumb-active">{activeGroup.name}</span>
+              {getBreadcrumbs(activeGroup).map((crumb, idx, arr) => (
+                <React.Fragment key={crumb.id}>
+                  <span className="sg-breadcrumb-sep">/</span>
+                  {idx === arr.length - 1 ? (
+                    <span className="sg-breadcrumb-active">{crumb.name}</span>
+                  ) : (
+                    <span
+                      className="sg-breadcrumb-crumb"
+                      onClick={() => {
+                        setActiveGroup(crumb);
+                        setActiveGate(null);
+                        setActiveGateSearch('');
+                      }}
+                    >
+                      {crumb.name}
+                    </span>
+                  )}
+                </React.Fragment>
+              ))}
             </div>
             {canManage && (
               <button className="btn btn-secondary btn-sm" onClick={() => handleOpenEdit(activeGroup)}>
@@ -694,13 +1114,29 @@ export default function ScopeGroupManagement({ user }: Props) {
               <div className="sg-hero-title-row">
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <span className="sg-color-dot" style={{ backgroundColor: activeGroup.color || '#0B3C7A' }} />
-                  <h2 style={{ margin: 0, fontSize: '1.75rem', fontWeight: 800, color: '#0f172a' }}>
-                    {activeGroup.name}
-                  </h2>
+                  <div>
+                    {resolveParent(activeGroup) && (
+                      <div style={{ marginBottom: 4 }}>
+                        <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#64748b', display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f1f5f9', padding: '2px 8px', borderRadius: 4 }}>
+                          <FaFolder size={11} color="#64748b" /> {resolveParent(activeGroup)?.name} /
+                        </span>
+                      </div>
+                    )}
+                    <h2 style={{ margin: 0, fontSize: '1.75rem', fontWeight: 800, color: '#0f172a' }}>
+                      {activeGroup.name}
+                    </h2>
+                  </div>
                 </div>
-                <span className="sg-pill gates">
-                  <FaMicrochip /> {activeGroup.gates?.length || 0} Included {activeGroup.gates?.length === 1 ? 'Gate' : 'Gates'}
-                </span>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <span className="sg-pill gates">
+                    <FaMicrochip /> {activeGroup.gates?.length || 0} Direct {activeGroup.gates?.length === 1 ? 'Gate' : 'Gates'}
+                  </span>
+                  {getDirectChildren(activeGroup.id).length > 0 && (
+                    <span className="sg-pill" style={{ background: '#ede9fe', color: '#6d28d9', borderColor: '#ddd6fe' }}>
+                      <FaFolderPlus /> {getDirectChildren(activeGroup.id).length} Sub-Divisions
+                    </span>
+                  )}
+                </div>
               </div>
 
               <p className="sg-hero-desc">
@@ -711,7 +1147,11 @@ export default function ScopeGroupManagement({ user }: Props) {
               <div className="sg-hero-stats">
                 <div className="sg-hero-stat-item">
                   <span className="sg-hero-stat-val">{activeGroup.gates?.length || 0}</span>
-                  <span className="sg-hero-stat-lbl">Included LC Gates</span>
+                  <span className="sg-hero-stat-lbl">Direct LC Gates</span>
+                </div>
+                <div className="sg-hero-stat-item">
+                  <span className="sg-hero-stat-val">{getRecursiveGates(activeGroup.id).length}</span>
+                  <span className="sg-hero-stat-lbl">Total Hierarchy Gates</span>
                 </div>
                 <div className="sg-hero-stat-item">
                   <span className="sg-hero-stat-val">
@@ -733,6 +1173,127 @@ export default function ScopeGroupManagement({ user }: Props) {
               </div>
             </div>
           </div>
+
+          {/* Sub-Divisions & Child Folders Section */}
+          {(() => {
+            const activeChildren = getDirectChildren(activeGroup.id);
+            return (
+              <div className="sg-subgroups-section">
+                <div className="sg-section-header" style={{ marginBottom: 14 }}>
+                  <div>
+                    <h3 style={{ margin: '0 0 4px 0', fontSize: '1.25rem', fontWeight: 700, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <FaFolderOpen style={{ color: activeGroup.color || '#0B3C7A' }} />
+                      Sub-Divisions & Child Folders ({activeChildren.length})
+                    </h3>
+                    <p style={{ margin: 0, fontSize: '0.88rem', color: '#64748b' }}>
+                      Scope groups nested inside {activeGroup.name}. Users assigned to {activeGroup.name} automatically have access to all clusters inside these sub-divisions.
+                    </p>
+                  </div>
+                  {canManage && (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={() => handleOpenCreate(activeGroup.id)}
+                    >
+                      <FaPlus /> Add Sub-Division
+                    </button>
+                  )}
+                </div>
+
+                {activeChildren.length === 0 ? (
+                  <div className="sg-subgroups-empty">
+                    <FaFolder style={{ color: '#94a3b8', fontSize: '1.4rem' }} />
+                    <span>No nested sub-divisions in this scope group yet.</span>
+                    {canManage && (
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-outline-primary"
+                        onClick={() => handleOpenCreate(activeGroup.id)}
+                      >
+                        <FaPlus /> Create First Sub-Division
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="sg-nested-subgroups-grid">
+                    {activeChildren.map(child => {
+                      const childGateCount = child.gates?.length || child._count?.gates || 0;
+                      const childGrandChildren = getDirectChildren(child.id);
+                      const childPreview = child.gates?.slice(0, 3) || [];
+                      return (
+                        <div
+                          key={child.id}
+                          className="sg-subdivision-card"
+                          onClick={() => {
+                            setActiveGroup(child);
+                            setActiveGate(null);
+                            setActiveGateSearch('');
+                          }}
+                        >
+                          <div className="sg-subdivision-header">
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span className="sg-folder-icon-circle" style={{ backgroundColor: `${child.color || activeGroup.color || '#0B3C7A'}15`, color: child.color || activeGroup.color || '#0B3C7A' }}>
+                                <FaFolder />
+                              </span>
+                              <strong style={{ fontSize: '1.02rem', color: '#0f172a' }}>{child.name}</strong>
+                            </div>
+                            <span className="sg-pill gates">
+                              <FaMicrochip size={11} /> {childGateCount} Gates
+                            </span>
+                          </div>
+                          <p style={{ margin: '6px 0 10px 0', fontSize: '0.82rem', color: '#64748b' }}>
+                            {child.description || 'No description provided.'}
+                          </p>
+                          {childPreview.length > 0 && (
+                            <div className="sg-nested-preview-chips" style={{ marginBottom: 8 }}>
+                              {childPreview.map(item => (
+                                <span key={item.gate.id} className="sg-gate-chip">
+                                  {item.gate.lcNumber}
+                                </span>
+                              ))}
+                              {childGateCount > childPreview.length && (
+                                <span className="sg-more-chip">+{childGateCount - childPreview.length}</span>
+                              )}
+                            </div>
+                          )}
+                          {childGrandChildren.length > 0 && (
+                            <div style={{ fontSize: '0.78rem', color: '#6d28d9', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 8 }}>
+                              <FaFolderPlus size={11} /> {childGrandChildren.length} Nested Sub-Unit{childGrandChildren.length > 1 ? 's' : ''}
+                            </div>
+                          )}
+                          <div className="sg-subdivision-footer">
+                            <span style={{ fontSize: '0.8rem', color: '#0B3C7A', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                              Open Sub-Division <FaChevronRight size={10} />
+                            </span>
+                            {canManage && (
+                              <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
+                                <button
+                                  type="button"
+                                  className="btn btn-xs btn-secondary"
+                                  onClick={() => handleOpenCreate(child.id)}
+                                  title="Add sub-group inside this division"
+                                >
+                                  <FaPlus size={10} /> Sub-Group
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-xs btn-secondary"
+                                  onClick={() => handleOpenEdit(child)}
+                                  title="Edit division"
+                                >
+                                  <FaEdit size={10} />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Included Gates Section */}
           <div className="sg-section-header">
@@ -1008,21 +1569,28 @@ export default function ScopeGroupManagement({ user }: Props) {
                 className={`sg-modal-tab-btn ${modalTab === 'details' ? 'active' : ''}`}
                 onClick={() => setModalTab('details')}
               >
-                <FaTag /> 1. Details
+                <FaTag /> 1. Group Details
+              </button>
+              <button
+                type="button"
+                className={`sg-modal-tab-btn ${modalTab === 'subgroups' ? 'active' : ''}`}
+                onClick={() => setModalTab('subgroups')}
+              >
+                <FaFolderPlus /> 2. Sub-Groups {formSubGroupsList.length > 0 && `(${formSubGroupsList.length})`}
               </button>
               <button
                 type="button"
                 className={`sg-modal-tab-btn ${modalTab === 'gates' ? 'active' : ''}`}
                 onClick={() => setModalTab('gates')}
               >
-                <FaMicrochip /> 2. Gates ({selectedGateIds.size})
+                <FaMicrochip /> 3. Clusters / Gates (Optional) {selectedGateIds.size > 0 && `(${selectedGateIds.size})`}
               </button>
               <button
                 type="button"
                 className={`sg-modal-tab-btn ${modalTab === 'users' ? 'active' : ''}`}
                 onClick={() => setModalTab('users')}
               >
-                <FaUsers /> 3. Assign Users ({selectedUserIds.size})
+                <FaUsers /> 4. Assign Users ({selectedUserIds.size})
               </button>
             </div>
 
@@ -1044,11 +1612,34 @@ export default function ScopeGroupManagement({ user }: Props) {
                       <input
                         type="text"
                         required
-                        placeholder="e.g. Bhopal Division Main Line, Mumbai South Cluster..."
+                        placeholder="e.g. Central Railway, Western Railway, Mumbai Division..."
                         value={formName}
                         onChange={e => setFormName(e.target.value)}
                         style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: '0.95rem' }}
                       />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontWeight: 700, fontSize: '0.88rem', color: '#1e293b', marginBottom: 6 }}>
+                        Parent Scope Group (Folder / Hierarchy Level)
+                      </label>
+                      <select
+                        value={formParentId === null ? '' : formParentId}
+                        onChange={e => setFormParentId(e.target.value ? parseInt(e.target.value, 10) : null)}
+                        style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: '0.92rem', backgroundColor: '#fff' }}
+                      >
+                        <option value="">📁 None (Top-Level Scope Group / Zone, e.g. Central Railway)</option>
+                        {scopeGroups
+                          .filter(g => g.id !== editingGroupId)
+                          .map(g => (
+                            <option key={g.id} value={g.id}>
+                              📂 {g.parent ? `${g.parent.name} / ` : ''}{g.name}
+                            </option>
+                          ))}
+                      </select>
+                      <small style={{ display: 'block', marginTop: 5, color: '#64748b', fontSize: '0.8rem', lineHeight: 1.35 }}>
+                        Create a folder within folder (e.g. Central Railway → Ahmedabad Division). Users assigned to the parent group automatically inherit all child divisions and their clusters.
+                      </small>
                     </div>
 
                     <div>
@@ -1082,9 +1673,159 @@ export default function ScopeGroupManagement({ user }: Props) {
                   </div>
                 )}
 
-                {/* TAB 2: GATES PICKER */}
+                {/* TAB 2: SUB-GROUPS */}
+                {modalTab === 'subgroups' && (
+                  <div>
+                    <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 16, marginBottom: 18 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, fontWeight: 750, color: '#0f172a' }}>
+                        <FaFolderPlus color="#0B3C7A" size={17} />
+                        <span style={{ fontSize: '1rem' }}>Create Sub-Groups Within This Group Simultaneously</span>
+                      </div>
+                      <p style={{ margin: 0, fontSize: '0.86rem', color: '#64748b', lineHeight: 1.45 }}>
+                        Define child divisions or sub-folders now (e.g. <em>Ahmedabad Division, Mumbai Division, Pune Division</em>). 
+                        You can create a parent group and its sub-groups at the exact same time without needing to assign clusters immediately.
+                      </p>
+
+                      <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                        <input
+                          type="text"
+                          placeholder="Enter sub-group name (e.g. Ahmedabad Division)..."
+                          value={formSubGroupInput}
+                          onChange={e => setFormSubGroupInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddSubGroup();
+                            }
+                          }}
+                          style={{ flex: 1, padding: '10px 14px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: '0.92rem' }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          onClick={handleAddSubGroup}
+                          style={{ whiteSpace: 'nowrap' }}
+                        >
+                          <FaPlus /> Add Sub-Group
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Queued Sub-Groups list */}
+                    <div style={{ marginBottom: 18 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                        <label style={{ fontWeight: 700, fontSize: '0.88rem', color: '#1e293b', margin: 0 }}>
+                          Sub-Groups Queued for Creation ({formSubGroupsList.length})
+                        </label>
+                        {formSubGroupsList.length > 0 && (
+                          <button
+                            type="button"
+                            className="btn btn-xs btn-secondary"
+                            onClick={() => setFormSubGroupsList([])}
+                            style={{ fontSize: '0.74rem' }}
+                          >
+                            Clear All
+                          </button>
+                        )}
+                      </div>
+
+                      {formSubGroupsList.length === 0 ? (
+                        <div style={{ padding: '28px 16px', textAlign: 'center', background: '#f8fafc', border: '1px dashed #cbd5e1', borderRadius: 8, color: '#94a3b8', fontSize: '0.88rem' }}>
+                          <FaFolderOpen size={24} style={{ display: 'block', margin: '0 auto 8px auto', color: '#cbd5e1' }} />
+                          No sub-groups added yet. Type a sub-group name above and click "Add Sub-Group" or press Enter.
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {formSubGroupsList.map((sgName, idx) => (
+                            <div
+                              key={idx}
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                padding: '10px 14px',
+                                background: '#ffffff',
+                                border: '1px solid #cbd5e1',
+                                borderRadius: 8
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <span style={{ width: 28, height: 28, borderRadius: 6, background: '#ede9fe', color: '#6d28d9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.85rem' }}>
+                                  <FaFolder />
+                                </span>
+                                <div>
+                                  <strong style={{ fontSize: '0.95rem', color: '#0f172a' }}>{sgName}</strong>
+                                  <div style={{ fontSize: '0.78rem', color: '#64748b' }}>
+                                    Will be created as child folder inside {formName.trim() || 'this parent group'}
+                                  </div>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                style={{ color: '#ef4444', background: '#fef2f2', borderColor: '#fecaca', padding: '4px 8px' }}
+                                onClick={() => handleRemoveSubGroup(idx)}
+                                title="Remove sub-group"
+                              >
+                                <FaTrash size={11} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* If editing an existing group, show existing child divisions */}
+                    {editingGroupId && (
+                      <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid #e2e8f0' }}>
+                        <label style={{ display: 'block', fontWeight: 700, fontSize: '0.88rem', color: '#1e293b', marginBottom: 8 }}>
+                          Existing Sub-Divisions ({getDirectChildren(editingGroupId).length})
+                        </label>
+                        {getDirectChildren(editingGroupId).length === 0 ? (
+                          <div style={{ fontSize: '0.84rem', color: '#94a3b8' }}>
+                            No existing sub-divisions currently under this group.
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            {getDirectChildren(editingGroupId).map(child => (
+                              <div
+                                key={child.id}
+                                style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  padding: '8px 12px',
+                                  background: '#f1f5f9',
+                                  border: '1px solid #e2e8f0',
+                                  borderRadius: 6,
+                                  fontSize: '0.88rem'
+                                }}
+                              >
+                                <span style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#334155', fontWeight: 600 }}>
+                                  <FaFolder color="#0B3C7A" /> {child.name}
+                                </span>
+                                <span className="sg-pill gates" style={{ fontSize: '0.72rem' }}>
+                                  {child.gates?.length || child._count?.gates || 0} Gates
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* TAB 3: GATES PICKER */}
                 {modalTab === 'gates' && (
                   <div>
+                    <div style={{ padding: '12px 14px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 14, fontSize: '0.86rem', color: '#166534', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                      <FaInfoCircle size={18} style={{ flexShrink: 0, marginTop: 1, color: '#16a34a' }} />
+                      <div>
+                        <strong>Cluster Selection is Optional for Parent Groups:</strong> You do not have to select clusters right now. If this is a zonal or parent group (like Central Railway), clusters can be assigned to child sub-groups (like Ahmedabad Division). Users assigned to the parent group automatically inherit all clusters from all sub-groups.
+                      </div>
+                    </div>
+
                     <div className="sg-selector-toolbar">
                       <div className="sg-search-box" style={{ flex: '1 1 200px' }}>
                         <FaSearch color="#94a3b8" />
@@ -1289,13 +2030,17 @@ export default function ScopeGroupManagement({ user }: Props) {
                     <button
                       type="button"
                       className="btn btn-secondary"
-                      onClick={() => setModalTab(modalTab === 'users' ? 'gates' : 'details')}
+                      onClick={() => {
+                        if (modalTab === 'users') setModalTab('gates');
+                        else if (modalTab === 'gates') setModalTab('subgroups');
+                        else if (modalTab === 'subgroups') setModalTab('details');
+                      }}
                     >
                       Back
                     </button>
                   )}
                 </div>
-                <div style={{ display: 'flex', gap: 10 }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                   <button
                     type="button"
                     className="btn btn-secondary"
@@ -1308,32 +2053,46 @@ export default function ScopeGroupManagement({ user }: Props) {
                   {modalTab === 'details' && (
                     <button
                       type="button"
-                      className="btn btn-primary"
+                      className="btn btn-secondary"
+                      onClick={() => setModalTab('subgroups')}
+                    >
+                      Next: Sub-Groups {formSubGroupsList.length > 0 && `(${formSubGroupsList.length})`}
+                    </button>
+                  )}
+
+                  {modalTab === 'subgroups' && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
                       onClick={() => setModalTab('gates')}
                     >
-                      Next: Select Gates ({selectedGateIds.size})
+                      Next: Gates (Optional)
                     </button>
                   )}
 
                   {modalTab === 'gates' && (
                     <button
                       type="button"
-                      className="btn btn-primary"
+                      className="btn btn-secondary"
                       onClick={() => setModalTab('users')}
                     >
                       Next: Assign Users ({selectedUserIds.size})
                     </button>
                   )}
 
-                  {modalTab === 'users' && (
-                    <button
-                      type="submit"
-                      className="btn btn-primary"
-                      disabled={submitting}
-                    >
-                      {submitting ? 'Saving...' : editingGroupId ? 'Save Scope Group' : 'Create Scope Group'}
-                    </button>
-                  )}
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={submitting}
+                  >
+                    {submitting
+                      ? 'Saving...'
+                      : editingGroupId
+                      ? 'Save Scope Group'
+                      : formSubGroupsList.length > 0
+                      ? `Create Group + ${formSubGroupsList.length} Sub-Group${formSubGroupsList.length > 1 ? 's' : ''}`
+                      : 'Create Scope Group'}
+                  </button>
                 </div>
               </div>
             </form>

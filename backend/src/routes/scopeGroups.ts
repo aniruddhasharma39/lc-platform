@@ -2,12 +2,13 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { authenticate, requireModule, AuthRequest } from '../middleware/auth';
+import { getAllDescendantScopeGroupIds, wouldCreateCycle, getScopeGroupBreadcrumbs } from '../lib/scopeHierarchy';
 
 const router = Router();
 
 router.use(authenticate);
 
-// 1. Get calling user's assigned scopes & accessible gate IDs
+// 1. Get calling user's assigned scopes & accessible gate IDs (with recursive hierarchy resolution)
 router.get('/my-scope', async (req: AuthRequest, res, next) => {
   try {
     const isDeveloper = req.user?.role === 'Developer';
@@ -18,32 +19,64 @@ router.get('/my-scope', async (req: AuthRequest, res, next) => {
       include: {
         scopeGroup: {
           include: {
-            gates: {
-              select: { gateId: true }
-            }
+            parent: { select: { id: true, name: true, color: true } },
+            children: { select: { id: true, name: true, color: true, parentId: true } },
+            gates: { select: { gateId: true } }
           }
         }
       }
     });
 
-    const assignedGroups = userScopeRecords.map(r => ({
-      id: r.scopeGroup.id,
-      name: r.scopeGroup.name,
-      color: r.scopeGroup.color,
-      description: r.scopeGroup.description,
-      gateCount: r.scopeGroup.gates.length
-    }));
+    const directScopeGroupIds = userScopeRecords.map(r => r.scopeGroup.id);
 
-    const gateIdSet = new Set<number>();
-    userScopeRecords.forEach(r => {
-      r.scopeGroup.gates.forEach(g => gateIdSet.add(g.gateId));
-    });
+    // If user has assigned scope groups, resolve all descendant groups (folders within folders)
+    if (directScopeGroupIds.length > 0) {
+      const allAccessibleIds = await getAllDescendantScopeGroupIds(directScopeGroupIds);
 
-    // If user has assigned scope groups, they MUST be returned regardless of role
-    if (assignedGroups.length > 0) {
+      // Fetch all accessible scope groups in the full tree
+      const allAccessibleGroups = await prisma.scopeGroup.findMany({
+        where: { id: { in: allAccessibleIds } },
+        include: {
+          parent: { select: { id: true, name: true, color: true } },
+          children: {
+            select: {
+              id: true,
+              name: true,
+              color: true,
+              parentId: true,
+              _count: { select: { gates: true, children: true } }
+            }
+          },
+          gates: { select: { gateId: true } },
+          _count: { select: { gates: true, children: true } }
+        }
+      });
+
+      const gateIdSet = new Set<number>();
+      allAccessibleGroups.forEach(g => {
+        g.gates.forEach(item => gateIdSet.add(item.gateId));
+      });
+
+      // Top-level assigned groups for this user (roots of their access)
+      const assignedGroups = userScopeRecords.map(r => {
+        const fullGroup = allAccessibleGroups.find(g => g.id === r.scopeGroup.id) || r.scopeGroup;
+        return {
+          id: fullGroup.id,
+          name: fullGroup.name,
+          color: fullGroup.color,
+          description: fullGroup.description,
+          parentId: (fullGroup as any).parentId || null,
+          parent: (fullGroup as any).parent || null,
+          directGateCount: fullGroup.gates?.length || 0,
+          subGroupCount: (fullGroup as any).children?.length || 0,
+          children: (fullGroup as any).children || [],
+        };
+      });
+
       return res.json({
         isDeveloper,
         scopeGroups: assignedGroups,
+        allScopeGroups: allAccessibleGroups,
         accessibleGateIds: Array.from(gateIdSet),
         allAccess: false,
         hasAssignedScopes: true
@@ -53,11 +86,30 @@ router.get('/my-scope', async (req: AuthRequest, res, next) => {
     // If Developer has NO specific scope groups assigned, they have full access
     if (isDeveloper) {
       const allGroups = await prisma.scopeGroup.findMany({
-        select: { id: true, name: true, color: true }
+        include: {
+          parent: { select: { id: true, name: true, color: true } },
+          children: {
+            select: {
+              id: true,
+              name: true,
+              color: true,
+              parentId: true,
+              _count: { select: { gates: true, children: true } }
+            }
+          },
+          gates: { select: { gateId: true } },
+          _count: { select: { gates: true, children: true } }
+        }
       });
+
+      const allGates = await prisma.lCGate.findMany({ select: { id: true } });
+      const allGateIds = allGates.map(g => g.id);
+
       return res.json({
         isDeveloper: true,
-        scopeGroups: allGroups,
+        scopeGroups: allGroups.filter(g => !g.parentId), // root groups
+        allScopeGroups: allGroups,
+        accessibleGateIds: allGateIds,
         allAccess: true,
         hasAssignedScopes: false
       });
@@ -67,6 +119,7 @@ router.get('/my-scope', async (req: AuthRequest, res, next) => {
     res.json({
       isDeveloper: false,
       scopeGroups: [],
+      allScopeGroups: [],
       accessibleGateIds: [],
       allAccess: false,
       hasAssignedScopes: false
@@ -95,7 +148,7 @@ const requireScopeAdmin = async (req: AuthRequest, res: any, next: any) => {
   }
 };
 
-// 2. List Scope Groups (Admins see all; assigned users see only their assigned scope group)
+// 2. List Scope Groups (Admins see all; assigned users see their assigned scope group and all child groups)
 router.get('/', async (req: AuthRequest, res, next) => {
   try {
     const isDeveloper = req.user?.role === 'Developer';
@@ -112,15 +165,40 @@ router.get('/', async (req: AuthRequest, res, next) => {
 
     const whereClause: any = {};
     if (hasAssignedScopes) {
-      whereClause.id = { in: assignedUserRecords.map(r => r.scopeGroupId) };
+      const allAccessibleIds = await getAllDescendantScopeGroupIds(assignedUserRecords.map(r => r.scopeGroupId));
+      whereClause.id = { in: allAccessibleIds };
+    }
+
+    // Optional filter by parentId
+    if (req.query.parentId !== undefined) {
+      if (req.query.parentId === 'root' || req.query.parentId === 'null') {
+        whereClause.parentId = null;
+      } else {
+        const pId = parseInt(req.query.parentId as string, 10);
+        if (!isNaN(pId)) {
+          whereClause.parentId = pId;
+        }
+      }
     }
 
     const groups = await prisma.scopeGroup.findMany({
       where: whereClause,
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ parentId: 'asc' }, { name: 'asc' }],
       include: {
+        parent: {
+          select: { id: true, name: true, color: true, parentId: true }
+        },
+        children: {
+          select: {
+            id: true,
+            name: true,
+            color: true,
+            parentId: true,
+            _count: { select: { gates: true, children: true } }
+          }
+        },
         _count: {
-          select: { gates: true, users: true }
+          select: { gates: true, users: true, children: true }
         },
         gates: {
           include: {
@@ -164,6 +242,18 @@ router.get('/', async (req: AuthRequest, res, next) => {
   }
 });
 
+// 2b. Get Breadcrumbs for Scope Group ID
+router.get('/:id/breadcrumbs', async (req: AuthRequest, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid scope group ID' });
+    const crumbs = await getScopeGroupBreadcrumbs(id);
+    res.json(crumbs);
+  } catch (error) {
+    next(error);
+  }
+});
+
 // 3. Get single Scope Group by ID
 router.get('/:id', async (req: AuthRequest, res, next) => {
   try {
@@ -177,13 +267,31 @@ router.get('/:id', async (req: AuthRequest, res, next) => {
     });
     const hasAssignedScopes = assignedUserRecords.length > 0;
 
-    if (hasAssignedScopes && !assignedUserRecords.some(r => r.scopeGroupId === id)) {
-      return res.status(403).json({ error: 'Forbidden: You do not have access to this scope group' });
+    if (hasAssignedScopes) {
+      const accessibleIds = await getAllDescendantScopeGroupIds(assignedUserRecords.map(r => r.scopeGroupId));
+      if (!accessibleIds.includes(id)) {
+        return res.status(403).json({ error: 'Forbidden: You do not have access to this scope group' });
+      }
     }
 
     const group = await prisma.scopeGroup.findUnique({
       where: { id },
       include: {
+        parent: {
+          select: { id: true, name: true, color: true, parentId: true }
+        },
+        children: {
+          select: {
+            id: true,
+            name: true,
+            color: true,
+            parentId: true,
+            _count: { select: { gates: true, children: true } }
+          }
+        },
+        _count: {
+          select: { gates: true, users: true, children: true }
+        },
         gates: {
           include: {
             gate: {
@@ -221,7 +329,8 @@ router.get('/:id', async (req: AuthRequest, res, next) => {
     });
 
     if (!group) return res.status(404).json({ error: 'Scope Group not found' });
-    res.json(group);
+    const breadcrumbs = await getScopeGroupBreadcrumbs(id);
+    res.json({ ...group, breadcrumbs });
   } catch (error) {
     next(error);
   }
@@ -231,11 +340,13 @@ const scopeGroupSchema = z.object({
   name: z.string().min(1, 'Scope Group name is required').max(100),
   description: z.string().optional().nullable(),
   color: z.string().regex(/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/, 'Invalid hex color').optional().nullable(),
+  parentId: z.number().int().optional().nullable(),
   gateIds: z.array(z.number().int()).optional(),
   userIds: z.array(z.number().int()).optional(),
+  subGroupNames: z.array(z.string().min(1).max(100)).optional(),
 });
 
-// 4. Create Scope Group
+// 4. Create Scope Group (with optional sub-groups defined simultaneously)
 router.post('/', requireScopeAdmin, async (req: AuthRequest, res, next) => {
   try {
     const data = scopeGroupSchema.parse(req.body);
@@ -244,46 +355,93 @@ router.post('/', requireScopeAdmin, async (req: AuthRequest, res, next) => {
       return res.status(400).json({ error: 'A Scope Group with this name already exists' });
     }
 
+    if (data.parentId) {
+      const parentGroup = await prisma.scopeGroup.findUnique({ where: { id: data.parentId } });
+      if (!parentGroup) {
+        return res.status(400).json({ error: 'Selected parent Scope Group does not exist' });
+      }
+    }
+
     const gateIds = Array.from(new Set(data.gateIds || []));
     const userIds = Array.from(new Set(data.userIds || []));
+    const subGroupNames = (data.subGroupNames || []).map(s => s.trim()).filter(Boolean);
 
-    const group = await prisma.scopeGroup.create({
-      data: {
-        name: data.name,
-        description: data.description || null,
-        color: data.color || '#0B3C7A',
-        gates: {
-          create: gateIds.map(gateId => ({ gateId }))
-        },
-        users: {
-          create: userIds.map(userId => ({ userId }))
+    const group = await prisma.$transaction(async (tx) => {
+      const created = await tx.scopeGroup.create({
+        data: {
+          name: data.name,
+          description: data.description || null,
+          color: data.color || '#0B3C7A',
+          parentId: data.parentId ?? null,
+          gates: {
+            create: gateIds.map(gateId => ({ gateId }))
+          },
+          users: {
+            create: userIds.map(userId => ({ userId }))
+          }
         }
-      },
-      include: {
-        _count: { select: { gates: true, users: true } },
-        gates: { include: { gate: true } },
-        users: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                fullName: true,
-                email: true,
-                mobile: true,
-                department: true,
-                role: true
+      });
+
+      // Simultaneously create any initial child sub-groups defined with this parent
+      for (const sgName of subGroupNames) {
+        const existingSub = await tx.scopeGroup.findUnique({ where: { name: sgName } });
+        if (!existingSub) {
+          await tx.scopeGroup.create({
+            data: {
+              name: sgName,
+              description: `Sub-division of ${created.name}`,
+              color: created.color,
+              parentId: created.id
+            }
+          });
+        } else if (existingSub.parentId === null) {
+          await tx.scopeGroup.update({
+            where: { id: existingSub.id },
+            data: { parentId: created.id }
+          });
+        }
+      }
+
+      return tx.scopeGroup.findUnique({
+        where: { id: created.id },
+        include: {
+          parent: { select: { id: true, name: true, color: true, parentId: true } },
+          children: {
+            select: {
+              id: true,
+              name: true,
+              color: true,
+              parentId: true,
+              description: true,
+              gates: { include: { gate: true } },
+              _count: { select: { gates: true, children: true } }
+            }
+          },
+          _count: { select: { gates: true, users: true, children: true } },
+          gates: { include: { gate: true } },
+          users: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  fullName: true,
+                  email: true,
+                  mobile: true,
+                  department: true,
+                  role: true
+                }
               }
             }
           }
         }
-      }
+      });
     });
 
     await prisma.auditLog.create({
       data: {
         userId: req.user!.id,
         action: 'CREATE_SCOPE_GROUP',
-        details: `Created scope group "${group.name}" with ${gateIds.length} gates and ${userIds.length} users`
+        details: `Created scope group "${group!.name}" (Parent: ${data.parentId ?? 'None'}) with ${gateIds.length} gates, ${userIds.length} users, and ${subGroupNames.length} sub-groups`
       }
     });
 
@@ -312,8 +470,24 @@ router.put('/:id', requireScopeAdmin, async (req: AuthRequest, res, next) => {
       }
     }
 
+    // Cycle check if parentId changed
+    if (data.parentId !== undefined && data.parentId !== null) {
+      if (data.parentId === id) {
+        return res.status(400).json({ error: 'A Scope Group cannot be its own parent' });
+      }
+      const parentGroup = await prisma.scopeGroup.findUnique({ where: { id: data.parentId } });
+      if (!parentGroup) {
+        return res.status(400).json({ error: 'Selected parent Scope Group does not exist' });
+      }
+      const createsCycle = await wouldCreateCycle(id, data.parentId);
+      if (createsCycle) {
+        return res.status(400).json({ error: 'Cannot set parent: would create a circular hierarchy loop' });
+      }
+    }
+
     const gateIds = data.gateIds ? Array.from(new Set(data.gateIds)) : undefined;
     const userIds = data.userIds ? Array.from(new Set(data.userIds)) : undefined;
+    const subGroupNames = (data.subGroupNames || []).map(s => s.trim()).filter(Boolean);
 
     const updated = await prisma.$transaction(async (tx) => {
       // Update basic fields
@@ -323,8 +497,29 @@ router.put('/:id', requireScopeAdmin, async (req: AuthRequest, res, next) => {
           name: data.name,
           description: data.description !== undefined ? data.description : existing.description,
           color: data.color !== undefined ? data.color : existing.color,
+          parentId: data.parentId !== undefined ? data.parentId : existing.parentId,
         }
       });
+
+      // Create any new sub-groups passed
+      for (const sgName of subGroupNames) {
+        const existingSub = await tx.scopeGroup.findUnique({ where: { name: sgName } });
+        if (!existingSub) {
+          await tx.scopeGroup.create({
+            data: {
+              name: sgName,
+              description: `Sub-division of ${data.name}`,
+              color: data.color || existing.color,
+              parentId: id
+            }
+          });
+        } else if (existingSub.parentId === null && existingSub.id !== id) {
+          await tx.scopeGroup.update({
+            where: { id: existingSub.id },
+            data: { parentId: id }
+          });
+        }
+      }
 
       // Sync gates if provided
       if (gateIds !== undefined) {
@@ -349,7 +544,19 @@ router.put('/:id', requireScopeAdmin, async (req: AuthRequest, res, next) => {
       return tx.scopeGroup.findUnique({
         where: { id },
         include: {
-          _count: { select: { gates: true, users: true } },
+          parent: { select: { id: true, name: true, color: true, parentId: true } },
+          children: {
+            select: {
+              id: true,
+              name: true,
+              color: true,
+              parentId: true,
+              description: true,
+              gates: { include: { gate: true } },
+              _count: { select: { gates: true, children: true } }
+            }
+          },
+          _count: { select: { gates: true, users: true, children: true } },
           gates: { include: { gate: true } },
           users: {
             include: {

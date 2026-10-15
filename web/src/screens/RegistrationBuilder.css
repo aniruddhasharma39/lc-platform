@@ -845,6 +845,21 @@
   border: 1px solid #e2e8f0;
 }
 
+.field-unique-pill {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: #ede9fe;
+  color: #5b21b6;
+  border: 1px solid #ddd6fe;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
 /* Left corner * Req indicator slot and badge */
 .field-req-corner-slot {
   width: 50px;

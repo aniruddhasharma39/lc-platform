@@ -42,8 +42,10 @@ export const RAILWAY_ZONES: string[] = Object.keys(RAILWAY_DATA);
 
 export const divisionsForZone = (zone?: string | null): string[] => {
   if (!zone) return [];
-  const key = Object.keys(RAILWAY_DATA).find(
-    (z) => z.toLowerCase() === zone.trim().toLowerCase()
-  );
+  const normalized = zone.trim().toLowerCase().replace(/s$/, '');
+  const key = Object.keys(RAILWAY_DATA).find((z) => {
+    const normZ = z.toLowerCase().replace(/s$/, '');
+    return normZ === normalized || normalized.includes(normZ) || normZ.includes(normalized);
+  });
   return key ? RAILWAY_DATA[key] : [];
 };

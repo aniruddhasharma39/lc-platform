@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { RAILWAY_DATA, RAILWAY_ZONES, divisionsForZone } from '../lib/railwayData';
+import { getAllDescendantScopeGroupIds } from '../lib/scopeHierarchy';
 
 const router = Router();
 
@@ -65,7 +66,7 @@ router.post('/', authenticate, async (req, res, next) => {
   }
 });
 
-// Get all LC Gates with their masters (strictly scoped to assigned scope groups)
+// Get all LC Gates with their masters (strictly scoped to assigned scope groups and child hierarchy)
 router.get('/', authenticate, async (req: any, res, next) => {
   try {
     const isDeveloper = req.user?.role === 'Developer';
@@ -81,27 +82,34 @@ router.get('/', authenticate, async (req: any, res, next) => {
 
     if (assignedScopeGroupIds.length > 0) {
       // User is explicitly assigned to Scope Group(s)!
-      // They MUST ONLY see gates belonging to their assigned scope group(s)
-      let targetScopeIds = assignedScopeGroupIds;
+      // Recursively resolve all accessible child scope groups
+      const accessibleScopeGroupIds = await getAllDescendantScopeGroupIds(assignedScopeGroupIds);
+      let targetScopeIds = accessibleScopeGroupIds;
 
-      // Developer option to switch between scopes or view all
-      if (isDeveloper && req.query.scopeGroupId) {
+      // Scoping filter if requested in query
+      if (req.query.scopeGroupId) {
         if (req.query.scopeGroupId === 'all') {
-          targetScopeIds = [];
+          targetScopeIds = isDeveloper ? [] : accessibleScopeGroupIds;
         } else {
           const paramId = parseInt(req.query.scopeGroupId as string, 10);
           if (!isNaN(paramId)) {
-            targetScopeIds = [paramId];
+            if (!isDeveloper && !accessibleScopeGroupIds.includes(paramId)) {
+              // Forbidden: User does not have access to this scope group
+              return res.json([]);
+            }
+            if (req.query.directOnly === 'true') {
+              targetScopeIds = [paramId];
+            } else {
+              targetScopeIds = await getAllDescendantScopeGroupIds([paramId]);
+            }
           }
         }
       }
 
       if (targetScopeIds.length > 0) {
-        whereClause = {
-          scopeGroups: {
-            some: {
-              scopeGroupId: { in: targetScopeIds }
-            }
+        whereClause.scopeGroups = {
+          some: {
+            scopeGroupId: { in: targetScopeIds }
           }
         };
       }
@@ -112,10 +120,11 @@ router.get('/', authenticate, async (req: any, res, next) => {
         if (req.query.scopeGroupId && req.query.scopeGroupId !== 'all') {
           const paramId = parseInt(req.query.scopeGroupId as string, 10);
           if (!isNaN(paramId)) {
-            whereClause = {
-              scopeGroups: {
-                some: { scopeGroupId: paramId }
-              }
+            const ids = req.query.directOnly === 'true' 
+              ? [paramId] 
+              : await getAllDescendantScopeGroupIds([paramId]);
+            whereClause.scopeGroups = {
+              some: { scopeGroupId: { in: ids } }
             };
           }
         }
@@ -132,7 +141,13 @@ router.get('/', authenticate, async (req: any, res, next) => {
         scopeGroups: {
           include: {
             scopeGroup: {
-              select: { id: true, name: true, color: true }
+              select: { 
+                id: true, 
+                name: true, 
+                color: true,
+                parentId: true,
+                parent: { select: { id: true, name: true, color: true } }
+              }
             }
           }
         },
@@ -372,6 +387,87 @@ router.get('/:id', authenticate, async (req, res, next) => {
 
     if (!gate) return res.status(404).json({ error: 'Gate not found' });
     res.json(gate);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Helper to build lightweight AWS Fleet Provisioning status and hardware device topology
+function buildGateTelemetry(gate: any) {
+  const masterList = gate.masters || [];
+  const isSolar = masterList.some((m: any) => m.powerSource === 'SOLAR');
+  const now = new Date();
+
+  const slavesList: any[] = [];
+  masterList.forEach((m: any) => {
+    (m.childDevices || []).forEach((c: any) => {
+      slavesList.push({
+        id: c.id,
+        serialNumber: c.serialNumber,
+        type: c.type,
+        sequence: c.deviceSequence,
+        status: 'PENDING_FLEET_MAPPING'
+      });
+    });
+  });
+
+  return {
+    cluster: {
+      id: gate.id,
+      lcNumber: gate.lcNumber,
+      name: gate.name || gate.locationName,
+      locationName: gate.locationName,
+      zone: gate.zone,
+      division: gate.division,
+      latitude: gate.latitude,
+      longitude: gate.longitude,
+      powerSource: isSolar ? 'SOLAR' : 'DIRECT',
+      mastersCount: masterList.length,
+      slavesCount: slavesList.length,
+      masters: masterList
+    },
+    awsConfig: {
+      provisioningMode: 'AWS_FLEET_PROVISIONING',
+      region: 'ap-south-1 (Mumbai)',
+      status: 'FLEET_MAPPING_PENDING',
+      description: 'Physical hardware devices will be mapped with AWS IoT Core via Fleet Provisioning.'
+    },
+    timestamp: now.toISOString()
+  };
+}
+
+// Get AWS Fleet Provisioning & Device Status for a Gate
+router.get('/:id/telemetry', authenticate, async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid gate ID' });
+
+    const gate = await prisma.lCGate.findUnique({
+      where: { id },
+      include: {
+        scopeGroups: {
+          include: {
+            scopeGroup: {
+              select: { id: true, name: true, color: true }
+            }
+          }
+        },
+        masters: {
+          orderBy: { masterSequence: 'asc' },
+          include: {
+            childDevices: {
+              orderBy: { deviceSequence: 'asc' },
+              include: { evidences: true }
+            },
+            evidences: true
+          }
+        }
+      }
+    });
+
+    if (!gate) return res.status(404).json({ error: 'Gate not found' });
+    const telemetryData = buildGateTelemetry(gate);
+    res.json(telemetryData);
   } catch (error) {
     next(error);
   }

@@ -29,8 +29,12 @@ class RailwayData {
 
   static List<String> divisionsForZone(String? zone) {
     if (zone == null || zone.trim().isEmpty) return [];
+    final normalized = zone.trim().toLowerCase().replaceAll(RegExp(r's$'), '');
     final key = data.keys.firstWhere(
-      (z) => z.toLowerCase() == zone.trim().toLowerCase(),
+      (z) {
+        final normZ = z.toLowerCase().replaceAll(RegExp(r's$'), '');
+        return normZ == normalized || normalized.contains(normZ) || normZ.contains(normalized);
+      },
       orElse: () => '',
     );
     if (key.isEmpty) return [];

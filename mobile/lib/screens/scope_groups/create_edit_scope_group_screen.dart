@@ -21,30 +21,40 @@ const List<String> kColorPresets = [
 class CreateEditScopeGroupScreen extends StatefulWidget {
   final Map<String, dynamic>? group;
   final String token;
+  final int? preselectedParentId;
+  final List<dynamic>? existingScopeGroups;
 
   const CreateEditScopeGroupScreen({
     super.key,
     this.group,
     required this.token,
+    this.preselectedParentId,
+    this.existingScopeGroups,
   });
 
   @override
   State<CreateEditScopeGroupScreen> createState() => _CreateEditScopeGroupScreenState();
 }
 
-class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen> with SingleTickerProviderStateMixin {
+class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
   final _formKey = GlobalKey<FormState>();
 
   final _nameController = TextEditingController();
   final _descController = TextEditingController();
+  final _subGroupNameCtrl = TextEditingController();
+
+  int? _selectedParentId;
   String _selectedColor = '#0B3C7A';
 
+  final List<String> _queuedSubGroupNames = [];
   final Set<int> _selectedGateIds = {};
   final Set<int> _selectedUserIds = {};
 
   List<dynamic> _allGates = [];
   List<dynamic> _allUsers = [];
+  List<dynamic> _allScopeGroups = [];
 
   bool _isLoadingData = true;
   bool _isSaving = false;
@@ -54,6 +64,7 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
   final _gateSearchCtrl = TextEditingController();
   String _gateSearchQuery = '';
   String _gateFilterZone = '';
+  String _gateFilterDivision = '';
 
   // User filters
   final _userSearchCtrl = TextEditingController();
@@ -65,13 +76,14 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
 
     if (_isEdit) {
       final g = widget.group!;
       _nameController.text = g['name'] ?? '';
       _descController.text = g['description'] ?? '';
       _selectedColor = g['color'] ?? '#0B3C7A';
+      _selectedParentId = g['parentId'] as int?;
 
       final gatesList = (g['gates'] as List?) ?? [];
       for (final item in gatesList) {
@@ -84,6 +96,12 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
         final uid = item['user']?['id'] ?? item['userId'] ?? item['id'];
         if (uid is int) _selectedUserIds.add(uid);
       }
+    } else {
+      _selectedParentId = widget.preselectedParentId;
+    }
+
+    if (widget.existingScopeGroups != null) {
+      _allScopeGroups = widget.existingScopeGroups!;
     }
 
     _fetchInitialData();
@@ -94,6 +112,7 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
     _tabController.dispose();
     _nameController.dispose();
     _descController.dispose();
+    _subGroupNameCtrl.dispose();
     _gateSearchCtrl.dispose();
     _userSearchCtrl.dispose();
     super.dispose();
@@ -110,8 +129,12 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
         Uri.parse('$baseUrl/users'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
+      final groupsResFuture = http.get(
+        Uri.parse('$baseUrl/scope-groups'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
 
-      final responses = await Future.wait([gateResFuture, userResFuture]);
+      final responses = await Future.wait([gateResFuture, userResFuture, groupsResFuture]);
 
       if (responses[0].statusCode == 200) {
         final gateData = json.decode(responses[0].body);
@@ -126,8 +149,15 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
           _allUsers = userData;
         }
       }
+
+      if (responses[2].statusCode == 200) {
+        final groupsData = json.decode(responses[2].body);
+        if (groupsData is List) {
+          _allScopeGroups = groupsData;
+        }
+      }
     } catch (e) {
-      _errorMessage = 'Failed to load gates/users: $e';
+      _errorMessage = 'Failed to load scope options: $e';
       if (mounted) {
         AppFeedback.showError(context, 'Failed to load scope configuration data: $e');
       }
@@ -136,6 +166,74 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
         setState(() => _isLoadingData = false);
       }
     }
+  }
+
+  // Prevent circular hierarchy references: group cannot be parent of itself or of its descendants
+  Set<int> _getDescendantIds(int rootId) {
+    final result = <int>{rootId};
+    final queue = [rootId];
+    while (queue.isNotEmpty) {
+      final curr = queue.removeAt(0);
+      for (final g in _allScopeGroups) {
+        if (g['parentId'] == curr) {
+          final cid = g['id'] as int?;
+          if (cid != null && !result.contains(cid)) {
+            result.add(cid);
+            queue.add(cid);
+          }
+        }
+      }
+    }
+    return result;
+  }
+
+  List<dynamic> get _availableParentGroups {
+    if (!_isEdit || widget.group == null || widget.group!['id'] == null) {
+      return _allScopeGroups;
+    }
+    final forbiddenIds = _getDescendantIds(widget.group!['id'] as int);
+    return _allScopeGroups.where((g) => !forbiddenIds.contains(g['id'])).toList();
+  }
+
+  Map<String, dynamic>? get _parentGroupDetails {
+    if (_selectedParentId == null) return null;
+    return _allScopeGroups.firstWhere(
+      (g) => g['id'] == _selectedParentId,
+      orElse: () => null,
+    );
+  }
+
+  List<dynamic> get _existingChildSubGroups {
+    if (!_isEdit || widget.group == null) return [];
+    final currentId = widget.group!['id'];
+    return _allScopeGroups.where((g) => g['parentId'] == currentId).toList();
+  }
+
+  void _handleAddSubGroup() {
+    final trimmed = _subGroupNameCtrl.text.trim();
+    if (trimmed.isEmpty) return;
+
+    if (_queuedSubGroupNames.any((s) => s.toLowerCase() == trimmed.toLowerCase())) {
+      AppFeedback.showWarning(context, '"$trimmed" is already in the queued list.');
+      return;
+    }
+
+    if (_nameController.text.trim().isNotEmpty &&
+        _nameController.text.trim().toLowerCase() == trimmed.toLowerCase()) {
+      AppFeedback.showWarning(context, 'A sub-group cannot have the exact same name as its parent group.');
+      return;
+    }
+
+    setState(() {
+      _queuedSubGroupNames.add(trimmed);
+      _subGroupNameCtrl.clear();
+    });
+  }
+
+  void _handleRemoveSubGroup(int index) {
+    setState(() {
+      _queuedSubGroupNames.removeAt(index);
+    });
   }
 
   Future<void> _handleSave() async {
@@ -155,15 +253,17 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
       'name': groupName,
       'description': _descController.text.trim().isEmpty ? null : _descController.text.trim(),
       'color': _selectedColor,
+      'parentId': _selectedParentId,
       'gateIds': _selectedGateIds.toList(),
       'userIds': _selectedUserIds.toList(),
+      'subGroupNames': _queuedSubGroupNames,
     };
 
     try {
       final url = _isEdit
           ? '$baseUrl/scope-groups/${widget.group!['id']}'
           : '$baseUrl/scope-groups';
-      
+
       final headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ${widget.token}',
@@ -176,12 +276,15 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
       if (response.statusCode == 200 || response.statusCode == 201) {
         if (!mounted) return;
         final actionWord = _isEdit ? 'updated' : 'created';
+        final subCount = _queuedSubGroupNames.length;
         final gateCount = _selectedGateIds.length;
         final userCount = _selectedUserIds.length;
-        AppFeedback.showSuccess(
-          context,
-          'Scope group "$groupName" $actionWord with $gateCount gates and $userCount assigned users!',
-        );
+
+        String msg = 'Scope group "$groupName" $actionWord';
+        if (subCount > 0) msg += ' with $subCount sub-groups';
+        msg += ' ($gateCount gates, $userCount users).';
+
+        AppFeedback.showSuccess(context, msg);
         Navigator.pop(context, true);
       } else {
         String err = 'Failed to save scope group (${response.statusCode})';
@@ -216,6 +319,9 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
   List<dynamic> get _filteredGates {
     return _allGates.where((g) {
       if (_gateFilterZone.isNotEmpty && (g['zone'] ?? '') != _gateFilterZone) {
+        return false;
+      }
+      if (_gateFilterDivision.isNotEmpty && (g['division'] ?? '') != _gateFilterDivision) {
         return false;
       }
       if (_gateSearchQuery.isNotEmpty) {
@@ -262,7 +368,12 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isEdit ? 'Edit Scope Group' : 'New Scope Group'),
+        title: Text(
+          _isEdit
+              ? 'Edit Scope Group'
+              : (_selectedParentId != null ? 'New Sub-Group' : 'New Scope Group'),
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+        ),
         backgroundColor: Colors.white,
         foregroundColor: const Color(0xFF0F172A),
         elevation: 1,
@@ -272,15 +383,21 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
           unselectedLabelColor: Colors.grey.shade600,
           indicatorColor: AppColors.primary,
           indicatorWeight: 3,
+          isScrollable: true,
+          tabAlignment: TabAlignment.start,
           tabs: [
-            const Tab(icon: Icon(Icons.info_outline, size: 18), text: 'Details'),
+            const Tab(icon: Icon(Icons.tune, size: 18), text: '1. Details'),
+            Tab(
+              icon: const Icon(Icons.create_new_folder_outlined, size: 18),
+              text: '2. Sub-Groups${_queuedSubGroupNames.isNotEmpty ? " (${_queuedSubGroupNames.length})" : ""}',
+            ),
             Tab(
               icon: const Icon(Icons.device_hub, size: 18),
-              text: 'Gates (${_selectedGateIds.length})',
+              text: '3. Gates${_selectedGateIds.isNotEmpty ? " (${_selectedGateIds.length})" : ""}',
             ),
             Tab(
               icon: const Icon(Icons.people_outline, size: 18),
-              text: 'Users (${_selectedUserIds.length})',
+              text: '4. Users${_selectedUserIds.isNotEmpty ? " (${_selectedUserIds.length})" : ""}',
             ),
           ],
         ),
@@ -293,6 +410,7 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
                 controller: _tabController,
                 children: [
                   _buildDetailsTab(),
+                  _buildSubGroupsTab(),
                   _buildGatesTab(),
                   _buildUsersTab(),
                 ],
@@ -344,6 +462,9 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
 
   // TAB 1: DETAILS
   Widget _buildDetailsTab() {
+    final parentGroup = _parentGroupDetails;
+    final availableParents = _availableParentGroups;
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -371,6 +492,34 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
           const SizedBox(height: 16),
         ],
 
+        // Preselected parent notification pill
+        if (parentGroup != null)
+          Container(
+            margin: const EdgeInsets.only(bottom: 16),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF5F3FF),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFDDD6FE)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.folder_shared, color: Color(0xFF7C3AED), size: 18),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Creating inside parent: "${parentGroup['name']}"',
+                    style: const TextStyle(
+                      color: Color(0xFF6D28D9),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
         // Scope Group Name
         const Text(
           'Scope Group Name *',
@@ -380,7 +529,7 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
         TextFormField(
           controller: _nameController,
           decoration: const InputDecoration(
-            hintText: 'e.g. Northern Section A, Cluster Alpha...',
+            hintText: 'e.g. Western Railway, Ahmedabad Division, Section A...',
             prefixIcon: Icon(Icons.layers_outlined, size: 20),
           ),
           validator: (val) {
@@ -389,6 +538,79 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
             }
             return null;
           },
+        ),
+        const SizedBox(height: 18),
+
+        // Parent Scope Group (Folder / Hierarchy Level)
+        const Text(
+          'Parent Scope Group (Folder / Hierarchy Level)',
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+        ),
+        const SizedBox(height: 6),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey.shade300),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<int?>(
+              value: _selectedParentId,
+              isExpanded: true,
+              icon: const Icon(Icons.keyboard_arrow_down),
+              items: [
+                const DropdownMenuItem<int?>(
+                  value: null,
+                  child: Row(
+                    children: [
+                      Icon(Icons.folder_outlined, color: AppColors.primary, size: 20),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'None (Root Scope Group / Zone Level)',
+                          style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: Color(0xFF0F172A)),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                ...availableParents.map((g) {
+                  final gid = g['id'] as int;
+                  final parentObj = g['parent'];
+                  final prefix = parentObj != null ? '${parentObj['name']} / ' : '';
+                  final displayName = '$prefix${g['name']}';
+                  final gColor = parseHexColor(g['color']);
+
+                  return DropdownMenuItem<int?>(
+                    value: gid,
+                    child: Row(
+                      children: [
+                        Icon(Icons.folder, color: gColor, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            displayName,
+                            style: const TextStyle(fontSize: 13.5, color: Color(0xFF1E293B)),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+              ],
+              onChanged: (val) {
+                setState(() => _selectedParentId = val);
+              },
+            ),
+          ),
+        ),
+        const SizedBox(height: 5),
+        Text(
+          'Nest this group inside another folder (e.g. Western Railway → Ahmedabad Division). Users assigned to the parent group automatically inherit access to this sub-group.',
+          style: TextStyle(fontSize: 12, color: Colors.grey.shade600, height: 1.3),
         ),
         const SizedBox(height: 18),
 
@@ -402,11 +624,11 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
           controller: _descController,
           maxLines: 3,
           decoration: const InputDecoration(
-            hintText: 'Add an operational summary or purpose for this scope group...',
+            hintText: 'Add an operational summary, area or purpose for this scope group...',
             alignLabelWithHint: true,
           ),
         ),
-        const SizedBox(height: 22),
+        const SizedBox(height: 20),
 
         // Color Swatches
         const Text(
@@ -447,7 +669,7 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
             );
           }).toList(),
         ),
-        const SizedBox(height: 28),
+        const SizedBox(height: 24),
 
         // Overview Summary Card
         Card(
@@ -462,7 +684,7 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Assignment Overview',
+                  'Scope Group Configuration Overview',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
                 ),
                 const SizedBox(height: 12),
@@ -470,7 +692,26 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
                   children: [
                     Expanded(
                       child: Container(
-                        padding: const EdgeInsets.all(12),
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF5F3FF),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Column(
+                          children: [
+                            Text(
+                              '${_queuedSubGroupNames.length + _existingChildSubGroups.length}',
+                              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF6D28D9)),
+                            ),
+                            const Text('Sub-Groups', style: TextStyle(fontSize: 11, color: Color(0xFF6D28D9))),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
                           color: const Color(0xFFE0F2FE),
                           borderRadius: BorderRadius.circular(8),
@@ -479,17 +720,17 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
                           children: [
                             Text(
                               '${_selectedGateIds.length}',
-                              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFF0369A1)),
+                              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF0369A1)),
                             ),
-                            const Text('Gates Selected', style: TextStyle(fontSize: 12, color: Color(0xFF0369A1))),
+                            const Text('Gates Picked', style: TextStyle(fontSize: 11, color: Color(0xFF0369A1))),
                           ],
                         ),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 8),
                     Expanded(
                       child: Container(
-                        padding: const EdgeInsets.all(12),
+                        padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
                           color: const Color(0xFFECFDF5),
                           borderRadius: BorderRadius.circular(8),
@@ -498,9 +739,9 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
                           children: [
                             Text(
                               '${_selectedUserIds.length}',
-                              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFF065F46)),
+                              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF065F46)),
                             ),
-                            const Text('Users Assigned', style: TextStyle(fontSize: 12, color: Color(0xFF065F46))),
+                            const Text('Users Assigned', style: TextStyle(fontSize: 11, color: Color(0xFF065F46))),
                           ],
                         ),
                       ),
@@ -509,8 +750,8 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Switch to the Gates and Users tabs above to select the LC Gates and team members for this group.',
-                  style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600),
+                  'Switch to the Sub-Groups, Gates, or Users tabs above to configure child divisions and direct cluster access.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                 ),
               ],
             ),
@@ -520,9 +761,231 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
     );
   }
 
-  // TAB 2: GATES PICKER
+  // TAB 2: SUB-GROUPS (Subgroup creation mirroring the web application)
+  Widget _buildSubGroupsTab() {
+    final existingSubs = _existingChildSubGroups;
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        // Helper banner
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF8FAFC),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.create_new_folder, color: AppColors.primary, size: 20),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Create Sub-Groups Simultaneously',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Define child divisions or sub-folders now (e.g. Ahmedabad Division, Mumbai Division, Section 1). You can create a parent group and its sub-groups at the exact same time without needing to assign clusters immediately.',
+                style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600, height: 1.4),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _subGroupNameCtrl,
+                      decoration: InputDecoration(
+                        hintText: 'Enter sub-group name...',
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        filled: true,
+                        fillColor: Colors.white,
+                      ),
+                      onSubmitted: (_) => _handleAddSubGroup(),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton.icon(
+                    onPressed: _handleAddSubGroup,
+                    icon: const Icon(Icons.add, size: 18),
+                    label: const Text('Add Sub-Group', style: TextStyle(fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 20),
+
+        // Header for queued sub-groups
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Sub-Groups Queued for Creation (${_queuedSubGroupNames.length})',
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+                color: Color(0xFF0F172A),
+              ),
+            ),
+            if (_queuedSubGroupNames.isNotEmpty)
+              TextButton(
+                onPressed: () => setState(() => _queuedSubGroupNames.clear()),
+                child: const Text('Clear All', style: TextStyle(fontSize: 12, color: Colors.red)),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+
+        if (_queuedSubGroupNames.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(28),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.grey.shade300, style: BorderStyle.solid),
+            ),
+            alignment: Alignment.center,
+            child: Column(
+              children: [
+                Icon(Icons.folder_open_outlined, size: 36, color: Colors.grey.shade400),
+                const SizedBox(height: 8),
+                Text(
+                  'No sub-groups added to queue yet.',
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5, color: Colors.grey.shade700),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Type a sub-group name above and tap "Add Sub-Group".',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+                ),
+              ],
+            ),
+          )
+        else
+          ..._queuedSubGroupNames.asMap().entries.map((entry) {
+            final idx = entry.key;
+            final name = entry.value;
+            final parentName = _nameController.text.trim().isNotEmpty
+                ? _nameController.text.trim()
+                : 'this parent group';
+
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+                side: BorderSide(color: Colors.grey.shade200),
+              ),
+              elevation: 0.5,
+              child: ListTile(
+                leading: Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEDE9FE),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.folder, color: Color(0xFF6D28D9), size: 20),
+                ),
+                title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                subtitle: Text(
+                  'Will be created as child folder in "$parentName"',
+                  style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
+                ),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                  onPressed: () => _handleRemoveSubGroup(idx),
+                ),
+              ),
+            );
+          }),
+
+        // If editing, display existing sub-divisions of this group
+        if (_isEdit && existingSubs.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              const Icon(Icons.folder_copy, color: Color(0xFF6D28D9), size: 18),
+              const SizedBox(width: 6),
+              Text(
+                'Existing Sub-Divisions (${existingSubs.length})',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                  color: Color(0xFF0F172A),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...existingSubs.map((child) {
+            final childGates = (child['gates'] as List?) ?? [];
+            final childColor = parseHexColor(child['color']);
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.folder, color: childColor, size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      child['name'] ?? 'Sub-Group',
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5, color: Color(0xFF1E293B)),
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE0F2FE),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      '${childGates.length} Gates',
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF0369A1)),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ],
+    );
+  }
+
+  // TAB 3: GATES PICKER
   Widget _buildGatesTab() {
     final filtered = _filteredGates;
+    final divisions = RailwayData.divisionsForZone(_gateFilterZone);
 
     return Column(
       children: [
@@ -576,13 +1039,48 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
                               (z) => DropdownMenuItem(value: z, child: Text(z, style: const TextStyle(fontSize: 12.5), overflow: TextOverflow.ellipsis)),
                             ),
                           ],
-                          onChanged: (val) => setState(() => _gateFilterZone = val ?? ''),
+                          onChanged: (val) => setState(() {
+                            _gateFilterZone = val ?? '';
+                            _gateFilterDivision = '';
+                          }),
                         ),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  // Select All / Deselect All
+                  if (divisions.isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    // Division Filter Dropdown
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<String>(
+                            value: _gateFilterDivision.isEmpty ? null : _gateFilterDivision,
+                            hint: const Text('All Divisions', style: TextStyle(fontSize: 12.5)),
+                            isExpanded: true,
+                            items: [
+                              const DropdownMenuItem(value: '', child: Text('All Divisions', style: TextStyle(fontSize: 12.5))),
+                              ...divisions.map(
+                                (d) => DropdownMenuItem(value: d, child: Text(d, style: const TextStyle(fontSize: 12.5), overflow: TextOverflow.ellipsis)),
+                              ),
+                            ],
+                            onChanged: (val) => setState(() => _gateFilterDivision = val ?? ''),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 6),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
                   TextButton(
                     onPressed: filtered.isEmpty
                         ? null
@@ -592,12 +1090,9 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
                                 if (g['id'] is int) _selectedGateIds.add(g['id']);
                               }
                             });
-                            AppFeedback.showInfo(
-                              context,
-                              'Selected ${filtered.length} matching gates.',
-                            );
+                            AppFeedback.showInfo(context, 'Selected ${filtered.length} matching gates.');
                           },
-                    child: const Text('Select All', style: TextStyle(fontSize: 12)),
+                    child: const Text('Select All Filtered', style: TextStyle(fontSize: 12)),
                   ),
                   TextButton(
                     onPressed: filtered.isEmpty
@@ -608,10 +1103,7 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
                                 if (g['id'] is int) _selectedGateIds.remove(g['id']);
                               }
                             });
-                            AppFeedback.showInfo(
-                              context,
-                              'Cleared gate selections.',
-                            );
+                            AppFeedback.showInfo(context, 'Cleared gate selections.');
                           },
                     child: const Text('Clear', style: TextStyle(fontSize: 12, color: Colors.grey)),
                   ),
@@ -717,7 +1209,7 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
     );
   }
 
-  // TAB 3: USERS PICKER
+  // TAB 4: USERS PICKER
   Widget _buildUsersTab() {
     final filtered = _filteredUsers;
     final roles = _userRolesList;
@@ -789,10 +1281,7 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
                                 if (u['id'] is int) _selectedUserIds.add(u['id']);
                               }
                             });
-                            AppFeedback.showInfo(
-                              context,
-                              'Selected ${filtered.length} matching users.',
-                            );
+                            AppFeedback.showInfo(context, 'Selected ${filtered.length} matching users.');
                           },
                     child: const Text('Select All', style: TextStyle(fontSize: 12)),
                   ),
@@ -805,10 +1294,7 @@ class _CreateEditScopeGroupScreenState extends State<CreateEditScopeGroupScreen>
                                 if (u['id'] is int) _selectedUserIds.remove(u['id']);
                               }
                             });
-                            AppFeedback.showInfo(
-                              context,
-                              'Cleared user selections.',
-                            );
+                            AppFeedback.showInfo(context, 'Cleared user selections.');
                           },
                     child: const Text('Clear', style: TextStyle(fontSize: 12, color: Colors.grey)),
                   ),

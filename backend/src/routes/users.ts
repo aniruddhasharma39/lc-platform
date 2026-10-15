@@ -164,7 +164,7 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
       mappedMetadata[label] = v;
     }
     
-    // Create the actual user
+// Create the actual user
     let user;
     try {
       user = await prisma.user.create({
@@ -185,9 +185,9 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
       });
     } catch (err: any) {
       if (err?.code === 'P2002') {
-        const targets = (err.meta?.target || []).join(', ');
-        return res.status(400).json({
-          error: `Cannot approve request: Duplicate user detected on unique field (${targets || 'email/mobile/employeeId'}).`
+        const target = err.meta?.target || 'unique field';
+        return res.status(409).json({
+          error: `Cannot approve request: Duplicate conflict on ${Array.isArray(target) ? target.join(', ') : target}.`
         });
       }
       throw err;

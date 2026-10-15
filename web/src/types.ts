@@ -42,11 +42,22 @@ export type ScopeGroupItem = {
   name: string;
   description?: string | null;
   color?: string | null;
+  parentId?: number | null;
+  parent?: { id: number; name: string; color?: string | null; parentId?: number | null } | null;
+  children?: {
+    id: number;
+    name: string;
+    color?: string | null;
+    parentId?: number | null;
+    _count?: { gates: number; children: number };
+  }[];
+  breadcrumbs?: { id: number; name: string; color?: string | null }[];
   createdAt?: string;
   updatedAt?: string;
   _count?: {
     gates: number;
     users: number;
+    children?: number;
   };
   gates?: {
     gate: {

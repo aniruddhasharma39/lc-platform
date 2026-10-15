@@ -13,7 +13,8 @@ import {
   FaExclamationTriangle, FaSpinner, FaCheck, FaSave, FaEye, 
   FaCloudUploadAlt, FaCheckCircle,
   FaArrowUp, FaArrowDown, FaCopy, FaCog, FaSearch, FaWpforms,
-  FaClipboardList, FaLayerGroup, FaChevronDown, FaChevronUp, FaTimes, FaEdit
+  FaClipboardList, FaLayerGroup, FaChevronDown, FaChevronUp, FaTimes, FaEdit,
+  FaFingerprint
 } from 'react-icons/fa';
 import { API_URL } from '../config';
 import { useToast } from '../context/ToastContext';
@@ -562,6 +563,7 @@ export default function RegistrationBuilder() {
       label: defaultLabels[type] || 'New Field',
       children: type === 'section' ? [] : undefined,
       required: ['email', 'phone', 'text'].includes(type),
+      unique: ['email', 'phone'].includes(type),
       options: ['dropdown', 'radio', 'checkbox'].includes(type) ? [
         { id: `${Date.now()}_1`, label: 'Option 1', value: 'option_1' },
         { id: `${Date.now()}_2`, label: 'Option 2', value: 'option_2' }
@@ -680,6 +682,11 @@ export default function RegistrationBuilder() {
               {field.type !== 'section' && field.name && (
                 <span className="field-key-slug">
                   {field.name}
+                </span>
+              )}
+              {field.unique && (
+                <span className="field-unique-pill" title="Unique Identifier (Value cannot be duplicated across users)">
+                  <FaFingerprint style={{ marginRight: '3px', fontSize: '0.65rem' }} /> Unique
                 </span>
               )}
             </div>

@@ -5,7 +5,7 @@ import {
   FaLock, FaSearchPlus,
   FaHome, FaLayerGroup, FaUsers, FaShieldAlt, FaPaintBrush, 
   FaFileAlt, FaChartBar, FaHistory, FaVideo, FaTrain, FaCog, 
-  FaMapMarkerAlt, FaDatabase
+  FaMapMarkerAlt, FaDatabase, FaArchway
 } from 'react-icons/fa';
 import type { User, NotificationItem } from '../types';
 import Roles from './Roles';
@@ -14,6 +14,7 @@ import Branding from './Branding';
 import ClusterDashboard from './Cluster/ClusterDashboard';
 import ManageUsers from './ManageUsers';
 import ScopeGroupManagement from './ScopeGroups/ScopeGroupManagement';
+import LCGatesScreen from './LCGates/LCGatesScreen';
 import { API_URL } from '../config';
 import { useToast } from '../context/ToastContext';
 
@@ -23,21 +24,23 @@ type Props = {
 };
 
 const CANONICAL_MODULE_ORDER = [
-  'branding',
+  'lc-gates',
   'cluster',
   'scope-groups',
   'manage-users',
   'registration',
   'roles',
+  'branding',
 ];
 
 const DEFAULT_SYSTEM_MODULES = [
-  { name: 'Branding', slug: 'branding' },
+  { name: 'LC Gates', slug: 'lc-gates' },
   { name: 'Cluster', slug: 'cluster' },
   { name: 'Scope Groups', slug: 'scope-groups' },
   { name: 'Manage Users', slug: 'manage-users' },
   { name: 'Registration Builder', slug: 'registration' },
   { name: 'Roles', slug: 'roles' },
+  { name: 'Branding', slug: 'branding' },
 ];
 
 const sortModules = (modules: any[]) => {
@@ -55,6 +58,7 @@ const sortModules = (modules: any[]) => {
 
 const getSidebarModuleIcon = (name: string, slug?: string) => {
   const key = (slug || name).toLowerCase();
+  if (key.includes('lc-gate') || key.includes('lc gate') || key === 'lc-gates') return FaArchway;
   if (key.includes('scope') || key.includes('group')) return FaLayerGroup;
   if (key.includes('cluster') || key.includes('gate') || key.includes('device') || key.includes('barrier')) return FaMicrochip;
   if (key.includes('user') || key.includes('member') || key.includes('staff')) return FaUsers;
@@ -579,8 +583,13 @@ export default function Dashboard({ user, onLogout }: Props) {
           
           {(() => {
             const isDev = user.role === 'Developer';
+            const hasAssignedScopes = Boolean(user.scopeGroups && user.scopeGroups.length > 0);
             const modulesToShow = (systemModules.length > 0 ? systemModules : DEFAULT_SYSTEM_MODULES)
-              .filter(m => isDev || (user.allowedModules && user.allowedModules.includes(m.slug)));
+              .filter(m => {
+                if (isDev) return true;
+                if (m.slug === 'lc-gates' && hasAssignedScopes) return true;
+                return user.allowedModules && user.allowedModules.includes(m.slug);
+              });
             return modulesToShow.map(mod => {
               const IconComp = getSidebarModuleIcon(mod.name, mod.slug);
               return (
@@ -607,6 +616,7 @@ export default function Dashboard({ user, onLogout }: Props) {
         </header>
 
         <main className="content-area">
+          {currentView === 'lc-gates' && <LCGatesScreen user={user} />}
           {currentView === 'roles' && <Roles user={user} />}
           {currentView === 'registration' && <RegistrationBuilder />}
           {currentView === 'branding' && <Branding user={user} />}
@@ -621,7 +631,7 @@ export default function Dashboard({ user, onLogout }: Props) {
             </div>
           )}
 
-          {!['roles', 'registration', 'branding', 'cluster', 'scope-groups', 'manage-users', 'home'].includes(currentView) && (() => {
+          {!['roles', 'registration', 'branding', 'cluster', 'scope-groups', 'manage-users', 'lc-gates', 'home'].includes(currentView) && (() => {
             const currentMod = systemModules.find(m => m.slug === currentView);
             const FallbackIcon = getSidebarModuleIcon(currentMod?.name || '', currentView);
             return (

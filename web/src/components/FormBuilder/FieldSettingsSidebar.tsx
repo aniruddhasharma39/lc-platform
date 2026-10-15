@@ -155,30 +155,74 @@ export default function FieldSettingsSidebar({ field, updateField, close }: Prop
         </div>
 
         {field.type !== 'section' && (
-          <div style={{ 
-            background: '#f8fafc', 
-            padding: '0.85rem 1rem', 
-            borderRadius: '10px', 
-            border: '1px solid #e2e8f0',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between'
-          }}>
-            <div>
-              <strong style={{ fontSize: '0.875rem', display: 'block', color: 'var(--text-main, #0f172a)' }}>
-                Mandatory Field
-              </strong>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted, #64748b)' }}>
-                User cannot complete registration without this
-              </span>
+          <>
+            <div style={{ 
+              background: '#f8fafc', 
+              padding: '0.85rem 1rem', 
+              borderRadius: '10px', 
+              border: '1px solid #e2e8f0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}>
+              <div>
+                <strong style={{ fontSize: '0.875rem', display: 'block', color: 'var(--text-main, #0f172a)' }}>
+                  Mandatory Field
+                </strong>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted, #64748b)' }}>
+                  User cannot complete registration without this
+                </span>
+              </div>
+              <input 
+                type="checkbox" 
+                checked={field.required || false} 
+                onChange={(e) => handleChange('required', e.target.checked)}
+                style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+              />
             </div>
-            <input 
-              type="checkbox" 
-              checked={field.required || false} 
-              onChange={(e) => handleChange('required', e.target.checked)}
-              style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-            />
-          </div>
+
+            <div style={{ 
+              background: field.unique ? '#f5f3ff' : '#f8fafc', 
+              padding: '0.85rem 1rem', 
+              borderRadius: '10px', 
+              border: field.unique ? '1px solid #c7d2fe' : '1px solid #e2e8f0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginTop: '0.75rem',
+              transition: 'all 0.2s ease'
+            }}>
+              <div style={{ paddingRight: '0.5rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <strong style={{ fontSize: '0.875rem', display: 'block', color: field.unique ? '#4338ca' : 'var(--text-main, #0f172a)' }}>
+                    Unique Identifier
+                  </strong>
+                  {field.unique && (
+                    <span style={{ 
+                      fontSize: '0.62rem', 
+                      padding: '1px 6px', 
+                      background: '#6366f1', 
+                      color: '#ffffff', 
+                      borderRadius: '999px',
+                      fontWeight: 700,
+                      letterSpacing: '0.03em'
+                    }}>
+                      UNIQUE / PRIMARY KEY
+                    </span>
+                  )}
+                </div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted, #64748b)', display: 'block', marginTop: '2px', lineHeight: 1.3 }}>
+                  Cannot be duplicated across users (e.g. Phone, Aadhar, Email, PAN). Alerts user if already exists.
+                </span>
+              </div>
+              <input 
+                type="checkbox" 
+                checked={field.unique || false} 
+                onChange={(e) => handleChange('unique', e.target.checked)}
+                style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: '#6366f1' }}
+              />
+            </div>
+          </>
         )}
 
         {/* Options Editor for Dropdown, Radio, Checkbox */}

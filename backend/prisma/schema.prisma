@@ -179,11 +179,16 @@ model ScopeGroup {
   name        String           @unique
   description String?
   color       String?          @default("#0B3C7A")
+  parentId    Int?
+  parent      ScopeGroup?      @relation("ScopeGroupHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children    ScopeGroup[]     @relation("ScopeGroupHierarchy")
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 
   gates       ScopeGroupGate[]
   users       ScopeGroupUser[]
+
+  @@index([parentId])
 }
 
 model ScopeGroupGate {

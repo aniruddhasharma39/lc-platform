@@ -28,6 +28,7 @@ export interface FormField {
   placeholder?: string;
   helperText?: string;
   required?: boolean;
+  unique?: boolean; // Unique constraint across all registered users (e.g. Phone, Email, PAN, Aadhar, Employee ID)
   
   // Specific to select/radio/checkbox
   options?: FormOption[];

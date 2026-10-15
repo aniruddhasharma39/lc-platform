@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import FormRenderer from '../components/FormBuilder/FormRenderer';
 import { API_URL } from '../config';
+import { FaExclamationTriangle } from 'react-icons/fa';
 import { useToast } from '../context/ToastContext';
 
 type Props = {
@@ -10,9 +11,9 @@ type Props = {
 const DEFAULT_FALLBACK_SCHEMA = {
   fields: [
     { id: '1', type: 'text', name: 'fullName', label: 'Full Name', required: true, placeholder: 'Enter your full name' },
-    { id: '2', type: 'phone', name: 'mobile', label: 'Mobile Number', required: true, placeholder: '10-digit mobile number' },
-    { id: '3', type: 'email', name: 'email', label: 'Email Address', required: true, placeholder: 'name@example.com' },
-    { id: '4', type: 'text', name: 'employeeId', label: 'Employee ID', required: true, placeholder: 'e.g. EMP-101' },
+    { id: '2', type: 'phone', name: 'mobile', label: 'Mobile Number', required: true, unique: true, placeholder: '10-digit mobile number' },
+    { id: '3', type: 'email', name: 'email', label: 'Email Address', required: true, unique: true, placeholder: 'name@example.com' },
+    { id: '4', type: 'text', name: 'employeeId', label: 'Employee ID', required: true, unique: true, placeholder: 'e.g. EMP-101' },
     { id: '5', type: 'text', name: 'department', label: 'Department', required: true, placeholder: 'e.g. Engineering' }
   ],
   allowRoles: true
@@ -119,11 +120,13 @@ export default function Register({ onGoToLogin }: Props) {
         const errMsg = data.error || 'Registration failed. Please check your submission.';
         setError(errMsg);
         toastError(errMsg, 'Registration Rejected');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
       }
     } catch (err) {
       const netMsg = 'Network error submitting registration. Please check connection and retry.';
       setError(netMsg);
       toastError(netMsg, 'Network Error');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     } finally {
       setIsLoading(false);
     }
@@ -147,8 +150,54 @@ export default function Register({ onGoToLogin }: Props) {
         <h2 className="text-center text-primary mb-6">Create an Account</h2>
         
         {error && (
-          <div className="bg-danger text-white mb-4" style={{ padding: 12, borderRadius: 4 }}>
-            {error}
+          <div 
+            className="registration-error-alert mb-5" 
+            style={{ 
+              padding: '14px 16px', 
+              borderRadius: '8px', 
+              background: '#fef2f2', 
+              border: '1px solid #fecaca',
+              color: '#991b1b',
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '12px',
+              fontSize: '0.88rem',
+              lineHeight: 1.45,
+              boxShadow: '0 2px 8px rgba(220, 38, 38, 0.08)'
+            }}
+          >
+            <FaExclamationTriangle style={{ color: '#dc2626', fontSize: '1.25rem', flexShrink: 0, marginTop: '2px' }} />
+            <div style={{ flex: 1 }}>
+              <strong style={{ display: 'block', marginBottom: '3px', color: '#7f1d1d', fontSize: '0.92rem' }}>
+                {error.toLowerCase().includes('already exists') || error.toLowerCase().includes('pending')
+                  ? 'User Already Exists / Account Collision'
+                  : 'Registration Issue'}
+              </strong>
+              <span>{error}</span>
+              {(error.toLowerCase().includes('already exists') || error.toLowerCase().includes('log in') || error.toLowerCase().includes('already registered')) && (
+                <div style={{ marginTop: '10px' }}>
+                  <button 
+                    type="button" 
+                    onClick={onGoToLogin} 
+                    style={{ 
+                      padding: '6px 14px', 
+                      fontSize: '0.82rem', 
+                      background: '#dc2626', 
+                      color: '#ffffff', 
+                      border: 'none', 
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontWeight: 600,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}
+                  >
+                    Go to Login
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
