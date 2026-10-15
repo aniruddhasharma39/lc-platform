@@ -82,6 +82,27 @@ export default function Dashboard({ user, onLogout }: Props) {
   const [branding, setBranding] = useState({ appName: 'LC Platform' });
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('lc_sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleToggleSidebar = () => {
+    if (typeof window !== 'undefined' && window.innerWidth <= 768) {
+      setIsMobileMenuOpen(prev => !prev);
+    } else {
+      setIsSidebarCollapsed(prev => {
+        const next = !prev;
+        try {
+          localStorage.setItem('lc_sidebar_collapsed', String(next));
+        } catch {}
+        return next;
+      });
+    }
+  };
 
   // Notifications State
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -282,23 +303,12 @@ export default function Dashboard({ user, onLogout }: Props) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button 
             type="button" 
-            className="mobile-menu-toggle"
-            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-            aria-label="Toggle navigation menu"
-            style={{ 
-              background: 'none', 
-              border: 'none', 
-              cursor: 'pointer', 
-              padding: '6px', 
-              color: 'var(--primary)', 
-              fontSize: '1.25rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: '6px'
-            }}
+            className="sidebar-toggle-btn"
+            onClick={handleToggleSidebar}
+            aria-label={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
-            {isMobileMenuOpen ? <FaTimes /> : <FaBars />}
+            <FaBars />
           </button>
           <h2 style={{ margin: 0, color: 'var(--primary)', fontSize: '1.25rem' }}>
             {branding.appName}
@@ -570,43 +580,62 @@ export default function Dashboard({ user, onLogout }: Props) {
       />
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        <div className={`sidebar ${isMobileMenuOpen ? 'mobile-open' : ''}`} style={{ height: '100%', overflowY: 'auto' }}>
-        <nav className="sidebar-nav">
-          <a 
-            href="#" 
-            className={`nav-item ${currentView === 'home' ? 'active' : ''}`} 
-            onClick={(e) => { e.preventDefault(); setCurrentView('home'); setIsMobileMenuOpen(false); }}
-          >
-            <FaHome style={{ fontSize: '1rem', flexShrink: 0 }} />
-            <span>Home</span>
-          </a>
-          
-          {(() => {
-            const isDev = user.role === 'Developer';
-            const hasAssignedScopes = Boolean(user.scopeGroups && user.scopeGroups.length > 0);
-            const modulesToShow = (systemModules.length > 0 ? systemModules : DEFAULT_SYSTEM_MODULES)
-              .filter(m => {
-                if (isDev) return true;
-                if (m.slug === 'lc-gates' && hasAssignedScopes) return true;
-                return user.allowedModules && user.allowedModules.includes(m.slug);
+        <div 
+          className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''} ${isMobileMenuOpen ? 'mobile-open' : ''}`} 
+          style={{ height: '100%', overflowY: 'auto' }}
+        >
+          {/* Mobile-only drawer header */}
+          <div className="mobile-drawer-header">
+            <span style={{ fontWeight: 'bold', color: 'var(--primary)', fontSize: '1.1rem' }}>{branding.appName}</span>
+            <button 
+              type="button" 
+              onClick={() => setIsMobileMenuOpen(false)} 
+              aria-label="Close menu"
+              className="drawer-close-btn"
+              title="Close menu"
+            >
+              <FaTimes />
+            </button>
+          </div>
+
+          <nav className="sidebar-nav">
+            <a 
+              href="#" 
+              className={`nav-item ${currentView === 'home' ? 'active' : ''}`} 
+              onClick={(e) => { e.preventDefault(); setCurrentView('home'); setIsMobileMenuOpen(false); }}
+              title="Home"
+            >
+              <FaHome style={{ fontSize: '1.15rem', flexShrink: 0 }} />
+              <span>Home</span>
+            </a>
+            
+            {(() => {
+              const isDev = user.role === 'Developer';
+              const hasAssignedScopes = Boolean(user.scopeGroups && user.scopeGroups.length > 0);
+              const modulesToShow = (systemModules.length > 0 ? systemModules : DEFAULT_SYSTEM_MODULES)
+                .filter(m => {
+                  if (isDev) return true;
+                  if (m.slug === 'lc-gates' && hasAssignedScopes) return true;
+                  return user.allowedModules && user.allowedModules.includes(m.slug);
+                });
+              return modulesToShow.map(mod => {
+                const IconComp = getSidebarModuleIcon(mod.name, mod.slug);
+                return (
+                  <a 
+                    key={mod.slug} 
+                    href="#" 
+                    className={`nav-item ${currentView === mod.slug ? 'active' : ''}`} 
+                    onClick={(e) => { e.preventDefault(); setCurrentView(mod.slug); setIsMobileMenuOpen(false); }}
+                    title={mod.name}
+                  >
+                    <IconComp style={{ fontSize: '1.15rem', flexShrink: 0 }} />
+                    <span>{mod.name}</span>
+                  </a>
+                );
               });
-            return modulesToShow.map(mod => {
-              const IconComp = getSidebarModuleIcon(mod.name, mod.slug);
-              return (
-                <a 
-                  key={mod.slug} 
-                  href="#" 
-                  className={`nav-item ${currentView === mod.slug ? 'active' : ''}`} 
-                  onClick={(e) => { e.preventDefault(); setCurrentView(mod.slug); setIsMobileMenuOpen(false); }}
-                >
-                  <IconComp style={{ fontSize: '1rem', flexShrink: 0 }} />
-                  <span>{mod.name}</span>
-                </a>
-              );
-            });
-          })()}
-        </nav>
-      </div>
+            })()}
+          </nav>
+        </div>
 
       <div className="main-content" style={{ height: '100%', overflowY: 'auto', flex: 1 }}>
         <header className="header" style={{ borderBottom: '1px solid var(--border)', paddingBottom: '1rem', marginBottom: '1.5rem', backgroundColor: 'transparent' }}>

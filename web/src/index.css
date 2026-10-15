@@ -184,12 +184,45 @@ input:not([type="checkbox"]):not([type="radio"]):focus, select:focus {
   overflow: hidden;
 }
 
+.sidebar-toggle-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 8px;
+  color: var(--primary);
+  font-size: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  transition: background-color 0.2s ease, color 0.2s ease, transform 0.15s ease;
+}
+
+.sidebar-toggle-btn:hover {
+  background-color: #f1f5f9;
+  color: var(--secondary);
+}
+
+.sidebar-toggle-btn:active {
+  transform: scale(0.92);
+}
+
 .sidebar {
   width: 250px;
+  min-width: 250px;
   background-color: var(--surface);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow-x: hidden;
+  user-select: none;
+}
+
+/* Collapsed icon-only mode */
+.sidebar.collapsed {
+  width: 70px;
+  min-width: 70px;
 }
 
 .sidebar-header {
@@ -221,24 +254,78 @@ input:not([type="checkbox"]):not([type="radio"]):focus, select:focus {
 }
 
 .sidebar-nav {
-  padding: 1rem 0;
+  padding: 0.85rem 0;
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .nav-item {
-  padding: 0.75rem 1.5rem;
+  padding: 0.75rem 1.25rem;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.85rem;
   color: var(--text-main);
   font-weight: 500;
-  transition: all 0.2s ease;
+  font-size: 0.92rem;
+  border-radius: 8px;
+  margin: 0 8px;
+  transition: background-color 0.2s ease, color 0.2s ease, padding 0.2s ease;
+  position: relative;
+  white-space: nowrap;
+  overflow: hidden;
+  text-decoration: none;
 }
 
-.nav-item:hover, .nav-item.active {
-  background-color: rgba(14, 154, 167, 0.1);
+.nav-item:hover {
+  background-color: rgba(14, 154, 167, 0.08);
   color: var(--secondary);
   text-decoration: none;
+}
+
+.nav-item.active {
+  background-color: rgba(14, 154, 167, 0.14);
+  color: var(--secondary);
+  font-weight: 600;
+}
+
+.nav-item svg {
+  font-size: 1.15rem;
+  min-width: 22px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s ease;
+}
+
+.nav-item:hover svg {
+  transform: scale(1.08);
+}
+
+.nav-item span {
+  opacity: 1;
+  white-space: nowrap;
+  transition: opacity 0.2s ease;
+}
+
+/* In collapsed state: center icon, hide labels */
+.sidebar.collapsed .nav-item {
+  padding: 0.75rem 0;
+  margin: 0 10px;
+  justify-content: center;
+  gap: 0;
+}
+
+.sidebar.collapsed .nav-item span {
+  display: none;
+  opacity: 0;
+  width: 0;
+}
+
+.sidebar.collapsed .nav-item svg {
+  font-size: 1.25rem;
 }
 
 .main-content {
@@ -353,6 +440,7 @@ input:not([type="checkbox"]):not([type="radio"]):focus, select:focus {
     left: 0;
     bottom: 0;
     width: 270px !important;
+    min-width: 270px !important;
     z-index: 1500 !important;
     transform: translateX(-100%);
     transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -361,6 +449,51 @@ input:not([type="checkbox"]):not([type="radio"]):focus, select:focus {
 
   .sidebar.mobile-open {
     transform: translateX(0);
+  }
+
+  .sidebar.collapsed {
+    width: 270px !important;
+    min-width: 270px !important;
+  }
+
+  .sidebar.collapsed .nav-item {
+    justify-content: flex-start;
+    padding: 0.75rem 1.25rem;
+    margin: 0 8px;
+    gap: 0.85rem;
+  }
+
+  .sidebar.collapsed .nav-item span {
+    display: inline !important;
+    opacity: 1 !important;
+    width: auto !important;
+  }
+
+  .mobile-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .drawer-close-btn {
+    background: none;
+    border: none;
+    font-size: 1.15rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+
+  .drawer-close-btn:hover {
+    color: var(--primary);
+    background-color: #f1f5f9;
   }
 
   .sidebar-backdrop {
