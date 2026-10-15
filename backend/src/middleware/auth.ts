@@ -53,8 +53,11 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
       allowedModules
     };
     next();
-  } catch (error) {
+  } catch (error: any) {
     console.error('Database connection or query error in authenticate middleware:', error);
+    if (error?.code === 'P1001' || (error?.message && error.message.includes("Can't reach database server"))) {
+      prisma.$disconnect().catch(() => {});
+    }
     return res.status(503).json({ error: 'Authentication service temporarily unavailable, please retry' });
   }
 };
