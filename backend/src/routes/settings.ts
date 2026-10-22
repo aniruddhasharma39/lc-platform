@@ -7,9 +7,9 @@ import { z } from 'zod';
 
 // Cloudinary config
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'dixdw1mus',
-  api_key: process.env.CLOUDINARY_API_KEY || '647788876868715',
-  api_secret: process.env.CLOUDINARY_API_SECRET || 'Aku2U6rp22oHgQQEESnZ7w3YaUI'
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
 const upload = multer({ storage: multer.memoryStorage() });

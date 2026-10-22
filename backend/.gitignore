@@ -4,3 +4,6 @@ dist
 build
 .DS_Store
 uploads/
+*.db
+*.db-journal
+*.sqlite
