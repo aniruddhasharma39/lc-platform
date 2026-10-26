@@ -229,7 +229,8 @@ async function createSession(user: any) {
   });
 
   let allowedModules = user.role?.roleModules?.map((rm: any) => rm.module?.slug) || [];
-  if (user.role?.name === 'Developer') {
+  const roleName = user.role?.name;
+  if (roleName === 'Developer' || roleName?.toLowerCase() === 'developer') {
     const allModules = await prisma.module.findMany();
     allowedModules = allModules.map((m: any) => m.slug);
   }
@@ -622,7 +623,8 @@ router.get('/me', authenticate, async (req: any, res, next) => {
     }
 
     let allowedModules = user.role?.roleModules?.map((rm: any) => rm.module?.slug) || [];
-    if (user.role?.name === 'Developer') {
+    const roleName = user.role?.name;
+    if (roleName === 'Developer' || roleName?.toLowerCase() === 'developer') {
       const allModules = await prisma.module.findMany();
       allowedModules = allModules.map((m: any) => m.slug);
     }

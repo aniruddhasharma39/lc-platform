@@ -8,11 +8,13 @@ import modulesRoutes from './routes/modules';
 import registrationFormsRoutes from './routes/registration-forms';
 import settingsRoutes from './routes/settings';
 import lcgateRoutes from './routes/lcgate';
+import deviceRoutes from './routes/deviceRegistry';
 import evidenceRoutes from './routes/evidence';
 import notificationsRoutes from './routes/notifications';
 import scopeGroupsRoutes from './routes/scopeGroups';
 import { errorHandler } from './middleware/error';
 import { prisma } from './lib/prisma';
+import { startTelemetryMonitor } from './lib/telemetryMonitor';
 
 import path from 'path';
 
@@ -43,6 +45,7 @@ app.use('/api/v1/registration-forms', registrationFormsRoutes);
 app.use('/api/v1/settings', settingsRoutes);
 app.use('/api/v1/branding', settingsRoutes);
 app.use('/api/v1/lcgate', lcgateRoutes);
+app.use('/api/v1/devices', deviceRoutes);
 app.use('/api/v1/evidence', evidenceRoutes);
 app.use('/api/v1/notifications', notificationsRoutes);
 app.use('/api/v1/scope-groups', scopeGroupsRoutes);
@@ -53,17 +56,32 @@ app.use(errorHandler);
 // Ensure system modules exist
 const ensureSystemModules = async () => {
   try {
-    await prisma.module.upsert({
-      where: { slug: 'scope-groups' },
-      update: {},
-      create: { name: 'Scope Groups', slug: 'scope-groups' }
-    });
+    const modulesToEnsure = [
+      { name: 'LC Gates', slug: 'lc-gates' },
+      { name: 'Cluster', slug: 'cluster' },
+      { name: 'Device Registry', slug: 'devices' },
+      { name: 'Scope Groups', slug: 'scope-groups' },
+      { name: 'Manage Users', slug: 'manage-users' },
+      { name: 'Registration Builder', slug: 'registration' },
+      { name: 'Roles', slug: 'roles' },
+      { name: 'Branding', slug: 'branding' },
+    ];
+    for (const mod of modulesToEnsure) {
+      await prisma.module.upsert({
+        where: { slug: mod.slug },
+        update: {},
+        create: { name: mod.name, slug: mod.slug }
+      });
+    }
   } catch (err) {
-    console.error('Failed to ensure scope-groups module:', err);
+    console.error('Failed to ensure system modules:', err);
   }
 };
 
 app.listen(port, () => {
   ensureSystemModules();
+  startTelemetryMonitor(3000);
   console.log(`Server is running on port ${port}`);
 });
+
+

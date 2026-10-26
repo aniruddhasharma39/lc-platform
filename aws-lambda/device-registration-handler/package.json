@@ -1,0 +1,13 @@
+{
+  "name": "lc-platform-device-registration-lambda",
+  "version": "1.0.0",
+  "description": "AWS Lambda function to register AWS IoT Things into LC-Platform RDS PostgreSQL database",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test-local.js",
+    "package": "zip -r function.zip index.js package.json node_modules"
+  },
+  "dependencies": {
+    "pg": "^8.11.5"
+  }
+}

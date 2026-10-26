@@ -107,43 +107,46 @@ model RegistrationRequest {
 }
 
 model LCGate {
-  id           Int          @id @default(autoincrement())
-  name         String?
-  lcNumber     String       @unique
-  locationName String
-  zone         String?
-  division     String?
-  latitude     Float?
-  longitude    Float?
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
-  masters      MasterUnit[]
-  scopeGroups  ScopeGroupGate[]
+  id               Int              @id @default(autoincrement())
+  name             String?
+  lcNumber         String           @unique
+  locationName     String
+  zone             String?
+  division         String?
+  latitude         Float?
+  longitude        Float?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  masters          MasterUnit[]
+  scopeGroups      ScopeGroupGate[]
+  deviceRegistries DeviceRegistry[]
 }
 
 model MasterUnit {
-  id             Int                    @id @default(autoincrement())
-  serialNumber   String                 @unique
-  masterSequence Int
-  powerSource    String
-  gateId         Int
-  gate           LCGate                 @relation(fields: [gateId], references: [id], onDelete: Cascade)
-  childDevices   ChildDevice[]
-  evidences      InstallationEvidence[]
-  createdAt      DateTime               @default(now())
-  updatedAt      DateTime               @updatedAt
+  id               Int                    @id @default(autoincrement())
+  serialNumber     String                 @unique
+  masterSequence   Int
+  powerSource      String
+  gateId           Int
+  gate             LCGate                 @relation(fields: [gateId], references: [id], onDelete: Cascade)
+  childDevices     ChildDevice[]
+  evidences        InstallationEvidence[]
+  deviceRegistries DeviceRegistry[]
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
 }
 
 model ChildDevice {
-  id             Int                    @id @default(autoincrement())
-  serialNumber   String                 @unique
-  type           String
-  deviceSequence Int
-  masterId       Int
-  master         MasterUnit             @relation(fields: [masterId], references: [id], onDelete: Cascade)
-  evidences      InstallationEvidence[]
-  createdAt      DateTime               @default(now())
-  updatedAt      DateTime               @updatedAt
+  id               Int                    @id @default(autoincrement())
+  serialNumber     String                 @unique
+  type             String
+  deviceSequence   Int
+  masterId         Int
+  master           MasterUnit             @relation(fields: [masterId], references: [id], onDelete: Cascade)
+  evidences        InstallationEvidence[]
+  deviceRegistries DeviceRegistry[]
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
 }
 
 model InstallationEvidence {
@@ -179,6 +182,7 @@ model ScopeGroup {
   name        String           @unique
   description String?
   color       String?          @default("#0B3C7A")
+  allowSms    Boolean          @default(false)
   parentId    Int?
   parent      ScopeGroup?      @relation("ScopeGroupHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
   children    ScopeGroup[]     @relation("ScopeGroupHierarchy")
@@ -186,6 +190,7 @@ model ScopeGroup {
   updatedAt   DateTime         @updatedAt
 
   gates       ScopeGroupGate[]
+  devices     ScopeGroupDevice[]
   users       ScopeGroupUser[]
 
   @@index([parentId])
@@ -205,6 +210,20 @@ model ScopeGroupGate {
   @@index([gateId])
 }
 
+model ScopeGroupDevice {
+  id           Int            @id @default(autoincrement())
+  scopeGroupId Int
+  scopeGroup   ScopeGroup     @relation(fields: [scopeGroupId], references: [id], onDelete: Cascade)
+  deviceId     Int
+  device       DeviceRegistry @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  assignedAt   DateTime       @default(now())
+
+  @@unique([scopeGroupId, deviceId])
+  @@index([scopeGroupId])
+  @@index([deviceId])
+}
+
 model ScopeGroupUser {
   id           Int        @id @default(autoincrement())
   scopeGroupId Int
@@ -219,4 +238,81 @@ model ScopeGroupUser {
   @@index([userId])
 }
 
+model DeviceRegistry {
+  id              Int          @id @default(autoincrement())
+  thingName       String       @unique
+  thingArn        String?
+  thingTypeName   String?
+  deviceType      String       @default("MASTER") // MASTER, SLAVE, SENSOR_UNIT, GATEWAY, etc.
+  serialNumber    String?      @unique
+  status          String       @default("ACTIVE") // ACTIVE, INACTIVE, PROVISIONED, DECOMMISSIONED, MAINTENANCE
 
+  // Optional associations with LC Platform gate & units
+  gateId          Int?
+  gate            LCGate?      @relation(fields: [gateId], references: [id], onDelete: SetNull)
+  masterId        Int?
+  master          MasterUnit?  @relation(fields: [masterId], references: [id], onDelete: SetNull)
+  childDeviceId   Int?
+  childDevice     ChildDevice? @relation(fields: [childDeviceId], references: [id], onDelete: SetNull)
+
+  // Hardware and manufacturing specifications
+  macAddress      String?
+  imei            String?
+  firmwareVersion String?
+  hardwareVersion String?
+  dateOfMfg       DateTime?
+  manufacturer    String?
+  modelNumber     String?
+  batchNumber     String?
+
+  // Hardware device metadata requested
+  sensors         Json?        // List or map of sensors within (e.g. solar voltage, inclinometer, radar, etc.)
+  components      Json?        // List or map of internal hardware components (MCU, modem, relays, batteries)
+  attributes      Json?        // AWS IoT Thing attributes
+  metadata        Json?        // Additional custom specs or dynamic properties
+
+  telemetries     DeviceTelemetry[]
+  scopeGroups     ScopeGroupDevice[]
+
+  lastSeenAt      DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([gateId])
+  @@index([masterId])
+  @@index([childDeviceId])
+  @@index([status])
+}
+
+model DeviceTelemetry {
+  id               Int             @id @default(autoincrement())
+  thingName        String
+  topic            String?
+  payload          Json
+  status           String?         @default("ONLINE")
+  receivedAt       DateTime        @default(now())
+  deviceRegistryId Int?
+  deviceRegistry   DeviceRegistry? @relation(fields: [deviceRegistryId], references: [id], onDelete: Cascade)
+
+  @@index([thingName])
+  @@index([receivedAt])
+}
+
+model GateStateAlertLog {
+  id              Int      @id @default(autoincrement())
+  gateId          Int?
+  lcNumber        String
+  status          String   // OPEN, CLOSED
+  recipientMobile String
+  recipientName   String?
+  scopeGroupId    Int?
+  message         String
+  provider        String   // AIRTEL, 2FACTOR, SIMULATED
+  statusResult    String   // SENT, FAILED, SKIPPED
+  details         String?
+  sentAt          DateTime @default(now())
+
+  @@index([gateId])
+  @@index([lcNumber])
+  @@index([sentAt])
+}

@@ -9,7 +9,9 @@ const router = Router();
 
 const createGateSchema = z.object({
   name: z.string().nullable().optional(),
-  lcNumberDigits: z.string().regex(/^\d{4}$/, "Must be exactly 4 digits"),
+  lcNumberDigits: z.string().optional(),
+  lcNumber: z.string().optional(),
+  deviceId: z.number().int().optional().nullable(),
   locationName: z.string().min(1),
   zone: z.string().min(1),
   division: z.string().min(1),
@@ -41,17 +43,28 @@ router.get('/divisions', authenticate, async (req, res) => {
 router.post('/', authenticate, async (req, res, next) => {
   try {
     const data = createGateSchema.parse(req.body);
-    const lcNumber = `LC-${data.lcNumberDigits}`;
+
+    let lcNumber = data.lcNumber ? data.lcNumber.trim() : '';
+    if (!lcNumber && data.lcNumberDigits) {
+      lcNumber = `LC-${data.lcNumberDigits.trim()}`;
+    }
+    if (!lcNumber) {
+      return res.status(400).json({ error: 'LC Number or 4-digit number is required' });
+    }
     
     // Check for existing gate
     const existing = await prisma.lCGate.findUnique({ where: { lcNumber } });
     if (existing) {
-      return res.status(400).json({ error: 'Gate with this LC Number already exists' });
+      return res.status(400).json({ error: `Gate with LC Number "${lcNumber}" already exists` });
     }
+
+    const gateName = (data.name && data.name.trim()) 
+      ? data.name.trim() 
+      : (data.locationName ? `${data.locationName.trim()} (${lcNumber})` : lcNumber);
 
     const gate = await prisma.lCGate.create({
       data: {
-        name: data.name,
+        name: gateName,
         lcNumber,
         locationName: data.locationName,
         zone: data.zone,
@@ -60,6 +73,58 @@ router.post('/', authenticate, async (req, res, next) => {
         longitude: data.longitude,
       },
     });
+
+    // Auto-create initial Master Unit for this gate with the same serialNumber/ID
+    let master = await prisma.masterUnit.findFirst({ where: { gateId: gate.id } });
+    if (!master) {
+      master = await prisma.masterUnit.create({
+        data: {
+          serialNumber: lcNumber,
+          masterSequence: 1,
+          powerSource: 'SOLAR',
+          gateId: gate.id,
+        },
+      });
+    }
+
+    // Automatically link Master device from DeviceRegistry if deviceId or matching thingName/serial
+    if (data.deviceId) {
+      await prisma.deviceRegistry.updateMany({
+        where: { id: data.deviceId },
+        data: { gateId: gate.id, masterId: master.id }
+      }).catch(console.warn);
+    } else {
+      await prisma.deviceRegistry.updateMany({
+        where: {
+          OR: [
+            { thingName: lcNumber },
+            { serialNumber: lcNumber }
+          ],
+        },
+        data: { gateId: gate.id, masterId: master.id }
+      }).catch(console.warn);
+    }
+
+    // Initialize the two physical wired slave units (Barrier A & Barrier B) for this master
+    const defaultWiredSlaves = [
+      { serial: `${lcNumber}-A`, type: 'DEVICE_1', seq: 1 },
+      { serial: `${lcNumber}-B`, type: 'DEVICE_2', seq: 2 },
+    ];
+
+    for (const slave of defaultWiredSlaves) {
+      let child = await prisma.childDevice.findUnique({ where: { serialNumber: slave.serial } });
+      if (!child) {
+        await prisma.childDevice.create({
+          data: {
+            serialNumber: slave.serial,
+            type: slave.type,
+            deviceSequence: slave.seq,
+            masterId: master.id,
+          }
+        }).catch(console.warn);
+      }
+    }
+
     res.status(201).json(gate);
   } catch (error) {
     next(error);
@@ -138,6 +203,7 @@ router.get('/', authenticate, async (req: any, res, next) => {
       where: whereClause,
       orderBy: { createdAt: 'desc' },
       include: {
+        deviceRegistries: true,
         scopeGroups: {
           include: {
             scopeGroup: {
@@ -190,6 +256,8 @@ router.get('/:gateId/next-master-sequence', authenticate, async (req, res, next)
 const createMasterSchema = z.object({
   masterSequence: z.number().int().min(1).max(99).optional(),
   powerSource: z.enum(['SOLAR', 'DIRECT']),
+  serialNumber: z.string().optional(),
+  deviceId: z.number().int().optional().nullable(),
 });
 
 // Add a Master to an LC Gate
@@ -220,10 +288,17 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
       targetSequence = nextSeq;
     }
 
-    let serialNumber = `${gate.lcNumber}-${targetSequence.toString().padStart(2, '0')}`;
-    while (await prisma.masterUnit.findUnique({ where: { serialNumber } })) {
-      targetSequence++;
-      serialNumber = `${gate.lcNumber}-${targetSequence.toString().padStart(2, '0')}`;
+    let serialNumber = data.serialNumber ? data.serialNumber.trim() : `${gate.lcNumber}-${targetSequence.toString().padStart(2, '0')}`;
+    if (!data.serialNumber) {
+      while (await prisma.masterUnit.findUnique({ where: { serialNumber } })) {
+        targetSequence++;
+        serialNumber = `${gate.lcNumber}-${targetSequence.toString().padStart(2, '0')}`;
+      }
+    } else {
+      const existing = await prisma.masterUnit.findUnique({ where: { serialNumber } });
+      if (existing) {
+        return res.status(400).json({ error: `Master Unit with serial number "${serialNumber}" already exists` });
+      }
     }
 
     const master = await prisma.masterUnit.create({
@@ -238,6 +313,21 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
       },
     });
 
+    // Auto-link DeviceRegistry
+    if (data.deviceId) {
+      await prisma.deviceRegistry.updateMany({
+        where: { id: data.deviceId },
+        data: { masterId: master.id, gateId: master.gateId }
+      }).catch(console.warn);
+    } else {
+      await prisma.deviceRegistry.updateMany({
+        where: {
+          OR: [{ thingName: serialNumber }, { serialNumber: serialNumber }]
+        },
+        data: { masterId: master.id, gateId: master.gateId }
+      }).catch(console.warn);
+    }
+
     res.status(201).json(master);
   } catch (error) {
     next(error);
@@ -249,19 +339,44 @@ router.get('/masters/:masterId/next-device-sequence', authenticate, async (req, 
   try {
     const masterId = parseInt(req.params.masterId);
     if (isNaN(masterId)) return res.status(400).json({ error: 'Invalid master ID' });
+
+    const master = await prisma.masterUnit.findUnique({ where: { id: masterId } });
+    if (!master) return res.status(404).json({ error: 'Master Unit not found' });
     
-    const type = req.query.type as string;
+    const type = (req.query.type as string) || 'DEVICE_1';
+    const letter = type === 'DEVICE_1' ? 'A' : 'B';
+    const prefix = `${master.serialNumber}-${letter}`;
+
     const existing = await prisma.childDevice.findMany({
       where: { masterId, ...(type ? { type } : {}) },
-      select: { deviceSequence: true }
+      select: { deviceSequence: true, serialNumber: true }
     });
     
-    const taken = new Set(existing.map(d => d.deviceSequence));
+    const taken = new Set<number>();
+    for (const d of existing) {
+      if (d.deviceSequence && d.deviceSequence > 0) taken.add(d.deviceSequence);
+      if (d.serialNumber === prefix) {
+        taken.add(1);
+      } else if (d.serialNumber && d.serialNumber.startsWith(`${prefix}-`)) {
+        const numPart = parseInt(d.serialNumber.slice(`${prefix}-`.length), 10);
+        if (!isNaN(numPart)) taken.add(numPart);
+      }
+    }
+
     let nextSeq = 1;
     while (taken.has(nextSeq)) {
       nextSeq++;
     }
-    res.json({ nextSequence: nextSeq });
+
+    // Ensure global uniqueness against all child devices in DB
+    while (await prisma.childDevice.findUnique({ where: { serialNumber: `${master.serialNumber}-${letter}-${nextSeq}` } })) {
+      nextSeq++;
+    }
+
+    res.json({ 
+      nextSequence: nextSeq,
+      serialNumber: `${master.serialNumber}-${letter}-${nextSeq}`
+    });
   } catch (error) {
     next(error);
   }
@@ -269,7 +384,15 @@ router.get('/masters/:masterId/next-device-sequence', authenticate, async (req, 
 
 const createDeviceSchema = z.object({
   type: z.enum(['DEVICE_1', 'DEVICE_2']),
-  deviceSequence: z.number().int().min(1).max(99).optional(),
+  deviceSequence: z.preprocess(
+    (val) => (val === '' || val === null || val === undefined ? undefined : Number(val)),
+    z.number().int().min(1).max(999).optional()
+  ),
+  serialNumber: z.string().optional(),
+  deviceId: z.preprocess(
+    (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
+    z.number().int().optional().nullable()
+  ),
 });
 
 // Add a Child Device to a Master
@@ -286,6 +409,7 @@ router.post('/masters/:masterId/devices', authenticate, async (req, res, next) =
     }
 
     const letter = data.type === 'DEVICE_1' ? 'A' : 'B';
+    const prefix = `${master.serialNumber}-${letter}`;
 
     // Find all existing child devices for this master to inspect existing sequences
     const existingDevices = await prisma.childDevice.findMany({
@@ -293,10 +417,17 @@ router.post('/masters/:masterId/devices', authenticate, async (req, res, next) =
       select: { deviceSequence: true, serialNumber: true }
     });
 
-    const takenSequences = new Set(existingDevices.map(d => d.deviceSequence));
+    const takenSequences = new Set<number>();
+    for (const d of existingDevices) {
+      if (d.deviceSequence && d.deviceSequence > 0) takenSequences.add(d.deviceSequence);
+      if (d.serialNumber === prefix) takenSequences.add(1);
+      else if (d.serialNumber && d.serialNumber.startsWith(`${prefix}-`)) {
+        const numPart = parseInt(d.serialNumber.slice(`${prefix}-`.length), 10);
+        if (!isNaN(numPart)) takenSequences.add(numPart);
+      }
+    }
     
     let targetSequence = data.deviceSequence;
-    // If no sequence provided or if the requested sequence is already taken on this master, auto-calculate the next available
     if (!targetSequence || takenSequences.has(targetSequence)) {
       let nextSeq = 1;
       while (takenSequences.has(nextSeq)) {
@@ -305,12 +436,14 @@ router.post('/masters/:masterId/devices', authenticate, async (req, res, next) =
       targetSequence = nextSeq;
     }
 
-    // Ensure serialNumber is unique globally
-    let serialNumber = `${master.serialNumber}-${letter}${targetSequence.toString().padStart(2, '0')}`;
+    // Determine derived serial number
+    let serialNumber = data.serialNumber ? data.serialNumber.trim() : `${master.serialNumber}-${letter}-${targetSequence}`;
+
+    // If candidate serialNumber exists, automatically increment suffix to avoid duplication errors
     let existingSerial = await prisma.childDevice.findUnique({ where: { serialNumber } });
     while (existingSerial) {
       targetSequence++;
-      serialNumber = `${master.serialNumber}-${letter}${targetSequence.toString().padStart(2, '0')}`;
+      serialNumber = `${master.serialNumber}-${letter}-${targetSequence}`;
       existingSerial = await prisma.childDevice.findUnique({ where: { serialNumber } });
     }
 
@@ -322,6 +455,21 @@ router.post('/masters/:masterId/devices', authenticate, async (req, res, next) =
         masterId,
       },
     });
+
+    // Auto-link DeviceRegistry
+    if (data.deviceId) {
+      await prisma.deviceRegistry.updateMany({
+        where: { id: data.deviceId },
+        data: { childDeviceId: device.id, masterId: master.id, gateId: master.gateId }
+      }).catch(console.warn);
+    } else {
+      await prisma.deviceRegistry.updateMany({
+        where: {
+          OR: [{ thingName: serialNumber }, { serialNumber: serialNumber }]
+        },
+        data: { childDeviceId: device.id, masterId: master.id, gateId: master.gateId }
+      }).catch(console.warn);
+    }
 
     res.status(201).json(device);
   } catch (error) {
@@ -365,6 +513,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
     const gate = await prisma.lCGate.findUnique({
       where: { id },
       include: {
+        deviceRegistries: true,
         scopeGroups: {
           include: {
             scopeGroup: {
@@ -396,17 +545,60 @@ router.get('/:id', authenticate, async (req, res, next) => {
 function buildGateTelemetry(gate: any) {
   const masterList = gate.masters || [];
   const isSolar = masterList.some((m: any) => m.powerSource === 'SOLAR');
+  const registeredDevices = gate.deviceRegistries || [];
   const now = new Date();
+
+  // Create a fast lookup map by serial number or thingName
+  const regMap = new Map<string, any>();
+  registeredDevices.forEach((d: any) => {
+    if (d.serialNumber) regMap.set(d.serialNumber, d);
+    if (d.thingName) regMap.set(d.thingName, d);
+  });
+
+  const mastersWithRegistry = masterList.map((m: any) => {
+    const reg = regMap.get(m.serialNumber);
+    return {
+      ...m,
+      awsThingName: reg ? reg.thingName : null,
+      awsStatus: reg ? reg.status : 'CONFIGURED',
+      deviceName: reg?.attributes?.deviceName || reg?.attributes?.hardware?.deviceName || 'LC Gate Controller',
+      description: reg?.attributes?.description || reg?.attributes?.hardware?.description || 'Installed on IR Level Crossings',
+      firmwareVersion: reg ? reg.firmwareVersion : 'v1.1',
+      hardwareVersion: reg ? reg.hardwareVersion : 'rev1.0',
+      dateOfMfg: reg ? reg.dateOfMfg : null,
+      sensors: reg ? reg.sensors : null,
+      components: reg ? reg.components : null,
+      attributes: reg ? reg.attributes : null,
+      metadata: reg ? reg.metadata : null,
+    };
+  });
 
   const slavesList: any[] = [];
   masterList.forEach((m: any) => {
+    const reg = regMap.get(m.serialNumber);
+    const manifestSlaves = reg?.attributes?.slaves || reg?.components || [];
     (m.childDevices || []).forEach((c: any) => {
+      const manifestSlave = Array.isArray(manifestSlaves)
+        ? manifestSlaves.find((s: any) => s.slaveId === c.serialNumber || (s.type && s.type === c.type))
+        : null;
+
       slavesList.push({
         id: c.id,
         serialNumber: c.serialNumber,
         type: c.type,
         sequence: c.deviceSequence,
-        status: 'PENDING_FLEET_MAPPING'
+        status: 'CONNECTED_WIRED',
+        awsThingName: null, // Slaves do not have individual cloud connectivity
+        masterSerialNumber: m.serialNumber,
+        sensors: c.type === 'DEVICE_2'
+          ? [
+              { name: 'Tilt Sensor', description: 'Boom barrier inclination and tilt monitoring' }
+            ]
+          : [
+              { name: 'LimitSwitch', description: 'End-stop & locking mechanism' },
+              { name: 'HallEffect Sensor', description: 'Boom barrier position detection' }
+            ],
+        components: null,
       });
     });
   });
@@ -424,13 +616,16 @@ function buildGateTelemetry(gate: any) {
       powerSource: isSolar ? 'SOLAR' : 'DIRECT',
       mastersCount: masterList.length,
       slavesCount: slavesList.length,
-      masters: masterList
+      masters: mastersWithRegistry,
+      slaves: slavesList,
+      deviceRegistries: registeredDevices,
     },
     awsConfig: {
       provisioningMode: 'AWS_FLEET_PROVISIONING',
       region: 'ap-south-1 (Mumbai)',
-      status: 'FLEET_MAPPING_PENDING',
-      description: 'Physical hardware devices will be mapped with AWS IoT Core via Fleet Provisioning.'
+      status: registeredDevices.length > 0 ? 'ACTIVE_FLEET_MAPPED' : 'FLEET_MAPPING_PENDING',
+      description: 'Physical hardware devices mapped and registered with AWS IoT Core and RDS Device Registry.',
+      registeredCount: registeredDevices.length,
     },
     timestamp: now.toISOString()
   };
@@ -452,6 +647,7 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
             }
           }
         },
+        deviceRegistries: true,
         masters: {
           orderBy: { masterSequence: 'asc' },
           include: {

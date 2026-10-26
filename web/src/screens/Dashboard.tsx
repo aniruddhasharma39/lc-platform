@@ -15,6 +15,7 @@ import ClusterDashboard from './Cluster/ClusterDashboard';
 import ManageUsers from './ManageUsers';
 import ScopeGroupManagement from './ScopeGroups/ScopeGroupManagement';
 import LCGatesScreen from './LCGates/LCGatesScreen';
+import DeviceRegistryScreen from './DeviceRegistry/DeviceRegistryScreen';
 import { API_URL } from '../config';
 import { useToast } from '../context/ToastContext';
 
@@ -26,6 +27,8 @@ type Props = {
 const CANONICAL_MODULE_ORDER = [
   'lc-gates',
   'cluster',
+  'devices',
+  'device-registry',
   'scope-groups',
   'manage-users',
   'registration',
@@ -36,6 +39,7 @@ const CANONICAL_MODULE_ORDER = [
 const DEFAULT_SYSTEM_MODULES = [
   { name: 'LC Gates', slug: 'lc-gates' },
   { name: 'Cluster', slug: 'cluster' },
+  { name: 'Device Registry', slug: 'devices' },
   { name: 'Scope Groups', slug: 'scope-groups' },
   { name: 'Manage Users', slug: 'manage-users' },
   { name: 'Registration Builder', slug: 'registration' },
@@ -59,6 +63,7 @@ const sortModules = (modules: any[]) => {
 const getSidebarModuleIcon = (name: string, slug?: string) => {
   const key = (slug || name).toLowerCase();
   if (key.includes('lc-gate') || key.includes('lc gate') || key === 'lc-gates') return FaArchway;
+  if (key === 'cluster') return FaNetworkWired;
   if (key.includes('scope') || key.includes('group')) return FaLayerGroup;
   if (key.includes('cluster') || key.includes('gate') || key.includes('device') || key.includes('barrier')) return FaMicrochip;
   if (key.includes('user') || key.includes('member') || key.includes('staff')) return FaUsers;
@@ -116,7 +121,10 @@ export default function Dashboard({ user, onLogout }: Props) {
       });
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
-        setSystemModules(sortModules(data));
+        const modMap = new Map<string, any>();
+        DEFAULT_SYSTEM_MODULES.forEach(m => modMap.set(m.slug, m));
+        data.forEach((m: any) => modMap.set(m.slug, m));
+        setSystemModules(sortModules(Array.from(modMap.values())));
       }
     } catch (err) {
       console.error(err);
@@ -585,11 +593,13 @@ export default function Dashboard({ user, onLogout }: Props) {
             </a>
             
             {(() => {
-              const isDev = user.role === 'Developer';
+              const roleName = typeof user.role === 'object' ? (user.role as any)?.name : user.role;
+              const isDev = roleName === 'Developer' || roleName?.toLowerCase() === 'developer';
               const hasAssignedScopes = Boolean(user.scopeGroups && user.scopeGroups.length > 0);
               const modulesToShow = (systemModules.length > 0 ? systemModules : DEFAULT_SYSTEM_MODULES)
                 .filter(m => {
                   if (isDev) return true;
+                  if (m.slug === 'cluster') return true;
                   if (m.slug === 'lc-gates' && hasAssignedScopes) return true;
                   return user.allowedModules && user.allowedModules.includes(m.slug);
                 });
@@ -627,6 +637,7 @@ export default function Dashboard({ user, onLogout }: Props) {
           {currentView === 'cluster' && <ClusterDashboard user={user} />}
           {currentView === 'scope-groups' && <ScopeGroupManagement user={user} />}
           {currentView === 'manage-users' && <ManageUsers user={user} onUserUpdate={fetchNotifications} />}
+          {(currentView === 'devices' || currentView === 'device-registry') && <DeviceRegistryScreen user={user} />}
 
           {currentView === 'home' && (
             <div className="card text-center" style={{ padding: 64, marginTop: 32 }}>
@@ -635,7 +646,7 @@ export default function Dashboard({ user, onLogout }: Props) {
             </div>
           )}
 
-          {!['roles', 'registration', 'branding', 'cluster', 'scope-groups', 'manage-users', 'lc-gates', 'home'].includes(currentView) && (() => {
+          {!['roles', 'registration', 'branding', 'cluster', 'scope-groups', 'manage-users', 'lc-gates', 'home', 'devices', 'device-registry'].includes(currentView) && (() => {
             const currentMod = systemModules.find(m => m.slug === currentView);
             const FallbackIcon = getSidebarModuleIcon(currentMod?.name || '', currentView);
             return (

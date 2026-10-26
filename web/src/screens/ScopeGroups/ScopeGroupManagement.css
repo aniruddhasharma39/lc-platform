@@ -1249,3 +1249,18 @@
 .btn-outline-primary:hover {
   background: rgba(11, 60, 122, 0.06);
 }
+
+.scale-in {
+  animation: sgScaleIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes sgScaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

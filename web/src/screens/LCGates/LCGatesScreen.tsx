@@ -22,10 +22,14 @@ import {
   FaClock,
   FaBroadcastTower,
   FaExternalLinkAlt,
-  FaEye
+  FaEye,
+  FaCode,
+  FaShieldAlt
 } from 'react-icons/fa';
+
 import type { User, ScopeGroupItem } from '../../types';
 import { API_URL } from '../../config';
+import DeviceInfoModal from '../../components/DeviceInfoModal';
 import './LCGatesScreen.css';
 
 type Props = {
@@ -58,8 +62,9 @@ export default function LCGatesScreen({ user }: Props) {
   // Selected Cluster for Full Drilldown
   const [selectedGate, setSelectedGate] = useState<any | null>(null);
 
-  // Drilldown Active Tab: 'about' (Cluster details & evidence) or 'telemetry' (AWS Fleet Provisioning)
-  const [clusterTab, setClusterTab] = useState<'about' | 'telemetry'>('about');
+  // Drilldown Active Tab: 'about' | 'deviceInfo' | 'telemetry'
+  const [clusterTab, setClusterTab] = useState<'about' | 'deviceInfo' | 'telemetry'>('about');
+  const [deviceInfoItem, setDeviceInfoItem] = useState<any | null>(null);
 
   // Modal State for Installation Evidence Photo
   const [evidenceModalItem, setEvidenceModalItem] = useState<{
@@ -447,6 +452,14 @@ export default function LCGatesScreen({ user }: Props) {
             </button>
             <button
               type="button"
+              className={`lcg-tab-button ${clusterTab === 'deviceInfo' ? 'active' : ''}`}
+              onClick={() => setClusterTab('deviceInfo')}
+            >
+              <FaMicrochip size={14} />
+              <span>Device Info & Manifest</span>
+            </button>
+            <button
+              type="button"
               className={`lcg-tab-button ${clusterTab === 'telemetry' ? 'active' : ''}`}
               onClick={() => setClusterTab('telemetry')}
             >
@@ -645,6 +658,16 @@ export default function LCGatesScreen({ user }: Props) {
                             </div>
 
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                style={{ padding: '4px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: 5, borderRadius: 6 }}
+                                onClick={() => setDeviceInfoItem({ master, gate: selectedGate })}
+                                title="View full device manifest and hardware specifications"
+                              >
+                                <FaMicrochip /> Device Info
+                              </button>
+
                               <span className={`lcg-power-pill ${master.powerSource === 'SOLAR' ? 'solar' : 'direct'}`}>
                                 {master.powerSource === 'SOLAR' ? <FaSun /> : <FaBolt />} {master.powerSource}
                               </span>
@@ -730,6 +753,131 @@ export default function LCGatesScreen({ user }: Props) {
                     })}
                   </div>
                 )}
+              </div>
+            </div>
+          ) : clusterTab === 'deviceInfo' ? (
+            /* ================= DEVICE INFO & MANIFEST VIEW ================= */
+            <div className="lcg-device-info-tab-view">
+              {/* Header Card */}
+              <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '18px 22px', marginBottom: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{ width: 44, height: 44, borderRadius: 10, background: '#e0f2fe', color: '#0369a1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.25rem' }}>
+                      <FaMicrochip />
+                    </div>
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: '1.18rem', fontWeight: 800, color: '#0f172a' }}>
+                        Physical Device Manifest & Telemetry Profile
+                      </h3>
+                      <p style={{ margin: '3px 0 0', fontSize: '0.82rem', color: '#64748b' }}>
+                        Hardware specifications and sensor mappings ingested from the edge device manifest payload.
+                      </p>
+                    </div>
+                  </div>
+                  <button 
+                    type="button" 
+                    className="btn btn-primary btn-sm"
+                    onClick={() => setDeviceInfoItem({ gate: selectedGate, master: selectedGate.masters?.[0] })}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px' }}
+                  >
+                    <FaCode /> View Raw Manifest JSON
+                  </button>
+                </div>
+              </div>
+
+              {/* Master Unit Hardware Card */}
+              <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '20px', marginBottom: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+                  <FaShieldAlt style={{ color: '#0b3c7a' }} />
+                  <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 800, color: '#0f172a' }}>
+                    Master Gateway Controller ({selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber})
+                  </h4>
+                  <span className="badge badge-active" style={{ fontSize: '0.72rem' }}>Physical Cloud Thing</span>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
+                  <div>
+                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Serial Number</span>
+                    <div style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--primary)' }}>
+                      {selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Device Name</span>
+                    <div style={{ fontSize: '0.92rem', fontWeight: 700, color: '#0f172a' }}>
+                      {selectedGate.deviceRegistries?.[0]?.attributes?.deviceName || 'LC Gate'}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Manufacturing Date</span>
+                    <div style={{ fontSize: '0.92rem', fontWeight: 600, color: '#0f172a' }}>
+                      {selectedGate.deviceRegistries?.[0]?.dateOfMfg ? new Date(selectedGate.deviceRegistries[0].dateOfMfg).toLocaleDateString() : '22-10-2026'}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Firmware Version</span>
+                    <div style={{ fontSize: '0.92rem', fontWeight: 700, color: '#0f172a' }}>
+                      v{selectedGate.deviceRegistries?.[0]?.firmwareVersion || '1.1'}
+                    </div>
+                  </div>
+                  <div style={{ gridColumn: 'span 2' }}>
+                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Description</span>
+                    <div style={{ fontSize: '0.88rem', color: '#334155', marginTop: 2 }}>
+                      {selectedGate.deviceRegistries?.[0]?.attributes?.description || 'Installed on IR Level Crossings'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Connected Wired Slaves Card */}
+              <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '20px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <FaPlug style={{ color: '#0284c7' }} />
+                  <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 800, color: '#0f172a' }}>
+                    Connected Physical Slave Units & Boom Sensors
+                  </h4>
+                </div>
+                <p style={{ margin: '0 0 14px 0', fontSize: '0.82rem', color: '#64748b' }}>
+                  Slaves do not have individual cloud/GSM connectivity; they are hardwired to Master <strong>{selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}</strong> with derived numbering (<code>-A</code> and <code>-B</code>).
+                </p>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
+                  <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 14 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <strong>{selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}-A</strong>
+                      <span style={{ fontSize: '0.72rem', background: '#e0f2fe', color: '#0369a1', padding: '2px 8px', borderRadius: 4, fontWeight: 700 }}>Barrier A • Wired</span>
+                    </div>
+                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Installed Sensors:</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
+                      <div style={{ background: '#ffffff', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: 6, fontSize: '0.8rem' }}>
+                        <strong>HallEffect Sensor</strong>
+                        <div style={{ fontSize: '0.72rem', color: '#64748b' }}>Boom barrier angle & position detection</div>
+                      </div>
+                      <div style={{ background: '#ffffff', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: 6, fontSize: '0.8rem' }}>
+                        <strong>LimitSwitch</strong>
+                        <div style={{ fontSize: '0.72rem', color: '#64748b' }}>Barrier locking & end-stop confirmation</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 14 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <strong>{selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}-B</strong>
+                      <span style={{ fontSize: '0.72rem', background: '#e0f2fe', color: '#0369a1', padding: '2px 8px', borderRadius: 4, fontWeight: 700 }}>Barrier B • Wired</span>
+                    </div>
+                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Installed Sensors:</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
+                      <div style={{ background: '#ffffff', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: 6, fontSize: '0.8rem' }}>
+                        <strong>HallEffect Sensor</strong>
+                        <div style={{ fontSize: '0.72rem', color: '#64748b' }}>Boom barrier angle & position detection</div>
+                      </div>
+                      <div style={{ background: '#ffffff', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: 6, fontSize: '0.8rem' }}>
+                        <strong>LimitSwitch</strong>
+                        <div style={{ fontSize: '0.72rem', color: '#64748b' }}>Barrier locking & end-stop confirmation</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           ) : (
@@ -1167,6 +1315,16 @@ export default function LCGatesScreen({ user }: Props) {
             </div>
           </div>
         </div>
+      )}
+
+      {deviceInfoItem && (
+        <DeviceInfoModal
+          isOpen={Boolean(deviceInfoItem)}
+          onClose={() => setDeviceInfoItem(null)}
+          gate={deviceInfoItem.gate || selectedGate}
+          master={deviceInfoItem.master}
+          device={deviceInfoItem.device}
+        />
       )}
     </div>
   );

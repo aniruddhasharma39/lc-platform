@@ -340,6 +340,7 @@ const scopeGroupSchema = z.object({
   name: z.string().min(1, 'Scope Group name is required').max(100),
   description: z.string().optional().nullable(),
   color: z.string().regex(/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/, 'Invalid hex color').optional().nullable(),
+  allowSms: z.boolean().optional(),
   parentId: z.number().int().optional().nullable(),
   gateIds: z.array(z.number().int()).optional(),
   userIds: z.array(z.number().int()).optional(),
@@ -372,6 +373,7 @@ router.post('/', requireScopeAdmin, async (req: AuthRequest, res, next) => {
           name: data.name,
           description: data.description || null,
           color: data.color || '#0B3C7A',
+          allowSms: Boolean(data.allowSms),
           parentId: data.parentId ?? null,
           gates: {
             create: gateIds.map(gateId => ({ gateId }))
@@ -497,6 +499,7 @@ router.put('/:id', requireScopeAdmin, async (req: AuthRequest, res, next) => {
           name: data.name,
           description: data.description !== undefined ? data.description : existing.description,
           color: data.color !== undefined ? data.color : existing.color,
+          allowSms: data.allowSms !== undefined ? Boolean(data.allowSms) : existing.allowSms,
           parentId: data.parentId !== undefined ? data.parentId : existing.parentId,
         }
       });
@@ -610,6 +613,96 @@ router.delete('/:id', requireScopeAdmin, async (req: AuthRequest, res, next) => 
     });
 
     res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 6b. Direct assign/update clusters (LC Gates) to ANY scope group or sub-division
+router.put('/:id/gates', requireScopeAdmin, async (req: AuthRequest, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid scope group ID' });
+
+    const gateSchema = z.object({
+      gateIds: z.array(z.number().int())
+    });
+    const { gateIds } = gateSchema.parse(req.body);
+
+    const group = await prisma.scopeGroup.findUnique({ where: { id } });
+    if (!group) return res.status(404).json({ error: 'Scope Group not found' });
+
+    const cleanGateIds = Array.from(new Set(gateIds));
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.scopeGroupGate.deleteMany({ where: { scopeGroupId: id } });
+      if (cleanGateIds.length > 0) {
+        await tx.scopeGroupGate.createMany({
+          data: cleanGateIds.map(gateId => ({ scopeGroupId: id, gateId }))
+        });
+      }
+
+      return tx.scopeGroup.findUnique({
+        where: { id },
+        include: {
+          parent: { select: { id: true, name: true, color: true, parentId: true } },
+          children: {
+            select: {
+              id: true,
+              name: true,
+              color: true,
+              parentId: true,
+              description: true,
+              gates: { include: { gate: true } },
+              _count: { select: { gates: true, children: true } }
+            }
+          },
+          gates: {
+            include: {
+              gate: {
+                include: {
+                  masters: {
+                    orderBy: { masterSequence: 'asc' },
+                    include: {
+                      childDevices: {
+                        orderBy: { deviceSequence: 'asc' },
+                        include: { evidences: true }
+                      },
+                      evidences: true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          users: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  fullName: true,
+                  email: true,
+                  mobile: true,
+                  department: true,
+                  role: true
+                }
+              }
+            }
+          },
+          _count: { select: { gates: true, users: true, children: true } }
+        }
+      });
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user!.id,
+        action: 'UPDATE_SCOPE_GROUP_GATES',
+        details: `Updated cluster/gate assignments for "${group.name}" (ID: ${id}) to ${cleanGateIds.length} clusters`
+      }
+    });
+
+    res.json(updated);
   } catch (error) {
     next(error);
   }

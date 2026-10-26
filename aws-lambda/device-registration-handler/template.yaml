@@ -1,0 +1,90 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: LC-Platform AWS IoT Device Registration Lambda & IoT Rule
+
+Parameters:
+  DatabaseUrl:
+    Type: String
+    Description: PostgreSQL RDS Connection URL for LC-Platform
+    NoEcho: true
+    Default: ""
+  
+  VpcSubnetIds:
+    Type: CommaDelimitedList
+    Description: Optional VPC Subnet IDs if RDS is in a private VPC
+    Default: ""
+
+  VpcSecurityGroupIds:
+    Type: CommaDelimitedList
+    Description: Optional VPC Security Group IDs if RDS is in a private VPC
+    Default: ""
+
+Conditions:
+  HasVpcConfig: !Not [!Equals [!Join ["", !Ref VpcSubnetIds], ""]]
+
+Resources:
+  # Lambda Execution Role
+  DeviceRegistrationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: lc-platform-device-registration-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+  # Lambda Function
+  DeviceRegistrationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: lc-platform-device-registration
+      Handler: index.handler
+      Runtime: nodejs20.x
+      CodeUri: .
+      MemorySize: 256
+      Timeout: 15
+      Role: !GetAtt DeviceRegistrationLambdaRole.Arn
+      Environment:
+        Variables:
+          DATABASE_URL: !Ref DatabaseUrl
+      VpcConfig: !If
+        - HasVpcConfig
+        - SubnetIds: !Ref VpcSubnetIds
+          SecurityGroupIds: !Ref VpcSecurityGroupIds
+        - !Ref "AWS::NoValue"
+
+  # AWS IoT Topic Rule: Fires on any Thing created in AWS IoT Core
+  IotThingCreatedRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: lc_platform_thing_created_rule
+      TopicRulePayload:
+        RuleDisabled: false
+        Sql: "SELECT * FROM '$aws/events/thing/+/created'"
+        Description: "Captures AWS IoT Thing creation lifecycle events and persists device metadata into RDS"
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt DeviceRegistrationFunction.Arn
+
+  # Permission allowing AWS IoT to invoke the Lambda function
+  IotInvokeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeviceRegistrationFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !GetAtt IotThingCreatedRule.Arn
+
+Outputs:
+  FunctionArn:
+    Description: ARN of the Device Registration Lambda Function
+    Value: !GetAtt DeviceRegistrationFunction.Arn
+  TopicRuleArn:
+    Description: ARN of the IoT Thing Created Topic Rule
+    Value: !GetAtt IotThingCreatedRule.Arn

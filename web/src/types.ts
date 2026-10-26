@@ -42,6 +42,7 @@ export type ScopeGroupItem = {
   name: string;
   description?: string | null;
   color?: string | null;
+  allowSms?: boolean;
   parentId?: number | null;
   parent?: { id: number; name: string; color?: string | null; parentId?: number | null } | null;
   children?: {

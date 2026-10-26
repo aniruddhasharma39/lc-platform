@@ -99,6 +99,7 @@ export default function ScopeGroupManagement({ user }: Props) {
   const [formName, setFormName] = useState('');
   const [formDesc, setFormDesc] = useState('');
   const [formColor, setFormColor] = useState('#0B3C7A');
+  const [formAllowSms, setFormAllowSms] = useState(false);
   const [formParentId, setFormParentId] = useState<number | null>(null);
   const [formSubGroupInput, setFormSubGroupInput] = useState('');
   const [formSubGroupsList, setFormSubGroupsList] = useState<string[]>([]);
@@ -118,6 +119,21 @@ export default function ScopeGroupManagement({ user }: Props) {
 
   // Delete Confirmation Modal
   const [deleteConfirmGroup, setDeleteConfirmGroup] = useState<ScopeGroupItem | null>(null);
+
+  // Dedicated Quick Cluster Assignment Modal
+  const [clusterAssignModalGroup, setClusterAssignModalGroup] = useState<ScopeGroupItem | null>(null);
+  const [assignGateIds, setAssignGateIds] = useState<Set<number>>(new Set());
+  const [assignSaving, setAssignSaving] = useState(false);
+  const [assignSearch, setAssignSearch] = useState('');
+  const [assignFilterZone, setAssignFilterZone] = useState('');
+  const [assignFilterDiv, setAssignFilterDiv] = useState('');
+
+  // Dedicated Quick Create Sub-Division Modal
+  const [subDivisionModalParent, setSubDivisionModalParent] = useState<ScopeGroupItem | null>(null);
+  const [subDivName, setSubDivName] = useState('');
+  const [subDivDesc, setSubDivDesc] = useState('');
+  const [subDivColor, setSubDivColor] = useState('#0B3C7A');
+  const [subDivSaving, setSubDivSaving] = useState(false);
 
   // Fetch Scope Groups
   const fetchScopeGroups = async () => {
@@ -417,6 +433,7 @@ export default function ScopeGroupManagement({ user }: Props) {
     setFormName('');
     setFormDesc('');
     setFormColor('#0B3C7A');
+    setFormAllowSms(false);
     const pId = typeof preselectedParentId === 'number' ? preselectedParentId : null;
     setFormParentId(pId);
     setSelectedGateIds(new Set());
@@ -435,6 +452,7 @@ export default function ScopeGroupManagement({ user }: Props) {
     setFormName(group.name);
     setFormDesc(group.description || '');
     setFormColor(group.color || '#0B3C7A');
+    setFormAllowSms(Boolean(group.allowSms));
     setFormParentId(group.parentId ?? null);
     setSelectedGateIds(new Set(group.gates?.map(g => g.gate.id) || []));
     setSelectedUserIds(new Set(group.users?.map(u => u.user.id) || []));
@@ -496,6 +514,132 @@ export default function ScopeGroupManagement({ user }: Props) {
     toastInfo(`Deselected ${pickerFilteredGates.length} filtered gates.`, 'Gates Deselected');
   };
 
+  // Open Quick Cluster Assignment Modal
+  const handleOpenAssignClusters = (group: ScopeGroupItem, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setClusterAssignModalGroup(group);
+    const existing = new Set(group.gates?.map(g => g.gate.id) || []);
+    setAssignGateIds(existing);
+    setAssignSearch('');
+    setAssignFilterZone('');
+    setAssignFilterDiv('');
+  };
+
+  // Toggle Cluster Selection in Quick Modal
+  const toggleAssignGate = (gateId: number) => {
+    setAssignGateIds(prev => {
+      const next = new Set(prev);
+      if (next.has(gateId)) next.delete(gateId);
+      else next.add(gateId);
+      return next;
+    });
+  };
+
+  // Save Cluster Assignments
+  const handleSaveClusterAssignments = async () => {
+    if (!clusterAssignModalGroup) return;
+    setAssignSaving(true);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/scope-groups/${clusterAssignModalGroup.id}/gates`, {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: JSON.stringify({ gateIds: Array.from(assignGateIds) })
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        toastSuccess(`Assigned ${assignGateIds.size} clusters to "${clusterAssignModalGroup.name}"!`, 'Clusters Assigned');
+        setClusterAssignModalGroup(null);
+        await fetchScopeGroups();
+        if (activeGroup && activeGroup.id === clusterAssignModalGroup.id) {
+          setActiveGroup(updated);
+        }
+      } else {
+        const err = await res.json();
+        toastError(err.error || 'Failed to assign clusters', 'Assignment Error');
+      }
+    } catch (err: any) {
+      toastError(err.message || 'Error communicating with server', 'Network Error');
+    } finally {
+      setAssignSaving(false);
+    }
+  };
+
+  // Filtered Gates for Quick Assign Modal
+  const assignFilteredGates = useMemo(() => {
+    return allGates.filter(gate => {
+      if (assignFilterZone && gate.zone !== assignFilterZone) return false;
+      if (assignFilterDiv && gate.division !== assignFilterDiv) return false;
+      if (assignSearch.trim()) {
+        const q = assignSearch.toLowerCase();
+        const matchName = (gate.name || '').toLowerCase().includes(q);
+        const matchLc = (gate.lcNumber || '').toLowerCase().includes(q);
+        const matchLoc = (gate.locationName || '').toLowerCase().includes(q);
+        if (!matchName && !matchLc && !matchLoc) return false;
+      }
+      return true;
+    });
+  }, [allGates, assignFilterZone, assignFilterDiv, assignSearch]);
+
+  const selectAllAssignFilteredGates = () => {
+    setAssignGateIds(prev => {
+      const next = new Set(prev);
+      assignFilteredGates.forEach(g => next.add(g.id));
+      return next;
+    });
+  };
+
+  const deselectAllAssignFilteredGates = () => {
+    setAssignGateIds(prev => {
+      const next = new Set(prev);
+      assignFilteredGates.forEach(g => next.delete(g.id));
+      return next;
+    });
+  };
+
+  // Open Create Sub-Division Modal
+  const handleOpenCreateSubDivision = (parentGroup: ScopeGroupItem, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSubDivisionModalParent(parentGroup);
+    setSubDivName('');
+    setSubDivDesc(`Sub-division of ${parentGroup.name}`);
+    setSubDivColor(parentGroup.color || '#0B3C7A');
+  };
+
+  // Save Sub-Division
+  const handleSaveSubDivision = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!subDivisionModalParent || !subDivName.trim()) return;
+    setSubDivSaving(true);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/scope-groups`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          name: subDivName.trim(),
+          description: subDivDesc.trim() || undefined,
+          color: subDivColor,
+          parentId: subDivisionModalParent.id,
+          gateIds: [],
+          userIds: [],
+          subGroupNames: []
+        })
+      });
+      if (res.ok) {
+        const created = await res.json();
+        toastSuccess(`Sub-division "${created.name}" created under "${subDivisionModalParent.name}"!`, 'Sub-Division Created');
+        setSubDivisionModalParent(null);
+        await fetchScopeGroups();
+      } else {
+        const err = await res.json();
+        toastError(err.error || 'Failed to create sub-division', 'Error');
+      }
+    } catch (err: any) {
+      toastError(err.message || 'Error creating sub-division', 'Error');
+    } finally {
+      setSubDivSaving(false);
+    }
+  };
+
   // Filtered Users in Picker
   const pickerFilteredUsers = useMemo(() => {
     return allUsers.filter(u => {
@@ -551,6 +695,7 @@ export default function ScopeGroupManagement({ user }: Props) {
       name: trimmedName,
       description: formDesc.trim() || null,
       color: formColor,
+      allowSms: formAllowSms,
       parentId: formParentId,
       gateIds: Array.from(selectedGateIds),
       userIds: Array.from(selectedUserIds),
@@ -955,9 +1100,19 @@ export default function ScopeGroupManagement({ user }: Props) {
                                     <div style={{ display: 'flex', gap: 6 }}>
                                       <button
                                         type="button"
+                                        className="btn btn-xs btn-primary"
+                                        onClick={(e) => handleOpenAssignClusters(child, e)}
+                                        title={`Assign clusters directly to ${child.name}`}
+                                        style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                                      >
+                                        <FaMicrochip size={10} /> + Clusters
+                                      </button>
+                                      <button
+                                        type="button"
                                         className="btn btn-xs btn-secondary"
-                                        onClick={() => handleOpenCreate(child.id)}
+                                        onClick={(e) => handleOpenCreateSubDivision(child, e)}
                                         title={`Add sub-group inside ${child.name}`}
+                                        style={{ display: 'flex', alignItems: 'center', gap: 4 }}
                                       >
                                         <FaPlus size={10} /> Sub-Group
                                       </button>
@@ -1022,20 +1177,26 @@ export default function ScopeGroupManagement({ user }: Props) {
                     {canManage && (
                       <div
                         className="sg-card-actions"
-                        style={{ marginTop: 12 }}
+                        style={{ marginTop: 12, display: 'flex', gap: 6, flexWrap: 'wrap' }}
                         onClick={(e) => e.stopPropagation()}
                       >
                         <button
                           type="button"
-                          className="btn btn-sm btn-secondary"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenCreate(group.id);
-                          }}
-                          title="Create a child Sub-Division inside this Scope Group"
-                          style={{ color: '#0B3C7A' }}
+                          className="btn btn-sm btn-primary"
+                          onClick={(e) => handleOpenAssignClusters(group, e)}
+                          title="Assign clusters directly to this Scope Group"
+                          style={{ display: 'flex', alignItems: 'center', gap: 6 }}
                         >
-                          <FaPlus /> Sub-Group
+                          <FaMicrochip /> Assign Clusters
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={(e) => handleOpenCreateSubDivision(group, e)}
+                          title="Create a child Sub-Division inside this Scope Group"
+                          style={{ color: '#0B3C7A', display: 'flex', alignItems: 'center', gap: 6 }}
+                        >
+                          <FaPlus /> Sub-Division
                         </button>
                         <button
                           type="button"
@@ -1101,9 +1262,11 @@ export default function ScopeGroupManagement({ user }: Props) {
               ))}
             </div>
             {canManage && (
-              <button className="btn btn-secondary btn-sm" onClick={() => handleOpenEdit(activeGroup)}>
-                <FaEdit /> Edit Scope Group
-              </button>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button className="btn btn-secondary btn-sm" onClick={() => handleOpenEdit(activeGroup)}>
+                  <FaEdit /> Edit Details
+                </button>
+              </div>
             )}
           </div>
 
@@ -1127,13 +1290,18 @@ export default function ScopeGroupManagement({ user }: Props) {
                     </h2>
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <span className="sg-pill gates">
                     <FaMicrochip /> {activeGroup.gates?.length || 0} Direct {activeGroup.gates?.length === 1 ? 'Gate' : 'Gates'}
                   </span>
                   {getDirectChildren(activeGroup.id).length > 0 && (
                     <span className="sg-pill" style={{ background: '#ede9fe', color: '#6d28d9', borderColor: '#ddd6fe' }}>
                       <FaFolderPlus /> {getDirectChildren(activeGroup.id).length} Sub-Divisions
+                    </span>
+                  )}
+                  {activeGroup.allowSms && (
+                    <span className="sg-pill" style={{ background: '#ecfdf5', color: '#047857', borderColor: '#a7f3d0' }}>
+                      📱 SMS Alerts Enabled
                     </span>
                   )}
                 </div>
@@ -1193,9 +1361,10 @@ export default function ScopeGroupManagement({ user }: Props) {
                     <button
                       type="button"
                       className="btn btn-sm btn-primary"
-                      onClick={() => handleOpenCreate(activeGroup.id)}
+                      onClick={(e) => handleOpenCreateSubDivision(activeGroup, e)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 6 }}
                     >
-                      <FaPlus /> Add Sub-Division
+                      <FaPlus /> Sub-Division
                     </button>
                   )}
                 </div>
@@ -1204,15 +1373,6 @@ export default function ScopeGroupManagement({ user }: Props) {
                   <div className="sg-subgroups-empty">
                     <FaFolder style={{ color: '#94a3b8', fontSize: '1.4rem' }} />
                     <span>No nested sub-divisions in this scope group yet.</span>
-                    {canManage && (
-                      <button
-                        type="button"
-                        className="btn btn-xs btn-outline-primary"
-                        onClick={() => handleOpenCreate(activeGroup.id)}
-                      >
-                        <FaPlus /> Create First Sub-Division
-                      </button>
-                    )}
                   </div>
                 ) : (
                   <div className="sg-nested-subgroups-grid">
@@ -1266,12 +1426,22 @@ export default function ScopeGroupManagement({ user }: Props) {
                               Open Sub-Division <FaChevronRight size={10} />
                             </span>
                             {canManage && (
-                              <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
+                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
+                                <button
+                                  type="button"
+                                  className="btn btn-xs btn-primary"
+                                  onClick={(e) => handleOpenAssignClusters(child, e)}
+                                  title={`Assign clusters directly to ${child.name}`}
+                                  style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                                >
+                                  <FaMicrochip size={10} /> + Clusters
+                                </button>
                                 <button
                                   type="button"
                                   className="btn btn-xs btn-secondary"
-                                  onClick={() => handleOpenCreate(child.id)}
-                                  title="Add sub-group inside this division"
+                                  onClick={(e) => handleOpenCreateSubDivision(child, e)}
+                                  title={`Add sub-group inside ${child.name}`}
+                                  style={{ display: 'flex', alignItems: 'center', gap: 4 }}
                                 >
                                   <FaPlus size={10} /> Sub-Group
                                 </button>
@@ -1305,20 +1475,32 @@ export default function ScopeGroupManagement({ user }: Props) {
                 Click on any gate card below to inspect its connected master units and slave devices.
               </p>
             </div>
-            <div className="sg-search-box" style={{ maxWidth: 320 }}>
-              <FaSearch color="#94a3b8" />
-              <input
-                type="text"
-                placeholder="Filter gates in this scope..."
-                value={activeGateSearch}
-                onChange={(e) => setActiveGateSearch(e.target.value)}
-              />
-              {activeGateSearch && (
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div className="sg-search-box" style={{ maxWidth: 300 }}>
+                <FaSearch color="#94a3b8" />
+                <input
+                  type="text"
+                  placeholder="Filter gates in this scope..."
+                  value={activeGateSearch}
+                  onChange={(e) => setActiveGateSearch(e.target.value)}
+                />
+                {activeGateSearch && (
+                  <button
+                    onClick={() => setActiveGateSearch('')}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8' }}
+                  >
+                    <FaTimes />
+                  </button>
+                )}
+              </div>
+              {canManage && (
                 <button
-                  onClick={() => setActiveGateSearch('')}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8' }}
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={(e) => handleOpenAssignClusters(activeGroup, e)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}
                 >
-                  <FaTimes />
+                  <FaPlus /> Assign Clusters
                 </button>
               )}
             </div>
@@ -1328,12 +1510,12 @@ export default function ScopeGroupManagement({ user }: Props) {
             <div className="sg-empty-state" style={{ padding: 48 }}>
               <FaMicrochip className="sg-empty-icon" />
               <h4 style={{ margin: '0 0 8px 0', color: '#1e293b' }}>
-                {activeGateSearch ? 'No matching gates found' : 'No Gates in this Scope Group'}
+                {activeGateSearch ? 'No matching gates found' : `No Clusters Assigned Directly to ${activeGroup.name}`}
               </h4>
-              <p style={{ margin: 0 }}>
+              <p style={{ margin: 0, maxWidth: 460 }}>
                 {activeGateSearch
                   ? 'Try adjusting your search query.'
-                  : 'This scope group does not have any LC gates assigned yet.'}
+                  : `Assign LC Gate clusters to this ${activeGroup.parentId ? 'sub-division' : 'scope group'} to monitor level crossings under it.`}
               </p>
             </div>
           ) : (
@@ -1669,6 +1851,47 @@ export default function ScopeGroupManagement({ user }: Props) {
                           />
                         ))}
                       </div>
+                    </div>
+
+                    {/* Gate State Change SMS Alerts Checkbox */}
+                    <div style={{
+                      marginTop: 4,
+                      padding: '14px 16px',
+                      background: formAllowSms ? '#f0fdf4' : '#f8fafc',
+                      border: formAllowSms ? '1.5px solid #86efac' : '1px solid #cbd5e1',
+                      borderRadius: 10,
+                      transition: 'all 0.2s ease'
+                    }}>
+                      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 12, cursor: 'pointer', margin: 0 }}>
+                        <input
+                          type="checkbox"
+                          checked={formAllowSms}
+                          onChange={e => setFormAllowSms(e.target.checked)}
+                          style={{ width: 19, height: 19, marginTop: 2, cursor: 'pointer', accentColor: '#16a34a' }}
+                        />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <span style={{ fontWeight: 800, fontSize: '0.94rem', color: '#0f172a' }}>
+                              📱 Allow Gate State SMS Alerts for this Scope Group
+                            </span>
+                            {formAllowSms ? (
+                              <span style={{ fontSize: '0.72rem', fontWeight: 800, background: '#dcfce7', color: '#15803d', padding: '2px 8px', borderRadius: 4, letterSpacing: '0.4px' }}>
+                                SMS ACTIVE
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: '0.72rem', fontWeight: 600, background: '#f1f5f9', color: '#64748b', padding: '2px 8px', borderRadius: 4 }}>
+                                DISABLED
+                              </span>
+                            )}
+                          </div>
+                          <p style={{ margin: '4px 0 0 0', fontSize: '0.82rem', color: '#475569', lineHeight: 1.45 }}>
+                            When enabled, officials mapped to this scope group receive real-time transactional DLT SMS on their registered mobile numbers whenever a mapped gate transitions between <strong>OPEN</strong> and <strong>CLOSED</strong>.
+                          </p>
+                          <div style={{ marginTop: 8, fontSize: '0.76rem', color: '#0369a1', background: '#e0f2fe', padding: '4px 8px', borderRadius: 4, display: 'inline-block' }}>
+                            DLT: <code>Mirtha Technologies: Level Crossing &#123;LC&#125; status changed to &#123;STATE&#125; at &#123;TIME&#125;. This is an automated monitoring alert.</code>
+                          </div>
+                        </div>
+                      </label>
                     </div>
                   </div>
                 )}
@@ -2140,6 +2363,283 @@ export default function ScopeGroupManagement({ user }: Props) {
                 Yes, Delete Scope Group
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* QUICK ASSIGN CLUSTERS MODAL */}
+      {clusterAssignModalGroup && (
+        <div className="sg-modal-overlay" onClick={() => setClusterAssignModalGroup(null)}>
+          <div className="sg-modal scale-in" onClick={e => e.stopPropagation()} style={{ maxWidth: 760, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+            <div className="sg-modal-header" style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ width: 40, height: 40, borderRadius: 10, background: '#e0f2fe', color: '#0369a1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem' }}>
+                  <FaMicrochip />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 800, color: '#0f172a' }}>
+                    Assign Clusters to: <span style={{ color: clusterAssignModalGroup.color || '#0B3C7A' }}>{clusterAssignModalGroup.name}</span>
+                  </h3>
+                  <p style={{ margin: '2px 0 0 0', fontSize: '0.82rem', color: '#64748b' }}>
+                    {clusterAssignModalGroup.parentId ? 'Sub-Division / Sub-Group' : 'Root Scope Group'} • Select LC Gates to be monitored under this scope
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '50%', width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#0f172a' }}
+                onClick={() => setClusterAssignModalGroup(null)}
+                aria-label="Close"
+              >
+                <FaTimes size={14} color="#0f172a" />
+              </button>
+            </div>
+
+            {/* Filter toolbar */}
+            <div style={{ padding: '14px 20px', background: '#ffffff', borderBottom: '1px solid #e2e8f0', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <div className="sg-search-box" style={{ flex: '1 1 200px' }}>
+                <FaSearch color="#94a3b8" />
+                <input
+                  type="text"
+                  placeholder="Search by LC#, location, zone..."
+                  value={assignSearch}
+                  onChange={e => setAssignSearch(e.target.value)}
+                />
+                {assignSearch && (
+                  <button type="button" onClick={() => setAssignSearch('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8' }}>
+                    <FaTimes size={12} />
+                  </button>
+                )}
+              </div>
+
+              <select
+                value={assignFilterZone}
+                onChange={e => {
+                  setAssignFilterZone(e.target.value);
+                  setAssignFilterDiv('');
+                }}
+                style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: '0.86rem', backgroundColor: '#fff' }}
+              >
+                <option value="">All Zones</option>
+                {zones.map(z => (
+                  <option key={z} value={z}>{z}</option>
+                ))}
+              </select>
+
+              <select
+                value={assignFilterDiv}
+                onChange={e => setAssignFilterDiv(e.target.value)}
+                disabled={!assignFilterZone}
+                style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: '0.86rem', backgroundColor: '#fff' }}
+              >
+                <option value="">All Divisions</option>
+                {(divisionsByZone[assignFilterZone] || []).map(d => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+
+              <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+                <button
+                  type="button"
+                  className="btn btn-xs btn-secondary"
+                  onClick={selectAllAssignFilteredGates}
+                >
+                  <FaCheckDouble size={11} /> Select All Filtered ({assignFilteredGates.length})
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-xs btn-secondary"
+                  onClick={deselectAllAssignFilteredGates}
+                >
+                  Clear Filtered
+                </button>
+              </div>
+            </div>
+
+            {/* Clusters list */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', maxHeight: '420px' }}>
+              {assignFilteredGates.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '40px 20px', color: '#64748b' }}>
+                  <FaMicrochip size={28} style={{ color: '#cbd5e1', marginBottom: 8 }} />
+                  <div>No clusters match your search or filters.</div>
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 10 }}>
+                  {assignFilteredGates.map(gate => {
+                    const isSelected = assignGateIds.has(gate.id);
+                    const mastersCount = gate.masters?.length || 0;
+                    return (
+                      <div
+                        key={gate.id}
+                        onClick={() => toggleAssignGate(gate.id)}
+                        style={{
+                          padding: '12px 14px',
+                          borderRadius: 8,
+                          border: isSelected ? '2px solid #0B3C7A' : '1px solid #e2e8f0',
+                          backgroundColor: isSelected ? '#f0f9ff' : '#ffffff',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: 12,
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => {}} // handled by container
+                          style={{ width: 18, height: 18, marginTop: 2, cursor: 'pointer', accentColor: '#0B3C7A' }}
+                        />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                            <strong style={{ fontSize: '0.96rem', color: '#0f172a' }}>{gate.lcNumber}</strong>
+                            <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: '#e2e8f0', color: '#475569' }}>
+                              {gate.zone || 'Zone N/A'}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '0.84rem', color: '#334155', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {gate.locationName || gate.name || 'Level Crossing'}
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: 4, display: 'flex', gap: 10 }}>
+                            <span>Div: {gate.division || 'N/A'}</span>
+                            <span>•</span>
+                            <span>{mastersCount} Master{mastersCount === 1 ? '' : 's'}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div style={{ padding: '14px 20px', borderTop: '1px solid #e2e8f0', background: '#f8fafc', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontSize: '0.9rem', color: '#334155', fontWeight: 600 }}>
+                Selected: <span style={{ color: '#0B3C7A', fontWeight: 800 }}>{assignGateIds.size}</span> cluster{assignGateIds.size === 1 ? '' : 's'}
+              </div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setClusterAssignModalGroup(null)}
+                  disabled={assignSaving}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleSaveClusterAssignments}
+                  disabled={assignSaving}
+                  style={{ minWidth: 140 }}
+                >
+                  {assignSaving ? 'Saving Clusters...' : 'Save Clusters'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* QUICK CREATE SUB-DIVISION MODAL */}
+      {subDivisionModalParent && (
+        <div className="sg-modal-overlay" onClick={() => setSubDivisionModalParent(null)}>
+          <div className="sg-modal scale-in" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
+            <div className="sg-modal-header" style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ width: 40, height: 40, borderRadius: 10, background: '#ede9fe', color: '#6d28d9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem' }}>
+                  <FaFolderPlus />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 800, color: '#0f172a' }}>
+                    Add Sub-Division / Sub-Group
+                  </h3>
+                  <p style={{ margin: '2px 0 0 0', fontSize: '0.82rem', color: '#64748b' }}>
+                    Create child folder inside <strong>{subDivisionModalParent.name}</strong>
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '50%', width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#0f172a' }}
+                onClick={() => setSubDivisionModalParent(null)}
+                aria-label="Close"
+              >
+                <FaTimes size={14} color="#0f172a" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveSubDivision}>
+              <div className="sg-modal-body" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div>
+                  <label style={{ display: 'block', fontWeight: 700, fontSize: '0.88rem', color: '#1e293b', marginBottom: 6 }}>
+                    Sub-Division / Sub-Group Name <span style={{ color: '#ef4444' }}>*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Ahmedabad Division, Vadodara Division, Pune Section..."
+                    value={subDivName}
+                    onChange={e => setSubDivName(e.target.value)}
+                    style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: '0.95rem' }}
+                    autoFocus
+                  />
+                  <small style={{ color: '#64748b', fontSize: '0.78rem', marginTop: 4, display: 'block' }}>
+                    Users assigned to {subDivisionModalParent.name} will automatically inherit access to this sub-division and its clusters.
+                  </small>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontWeight: 700, fontSize: '0.88rem', color: '#1e293b', marginBottom: 6 }}>
+                    Description (Optional)
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="e.g. Covers Ahmedabad to Gandhidham section level crossings..."
+                    value={subDivDesc}
+                    onChange={e => setSubDivDesc(e.target.value)}
+                    style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: '0.92rem', resize: 'vertical' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontWeight: 700, fontSize: '0.88rem', color: '#1e293b', marginBottom: 6 }}>
+                    Color Accent
+                  </label>
+                  <div className="sg-color-swatches">
+                    {COLOR_PRESETS.map(hex => (
+                      <div
+                        key={hex}
+                        className={`sg-color-circle ${subDivColor === hex ? 'selected' : ''}`}
+                        style={{ backgroundColor: hex }}
+                        onClick={() => setSubDivColor(hex)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="sg-modal-footer" style={{ padding: '14px 20px', borderTop: '1px solid #e2e8f0', background: '#f8fafc', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setSubDivisionModalParent(null)}
+                  disabled={subDivSaving}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={subDivSaving || !subDivName.trim()}
+                >
+                  {subDivSaving ? 'Creating...' : 'Create Sub-Division'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
