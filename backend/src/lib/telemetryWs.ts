@@ -216,3 +216,4 @@ export async function broadcastGateTelemetry(gateId: number, customData?: any) {
     }
   }
 }
+

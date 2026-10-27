@@ -1079,7 +1079,7 @@ export default function LCGatesScreen({ user }: Props) {
                   <div>
                     <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Manufacturing Date</span>
                     <div style={{ fontSize: '0.92rem', fontWeight: 600, color: '#0f172a' }}>
-                      {selectedGate.deviceRegistries?.[0]?.dateOfMfg ? new Date(selectedGate.deviceRegistries[0].dateOfMfg).toLocaleDateString() : '22-10-2026'}
+                      {selectedGate.deviceRegistries?.[0]?.dateOfMfg ? new Date(selectedGate.deviceRegistries[0].dateOfMfg).toLocaleDateString() : (selectedGate.createdAt ? new Date(selectedGate.createdAt).toLocaleDateString() : 'N/A')}
                     </div>
                   </div>
                   <div>
@@ -1097,55 +1097,79 @@ export default function LCGatesScreen({ user }: Props) {
                 </div>
               </div>
 
-              {/* Connected Wired Slaves Card */}
+              {/* Connected Wired Slaves Card (Dynamic from Database) */}
               <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '20px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                   <FaPlug style={{ color: '#0284c7' }} />
                   <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 800, color: '#0f172a' }}>
-                    Connected Physical Slave Units & Boom Sensors
+                    Connected Physical Slave Units & Boom Sensors ({selectedGate.masters?.flatMap((m: any) => m.childDevices || []).length || 0})
                   </h4>
                 </div>
                 <p style={{ margin: '0 0 14px 0', fontSize: '0.82rem', color: '#64748b' }}>
-                  Slaves do not have individual cloud/GSM connectivity; they are hardwired to Master <strong>{selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}</strong> with derived numbering (<code>-A</code> and <code>-B</code>).
+                  Hardware devices hardwired to Master Gateway <strong>{selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}</strong>.
                 </p>
 
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
-                  <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 14 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                      <strong>{selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}-A</strong>
-                      <span style={{ fontSize: '0.72rem', background: '#e0f2fe', color: '#0369a1', padding: '2px 8px', borderRadius: 4, fontWeight: 700 }}>Barrier A • Wired</span>
-                    </div>
-                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Installed Sensors:</span>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
-                      <div style={{ background: '#ffffff', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: 6, fontSize: '0.8rem' }}>
-                        <strong>HallEffect Sensor</strong>
-                        <div style={{ fontSize: '0.72rem', color: '#64748b' }}>Boom barrier angle & position detection</div>
-                      </div>
-                      <div style={{ background: '#ffffff', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: 6, fontSize: '0.8rem' }}>
-                        <strong>LimitSwitch</strong>
-                        <div style={{ fontSize: '0.72rem', color: '#64748b' }}>Barrier locking & end-stop confirmation</div>
-                      </div>
-                    </div>
-                  </div>
+                {(() => {
+                  const allSlaves = selectedGate.masters?.flatMap((m: any) =>
+                    (m.childDevices || []).map((c: any) => ({
+                      ...c,
+                      masterSeq: m.masterSequence,
+                      masterSerial: m.serialNumber,
+                      masterPower: m.powerSource
+                    }))
+                  ) || [];
 
-                  <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 14 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                      <strong>{selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}-B</strong>
-                      <span style={{ fontSize: '0.72rem', background: '#e0f2fe', color: '#0369a1', padding: '2px 8px', borderRadius: 4, fontWeight: 700 }}>Barrier B • Wired</span>
-                    </div>
-                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Installed Sensors:</span>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
-                      <div style={{ background: '#ffffff', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: 6, fontSize: '0.8rem' }}>
-                        <strong>HallEffect Sensor</strong>
-                        <div style={{ fontSize: '0.72rem', color: '#64748b' }}>Boom barrier angle & position detection</div>
+                  if (allSlaves.length === 0) {
+                    return (
+                      <div style={{ background: '#f8fafc', border: '1px dashed #cbd5e1', borderRadius: 10, padding: '24px', textAlign: 'center', color: '#64748b', fontSize: '0.85rem' }}>
+                        No slave hardware units or boom sensors have been configured for this master gateway yet.
                       </div>
-                      <div style={{ background: '#ffffff', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: 6, fontSize: '0.8rem' }}>
-                        <strong>LimitSwitch</strong>
-                        <div style={{ fontSize: '0.72rem', color: '#64748b' }}>Barrier locking & end-stop confirmation</div>
-                      </div>
+                    );
+                  }
+
+                  return (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
+                      {allSlaves.map((slave: any) => (
+                        <div key={slave.id} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 14 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                            <div>
+                              <strong style={{ fontSize: '0.92rem', color: '#0f172a' }}>{slave.serialNumber}</strong>
+                              <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
+                                Sequence #{slave.deviceSequence} • Master: {slave.masterSerial}
+                              </div>
+                            </div>
+                            <span style={{ fontSize: '0.72rem', background: '#e0f2fe', color: '#0369a1', padding: '2px 8px', borderRadius: 4, fontWeight: 700 }}>
+                              {slave.type || 'SLAVE UNIT'} • Wired
+                            </span>
+                          </div>
+
+                          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Installed Unit Details:</span>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
+                            <div style={{ background: '#ffffff', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: 6, fontSize: '0.8rem' }}>
+                              <strong>Device Unit Type</strong>
+                              <div style={{ fontSize: '0.72rem', color: '#64748b' }}>{slave.type || 'Sensor / Barrier Unit'}</div>
+                            </div>
+                            <div style={{ background: '#ffffff', border: '1px solid #cbd5e1', padding: '6px 10px', borderRadius: 6, fontSize: '0.8rem' }}>
+                              <strong>Master Parent Gateway</strong>
+                              <div style={{ fontSize: '0.72rem', color: '#64748b' }}>Sequence #{slave.masterSeq} ({slave.masterSerial})</div>
+                            </div>
+                          </div>
+
+                          <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              style={{ padding: '4px 10px', fontSize: '0.72rem', borderRadius: 5, display: 'flex', alignItems: 'center', gap: 4 }}
+                              onClick={() => setDeviceInfoItem({ device: slave, gate: selectedGate })}
+                            >
+                              <FaMicrochip /> Device Info
+                            </button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  </div>
-                </div>
+                  );
+                })()}
               </div>
             </div>
                     ) : (
