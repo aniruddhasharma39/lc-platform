@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { RAILWAY_DATA, RAILWAY_ZONES, divisionsForZone } from '../lib/railwayData';
 import { getAllDescendantScopeGroupIds } from '../lib/scopeHierarchy';
+import { publishMqttMessage } from '../lib/iotClient';
 
 const router = Router();
 
@@ -631,7 +632,7 @@ function buildGateTelemetry(gate: any) {
   };
 }
 
-// Get AWS Fleet Provisioning & Device Status for a Gate
+// Get Live Telemetry, Historical MQTT Payloads & Device Inspection Data for a Gate
 router.get('/:id/telemetry', authenticate, async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
@@ -662,10 +663,142 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
     });
 
     if (!gate) return res.status(404).json({ error: 'Gate not found' });
+    // Collect all possible thing / serial identifiers for this gate
+    const thingIdentifiers = Array.from(new Set([
+      gate.lcNumber,
+      ...gate.masters.map(m => m.serialNumber),
+      ...gate.deviceRegistries.map(d => d.thingName),
+      ...gate.deviceRegistries.map(d => d.serialNumber).filter(Boolean) as string[],
+    ])).filter(Boolean);
+
+    const deviceRegistryIds = gate.deviceRegistries.map(d => d.id);
+
+    // Fetch real device telemetry payloads from database
+    const telemetries = await prisma.deviceTelemetry.findMany({
+      where: {
+        OR: [
+          { thingName: { in: thingIdentifiers } },
+          ...(deviceRegistryIds.length > 0 ? [{ deviceRegistryId: { in: deviceRegistryIds } }] : [])
+        ]
+      },
+      orderBy: { receivedAt: 'desc' },
+      take: 100,
+    }).catch(() => []);
+
+    // Categorize payloads:
+    // 1. Telemetry
+    const telemetryRecords = telemetries.filter(t =>
+      (t.topic && t.topic.includes('/telemetry')) ||
+      (t.payload && typeof t.payload === 'object' && ((t.payload as any).Status !== undefined || (t.payload as any).LimitSwitchClosed !== undefined))
+    );
+
+    // 2. Manifest
+    const manifestRecords = telemetries.filter(t =>
+      (t.topic && t.topic.includes('/manifest')) ||
+      (t.payload && typeof t.payload === 'object' && ((t.payload as any).thing !== undefined || (t.payload as any).Master !== undefined))
+    );
+
+    // 3. Health Check
+    const healthRecords = telemetries.filter(t =>
+      (t.topic && t.topic.includes('/health')) ||
+      (t.payload && typeof t.payload === 'object' && ((t.payload as any).action === 'HEALTH_CHECK' || (t.payload as any).NetworkStrength !== undefined || (t.payload as any).BatteryPercentage !== undefined))
+    );
+
+    const latestTele = telemetryRecords[0]?.payload as any;
+    const currentStatus = latestTele?.Status || (gate.deviceRegistries[0]?.status ?? 'CONFIGURED');
+    const primaryThingName = gate.masters[0]?.serialNumber || gate.deviceRegistries[0]?.thingName || gate.lcNumber;
+
     const telemetryData = buildGateTelemetry(gate);
-    res.json(telemetryData);
+    res.json({
+      success: true,
+      gateId: gate.id,
+      lcNumber: gate.lcNumber,
+      locationName: gate.locationName,
+      thingName: primaryThingName,
+      currentStatus,
+      topic: `lc-gate/${primaryThingName}/telemetry`,
+      counts: {
+        all: telemetries.length,
+        telemetry: telemetryRecords.length,
+        manifest: manifestRecords.length,
+        healthCheck: healthRecords.length,
+      },
+      payloads: telemetries,
+      telemetryRecords,
+      manifestRecords,
+      healthRecords,
+      latestTelemetry: telemetryRecords[0] || null,
+      latestManifest: manifestRecords[0] || null,
+      latestHealthCheck: healthRecords[0] || null,
+      cluster: telemetryData.cluster,
+      awsConfig: telemetryData.awsConfig,
+      timestamp: new Date().toISOString()
+    });
   } catch (error) {
     next(error);
+  }
+});
+
+// Delete an LC Gate (cascades) - declared last so it doesn't shadow the paths above.
+// Trigger health check command to gate's master hardware over AWS IoT Core MQTT broker
+router.post('/:id/health-check', authenticate, async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid gate ID' });
+
+    const gate = await prisma.lCGate.findUnique({
+      where: { id },
+      include: {
+        masters: { orderBy: { masterSequence: 'asc' } },
+        deviceRegistries: true,
+      }
+    });
+
+    if (!gate) return res.status(404).json({ error: 'Gate not found' });
+
+    const primaryThingName = gate.masters[0]?.serialNumber || gate.deviceRegistries[0]?.thingName || gate.lcNumber;
+    const topic = `lc-gate/${primaryThingName}/health/request`;
+    const requestId = `hc_${Date.now()}`;
+    const commandPayload = {
+      action: 'HEALTH_CHECK',
+      MasterDeviceId: primaryThingName,
+      gateId: gate.id,
+      lcNumber: gate.lcNumber,
+      requestId,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Publish to AWS IoT Core MQTT broker
+    const mqttResult = await publishMqttMessage(topic, commandPayload);
+
+    // Record request into common telemetry table
+    const record = await prisma.deviceTelemetry.create({
+      data: {
+        thingName: primaryThingName,
+        topic,
+        payload: {
+          ...commandPayload,
+          mqttDelivery: mqttResult.success ? 'PUBLISHED_TO_BROKER' : 'QUEUED_LOCAL',
+          mqttError: mqttResult.error || null,
+        },
+        status: 'REQUESTED',
+        deviceRegistryId: gate.deviceRegistries[0]?.id || null,
+        receivedAt: new Date(),
+      }
+    });
+
+    res.json({
+      message: mqttResult.success
+        ? `Health check command published over AWS IoT MQTT to ${topic}`
+        : `Health check request registered for ${primaryThingName} (MQTT: ${mqttResult.error || 'broker offline'})`,
+      topic,
+      requestId,
+      mqttDelivered: mqttResult.success,
+      mqttError: mqttResult.error || null,
+      record,
+    });
+  } catch (err) {
+    next(err);
   }
 });
 

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -63,6 +64,16 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   final _searchCtrl = TextEditingController();
   String _searchQuery = '';
 
+  // Telemetry & Inspector State
+  Map<String, dynamic>? _gateTelemetry;
+  bool _loadingTelemetry = false;
+  bool _autoRefreshTelemetry = true;
+  int? _selectedPayloadId;
+  String _inspectSubTab = 'telemetry'; // 'telemetry' | 'manifest' | 'health' | 'all'
+  bool _showRawJson = false;
+  bool _triggeringHealthCheck = false;
+  Timer? _telemetryTimer;
+
   // Data
   List<dynamic> _scopeGroups = [];
   List<dynamic> _gates = [];
@@ -76,6 +87,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
 
   @override
   void dispose() {
+    _telemetryTimer?.cancel();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -331,7 +343,18 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
       _selectedGate = gate;
       _clusterTab = tab;
       _viewMode = 'detail';
+      _selectedPayloadId = null;
     });
+    if (tab == 'telemetry') {
+      final gateId = gate['id'];
+      final idNum = gateId is int ? gateId : int.tryParse(gateId?.toString() ?? '') ?? 0;
+      if (idNum > 0) {
+        _fetchGateTelemetry(idNum);
+        _startTelemetryTimer();
+      }
+    } else {
+      _telemetryTimer?.cancel();
+    }
   }
 
   // Open Evidence Photo Dialog
@@ -1363,8 +1386,8 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                       padding: const EdgeInsets.symmetric(vertical: 8),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
                     ),
-                    icon: const Icon(Icons.sensors, size: 14, color: Colors.white),
-                    label: const Text('AWS Telemetry', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white)),
+                    icon: const Icon(Icons.tune, size: 14, color: Colors.white),
+                    label: const Text('Inspect Telemetry', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white)),
                     onPressed: () => _openClusterDetail(gate, 'telemetry'),
                   ),
                 ),
@@ -1400,10 +1423,13 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
           children: [
             TextButton.icon(
               style: TextButton.styleFrom(padding: EdgeInsets.zero, visualDensity: VisualDensity.compact),
-              onPressed: () => setState(() {
-                _viewMode = 'folder';
-                _selectedGate = null;
-              }),
+              onPressed: () {
+                _telemetryTimer?.cancel();
+                setState(() {
+                  _viewMode = 'folder';
+                  _selectedGate = null;
+                });
+              },
               icon: const Icon(Icons.arrow_back, size: 16),
               label: const Text('Back to Directory', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
             ),
@@ -1578,7 +1604,10 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             children: [
               Expanded(
                 child: InkWell(
-                  onTap: () => setState(() => _clusterTab = 'about'),
+                  onTap: () {
+                    _telemetryTimer?.cancel();
+                    setState(() => _clusterTab = 'about');
+                  },
                   borderRadius: BorderRadius.circular(6),
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
@@ -1598,7 +1627,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                         const SizedBox(width: 5),
                         Flexible(
                           child: Text(
-                            'About Cluster & Hardware',
+                            'About Cluster',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
@@ -1615,7 +1644,15 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               ),
               Expanded(
                 child: InkWell(
-                  onTap: () => setState(() => _clusterTab = 'telemetry'),
+                  onTap: () {
+                    setState(() => _clusterTab = 'telemetry');
+                    final gateId = gate['id'];
+                    final idNum = gateId is int ? gateId : int.tryParse(gateId?.toString() ?? '') ?? 0;
+                    if (idNum > 0) {
+                      _fetchGateTelemetry(idNum);
+                      _startTelemetryTimer();
+                    }
+                  },
                   borderRadius: BorderRadius.circular(6),
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
@@ -1631,11 +1668,11 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.sensors, size: 14, color: _clusterTab == 'telemetry' ? AppColors.primary : const Color(0xFF64748B)),
+                        Icon(Icons.tune, size: 14, color: _clusterTab == 'telemetry' ? AppColors.primary : const Color(0xFF64748B)),
                         const SizedBox(width: 5),
                         Flexible(
                           child: Text(
-                            'AWS Telemetry',
+                            'Live Telemetry & Inspect',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
@@ -2021,85 +2058,189 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     );
   }
 
-  // Tab 2: AWS Telemetry & Fleet Provisioning
+  // ==========================================================
+  // TELEMETRY & INSPECTOR METHODS
+  // ==========================================================
+  void _startTelemetryTimer() {
+    _telemetryTimer?.cancel();
+    _telemetryTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_viewMode == 'detail' && _clusterTab == 'telemetry' && _autoRefreshTelemetry && _selectedGate != null) {
+        final gateId = _selectedGate!['id'];
+        final idNum = gateId is int ? gateId : int.tryParse(gateId?.toString() ?? '') ?? 0;
+        if (idNum > 0) {
+          _fetchGateTelemetry(idNum, silent: true);
+        }
+      }
+    });
+  }
+
+  Future<void> _fetchGateTelemetry(int gateId, {bool silent = false}) async {
+    if (gateId <= 0) return;
+    if (!silent) {
+      setState(() => _loadingTelemetry = true);
+    }
+    try {
+      final res = await http.get(
+        Uri.parse('$baseUrl/lcgate/$gateId/telemetry'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_token',
+        },
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (mounted && data is Map<String, dynamic>) {
+          setState(() {
+            _gateTelemetry = data;
+            _loadingTelemetry = false;
+          });
+        }
+      } else {
+        if (!silent && mounted) {
+          setState(() => _loadingTelemetry = false);
+        }
+      }
+    } catch (_) {
+      if (!silent && mounted) {
+        setState(() => _loadingTelemetry = false);
+      }
+    }
+  }
+
+  Future<void> _triggerGatePing(int gateId) async {
+    if (gateId <= 0) return;
+    setState(() => _triggeringHealthCheck = true);
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/lcgate/$gateId/health-check'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_token',
+        },
+      );
+      if (res.statusCode == 200) {
+        if (mounted) {
+          AppFeedback.showSuccess(context, 'MQTT health ping published to AWS IoT Core topic.');
+          await _fetchGateTelemetry(gateId, silent: true);
+        }
+      } else {
+        if (mounted) {
+          final body = json.decode(res.body);
+          AppFeedback.showError(context, body['error'] ?? 'Failed to trigger health check ping.');
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        AppFeedback.showError(context, 'Network error triggering health check ping: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _triggeringHealthCheck = false);
+      }
+    }
+  }
+
+  String _formatDateTime(dynamic dtStr) {
+    if (dtStr == null) return 'N/A';
+    try {
+      final dt = DateTime.parse(dtStr.toString()).toLocal();
+      final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+      final m = dt.minute.toString().padLeft(2, '0');
+      final s = dt.second.toString().padLeft(2, '0');
+      final ampm = dt.hour >= 12 ? 'PM' : 'AM';
+      final mo = dt.month.toString().padLeft(2, '0');
+      final day = dt.day.toString().padLeft(2, '0');
+      final yr = dt.year;
+      return '$h:$m:$s $ampm • $mo/$day/$yr';
+    } catch (_) {
+      return dtStr.toString();
+    }
+  }
+
+  String _formatTimeOnly(dynamic dtStr) {
+    if (dtStr == null) return 'N/A';
+    try {
+      final dt = DateTime.parse(dtStr.toString()).toLocal();
+      final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+      final m = dt.minute.toString().padLeft(2, '0');
+      final s = dt.second.toString().padLeft(2, '0');
+      final ampm = dt.hour >= 12 ? 'PM' : 'AM';
+      return '$h:$m:$s $ampm';
+    } catch (_) {
+      return dtStr.toString();
+    }
+  }
+
+  // ==========================================================
+  // TAB 2: LIVE TELEMETRY & DEVICE INSPECTOR (FULL PARITY)
+  // ==========================================================
   Widget _buildTelemetryTab(Map<String, dynamic> gate, int totalDevicesCount) {
-    final masters = (gate['masters'] as List?) ?? [];
+    final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
+    final thingName = _gateTelemetry?['thingName']?.toString() ?? gate['lcNumber']?.toString() ?? 'LC-GATE';
+    final currentStatus = _gateTelemetry?['currentStatus']?.toString().toUpperCase() ?? 'UNKNOWN';
+    final topic = _gateTelemetry?['topic']?.toString() ?? 'lc-gate/$thingName/telemetry';
+    final counts = (_gateTelemetry?['counts'] as Map<String, dynamic>?) ?? {};
+
+    final telemetryRecords = (_gateTelemetry?['telemetryRecords'] as List?) ?? [];
+    final manifestRecords = (_gateTelemetry?['manifestRecords'] as List?) ?? [];
+    final healthRecords = (_gateTelemetry?['healthRecords'] as List?) ?? [];
+    final allRecords = (_gateTelemetry?['payloads'] as List?) ?? [];
+
+    List<dynamic> activeList = [];
+    if (_inspectSubTab == 'telemetry') {
+      activeList = telemetryRecords;
+    } else if (_inspectSubTab == 'manifest') {
+      activeList = manifestRecords;
+    } else if (_inspectSubTab == 'health') {
+      activeList = healthRecords;
+    } else {
+      activeList = allRecords;
+    }
+
+    // Determine actively inspected record
+    dynamic activeRecord;
+    if (_selectedPayloadId != null) {
+      activeRecord = allRecords.firstWhere(
+        (r) => r is Map && r['id'] == _selectedPayloadId,
+        orElse: () => null,
+      );
+    }
+    if (activeRecord == null && activeList.isNotEmpty) {
+      activeRecord = activeList.first;
+    }
+
+    dynamic displayPayload;
+    dynamic recordTimestamp;
+    if (activeRecord != null && activeRecord is Map) {
+      displayPayload = activeRecord['payload'] ?? activeRecord;
+      recordTimestamp = activeRecord['createdAt'];
+    } else {
+      if (_inspectSubTab == 'telemetry' && _gateTelemetry?['latestTelemetry'] != null) {
+        displayPayload = _gateTelemetry!['latestTelemetry']['payload'] ?? _gateTelemetry!['latestTelemetry'];
+        recordTimestamp = _gateTelemetry!['latestTelemetry']['createdAt'];
+      } else if (_inspectSubTab == 'manifest' && _gateTelemetry?['latestManifest'] != null) {
+        displayPayload = _gateTelemetry!['latestManifest']['payload'] ?? _gateTelemetry!['latestManifest'];
+        recordTimestamp = _gateTelemetry!['latestManifest']['createdAt'];
+      } else if (_inspectSubTab == 'health' && _gateTelemetry?['latestHealthCheck'] != null) {
+        displayPayload = _gateTelemetry!['latestHealthCheck']['payload'] ?? _gateTelemetry!['latestHealthCheck'];
+        recordTimestamp = _gateTelemetry!['latestHealthCheck']['createdAt'];
+      }
+    }
+
+    final isClosed = currentStatus == 'CLOSED';
+    final isOpen = currentStatus == 'OPEN';
+    final statusBg = isClosed ? const Color(0xFFDCFCE7) : (isOpen ? const Color(0xFFFEE2E2) : const Color(0xFFF1F5F9));
+    final statusColor = isClosed ? const Color(0xFF15803D) : (isOpen ? const Color(0xFFB91C1C) : const Color(0xFF475569));
+    final statusBorder = isClosed ? const Color(0xFF86EFAC) : (isOpen ? const Color(0xFFFCA5A5) : const Color(0xFFCBD5E1));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Informational Banner
-        Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: const Color(0xFFEFF6FF),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFBFDBFE)),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                alignment: WrapAlignment.spaceBetween,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1D4ED8),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.sensors, size: 12, color: Colors.white),
-                        SizedBox(width: 4),
-                        Text(
-                          'AWS IoT Core • Fleet Provisioning',
-                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFEF3C7),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: const Color(0xFFFDE68A)),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.schedule, size: 12, color: Color(0xFFD97706)),
-                        SizedBox(width: 4),
-                        Text(
-                          'Upcoming AWS Integration',
-                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFFD97706)),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              const Text(
-                'AWS Device Telemetry & Fleet Mapping',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-              ),
-              const SizedBox(height: 4),
-              const Text(
-                'Hardware devices configured for this cluster will be mapped and provisioned directly into AWS IoT Core using AWS Fleet Provisioning. Once provisioned and active on AWS, live device payloads and operational telemetry will stream directly from the physical hardware.',
-                style: TextStyle(fontSize: 11, color: Color(0xFF334155), height: 1.4),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 14),
-
-        // Configured Devices Section
+        // 1. Top Gateway & Status Header Card
         Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
@@ -2122,29 +2263,54 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.memory, size: 16, color: AppColors.primary),
-                      const SizedBox(width: 6),
                       Text(
-                        'Configured Hardware Units ($totalDevicesCount)',
-                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+                        thingName,
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEFF6FF),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: const Color(0xFFBFDBFE)),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.sensors, size: 11, color: Color(0xFF1D4ED8)),
+                            SizedBox(width: 4),
+                            Text(
+                              'AWS IOT CORE',
+                              style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: Color(0xFF1D4ED8)),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFFEF3C7),
+                      color: statusBg,
                       borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: const Color(0xFFFDE68A)),
+                      border: Border.all(color: statusBorder),
                     ),
-                    child: const Row(
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.schedule, size: 10, color: Color(0xFFD97706)),
-                        SizedBox(width: 4),
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: statusColor,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
                         Text(
-                          'Pending Fleet Provisioning',
-                          style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFFD97706)),
+                          currentStatus,
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: statusColor),
                         ),
                       ],
                     ),
@@ -2152,204 +2318,504 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                 ],
               ),
               const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'MQTT TELEMETRY TOPIC',
+                            style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w700, color: Color(0xFF64748B), letterSpacing: 0.5),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            topic,
+                            style: const TextStyle(fontFamily: 'monospace', fontSize: 11.5, fontWeight: FontWeight.bold, color: Color(0xFF0284C7)),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.copy, size: 15, color: Color(0xFF64748B)),
+                      visualDensity: VisualDensity.compact,
+                      tooltip: 'Copy Topic',
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: topic));
+                        AppFeedback.showSuccess(context, 'Topic copied to clipboard');
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
 
-              if (masters.isEmpty)
-                _buildEmptyCard(
-                  icon: Icons.memory,
-                  title: 'No Hardware Units Configured',
-                  message: 'No Master or Slave devices have been registered for this cluster yet.',
+        // 2. Action Controls Toolbar
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              // Auto Polling Toggle
+              InkWell(
+                onTap: () {
+                  setState(() => _autoRefreshTelemetry = !_autoRefreshTelemetry);
+                  if (_autoRefreshTelemetry) {
+                    _startTelemetryTimer();
+                    AppFeedback.showSuccess(context, 'Auto-polling resumed (3s interval).');
+                  } else {
+                    _telemetryTimer?.cancel();
+                    AppFeedback.showSuccess(context, 'Auto-polling paused.');
+                  }
+                },
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: _autoRefreshTelemetry ? const Color(0xFFECFDF5) : const Color(0xFFF1F5F9),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: _autoRefreshTelemetry ? const Color(0xFFA7F3D0) : const Color(0xFFCBD5E1)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                          color: _autoRefreshTelemetry ? const Color(0xFF10B981) : const Color(0xFF94A3B8),
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        _autoRefreshTelemetry ? 'Auto Polling (3s)' : 'Auto Polling: Off',
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.bold,
+                          color: _autoRefreshTelemetry ? const Color(0xFF047857) : const Color(0xFF64748B),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              // Action Buttons: Refresh, Ping Gate, Export
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Refresh
+                  InkWell(
+                    onTap: _loadingTelemetry ? null : () => _fetchGateTelemetry(gateId),
+                    borderRadius: BorderRadius.circular(6),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: const Color(0xFFCBD5E1)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _loadingTelemetry
+                              ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.refresh, size: 13, color: Color(0xFF334155)),
+                          const SizedBox(width: 4),
+                          const Text('Refresh', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF334155))),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+
+                  // Ping Gate
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFEF4444),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                    ),
+                    onPressed: _triggeringHealthCheck ? null : () => _triggerGatePing(gateId),
+                    icon: _triggeringHealthCheck
+                        ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.favorite, size: 12, color: Colors.white),
+                    label: Text(
+                      _triggeringHealthCheck ? 'Pinging...' : 'Ping Gate',
+                      style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        // 3. Sub-Tab Navigation Bar
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              _buildSubTabChip('telemetry', 'Telemetry', counts['telemetry'] ?? telemetryRecords.length),
+              const SizedBox(width: 6),
+              _buildSubTabChip('manifest', 'Manifest', counts['manifest'] ?? (manifestRecords.isNotEmpty ? manifestRecords.length : totalDevicesCount)),
+              const SizedBox(width: 6),
+              _buildSubTabChip('health', 'Health Check', counts['health'] ?? healthRecords.length),
+              const SizedBox(width: 6),
+              _buildSubTabChip('all', 'All Records', counts['total'] ?? allRecords.length),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        // 4. Active Payload Breakdown Card
+        Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: const [
+              BoxShadow(color: Color(0x06000000), offset: Offset(0, 1), blurRadius: 2),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Breakdown Card Header
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Payload Breakdown ${recordTimestamp != null ? "(${_formatTimeOnly(recordTimestamp)})" : ""}',
+                            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          if (recordTimestamp != null)
+                            Text(
+                              _formatDateTime(recordTimestamp),
+                              style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                            ),
+                        ],
+                      ),
+                    ),
+                    // Table View / Raw JSON Switch
+                    Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          InkWell(
+                            onTap: () => setState(() => _showRawJson = false),
+                            borderRadius: BorderRadius.circular(6),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: !_showRawJson ? Colors.white : Colors.transparent,
+                                borderRadius: BorderRadius.circular(6),
+                                boxShadow: !_showRawJson
+                                    ? const [BoxShadow(color: Color(0x0A000000), offset: Offset(0, 1), blurRadius: 2)]
+                                    : null,
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.table_rows, size: 12, color: !_showRawJson ? AppColors.primary : const Color(0xFF64748B)),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'Table',
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      color: !_showRawJson ? AppColors.primary : const Color(0xFF64748B),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          InkWell(
+                            onTap: () => setState(() => _showRawJson = true),
+                            borderRadius: BorderRadius.circular(6),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: _showRawJson ? Colors.white : Colors.transparent,
+                                borderRadius: BorderRadius.circular(6),
+                                boxShadow: _showRawJson
+                                    ? const [BoxShadow(color: Color(0x0A000000), offset: Offset(0, 1), blurRadius: 2)]
+                                    : null,
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.code, size: 12, color: _showRawJson ? AppColors.primary : const Color(0xFF64748B)),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'JSON',
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      color: _showRawJson ? AppColors.primary : const Color(0xFF64748B),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    // Copy JSON
+                    IconButton(
+                      icon: const Icon(Icons.copy, size: 15, color: Color(0xFF64748B)),
+                      visualDensity: VisualDensity.compact,
+                      tooltip: 'Copy Payload JSON',
+                      onPressed: displayPayload != null
+                          ? () {
+                              Clipboard.setData(ClipboardData(text: const JsonEncoder.withIndent('  ').convert(displayPayload)));
+                              AppFeedback.showSuccess(context, 'Payload JSON copied to clipboard');
+                            }
+                          : null,
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1, color: Color(0xFFE2E8F0)),
+
+              // Breakdown Card Content
+              if (_loadingTelemetry && _gateTelemetry == null)
+                const Padding(
+                  padding: EdgeInsets.all(32),
+                  child: Center(child: CircularProgressIndicator()),
+                )
+              else if (displayPayload == null || (displayPayload is Map && displayPayload.isEmpty))
+                Container(
+                  padding: const EdgeInsets.all(24),
+                  alignment: Alignment.center,
+                  child: Column(
+                    children: [
+                      const Icon(Icons.sensors_off, size: 30, color: Color(0xFF94A3B8)),
+                      const SizedBox(height: 8),
+                      Text(
+                        'No $_inspectSubTab records available for this gate yet.',
+                        style: const TextStyle(fontSize: 12, color: Color(0xFF64748B), fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                )
+              else if (_showRawJson)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF0F172A),
+                    borderRadius: BorderRadius.vertical(bottom: Radius.circular(12)),
+                  ),
+                  child: SelectableText(
+                    const JsonEncoder.withIndent('  ').convert(displayPayload),
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 11, color: Color(0xFF38BDF8), height: 1.4),
+                  ),
+                )
+              else
+                _buildTelemetryTable(displayPayload, topic, thingName),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+
+        // 5. Historic Telemetry Stream Table
+        Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: const [
+              BoxShadow(color: Color(0x06000000), offset: Offset(0, 1), blurRadius: 2),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'HISTORIC TELEMETRY STREAM (${activeList.length})',
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF0F172A), letterSpacing: 0.5),
+                    ),
+                    const Text(
+                      'Tap row to inspect',
+                      style: TextStyle(fontSize: 10, color: Color(0xFF64748B), fontStyle: FontStyle.italic),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1, color: Color(0xFFE2E8F0)),
+
+              if (activeList.isEmpty)
+                Container(
+                  padding: const EdgeInsets.all(20),
+                  alignment: Alignment.center,
+                  child: const Text('No records in stream history.', style: TextStyle(fontSize: 11.5, color: Color(0xFF94A3B8))),
                 )
               else
                 ListView.separated(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
-                  itemCount: masters.length,
-                  separatorBuilder: (context, index) => const SizedBox(height: 10),
-                  itemBuilder: (context, mIdx) {
-                    final master = masters[mIdx] as Map<String, dynamic>;
-                    final childDevices = (master['childDevices'] as List?) ?? [];
+                  itemCount: activeList.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                  itemBuilder: (ctx, idx) {
+                    final item = activeList[idx] as Map<String, dynamic>;
+                    final p = item['payload'] is Map ? item['payload'] as Map<String, dynamic> : <String, dynamic>{};
+                    final itemStatus = (p['Status'] ?? item['Status'] ?? 'UNKNOWN').toString().toUpperCase();
+                    final isViewing = activeRecord != null && activeRecord['id'] == item['id'];
 
-                    return Column(
-                      children: [
-                        // Master Unit Row
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF8FAFC),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: const Color(0xFFE2E8F0)),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Container(
-                                    width: 32,
-                                    height: 32,
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF0369A1),
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: const Icon(Icons.memory, color: Colors.white, size: 16),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          master['serialNumber'] ?? 'Master',
-                                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                        Text(
-                                          'Sequence #${master['masterSequence']} • Primary Master Gateway',
-                                          style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  InkWell(
-                                    onTap: () => DeviceInfoSheet.show(context, master: master, gate: gate),
-                                    borderRadius: BorderRadius.circular(6),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFFEFF6FF),
-                                        borderRadius: BorderRadius.circular(5),
-                                        border: Border.all(color: const Color(0xFFBFDBFE)),
-                                      ),
-                                      child: const Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(Icons.developer_board, size: 11, color: Color(0xFF1D4ED8)),
-                                          SizedBox(width: 3),
-                                          Text('Info', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: Color(0xFF1D4ED8))),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                                    decoration: BoxDecoration(
-                                      color: master['powerSource'] == 'SOLAR' ? const Color(0xFFFEF3C7) : const Color(0xFFDBEAFE),
-                                      borderRadius: BorderRadius.circular(5),
-                                    ),
-                                    child: Text(
-                                      master['powerSource'] == 'SOLAR' ? 'Solar' : 'Direct AC',
-                                      style: TextStyle(
-                                        fontSize: 9,
-                                        fontWeight: FontWeight.bold,
-                                        color: master['powerSource'] == 'SOLAR' ? const Color(0xFFD97706) : const Color(0xFF2563EB),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              const Divider(height: 1, color: Color(0xFFE2E8F0)),
-                              const SizedBox(height: 8),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  const Text('AWS Fleet Status:', style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
-                                  Flexible(
-                                    child: Text(
-                                      'Pending Fleet Provisioning',
-                                      style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFFD97706)),
-                                      overflow: TextOverflow.ellipsis,
-                                      textAlign: TextAlign.end,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 3),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  const Text('Live Telemetry:', style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
-                                  Flexible(
-                                    child: Text(
-                                      'Awaiting AWS IoT connection',
-                                      style: const TextStyle(fontSize: 10, fontStyle: FontStyle.italic, color: Color(0xFF94A3B8)),
-                                      overflow: TextOverflow.ellipsis,
-                                      textAlign: TextAlign.end,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
+                    final limitClosed = p['LimitSwitchClosed'];
+                    final hallClosed = p['HallClosed'];
+                    final ts = p['TimeStampMs'];
 
-                        // Slaves under this Master
-                        if (childDevices.isNotEmpty) ...[
-                          const SizedBox(height: 6),
-                          Padding(
-                            padding: const EdgeInsets.only(left: 14),
-                            child: Column(
-                              children: childDevices.map((c) {
-                                final child = c as Map<String, dynamic>;
-                                return Container(
-                                  margin: const EdgeInsets.only(bottom: 6),
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white,
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(color: const Color(0xFFE2E8F0)),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      const Icon(Icons.power_outlined, size: 14, color: Color(0xFF0284C7)),
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              child['serialNumber'] ?? 'Slave',
-                                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                            Text(
-                                              'Slave #${child['deviceSequence']} • ${child['type'] ?? 'Sensor / Actuator'}',
-                                              style: const TextStyle(fontSize: 9, color: Color(0xFF64748B)),
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      const SizedBox(width: 6),
-                                      InkWell(
-                                        onTap: () => DeviceInfoSheet.show(context, device: child, master: master, gate: gate),
-                                        borderRadius: BorderRadius.circular(4),
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2.5),
-                                          decoration: BoxDecoration(
-                                            color: const Color(0xFFEFF6FF),
-                                            borderRadius: BorderRadius.circular(4),
-                                            border: Border.all(color: const Color(0xFFBFDBFE)),
-                                          ),
-                                          child: const Text('Info', style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      const Text(
-                                        'Awaiting AWS',
-                                        style: TextStyle(fontSize: 9, fontStyle: FontStyle.italic, color: Color(0xFF94A3B8)),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              }).toList(),
+                    return InkWell(
+                      onTap: () {
+                        setState(() {
+                          _selectedPayloadId = item['id'];
+                        });
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        color: isViewing ? const Color(0xFFF8FAFC) : Colors.white,
+                        child: Row(
+                          children: [
+                            // Index #
+                            Container(
+                              width: 24,
+                              alignment: Alignment.center,
+                              child: Text(
+                                '#${idx + 1}',
+                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF94A3B8)),
+                              ),
                             ),
-                          ),
-                        ],
-                      ],
+                            const SizedBox(width: 8),
+
+                            // Timestamp
+                            Expanded(
+                              flex: 3,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    _formatTimeOnly(item['createdAt']),
+                                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                  ),
+                                  Text(
+                                    _formatDateOnly(item['createdAt']),
+                                    style: const TextStyle(fontSize: 9.5, color: Color(0xFF64748B)),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            // Status Pill
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                              decoration: BoxDecoration(
+                                color: itemStatus == 'CLOSED'
+                                    ? const Color(0xFFDCFCE7)
+                                    : (itemStatus == 'OPEN' ? const Color(0xFFFEE2E2) : const Color(0xFFF1F5F9)),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                itemStatus,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: itemStatus == 'CLOSED'
+                                      ? const Color(0xFF15803D)
+                                      : (itemStatus == 'OPEN' ? const Color(0xFFB91C1C) : const Color(0xFF475569)),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+
+                            // Mini Sensor Indicators
+                            Expanded(
+                              flex: 2,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (limitClosed != null)
+                                    Text(
+                                      'Limit: ${limitClosed == true ? "Closed" : "Open"}',
+                                      style: TextStyle(fontSize: 9.5, color: limitClosed == true ? const Color(0xFF15803D) : const Color(0xFF64748B)),
+                                    ),
+                                  if (hallClosed != null)
+                                    Text(
+                                      'Hall: ${hallClosed == true ? "Closed" : "Open"}',
+                                      style: TextStyle(fontSize: 9.5, color: hallClosed == true ? const Color(0xFF15803D) : const Color(0xFF64748B)),
+                                    )
+                                  else if (ts != null)
+                                    Text(
+                                      '${ts}ms',
+                                      style: const TextStyle(fontSize: 9, color: Color(0xFF94A3B8)),
+                                    ),
+                                ],
+                              ),
+                            ),
+
+                            // Action button
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: isViewing ? AppColors.primary : Colors.transparent,
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(color: isViewing ? AppColors.primary : const Color(0xFFCBD5E1)),
+                              ),
+                              child: Text(
+                                isViewing ? 'Viewing' : 'Inspect',
+                                style: TextStyle(
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.bold,
+                                  color: isViewing ? Colors.white : const Color(0xFF334155),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     );
                   },
                 ),
@@ -2358,6 +2824,198 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         ),
       ],
     );
+  }
+
+  Widget _buildSubTabChip(String key, String title, dynamic count) {
+    final isSelected = _inspectSubTab == key;
+    return InkWell(
+      onTap: () {
+        setState(() {
+          _inspectSubTab = key;
+          _selectedPayloadId = null;
+        });
+      },
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected ? AppColors.primary : Colors.white,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: isSelected ? AppColors.primary : const Color(0xFFCBD5E1)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: isSelected ? Colors.white : const Color(0xFF475569),
+              ),
+            ),
+            const SizedBox(width: 5),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+              decoration: BoxDecoration(
+                color: isSelected ? const Color(0x33FFFFFF) : const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                '$count',
+                style: TextStyle(
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.bold,
+                  color: isSelected ? Colors.white : const Color(0xFF64748B),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTelemetryTable(dynamic payload, String topic, String thingName) {
+    if (payload is! Map) return Padding(padding: const EdgeInsets.all(12), child: Text('$payload'));
+
+    // Construct ordered key-value pairs matching Web
+    final orderedKeys = <String>[];
+    if (payload.containsKey('topic') || topic.isNotEmpty) orderedKeys.add('topic');
+    if (payload.containsKey('Status')) orderedKeys.add('Status');
+    if (payload.containsKey('DeviceType')) orderedKeys.add('DeviceType');
+    if (payload.containsKey('HallClosed')) orderedKeys.add('HallClosed');
+    if (payload.containsKey('SensorType')) orderedKeys.add('SensorType');
+    if (payload.containsKey('TimeStampMs')) orderedKeys.add('TimeStampMs');
+    if (payload.containsKey('MasterDeviceId')) orderedKeys.add('MasterDeviceId');
+    if (payload.containsKey('topicThingName')) orderedKeys.add('topicThingName');
+    if (payload.containsKey('FirmwareVersion')) orderedKeys.add('FirmwareVersion');
+    if (payload.containsKey('LimitSwitchClosed')) orderedKeys.add('LimitSwitchClosed');
+
+    for (final k in payload.keys) {
+      final keyStr = k.toString();
+      if (!orderedKeys.contains(keyStr)) {
+        orderedKeys.add(keyStr);
+      }
+    }
+
+    return ListView.separated(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: orderedKeys.length,
+      separatorBuilder: (_, _) => const Divider(height: 1, color: Color(0xFFF1F5F9)),
+      itemBuilder: (ctx, idx) {
+        final k = orderedKeys[idx];
+        dynamic v = payload[k];
+        if (k == 'topic' && v == null) v = topic;
+        if (k == 'topicThingName' && v == null) v = thingName;
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                flex: 2,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    k,
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF475569)),
+                  ),
+                ),
+              ),
+              Expanded(
+                flex: 3,
+                child: _renderParameterValue(k, v),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _renderParameterValue(String key, dynamic value) {
+    final strVal = value?.toString() ?? 'N/A';
+    final lowerKey = key.toLowerCase();
+
+    if (lowerKey == 'status') {
+      final isClosed = strVal.toUpperCase() == 'CLOSED';
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          decoration: BoxDecoration(
+            color: isClosed ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Text(
+            strVal.toUpperCase(),
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w800,
+              color: isClosed ? const Color(0xFF15803D) : const Color(0xFFB91C1C),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (value is bool || lowerKey.contains('closed')) {
+      final isTrue = value == true || strVal.toLowerCase() == 'true';
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          decoration: BoxDecoration(
+            color: isTrue ? const Color(0xFFDCFCE7) : const Color(0xFFF1F5F9),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Text(
+            isTrue ? 'TRUE (Closed)' : 'FALSE (Open)',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              color: isTrue ? const Color(0xFF15803D) : const Color(0xFF64748B),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (lowerKey == 'topic') {
+      return Text(
+        strVal,
+        style: const TextStyle(fontFamily: 'monospace', fontSize: 10.5, color: Color(0xFF0284C7), fontWeight: FontWeight.w600),
+      );
+    }
+
+    if (lowerKey == 'timestampms' && !strVal.endsWith('ms')) {
+      return Text(
+        '$strVal ms',
+        style: const TextStyle(fontFamily: 'monospace', fontSize: 11, color: Color(0xFF0F172A), fontWeight: FontWeight.w600),
+      );
+    }
+
+    return Text(
+      strVal,
+      style: const TextStyle(fontSize: 11.5, color: Color(0xFF0F172A), fontWeight: FontWeight.w500),
+    );
+  }
+
+  String _formatDateOnly(dynamic dtStr) {
+    if (dtStr == null) return '';
+    try {
+      final dt = DateTime.parse(dtStr.toString()).toLocal();
+      final mo = dt.month.toString().padLeft(2, '0');
+      final day = dt.day.toString().padLeft(2, '0');
+      final yr = dt.year;
+      return '$mo/$day/$yr';
+    } catch (_) {
+      return '';
+    }
   }
 
   // Helper Section Card for About Tab

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   FaArchway,
   FaFolder,
@@ -19,7 +19,6 @@ import {
   FaTrain,
   FaPlug,
   FaInfoCircle,
-  FaClock,
   FaBroadcastTower,
   FaExternalLinkAlt,
   FaEye,
@@ -31,6 +30,112 @@ import type { User, ScopeGroupItem } from '../../types';
 import { API_URL } from '../../config';
 import DeviceInfoModal from '../../components/DeviceInfoModal';
 import './LCGatesScreen.css';
+import { useToast } from '../../context/ToastContext';
+import {
+  FaSlidersH,
+  FaHeartbeat,
+  FaDownload,
+  FaTable,
+  FaCopy,
+  FaCheck,
+  FaServer,
+  FaFileAlt
+} from 'react-icons/fa';
+
+/**
+ * Universal key-value renderer for real device payloads
+ */
+function renderCleanKeyValueTable(data: any): React.ReactNode {
+  if (!data || typeof data !== 'object') {
+    return (
+      <div className="py-4 text-center text-muted" style={{ fontSize: '0.85rem' }}>
+        No payload properties available.
+      </div>
+    );
+  }
+
+  const entries = Object.entries(data);
+  if (entries.length === 0) {
+    return (
+      <div className="py-4 text-center text-muted" style={{ fontSize: '0.85rem' }}>
+        Payload object is empty.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: '8px', background: '#ffffff' }}>
+      <table className="dynamic-table" style={{ width: '100%', fontSize: '0.86rem' }}>
+        <thead>
+          <tr style={{ background: '#f8fafc' }}>
+            <th style={{ width: '32%', fontWeight: 700, color: '#334155' }}>Parameter Key</th>
+            <th style={{ fontWeight: 700, color: '#334155' }}>Reported Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map(([key, val]) => {
+            const isStatus = key.toLowerCase() === 'status';
+            const isBool = typeof val === 'boolean';
+            const isObject = typeof val === 'object' && val !== null;
+            const strVal = String(val);
+
+            return (
+              <tr key={key}>
+                <td style={{ fontWeight: 600, color: '#1e293b' }}>
+                  <code style={{ fontSize: '0.82rem', color: '#0f172a', background: '#f1f5f9', padding: '2px 6px', borderRadius: '4px' }}>
+                    {key}
+                  </code>
+                </td>
+                <td>
+                  {isStatus ? (
+                    <span
+                      style={{
+                        display: 'inline-block',
+                        padding: '3px 12px',
+                        borderRadius: '6px',
+                        fontWeight: 800,
+                        fontSize: '0.82rem',
+                        letterSpacing: '0.3px',
+                        background: strVal.toUpperCase() === 'CLOSED' ? 'rgba(16, 185, 129, 0.14)' : 'rgba(239, 68, 68, 0.14)',
+                        color: strVal.toUpperCase() === 'CLOSED' ? '#047857' : '#b91c1c',
+                        border: `1px solid ${strVal.toUpperCase() === 'CLOSED' ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.35)'}`,
+                      }}
+                    >
+                      {strVal}
+                    </span>
+                  ) : isBool ? (
+                    <span
+                      style={{
+                        display: 'inline-block',
+                        padding: '2px 10px',
+                        borderRadius: '4px',
+                        fontWeight: 700,
+                        fontSize: '0.78rem',
+                        background: val ? 'rgba(16, 185, 129, 0.12)' : 'rgba(100, 116, 139, 0.12)',
+                        color: val ? '#059669' : '#475569',
+                      }}
+                    >
+                      {val ? 'TRUE (Closed)' : 'FALSE (Open)'}
+                    </span>
+                  ) : isObject ? (
+                    <pre style={{ margin: 0, fontSize: '0.78rem', background: '#f8fafc', padding: '8px 12px', borderRadius: '4px', border: '1px solid #e2e8f0', overflowX: 'auto', color: '#0f172a' }}>
+                      {JSON.stringify(val, null, 2)}
+                    </pre>
+                  ) : (
+                    <span style={{ fontWeight: 600, color: '#0f172a' }}>
+                      {strVal}
+                      {key.toLowerCase().includes('ms') && !isNaN(Number(val)) ? ' ms' : ''}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 type Props = {
   user: User;
@@ -65,6 +170,18 @@ export default function LCGatesScreen({ user }: Props) {
   // Drilldown Active Tab: 'about' | 'deviceInfo' | 'telemetry'
   const [clusterTab, setClusterTab] = useState<'about' | 'deviceInfo' | 'telemetry'>('about');
   const [deviceInfoItem, setDeviceInfoItem] = useState<any | null>(null);
+
+  const { success: toastSuccess, error: toastError } = useToast();
+
+  // Telemetry Inspector state for the selected gate
+  const [gateTelemetry, setGateTelemetry] = useState<any | null>(null);
+  const [loadingTelemetry, setLoadingTelemetry] = useState<boolean>(false);
+  const [autoRefreshTelemetry, setAutoRefreshTelemetry] = useState<boolean>(true);
+  const [selectedPayloadId, setSelectedPayloadId] = useState<number | null>(null);
+  const [inspectSubTab, setInspectSubTab] = useState<'telemetry' | 'manifest' | 'health' | 'all'>('telemetry');
+  const [telemetryViewMode, setTelemetryViewMode] = useState<'table' | 'raw'>('table');
+  const [triggeringHealthCheck, setTriggeringHealthCheck] = useState<boolean>(false);
+  const [isCopied, setIsCopied] = useState<boolean>(false);
 
   // Modal State for Installation Evidence Photo
   const [evidenceModalItem, setEvidenceModalItem] = useState<{
@@ -227,6 +344,91 @@ export default function LCGatesScreen({ user }: Props) {
     setClusterTab('telemetry');
     setViewMode('detail');
   };
+
+  // Fetch real-time telemetry from backend for the gate
+  const fetchGateTelemetry = useCallback(async (gateId: number, silent = false) => {
+    if (!silent) setLoadingTelemetry(true);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/lcgates/${gateId}/telemetry`, {
+        headers: authHeaders()
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setGateTelemetry(data);
+      }
+    } catch (err) {
+      console.error('Failed to load gate telemetry', err);
+    } finally {
+      if (!silent) setLoadingTelemetry(false);
+    }
+  }, []);
+
+  // Fetch telemetry whenever detail view is active on telemetry tab
+  useEffect(() => {
+    if (viewMode === 'detail' && selectedGate && clusterTab === 'telemetry') {
+      fetchGateTelemetry(selectedGate.id, false);
+    }
+  }, [viewMode, selectedGate, clusterTab, fetchGateTelemetry]);
+
+  // Live Auto-Refresh polling every 3s
+  useEffect(() => {
+    if (viewMode !== 'detail' || !selectedGate || clusterTab !== 'telemetry' || !autoRefreshTelemetry) return;
+    const interval = setInterval(() => {
+      fetchGateTelemetry(selectedGate.id, true);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [viewMode, selectedGate, clusterTab, autoRefreshTelemetry, fetchGateTelemetry]);
+
+  // Trigger health check command to physical gate hardware
+  const handleTriggerGatePing = async () => {
+    if (!selectedGate) return;
+    setTriggeringHealthCheck(true);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/lcgates/${selectedGate.id}/health-check`, {
+        method: 'POST',
+        headers: authHeaders()
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toastSuccess(data.message || 'Health check command published over MQTT', 'Health Check Sent');
+        await fetchGateTelemetry(selectedGate.id, true);
+        setInspectSubTab('health');
+      } else {
+        toastError(data.error || 'Failed to ping gate', 'Health Check');
+      }
+    } catch (err: any) {
+      toastError(err.message || 'Error triggering health check', 'Health Check');
+    } finally {
+      setTriggeringHealthCheck(false);
+    }
+  };
+
+  const allHistoricPayloads: any[] = useMemo(() => gateTelemetry?.payloads || [], [gateTelemetry]);
+  const telemetryRecords: any[] = useMemo(() => gateTelemetry?.telemetryRecords || [], [gateTelemetry]);
+  const manifestRecords: any[] = useMemo(() => gateTelemetry?.manifestRecords || [], [gateTelemetry]);
+  const healthRecords: any[] = useMemo(() => gateTelemetry?.healthRecords || [], [gateTelemetry]);
+
+  const activeRecordList = useMemo(() => {
+    if (inspectSubTab === 'telemetry') return telemetryRecords;
+    if (inspectSubTab === 'manifest') return manifestRecords;
+    if (inspectSubTab === 'health') return healthRecords;
+    return allHistoricPayloads;
+  }, [inspectSubTab, telemetryRecords, manifestRecords, healthRecords, allHistoricPayloads]);
+
+  const currentViewingRecord = useMemo(() => {
+    if (selectedPayloadId !== null) {
+      const found = allHistoricPayloads.find((p: any) => p.id === selectedPayloadId);
+      if (found) return found;
+    }
+    if (activeRecordList.length > 0) return activeRecordList[0];
+    if (inspectSubTab === 'manifest' && gateTelemetry?.latestManifest) {
+      return gateTelemetry.latestManifest;
+    }
+    if (inspectSubTab === 'health' && gateTelemetry?.latestHealthCheck) {
+      return gateTelemetry.latestHealthCheck;
+    }
+    return gateTelemetry?.latestTelemetry || null;
+  }, [selectedPayloadId, allHistoricPayloads, activeRecordList, inspectSubTab, gateTelemetry]);
 
   // Helper to extract first evidence photo for a gate
   const getGateInstallationEvidence = (gate: any) => {
@@ -463,8 +665,8 @@ export default function LCGatesScreen({ user }: Props) {
               className={`lcg-tab-button ${clusterTab === 'telemetry' ? 'active' : ''}`}
               onClick={() => setClusterTab('telemetry')}
             >
-              <FaBroadcastTower size={14} />
-              <span>AWS Telemetry & Fleet Provisioning</span>
+              <FaSlidersH size={14} />
+              <span>Live Telemetry & Inspector</span>
             </button>
           </div>
 
@@ -880,127 +1082,369 @@ export default function LCGatesScreen({ user }: Props) {
                 </div>
               </div>
             </div>
-          ) : (
-            /* ================= LIGHTWEIGHT AWS FLEET PROVISIONING & TELEMETRY SECTION ================= */
-            <div className="lcg-telemetry-light-container">
-              {/* Informative Header */}
-              <div className="lcg-telemetry-light-header">
-                <div className="lcg-telemetry-header-info">
-                  <div className="lcg-pipeline-pill">
-                    <FaBroadcastTower /> AWS IoT Core • Fleet Provisioning
+                    ) : (
+            /* ================= LIVE TELEMETRY & OPERATIONAL INSPECTOR SECTION ================= */
+            <div className="lcg-telemetry-inspector-container">
+              {/* Top Inspector Header Card */}
+              <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '16px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.02)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 14 }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 800, color: '#0f172a' }}>
+                      {gateTelemetry?.thingName || selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}
+                    </h3>
+                    <span className="badge badge-indigo" style={{ fontSize: '0.76rem', padding: '3px 9px' }}>
+                      AWS IoT Core
+                    </span>
+                    <span style={{ fontSize: '0.84rem', fontWeight: 600, color: '#475569' }}>
+                      Cluster {selectedGate.lcNumber} • {selectedGate.locationName || selectedGate.name}
+                    </span>
+                    <span
+                      style={{
+                        padding: '3px 12px',
+                        borderRadius: 6,
+                        fontWeight: 800,
+                        fontSize: '0.8rem',
+                        letterSpacing: '0.3px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        background: (gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#dcfce7' : '#fee2e2',
+                        color: (gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#15803d' : '#b91c1c',
+                        border: `1px solid ${(gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#86efac' : '#fca5a5'}`
+                      }}
+                    >
+                      <span
+                        className="pulse-dot"
+                        style={{
+                          width: 7,
+                          height: 7,
+                          background: (gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#15803d' : '#b91c1c'
+                        }}
+                      />
+                      {(gateTelemetry?.currentStatus || 'CLOSED').toUpperCase()}
+                    </span>
                   </div>
-                  <h3>AWS Device Telemetry & Fleet Mapping</h3>
-                  <p>
-                    Hardware devices configured for this cluster will be mapped and provisioned directly into AWS IoT Core using <strong>AWS Fleet Provisioning</strong>. 
-                    Once provisioned and active on AWS, live device payloads and operational telemetry will stream directly from the physical hardware.
-                  </p>
+                  <div style={{ marginTop: 4, fontSize: '0.82rem', color: '#64748b' }}>
+                    Real-time operational telemetry streamed via MQTT from edge gateway controller.
+                  </div>
                 </div>
-                <div className="lcg-upcoming-badge">
-                  <FaClock /> Upcoming AWS Integration
+
+                {/* Interactive Controls */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  {/* Auto Polling Toggle */}
+                  <button
+                    type="button"
+                    className={`btn-small ${autoRefreshTelemetry ? 'btn-primary' : 'btn-outline'}`}
+                    style={{ fontSize: '0.78rem', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 6, borderRadius: 6, fontWeight: 700 }}
+                    onClick={() => setAutoRefreshTelemetry(!autoRefreshTelemetry)}
+                    title="Toggle live automatic polling every 3 seconds"
+                  >
+                    <span className={autoRefreshTelemetry ? 'pulse-dot' : ''} style={{ width: 6, height: 6 }} />
+                    {autoRefreshTelemetry ? 'Auto Polling (3s)' : 'Polling Paused'}
+                  </button>
+
+                  {/* Manual Refresh */}
+                  <button
+                    type="button"
+                    className="btn-small btn-outline"
+                    style={{ fontSize: '0.78rem', padding: '6px 11px', display: 'flex', alignItems: 'center', gap: 5, borderRadius: 6 }}
+                    onClick={() => fetchGateTelemetry(selectedGate.id, false)}
+                    disabled={loadingTelemetry}
+                    title="Refresh telemetry stream"
+                  >
+                    <FaSyncAlt className={loadingTelemetry ? 'fa-spin' : ''} size={11} />
+                    <span>{loadingTelemetry ? 'Syncing...' : 'Refresh'}</span>
+                  </button>
+
+                  {/* Ping Device / Trigger Health Check */}
+                  <button
+                    type="button"
+                    className="btn-small btn-outline"
+                    style={{ fontSize: '0.78rem', padding: '6px 11px', display: 'flex', alignItems: 'center', gap: 5, color: '#0b3c7a', borderColor: '#bfdbfe', borderRadius: 6 }}
+                    onClick={handleTriggerGatePing}
+                    disabled={triggeringHealthCheck}
+                    title="Publish MQTT health check command to physical gate hardware"
+                  >
+                    <FaHeartbeat className={triggeringHealthCheck ? 'fa-spin' : ''} size={12} color="#dc2626" />
+                    <span>{triggeringHealthCheck ? 'Pinging...' : 'Ping Device'}</span>
+                  </button>
+
+                  {/* Export Records as JSON */}
+                  <button
+                    type="button"
+                    className="btn-small btn-outline"
+                    style={{ fontSize: '0.78rem', padding: '6px 11px', display: 'flex', alignItems: 'center', gap: 5, borderRadius: 6 }}
+                    onClick={() => {
+                      const exportData = {
+                        gate: selectedGate,
+                        gateTelemetry,
+                        historyCount: allHistoricPayloads.length,
+                        records: allHistoricPayloads,
+                        exportedAt: new Date().toISOString()
+                      };
+                      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `${selectedGate.lcNumber}-telemetry-export.json`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                      toastSuccess('Gate telemetry exported as JSON', 'Export Successful');
+                    }}
+                    title="Export telemetry records to a JSON file"
+                  >
+                    <FaDownload size={11} />
+                    <span>Export</span>
+                  </button>
                 </div>
               </div>
 
-              {/* Configured Devices Ready for AWS Fleet Mapping */}
-              <div className="lcg-fleet-devices-card">
-                <div className="lcg-fleet-header">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <FaMicrochip color="#0B3C7A" />
-                    <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 800, color: '#0f172a' }}>
-                      Configured Hardware Units for AWS Mapping ({totalDevicesCount})
-                    </h4>
-                  </div>
-                  <span className="lcg-fleet-badge pending">
-                    <FaClock size={10} /> Fleet Mapping Pending
-                  </span>
+              {/* Sub-header Navigation Tabs */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', padding: '12px 0 10px 0', marginTop: 14, flexWrap: 'wrap', gap: 10 }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className={`telemetry-tab-btn ${inspectSubTab === 'telemetry' ? 'active' : ''}`}
+                    onClick={() => { setInspectSubTab('telemetry'); setSelectedPayloadId(null); }}
+                  >
+                    <FaBroadcastTower size={13} />
+                    <span>Telemetry</span>
+                    <span className="badge badge-indigo" style={{ fontSize: '0.7rem', padding: '1px 6px', marginLeft: 4 }}>
+                      {telemetryRecords.length}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`telemetry-tab-btn ${inspectSubTab === 'manifest' ? 'active' : ''}`}
+                    onClick={() => { setInspectSubTab('manifest'); setSelectedPayloadId(null); }}
+                  >
+                    <FaFileAlt size={13} />
+                    <span>Manifest</span>
+                    <span className="badge badge-indigo" style={{ fontSize: '0.7rem', padding: '1px 6px', marginLeft: 4 }}>
+                      {manifestRecords.length || totalDevicesCount || (selectedGate.masters?.length ? 1 : 0)}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`telemetry-tab-btn ${inspectSubTab === 'health' ? 'active' : ''}`}
+                    onClick={() => { setInspectSubTab('health'); setSelectedPayloadId(null); }}
+                  >
+                    <FaHeartbeat size={13} />
+                    <span>Health Check</span>
+                    <span className="badge badge-indigo" style={{ fontSize: '0.7rem', padding: '1px 6px', marginLeft: 4 }}>
+                      {healthRecords.length}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`telemetry-tab-btn ${inspectSubTab === 'all' ? 'active' : ''}`}
+                    onClick={() => { setInspectSubTab('all'); setSelectedPayloadId(null); }}
+                  >
+                    <FaServer size={13} />
+                    <span>All Records ({allHistoricPayloads.length})</span>
+                  </button>
                 </div>
 
-                {(!selectedGate.masters || selectedGate.masters.length === 0) ? (
-                  <div className="lcg-fleet-empty">
-                    <FaMicrochip size={24} style={{ color: '#94a3b8', marginBottom: 8 }} />
-                    <div style={{ fontWeight: 700, color: '#334155' }}>No Hardware Units Configured</div>
-                    <p style={{ margin: '4px 0 0', fontSize: '0.82rem', color: '#64748b' }}>
-                      No Master or Slave devices have been registered for this cluster yet. Configure devices in the Cluster settings to enable AWS Fleet Provisioning.
-                    </p>
+                {/* View Format Toggle (Table vs Raw JSON) */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ background: '#f1f5f9', padding: '2px', borderRadius: 6, border: '1px solid #cbd5e1', display: 'flex' }}>
+                    <button
+                      type="button"
+                      className={`telemetry-tab-btn ${telemetryViewMode === 'table' ? 'active' : ''}`}
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                      onClick={() => setTelemetryViewMode('table')}
+                    >
+                      <FaTable size={11} /> Table View
+                    </button>
+                    <button
+                      type="button"
+                      className={`telemetry-tab-btn ${telemetryViewMode === 'raw' ? 'active' : ''}`}
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                      onClick={() => setTelemetryViewMode('raw')}
+                    >
+                      <FaCode size={11} /> Raw JSON
+                    </button>
+                  </div>
+
+                  {currentViewingRecord?.payload && (
+                    <button
+                      type="button"
+                      className="btn-small btn-outline"
+                      style={{ fontSize: '0.75rem', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 5, borderRadius: 6 }}
+                      onClick={() => {
+                        navigator.clipboard.writeText(JSON.stringify(currentViewingRecord.payload, null, 2));
+                        setIsCopied(true);
+                        setTimeout(() => setIsCopied(false), 2000);
+                        toastSuccess('Payload copied to clipboard', 'Copied');
+                      }}
+                    >
+                      {isCopied ? <FaCheck color="#10b981" /> : <FaCopy />} {isCopied ? 'Copied' : 'Copy'}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Body Content */}
+              <div style={{ marginTop: 14 }}>
+                {loadingTelemetry && allHistoricPayloads.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)' }}>
+                    <FaSyncAlt className="fa-spin" size={26} style={{ color: '#0B3C7A', marginBottom: 10 }} />
+                    <div style={{ fontWeight: 700, color: '#1e293b' }}>Loading live operational telemetry from edge device...</div>
                   </div>
                 ) : (
-                  <div className="lcg-fleet-table-wrap">
-                    <table className="lcg-fleet-table">
-                      <thead>
-                        <tr>
-                          <th>Device Identifier</th>
-                          <th>Hardware Role</th>
-                          <th>Power Architecture</th>
-                          <th>AWS Fleet Status</th>
-                          <th>Live Telemetry Payload</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedGate.masters.map((master: any) => (
-                          <React.Fragment key={master.id}>
-                            <tr className="lcg-master-row">
-                              <td>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                  <span className="lcg-device-icon master"><FaMicrochip /></span>
-                                  <div>
-                                    <strong>{master.serialNumber}</strong>
-                                    <div style={{ fontSize: '0.72rem', color: '#64748b' }}>Sequence #{master.masterSequence}</div>
-                                  </div>
-                                </div>
-                              </td>
-                              <td>
-                                <span className="lcg-role-tag master">Primary Master Gateway</span>
-                              </td>
-                              <td>
-                                <span className={`lcg-power-pill ${master.powerSource === 'SOLAR' ? 'solar' : 'direct'}`} style={{ fontSize: '0.72rem' }}>
-                                  {master.powerSource === 'SOLAR' ? <FaSun /> : <FaBolt />} {master.powerSource}
-                                </span>
-                              </td>
-                              <td>
-                                <span className="lcg-fleet-badge pending">
-                                  <FaClock size={10} /> Pending Fleet Provisioning
-                                </span>
-                              </td>
-                              <td>
-                                <span className="lcg-payload-placeholder">
-                                  Awaiting AWS IoT connection
-                                </span>
-                              </td>
-                            </tr>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                    {/* Topic Banner */}
+                    <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                      <div>
+                        <div style={{ fontSize: '0.72rem', color: '#64748b', textTransform: 'uppercase', fontWeight: 700 }}>
+                          MQTT Telemetry Topic
+                        </div>
+                        <code style={{ fontSize: '0.86rem', color: '#0369a1', fontWeight: 600 }}>
+                          lc-gate/{gateTelemetry?.thingName || selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}/telemetry
+                        </code>
+                      </div>
+                      {currentViewingRecord?.payload?.Status && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ fontSize: '0.8rem', color: '#475569', fontWeight: 600 }}>Reported Gate State:</span>
+                          <span
+                            style={{
+                              padding: '4px 14px',
+                              borderRadius: 6,
+                              fontWeight: 800,
+                              fontSize: '0.88rem',
+                              letterSpacing: '0.4px',
+                              background: String(currentViewingRecord.payload.Status).toUpperCase() === 'CLOSED' ? '#dcfce7' : '#fee2e2',
+                              color: String(currentViewingRecord.payload.Status).toUpperCase() === 'CLOSED' ? '#15803d' : '#b91c1c',
+                              border: `1px solid ${String(currentViewingRecord.payload.Status).toUpperCase() === 'CLOSED' ? '#86efac' : '#fca5a5'}`
+                            }}
+                          >
+                            {currentViewingRecord.payload.Status}
+                          </span>
+                        </div>
+                      )}
+                    </div>
 
-                            {/* Child devices under this master */}
-                            {master.childDevices?.map((child: any) => (
-                              <tr key={child.id} className="lcg-child-row">
-                                <td style={{ paddingLeft: '2.2rem' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                    <span className="lcg-device-icon child"><FaPlug /></span>
-                                    <div>
-                                      <strong>{child.serialNumber}</strong>
-                                      <div style={{ fontSize: '0.72rem', color: '#64748b' }}>Slave #{child.deviceSequence}</div>
-                                    </div>
-                                  </div>
-                                </td>
-                                <td>
-                                  <span className="lcg-role-tag child">{child.type || 'Sensor / Actuator'}</span>
-                                </td>
-                                <td>
-                                  <span style={{ fontSize: '0.76rem', color: '#64748b' }}>Connected to Master #{master.masterSequence}</span>
-                                </td>
-                                <td>
-                                  <span className="lcg-fleet-badge pending">
-                                    <FaClock size={10} /> Pending AWS Mapping
-                                  </span>
-                                </td>
-                                <td>
-                                  <span className="lcg-payload-placeholder">
-                                    Awaiting AWS IoT connection
-                                  </span>
-                                </td>
+                    {/* Selected Payload Presentation */}
+                    {currentViewingRecord ? (
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                          <span style={{ fontSize: '0.88rem', fontWeight: 700, color: '#1e293b' }}>
+                            Payload Breakdown (Recorded {new Date(currentViewingRecord.receivedAt).toLocaleTimeString()})
+                          </span>
+                          <span style={{ fontSize: '0.78rem', color: '#64748b' }}>
+                            {new Date(currentViewingRecord.receivedAt).toLocaleDateString()}
+                          </span>
+                        </div>
+
+                        {telemetryViewMode === 'table' ? (
+                          renderCleanKeyValueTable(currentViewingRecord.payload)
+                        ) : (
+                          <div style={{ background: '#0f172a', borderRadius: 8, padding: '1rem', border: '1px solid #1e293b' }}>
+                            <pre style={{ margin: 0, color: '#38bdf8', fontSize: '0.82rem', fontFamily: 'monospace', maxHeight: '300px', overflowY: 'auto' }}>
+                              {JSON.stringify(currentViewingRecord.payload, null, 2)}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div style={{ textAlign: 'center', padding: '36px 16px', background: '#f8fafc', borderRadius: 8, border: '1px dashed #cbd5e1' }}>
+                        <FaBroadcastTower size={28} style={{ color: '#94a3b8', margin: '0 auto 8px auto' }} />
+                        <h4 style={{ margin: '0 0 4px 0', color: '#1e293b', fontWeight: 700 }}>No Telemetry Payloads Received Yet</h4>
+                        <p style={{ margin: 0, fontSize: '0.84rem', color: '#64748b' }}>
+                          Awaiting real-time telemetry from edge device on MQTT topic <code>lc-gate/{selectedGate.lcNumber}/telemetry</code>.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Historic Telemetry Stream Table */}
+                    {activeRecordList.length > 0 && (
+                      <div style={{ marginTop: 6 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                          <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                            Historic Telemetry Stream ({activeRecordList.length} Messages)
+                          </span>
+                          <small style={{ color: '#64748b', fontSize: '0.76rem' }}>Click row to inspect payload</small>
+                        </div>
+
+                        <div style={{ maxHeight: '240px', overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+                          <table className="dynamic-table" style={{ width: '100%', fontSize: '0.84rem' }}>
+                            <thead>
+                              <tr style={{ background: '#f8fafc' }}>
+                                <th style={{ width: '35px' }}>#</th>
+                                <th>Received Time</th>
+                                <th>Status</th>
+                                <th>Limit Switch</th>
+                                <th>Hall Effect</th>
+                                <th>Timestamp</th>
+                                <th style={{ textAlign: 'right' }}>Action</th>
                               </tr>
-                            ))}
-                          </React.Fragment>
-                        ))}
-                      </tbody>
-                    </table>
+                            </thead>
+                            <tbody>
+                              {activeRecordList.map((item, idx) => {
+                                const isSelected = currentViewingRecord?.id === item.id;
+                                const p = item.payload || {};
+                                const status = p.Status || '—';
+                                const limitSwitch = p.LimitSwitchClosed !== undefined ? (p.LimitSwitchClosed ? 'Closed' : 'Open') : '—';
+                                const hallEffect = p.HallClosed !== undefined ? (p.HallClosed ? 'Closed' : 'Open') : '—';
+                                const ts = p.TimeStampMs ? `${p.TimeStampMs} ms` : '—';
+
+                                return (
+                                  <tr
+                                    key={item.id || idx}
+                                    onClick={() => setSelectedPayloadId(item.id)}
+                                    style={{
+                                      background: isSelected ? 'rgba(11, 60, 122, 0.06)' : idx % 2 === 0 ? '#ffffff' : '#f8fafc',
+                                      cursor: 'pointer',
+                                      borderLeft: isSelected ? '3px solid #0B3C7A' : '3px solid transparent'
+                                    }}
+                                  >
+                                    <td>{idx + 1}</td>
+                                    <td>
+                                      <div style={{ fontWeight: 600 }}>{new Date(item.receivedAt).toLocaleTimeString()}</div>
+                                      <div style={{ fontSize: '0.72rem', color: '#64748b' }}>{new Date(item.receivedAt).toLocaleDateString()}</div>
+                                    </td>
+                                    <td>
+                                      <span
+                                        style={{
+                                          padding: '2px 8px',
+                                          borderRadius: 4,
+                                          fontWeight: 700,
+                                          fontSize: '0.76rem',
+                                          background: String(status).toUpperCase() === 'CLOSED' ? '#dcfce7' : '#fee2e2',
+                                          color: String(status).toUpperCase() === 'CLOSED' ? '#15803d' : '#b91c1c'
+                                        }}
+                                      >
+                                        {status}
+                                      </span>
+                                    </td>
+                                    <td>{limitSwitch}</td>
+                                    <td>{hallEffect}</td>
+                                    <td><code>{ts}</code></td>
+                                    <td style={{ textAlign: 'right' }}>
+                                      <span
+                                        style={{
+                                          fontSize: '0.72rem',
+                                          padding: '2px 8px',
+                                          borderRadius: 4,
+                                          background: isSelected ? '#0B3C7A' : '#f1f5f9',
+                                          color: isSelected ? '#ffffff' : '#475569',
+                                          fontWeight: 700
+                                        }}
+                                      >
+                                        {isSelected ? 'Viewing' : 'Inspect'}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1233,8 +1677,8 @@ export default function LCGatesScreen({ user }: Props) {
                           onClick={() => handleOpenClusterTelemetry(gate)}
                           title="View AWS Fleet Provisioning & device telemetry"
                         >
-                          <FaBroadcastTower />
-                          <span>AWS Telemetry</span>
+                          <FaSlidersH />
+                          <span>Inspect Telemetry</span>
                         </button>
                       </div>
                     </div>
