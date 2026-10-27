@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import authRoutes from './routes/auth';
@@ -16,6 +17,7 @@ import reportsRoutes from './routes/reports';
 import { errorHandler } from './middleware/error';
 import { prisma } from './lib/prisma';
 import { startTelemetryMonitor } from './lib/telemetryMonitor';
+import { initTelemetryWebSocket } from './lib/telemetryWs';
 
 import path from 'path';
 
@@ -81,8 +83,11 @@ const ensureSystemModules = async () => {
   }
 };
 
-app.listen(port, () => {
+const server = http.createServer(app);
+initTelemetryWebSocket(server);
+
+server.listen(port, () => {
   ensureSystemModules();
   startTelemetryMonitor(3000);
-  console.log(`Server is running on port ${port}`);
+  console.log(`Server is running on port ${port} with WebSocket telemetry stream`);
 });

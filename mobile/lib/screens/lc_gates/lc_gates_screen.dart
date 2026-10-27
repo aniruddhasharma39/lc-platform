@@ -8,6 +8,7 @@ import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
 import '../../components/device_info_sheet.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 Color parseHexColor(String? hexString) {
   if (hexString == null || hexString.isEmpty) return const Color(0xFF0B3C7A);
@@ -67,12 +68,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   // Telemetry & Inspector State
   Map<String, dynamic>? _gateTelemetry;
   bool _loadingTelemetry = false;
-  bool _autoRefreshTelemetry = true;
+  bool _wsConnected = false;
   int? _selectedPayloadId;
   String _inspectSubTab = 'telemetry'; // 'telemetry' | 'manifest' | 'health' | 'all'
   bool _showRawJson = false;
   bool _triggeringHealthCheck = false;
-  Timer? _telemetryTimer;
+  WebSocketChannel? _telemetryWsChannel;
+  StreamSubscription? _telemetryWsSub;
+  Timer? _wsReconnectTimer;
 
   // Data
   List<dynamic> _scopeGroups = [];
@@ -87,7 +90,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
 
   @override
   void dispose() {
-    _telemetryTimer?.cancel();
+    _disconnectTelemetryWs();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -345,15 +348,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
       _viewMode = 'detail';
       _selectedPayloadId = null;
     });
+    final gateId = gate['id'];
+    final idNum = gateId is int ? gateId : int.tryParse(gateId?.toString() ?? '') ?? 0;
     if (tab == 'telemetry') {
-      final gateId = gate['id'];
-      final idNum = gateId is int ? gateId : int.tryParse(gateId?.toString() ?? '') ?? 0;
       if (idNum > 0) {
-        _fetchGateTelemetry(idNum);
-        _startTelemetryTimer();
+        _connectTelemetryWs(idNum);
       }
     } else {
-      _telemetryTimer?.cancel();
+      _disconnectTelemetryWs();
     }
   }
 
@@ -1424,7 +1426,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             TextButton.icon(
               style: TextButton.styleFrom(padding: EdgeInsets.zero, visualDensity: VisualDensity.compact),
               onPressed: () {
-                _telemetryTimer?.cancel();
+                _disconnectTelemetryWs();
                 setState(() {
                   _viewMode = 'folder';
                   _selectedGate = null;
@@ -1605,7 +1607,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               Expanded(
                 child: InkWell(
                   onTap: () {
-                    _telemetryTimer?.cancel();
+                    _disconnectTelemetryWs();
                     setState(() => _clusterTab = 'about');
                   },
                   borderRadius: BorderRadius.circular(6),
@@ -1649,8 +1651,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                     final gateId = gate['id'];
                     final idNum = gateId is int ? gateId : int.tryParse(gateId?.toString() ?? '') ?? 0;
                     if (idNum > 0) {
-                      _fetchGateTelemetry(idNum);
-                      _startTelemetryTimer();
+                      _connectTelemetryWs(idNum);
                     }
                   },
                   borderRadius: BorderRadius.circular(6),
@@ -2061,21 +2062,77 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   // ==========================================================
   // TELEMETRY & INSPECTOR METHODS
   // ==========================================================
-  void _startTelemetryTimer() {
-    _telemetryTimer?.cancel();
-    _telemetryTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-      if (_viewMode == 'detail' && _clusterTab == 'telemetry' && _autoRefreshTelemetry && _selectedGate != null) {
-        final gateId = _selectedGate!['id'];
-        final idNum = gateId is int ? gateId : int.tryParse(gateId?.toString() ?? '') ?? 0;
-        if (idNum > 0) {
-          _fetchGateTelemetry(idNum, silent: true);
+  void _connectTelemetryWs(int gateId) {
+    _disconnectTelemetryWs();
+    if (gateId <= 0) return;
+
+    String wsBase = baseUrl.replaceAll('/api/v1', '');
+    if (wsBase.startsWith('https://')) {
+      wsBase = wsBase.replaceFirst('https://', 'wss://');
+    } else if (wsBase.startsWith('http://')) {
+      wsBase = wsBase.replaceFirst('http://', 'ws://');
+    }
+    final wsUri = Uri.parse('$wsBase/ws/telemetry?gateId=$gateId');
+
+    try {
+      final channel = WebSocketChannel.connect(wsUri);
+      _telemetryWsChannel = channel;
+
+      _telemetryWsSub = channel.stream.listen(
+        (data) {
+          if (!mounted) return;
+          if (!_wsConnected) {
+            setState(() => _wsConnected = true);
+          }
+          try {
+            final msg = json.decode(data.toString());
+            if (msg is Map && (msg['type'] == 'telemetry_init' || msg['type'] == 'telemetry_update')) {
+              if (msg['data'] is Map && mounted) {
+                setState(() {
+                  _gateTelemetry = msg['data'] as Map<String, dynamic>;
+                  _loadingTelemetry = false;
+                });
+              }
+            }
+          } catch (_) {}
+        },
+        onDone: () {
+          if (!mounted) return;
+          setState(() => _wsConnected = false);
+          _scheduleWsReconnect(gateId);
+        },
+        onError: (_) {
+          if (!mounted) return;
+          setState(() => _wsConnected = false);
+          _scheduleWsReconnect(gateId);
+        },
+      );
+    } catch (_) {
+      if (mounted) setState(() => _wsConnected = false);
+      _scheduleWsReconnect(gateId);
+    }
+
+    _fetchGateTelemetry(gateId, silent: false);
+  }
+
+  void _scheduleWsReconnect(int gateId) {
+    _wsReconnectTimer?.cancel();
+    if (_viewMode == 'detail' && _clusterTab == 'telemetry' && _selectedGate != null) {
+      _wsReconnectTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted && _viewMode == 'detail' && _clusterTab == 'telemetry') {
+          _connectTelemetryWs(gateId);
         }
-      }
-    });
+      });
+    }
+  }
+
+  void _disconnectTelemetryWs() {
+    _wsReconnectTimer?.cancel();
+    _telemetryWsSub?.cancel();
+    _telemetryWsChannel?.sink.close();
+    _telemetryWsSub = null;
+    _telemetryWsChannel = null;
+    _wsConnected = false;
   }
 
   Future<void> _fetchGateTelemetry(int gateId, {bool silent = false}) async {
@@ -2125,6 +2182,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
       if (res.statusCode == 200) {
         if (mounted) {
           AppFeedback.showSuccess(context, 'MQTT health ping published to AWS IoT Core topic.');
+          setState(() => _inspectSubTab = 'health');
           await _fetchGateTelemetry(gateId, silent: true);
         }
       } else {
@@ -2363,112 +2421,66 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
 
         // 2. Action Controls Toolbar
         Container(
-          padding: const EdgeInsets.all(10),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(color: const Color(0xFFE2E8F0)),
           ),
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            alignment: WrapAlignment.spaceBetween,
-            crossAxisAlignment: WrapCrossAlignment.center,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              // Auto Polling Toggle
-              InkWell(
-                onTap: () {
-                  setState(() => _autoRefreshTelemetry = !_autoRefreshTelemetry);
-                  if (_autoRefreshTelemetry) {
-                    _startTelemetryTimer();
-                    AppFeedback.showSuccess(context, 'Auto-polling resumed (3s interval).');
-                  } else {
-                    _telemetryTimer?.cancel();
-                    AppFeedback.showSuccess(context, 'Auto-polling paused.');
-                  }
-                },
-                borderRadius: BorderRadius.circular(6),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: _autoRefreshTelemetry ? const Color(0xFFECFDF5) : const Color(0xFFF1F5F9),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: _autoRefreshTelemetry ? const Color(0xFFA7F3D0) : const Color(0xFFCBD5E1)),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 7,
-                        height: 7,
-                        decoration: BoxDecoration(
-                          color: _autoRefreshTelemetry ? const Color(0xFF10B981) : const Color(0xFF94A3B8),
-                          shape: BoxShape.circle,
-                        ),
+              // Live WebSocket Connection Status Badge
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: _wsConnected ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: _wsConnected ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 7,
+                      height: 7,
+                      decoration: BoxDecoration(
+                        color: _wsConnected ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                        shape: BoxShape.circle,
                       ),
-                      const SizedBox(width: 6),
-                      Text(
-                        _autoRefreshTelemetry ? 'Auto Polling (3s)' : 'Auto Polling: Off',
-                        style: TextStyle(
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.bold,
-                          color: _autoRefreshTelemetry ? const Color(0xFF047857) : const Color(0xFF64748B),
-                        ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      _wsConnected ? 'Live Stream Connected' : 'Reconnecting...',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.bold,
+                        color: _wsConnected ? const Color(0xFF047857) : const Color(0xFF991B1B),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
 
-              // Action Buttons: Refresh, Ping Gate, Export
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Refresh
-                  InkWell(
-                    onTap: _loadingTelemetry ? null : () => _fetchGateTelemetry(gateId),
-                    borderRadius: BorderRadius.circular(6),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: const Color(0xFFCBD5E1)),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _loadingTelemetry
-                              ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
-                              : const Icon(Icons.refresh, size: 13, color: Color(0xFF334155)),
-                          const SizedBox(width: 4),
-                          const Text('Refresh', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF334155))),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-
-                  // Ping Gate
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFEF4444),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                    ),
-                    onPressed: _triggeringHealthCheck ? null : () => _triggerGatePing(gateId),
-                    icon: _triggeringHealthCheck
-                        ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                        : const Icon(Icons.favorite, size: 12, color: Colors.white),
-                    label: Text(
-                      _triggeringHealthCheck ? 'Pinging...' : 'Ping Gate',
-                      style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.white),
-                    ),
-                  ),
-                ],
+              // Ping Gate Button
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFDC2626),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                  elevation: 1,
+                ),
+                onPressed: _triggeringHealthCheck ? null : () => _triggerGatePing(gateId),
+                icon: _triggeringHealthCheck
+                    ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.favorite, size: 13, color: Colors.white),
+                label: Text(
+                  _triggeringHealthCheck ? 'Pinging Device...' : 'Ping Device',
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
+                ),
               ),
             ],
           ),

@@ -1,5 +1,6 @@
 import { prisma } from './prisma';
 import { checkAndDispatchGateStateAlert } from './gateAlertSms';
+import { broadcastGateTelemetry } from './telemetryWs';
 
 let lastProcessedId = 0;
 const lastKnownState = new Map<string, 'OPEN' | 'CLOSED'>();
@@ -250,6 +251,9 @@ export async function pollTelemetryTransitions() {
         }).catch(err => console.error('Error dispatching SMS from telemetry monitor:', err));
 
         // Log operational event for the Reports section
+        if (device?.gateId) {
+          broadcastGateTelemetry(device.gateId).catch(console.warn);
+        }
         recordGateTelemetryTransition({
           gateId: device?.gateId,
           thingName,

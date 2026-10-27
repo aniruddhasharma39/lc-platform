@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   FaArchway,
   FaFolder,
@@ -34,7 +34,6 @@ import { useToast } from '../../context/ToastContext';
 import {
   FaSlidersH,
   FaHeartbeat,
-  FaDownload,
   FaTable,
   FaCopy,
   FaCheck,
@@ -176,7 +175,8 @@ export default function LCGatesScreen({ user }: Props) {
   // Telemetry Inspector state for the selected gate
   const [gateTelemetry, setGateTelemetry] = useState<any | null>(null);
   const [loadingTelemetry, setLoadingTelemetry] = useState<boolean>(false);
-  const [autoRefreshTelemetry, setAutoRefreshTelemetry] = useState<boolean>(true);
+  const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const wsRef = useRef<WebSocket | null>(null);
   const [selectedPayloadId, setSelectedPayloadId] = useState<number | null>(null);
   const [inspectSubTab, setInspectSubTab] = useState<'telemetry' | 'manifest' | 'health' | 'all'>('telemetry');
   const [telemetryViewMode, setTelemetryViewMode] = useState<'table' | 'raw'>('table');
@@ -363,21 +363,87 @@ export default function LCGatesScreen({ user }: Props) {
     }
   }, []);
 
-  // Fetch telemetry whenever detail view is active on telemetry tab
+  // Live WebSocket connection for real-time telemetry streaming
   useEffect(() => {
-    if (viewMode === 'detail' && selectedGate && clusterTab === 'telemetry') {
-      fetchGateTelemetry(selectedGate.id, false);
+    if (viewMode !== 'detail' || !selectedGate || clusterTab !== 'telemetry') {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      setWsConnected(false);
+      return;
     }
-  }, [viewMode, selectedGate, clusterTab, fetchGateTelemetry]);
 
-  // Live Auto-Refresh polling every 3s
-  useEffect(() => {
-    if (viewMode !== 'detail' || !selectedGate || clusterTab !== 'telemetry' || !autoRefreshTelemetry) return;
-    const interval = setInterval(() => {
-      fetchGateTelemetry(selectedGate.id, true);
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [viewMode, selectedGate, clusterTab, autoRefreshTelemetry, fetchGateTelemetry]);
+    const gateId = selectedGate.id;
+    let wsUrl: string;
+    try {
+      const parsed = new URL(API_URL);
+      const wsProto = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl = `${wsProto}//${parsed.host}/ws/telemetry?gateId=${gateId}`;
+    } catch {
+      const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl = `${wsProto}//${window.location.hostname}:5001/ws/telemetry?gateId=${gateId}`;
+    }
+
+    let isMounted = true;
+    let reconnectTimeout: any = null;
+
+    const connectWebSocket = () => {
+      try {
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          if (!isMounted) return;
+          setWsConnected(true);
+        };
+
+        ws.onmessage = (event) => {
+          if (!isMounted) return;
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'telemetry_init' || msg.type === 'telemetry_update') {
+              if (msg.data) {
+                setGateTelemetry(msg.data);
+                setLoadingTelemetry(false);
+              }
+            }
+          } catch (e) {
+            console.warn('WS message parse error:', e);
+          }
+        };
+
+        ws.onclose = () => {
+          if (!isMounted) return;
+          setWsConnected(false);
+          reconnectTimeout = setTimeout(() => {
+            if (isMounted) connectWebSocket();
+          }, 3000);
+        };
+
+        ws.onerror = () => {
+          if (!isMounted) return;
+          setWsConnected(false);
+          ws.close();
+        };
+      } catch (err) {
+        console.warn('Failed to establish WebSocket:', err);
+      }
+    };
+
+    connectWebSocket();
+    fetchGateTelemetry(gateId, false);
+
+    return () => {
+      isMounted = false;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      setWsConnected(false);
+    };
+  }, [viewMode, selectedGate, clusterTab, fetchGateTelemetry]);
 
   // Trigger health check command to physical gate hardware
   const handleTriggerGatePing = async () => {
@@ -1129,72 +1195,61 @@ export default function LCGatesScreen({ user }: Props) {
                   </div>
                 </div>
 
-                {/* Interactive Controls */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  {/* Auto Polling Toggle */}
-                  <button
-                    type="button"
-                    className={`btn-small ${autoRefreshTelemetry ? 'btn-primary' : 'btn-outline'}`}
-                    style={{ fontSize: '0.78rem', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 6, borderRadius: 6, fontWeight: 700 }}
-                    onClick={() => setAutoRefreshTelemetry(!autoRefreshTelemetry)}
-                    title="Toggle live automatic polling every 3 seconds"
+                {/* Live Stream Status & Action Controls */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  {/* Live WebSocket Connection Status Badge */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 7,
+                      padding: '6px 14px',
+                      borderRadius: 6,
+                      background: wsConnected ? '#ecfdf5' : '#fef2f2',
+                      border: `1px solid ${wsConnected ? '#a7f3d0' : '#fecaca'}`,
+                      fontSize: '0.8rem',
+                      fontWeight: 700,
+                      color: wsConnected ? '#065f46' : '#991b1b',
+                    }}
+                    title={wsConnected ? 'Connected to live WebSocket stream' : 'Reconnecting to live WebSocket...'}
                   >
-                    <span className={autoRefreshTelemetry ? 'pulse-dot' : ''} style={{ width: 6, height: 6 }} />
-                    {autoRefreshTelemetry ? 'Auto Polling (3s)' : 'Polling Paused'}
-                  </button>
-
-                  {/* Manual Refresh */}
-                  <button
-                    type="button"
-                    className="btn-small btn-outline"
-                    style={{ fontSize: '0.78rem', padding: '6px 11px', display: 'flex', alignItems: 'center', gap: 5, borderRadius: 6 }}
-                    onClick={() => fetchGateTelemetry(selectedGate.id, false)}
-                    disabled={loadingTelemetry}
-                    title="Refresh telemetry stream"
-                  >
-                    <FaSyncAlt className={loadingTelemetry ? 'fa-spin' : ''} size={11} />
-                    <span>{loadingTelemetry ? 'Syncing...' : 'Refresh'}</span>
-                  </button>
+                    <span
+                      className={wsConnected ? 'pulse-dot' : ''}
+                      style={{
+                        width: 7,
+                        height: 7,
+                        background: wsConnected ? '#10b981' : '#ef4444',
+                        borderRadius: '50%',
+                        display: 'inline-block',
+                      }}
+                    />
+                    {wsConnected ? 'Live Stream Connected' : 'Reconnecting...'}
+                  </div>
 
                   {/* Ping Device / Trigger Health Check */}
                   <button
                     type="button"
-                    className="btn-small btn-outline"
-                    style={{ fontSize: '0.78rem', padding: '6px 11px', display: 'flex', alignItems: 'center', gap: 5, color: '#0b3c7a', borderColor: '#bfdbfe', borderRadius: 6 }}
+                    className="btn-small"
+                    style={{
+                      fontSize: '0.8rem',
+                      padding: '7px 15px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      borderRadius: 6,
+                      background: '#dc2626',
+                      color: '#ffffff',
+                      border: 'none',
+                      fontWeight: 700,
+                      cursor: triggeringHealthCheck ? 'not-allowed' : 'pointer',
+                      boxShadow: '0 1px 3px rgba(220, 38, 38, 0.25)',
+                    }}
                     onClick={handleTriggerGatePing}
                     disabled={triggeringHealthCheck}
-                    title="Publish MQTT health check command to physical gate hardware"
+                    title="Publish instant MQTT health ping to AWS IoT Core"
                   >
-                    <FaHeartbeat className={triggeringHealthCheck ? 'fa-spin' : ''} size={12} color="#dc2626" />
-                    <span>{triggeringHealthCheck ? 'Pinging...' : 'Ping Device'}</span>
-                  </button>
-
-                  {/* Export Records as JSON */}
-                  <button
-                    type="button"
-                    className="btn-small btn-outline"
-                    style={{ fontSize: '0.78rem', padding: '6px 11px', display: 'flex', alignItems: 'center', gap: 5, borderRadius: 6 }}
-                    onClick={() => {
-                      const exportData = {
-                        gate: selectedGate,
-                        gateTelemetry,
-                        historyCount: allHistoricPayloads.length,
-                        records: allHistoricPayloads,
-                        exportedAt: new Date().toISOString()
-                      };
-                      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = `${selectedGate.lcNumber}-telemetry-export.json`;
-                      a.click();
-                      URL.revokeObjectURL(url);
-                      toastSuccess('Gate telemetry exported as JSON', 'Export Successful');
-                    }}
-                    title="Export telemetry records to a JSON file"
-                  >
-                    <FaDownload size={11} />
-                    <span>Export</span>
+                    <FaHeartbeat className={triggeringHealthCheck ? 'fa-spin' : ''} size={13} color="#ffffff" />
+                    <span>{triggeringHealthCheck ? 'Pinging Device...' : 'Ping Device'}</span>
                   </button>
                 </div>
               </div>
