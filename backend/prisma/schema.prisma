@@ -8,35 +8,35 @@ datasource db {
 }
 
 model Role {
-  id             Int    @id @default(autoincrement())
-  name           String @unique
+  id             Int          @id @default(autoincrement())
+  name           String       @unique
   users          User[]       @relation("FinalRole")
   requestedUsers User[]       @relation("RequestedRole")
   roleModules    RoleModule[]
 }
 
 model User {
-  id                  Int       @id @default(autoincrement())
+  id                  Int                    @id @default(autoincrement())
   fullName            String
-  mobile              String    @unique
-  email               String    @unique
-  employeeId          String    @unique
+  mobile              String                 @unique
+  email               String                 @unique
+  employeeId          String                 @unique
   department          String
   passwordHash        String
   roleId              Int?
-  role                Role?     @relation("FinalRole", fields: [roleId], references: [id])
+  role                Role?                  @relation("FinalRole", fields: [roleId], references: [id])
   requestedRoleId     Int?
-  requestedRole       Role?     @relation("RequestedRole", fields: [requestedRoleId], references: [id])
-  status              String    @default("PENDING") // PENDING, APPROVED, REJECTED, DEACTIVATED
-  failedLoginAttempts Int       @default(0)
+  requestedRole       Role?                  @relation("RequestedRole", fields: [requestedRoleId], references: [id])
+  status              String                 @default("PENDING") // PENDING, APPROVED, REJECTED, DEACTIVATED
+  failedLoginAttempts Int                    @default(0)
   lockoutUntil        DateTime?
-  mustChangePassword  Boolean   @default(false)
+  mustChangePassword  Boolean                @default(false)
   rejectionReason     String?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
   refreshTokens       RefreshToken[]
   auditLogs           AuditLog[]
-  metadata            String?    // JSON string for dynamic registration fields
+  metadata            String? // JSON string for dynamic registration fields
   evidences           InstallationEvidence[]
   scopeGroups         ScopeGroupUser[]
 }
@@ -85,25 +85,25 @@ model AppSetting {
 model RegistrationForm {
   id        Int      @id @default(autoincrement())
   name      String
-  schema    String   // JSON representing fields and sections
+  schema    String // JSON representing fields and sections
   status    String   @default("DRAFT") // DRAFT, LIVE, ARCHIVED
   version   Int      @default(1)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  requests  RegistrationRequest[]
+  requests RegistrationRequest[]
 }
 
 model RegistrationRequest {
-  id              Int               @id @default(autoincrement())
+  id              Int              @id @default(autoincrement())
   formId          Int
-  form            RegistrationForm  @relation(fields: [formId], references: [id], onDelete: Restrict)
-  data            String            // JSON representing submitted values
-  status          String            @default("PENDING") // PENDING, APPROVED, REJECTED
+  form            RegistrationForm @relation(fields: [formId], references: [id], onDelete: Restrict)
+  data            String // JSON representing submitted values
+  status          String           @default("PENDING") // PENDING, APPROVED, REJECTED
   requestedRoleId Int?
   rejectionReason String?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 }
 
 model LCGate {
@@ -120,6 +120,7 @@ model LCGate {
   masters          MasterUnit[]
   scopeGroups      ScopeGroupGate[]
   deviceRegistries DeviceRegistry[]
+  events           LCGateEvent[]
 }
 
 model MasterUnit {
@@ -168,7 +169,7 @@ model InstallationEvidence {
 model OtpVerification {
   id         Int      @id @default(autoincrement())
   identifier String
-  type       String   // EMAIL or PHONE
+  type       String // EMAIL or PHONE
   otp        String
   expiresAt  DateTime
   verified   Boolean  @default(false)
@@ -178,16 +179,16 @@ model OtpVerification {
 }
 
 model ScopeGroup {
-  id          Int              @id @default(autoincrement())
-  name        String           @unique
+  id          Int                @id @default(autoincrement())
+  name        String             @unique
   description String?
-  color       String?          @default("#0B3C7A")
-  allowSms    Boolean          @default(false)
+  color       String?            @default("#0B3C7A")
+  allowSms    Boolean            @default(false)
   parentId    Int?
-  parent      ScopeGroup?      @relation("ScopeGroupHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
-  children    ScopeGroup[]     @relation("ScopeGroupHierarchy")
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  parent      ScopeGroup?        @relation("ScopeGroupHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children    ScopeGroup[]       @relation("ScopeGroupHierarchy")
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
 
   gates       ScopeGroupGate[]
   devices     ScopeGroupDevice[]
@@ -315,4 +316,24 @@ model GateStateAlertLog {
   @@index([gateId])
   @@index([lcNumber])
   @@index([sentAt])
+}
+
+model LCGateEvent {
+  id              Int       @id @default(autoincrement())
+  gateId          Int
+  gate            LCGate    @relation(fields: [gateId], references: [id], onDelete: Cascade)
+  openedAt        DateTime
+  closedAt        DateTime?
+  durationSeconds Int?      // Precomputed duration in seconds when closed
+  status          String    @default("CLOSED") // OPEN, CLOSED, EXTENDED_DELAY
+  openedBy        String?   // e.g., "Gatesman R. Sharma", "Station Master", "Interlock Auto"
+  closedBy        String?
+  trainNumber     String?   // e.g., "12952 Rajdhani Exp", "Freight DN-402", "Routine Road Clearance"
+  remarks         String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([gateId])
+  @@index([openedAt])
+  @@index([status])
 }

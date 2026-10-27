@@ -12,6 +12,7 @@ import 'cluster/cluster_main_screen.dart';
 import 'profile_screen.dart';
 import 'scope_groups/scope_groups_screen.dart';
 import 'lc_gates/lc_gates_screen.dart';
+import 'reports/reports_screen.dart';
 import '../utils/app_feedback.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -25,6 +26,7 @@ class DashboardScreen extends StatefulWidget {
 
 const List<String> _canonicalModuleOrder = [
   'lc-gates',
+  'reports',
   'cluster',
   'scope-groups',
   'manage-users',
@@ -35,6 +37,7 @@ const List<String> _canonicalModuleOrder = [
 
 const List<Map<String, String>> _defaultModules = [
   {'name': 'LC Gates', 'slug': 'lc-gates'},
+  {'name': 'Reports', 'slug': 'reports'},
   {'name': 'Cluster', 'slug': 'cluster'},
   {'name': 'Scope Groups', 'slug': 'scope-groups'},
   {'name': 'Manage Users', 'slug': 'manage-users'},
@@ -48,6 +51,8 @@ String _getModuleTitle(dynamic m) {
   switch (slug) {
     case 'lc-gates':
       return 'LC Gates';
+    case 'reports':
+      return 'Reports';
     case 'branding':
       return 'Branding';
     case 'cluster':
@@ -764,6 +769,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     IconData getIconForModule(String slug) {
       switch (slug) {
         case 'lc-gates': return Icons.meeting_room_outlined;
+        case 'reports': return Icons.assessment_outlined;
         case 'manage-users': return Icons.group;
         case 'roles': return Icons.security;
         case 'branding': return Icons.brush;
@@ -961,7 +967,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ..._systemModules.where((m) {
               if (widget.user['role'] == 'Developer') return true;
               final hasAssignedScopes = widget.user['scopeGroups'] is List && (widget.user['scopeGroups'] as List).isNotEmpty;
-              if (m['slug'] == 'lc-gates' && hasAssignedScopes) return true;
+              if ((m['slug'] == 'lc-gates' || m['slug'] == 'reports') && hasAssignedScopes) return true;
               final allowed = widget.user['allowedModules'];
               return allowed is List && allowed.contains(m['slug']);
             }).map((m) {
@@ -990,6 +996,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildBody() {
     if (_currentView == 'home') return _buildUserDashboard();
     if (_currentView == 'lc-gates') return LCGatesScreen(user: widget.user);
+    if (_currentView == 'reports') return ReportsScreen(user: widget.user);
     if (_currentView == 'manage-users') return _buildAdminDashboard();
     if (_currentView == 'roles') return RolesScreen(user: widget.user);
     if (_currentView == 'branding') return BrandingScreen(user: widget.user);

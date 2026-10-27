@@ -12,6 +12,7 @@ import deviceRoutes from './routes/deviceRegistry';
 import evidenceRoutes from './routes/evidence';
 import notificationsRoutes from './routes/notifications';
 import scopeGroupsRoutes from './routes/scopeGroups';
+import reportsRoutes from './routes/reports';
 import { errorHandler } from './middleware/error';
 import { prisma } from './lib/prisma';
 import { startTelemetryMonitor } from './lib/telemetryMonitor';
@@ -49,6 +50,7 @@ app.use('/api/v1/devices', deviceRoutes);
 app.use('/api/v1/evidence', evidenceRoutes);
 app.use('/api/v1/notifications', notificationsRoutes);
 app.use('/api/v1/scope-groups', scopeGroupsRoutes);
+app.use('/api/v1/reports', reportsRoutes);
 
 // Error Handling
 app.use(errorHandler);
@@ -58,6 +60,7 @@ const ensureSystemModules = async () => {
   try {
     const modulesToEnsure = [
       { name: 'LC Gates', slug: 'lc-gates' },
+      { name: 'Reports', slug: 'reports' },
       { name: 'Cluster', slug: 'cluster' },
       { name: 'Device Registry', slug: 'devices' },
       { name: 'Scope Groups', slug: 'scope-groups' },
@@ -83,5 +86,3 @@ app.listen(port, () => {
   startTelemetryMonitor(3000);
   console.log(`Server is running on port ${port}`);
 });
-
-

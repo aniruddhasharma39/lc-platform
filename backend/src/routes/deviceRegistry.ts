@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { publishMqttMessage } from '../lib/iotClient';
 import { checkAndDispatchGateStateAlert } from '../lib/gateAlertSms';
+import { recordGateTelemetryTransition } from '../lib/telemetryMonitor';
 
 const router = Router();
 
@@ -572,6 +573,13 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
         newState: currentState,
         timestamp: telemetry.receivedAt,
       }).catch(err => console.error('Error dispatching gate state SMS alert:', err));
+
+      recordGateTelemetryTransition({
+        gateId: device.gateId,
+        thingName: device.thingName,
+        newState: currentState,
+        timestamp: telemetry.receivedAt,
+      }).catch(err => console.error('Error recording telemetry event for reports:', err));
     }
 
     res.status(201).json({

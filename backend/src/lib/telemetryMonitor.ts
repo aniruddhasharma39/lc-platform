@@ -31,6 +31,132 @@ export function parseGateStateFromPayload(payload: any): 'OPEN' | 'CLOSED' | nul
 }
 
 /**
+ * Records an operational gate event in LCGateEvent for the Reports section
+ * when a physical or simulated telemetry transition occurs.
+ */
+export async function recordGateTelemetryTransition(params: {
+  gateId?: number | null;
+  thingName: string;
+  newState: 'OPEN' | 'CLOSED';
+  timestamp?: Date;
+}) {
+  try {
+    const { gateId, thingName, newState } = params;
+    const timestamp = params.timestamp || new Date();
+
+    // 1. Resolve gate ID
+    let targetGateId = gateId;
+    if (!targetGateId) {
+      // Find gate by thingName or serialNumber in DeviceRegistry
+      const dev = await prisma.deviceRegistry.findFirst({
+        where: {
+          OR: [
+            { thingName },
+            { serialNumber: thingName }
+          ]
+        },
+        select: { gateId: true }
+      });
+      if (dev?.gateId) {
+        targetGateId = dev.gateId;
+      } else {
+        // Fallback: match by LC number
+        const gate = await prisma.lCGate.findFirst({
+          where: {
+            OR: [
+              { lcNumber: thingName },
+              { name: thingName }
+            ]
+          },
+          select: { id: true }
+        });
+        if (gate) targetGateId = gate.id;
+      }
+    }
+
+    if (!targetGateId) {
+      // No gate linked to this device yet
+      return null;
+    }
+
+    if (newState === 'OPEN') {
+      // Check if there is already an open event that hasn't closed yet
+      const existingOpen = await prisma.lCGateEvent.findFirst({
+        where: {
+          gateId: targetGateId,
+          status: 'OPEN',
+          closedAt: null
+        },
+        orderBy: { openedAt: 'desc' }
+      });
+
+      if (!existingOpen) {
+        const newEvent = await prisma.lCGateEvent.create({
+          data: {
+            gateId: targetGateId,
+            openedAt: timestamp,
+            status: 'OPEN',
+            openedBy: `AWS IoT / ${thingName}`,
+            remarks: `State transition: OPEN detected by IoT Telemetry`
+          }
+        });
+        console.log(`📊 [REPORTS] Logged OPEN event #${newEvent.id} for Gate #${targetGateId} (${thingName})`);
+        return newEvent;
+      }
+      return existingOpen;
+    } else if (newState === 'CLOSED') {
+      // Find latest OPEN event for this gate
+      const openEvent = await prisma.lCGateEvent.findFirst({
+        where: {
+          gateId: targetGateId,
+          status: 'OPEN',
+          closedAt: null
+        },
+        orderBy: { openedAt: 'desc' }
+      });
+
+      if (openEvent) {
+        const durationSeconds = Math.max(0, Math.round((timestamp.getTime() - openEvent.openedAt.getTime()) / 1000));
+        const finalStatus = durationSeconds > 900 ? 'EXTENDED_DELAY' : 'CLOSED';
+
+        const updated = await prisma.lCGateEvent.update({
+          where: { id: openEvent.id },
+          data: {
+            closedAt: timestamp,
+            durationSeconds,
+            status: finalStatus,
+            closedBy: `AWS IoT / ${thingName}`,
+            remarks: openEvent.remarks ? `${openEvent.remarks} | Closed via IoT Telemetry` : `Closed via IoT Telemetry`
+          }
+        });
+        console.log(`📊 [REPORTS] Updated CLOSED event #${updated.id} for Gate #${targetGateId} (${thingName}), duration: ${durationSeconds}s`);
+        return updated;
+      } else {
+        // If OPEN event was missed (e.g. cold start), record a completed event with standard duration (e.g. 180s)
+        const estimatedOpen = new Date(timestamp.getTime() - 180000);
+        const newEvent = await prisma.lCGateEvent.create({
+          data: {
+            gateId: targetGateId,
+            openedAt: estimatedOpen,
+            closedAt: timestamp,
+            durationSeconds: 180,
+            status: 'CLOSED',
+            openedBy: `AWS IoT / ${thingName}`,
+            closedBy: `AWS IoT / ${thingName}`,
+            remarks: `Direct CLOSED state detected via IoT Telemetry`
+          }
+        });
+        console.log(`📊 [REPORTS] Created completed CLOSED event #${newEvent.id} for Gate #${targetGateId}`);
+        return newEvent;
+      }
+    }
+  } catch (err: any) {
+    console.error('Error recording gate telemetry event for reports:', err?.message || err);
+    return null;
+  }
+}
+
+/**
  * Initializes the monitor by capturing current state so past history doesn't trigger alerts
  */
 export async function initTelemetryMonitor() {
@@ -122,6 +248,14 @@ export async function pollTelemetryTransitions() {
           newState: currentState,
           timestamp: record.receivedAt || new Date(),
         }).catch(err => console.error('Error dispatching SMS from telemetry monitor:', err));
+
+        // Log operational event for the Reports section
+        recordGateTelemetryTransition({
+          gateId: device?.gateId,
+          thingName,
+          newState: currentState,
+          timestamp: record.receivedAt || new Date(),
+        }).catch(err => console.error('Error recording telemetry event for reports:', err));
       }
 
       // Update in-memory tracker

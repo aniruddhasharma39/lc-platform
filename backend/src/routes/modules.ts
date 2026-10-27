@@ -8,6 +8,7 @@ router.use(authenticate);
 
 const CANONICAL_ORDER = [
   'lc-gates',
+  'reports',
   'cluster',
   'devices',
   'scope-groups',
@@ -19,6 +20,7 @@ const CANONICAL_ORDER = [
 
 const REQUIRED_MODULES = [
   { name: 'LC Gates', slug: 'lc-gates' },
+  { name: 'Reports', slug: 'reports' },
   { name: 'Cluster', slug: 'cluster' },
   { name: 'Device Registry', slug: 'devices' },
   { name: 'Scope Groups', slug: 'scope-groups' },

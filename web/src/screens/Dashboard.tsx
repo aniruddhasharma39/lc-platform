@@ -16,6 +16,7 @@ import ManageUsers from './ManageUsers';
 import ScopeGroupManagement from './ScopeGroups/ScopeGroupManagement';
 import LCGatesScreen from './LCGates/LCGatesScreen';
 import DeviceRegistryScreen from './DeviceRegistry/DeviceRegistryScreen';
+import ReportsScreen from './Reports/ReportsScreen';
 import { API_URL } from '../config';
 import { useToast } from '../context/ToastContext';
 
@@ -26,6 +27,7 @@ type Props = {
 
 const CANONICAL_MODULE_ORDER = [
   'lc-gates',
+  'reports',
   'cluster',
   'devices',
   'device-registry',
@@ -38,6 +40,7 @@ const CANONICAL_MODULE_ORDER = [
 
 const DEFAULT_SYSTEM_MODULES = [
   { name: 'LC Gates', slug: 'lc-gates' },
+  { name: 'Reports', slug: 'reports' },
   { name: 'Cluster', slug: 'cluster' },
   { name: 'Device Registry', slug: 'devices' },
   { name: 'Scope Groups', slug: 'scope-groups' },
@@ -599,8 +602,8 @@ export default function Dashboard({ user, onLogout }: Props) {
               const modulesToShow = (systemModules.length > 0 ? systemModules : DEFAULT_SYSTEM_MODULES)
                 .filter(m => {
                   if (isDev) return true;
-                  if (m.slug === 'cluster') return true;
-                  if (m.slug === 'lc-gates' && hasAssignedScopes) return true;
+if (m.slug === 'cluster') return true;
+                  if ((m.slug === 'lc-gates' || m.slug === 'reports') && hasAssignedScopes) return true;
                   return user.allowedModules && user.allowedModules.includes(m.slug);
                 });
               return modulesToShow.map(mod => {
@@ -631,6 +634,7 @@ export default function Dashboard({ user, onLogout }: Props) {
 
         <main className="content-area">
           {currentView === 'lc-gates' && <LCGatesScreen user={user} />}
+          {currentView === 'reports' && <ReportsScreen user={user} />}
           {currentView === 'roles' && <Roles user={user} />}
           {currentView === 'registration' && <RegistrationBuilder />}
           {currentView === 'branding' && <Branding user={user} />}
@@ -646,7 +650,7 @@ export default function Dashboard({ user, onLogout }: Props) {
             </div>
           )}
 
-          {!['roles', 'registration', 'branding', 'cluster', 'scope-groups', 'manage-users', 'lc-gates', 'home', 'devices', 'device-registry'].includes(currentView) && (() => {
+          {!['roles', 'registration', 'branding', 'cluster', 'scope-groups', 'manage-users', 'lc-gates', 'reports', 'home', 'devices', 'device-registry'].includes(currentView) && (() => {
             const currentMod = systemModules.find(m => m.slug === currentView);
             const FallbackIcon = getSidebarModuleIcon(currentMod?.name || '', currentView);
             return (
