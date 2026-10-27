@@ -3,15 +3,16 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'create_gate_screen.dart';
 import 'gate_detail_screen.dart';
-
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
+import '../../components/device_info_sheet.dart';
 import 'railway_data.dart';
 
 class ClusterMainScreen extends StatefulWidget {
-  const ClusterMainScreen({super.key});
+  final Map<String, dynamic>? user;
+  const ClusterMainScreen({super.key, this.user});
 
   @override
   State<ClusterMainScreen> createState() => _ClusterMainScreenState();
@@ -22,6 +23,10 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
   bool _isLoading = true;
   String _token = '';
   List<String> _scopeNames = [];
+
+  // Developer Scope Groups View State (Parity with Web ClusterDashboard)
+  String _developerScopeId = '';
+  List<dynamic> _allScopeGroupsList = [];
 
   // Zone/Division reference data
   List<String> _zones = RailwayData.zones;
@@ -44,6 +49,10 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
     {'value': 'location_asc', 'label': 'Location (A–Z)'},
   ];
 
+  bool get _isDeveloper =>
+      widget.user?['role'] == 'Developer' ||
+      ((widget.user?['allowedModules'] as List?)?.contains('cluster') ?? false);
+
   @override
   void initState() {
     super.initState();
@@ -58,6 +67,22 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
     await _fetchGates();
     await _fetchReferenceData();
     await _fetchMyScope();
+    await _fetchScopeGroupsForDeveloper();
+  }
+
+  Future<void> _fetchScopeGroupsForDeveloper() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$baseUrl/scope-groups'),
+        headers: {'Authorization': 'Bearer $_token'},
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data is List && mounted) {
+          setState(() => _allScopeGroupsList = data);
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _fetchMyScope() async {
@@ -77,7 +102,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
         }
       }
     } catch (e) {
-      print('Error fetching scope groups: $e');
+      debugPrint('Error fetching scope groups: $e');
     }
   }
 
@@ -105,15 +130,18 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
         }
       }
     } catch (e) {
-      print('Error fetching zone/division reference data: $e');
+      debugPrint('Error fetching zone/division reference data: $e');
     }
   }
 
-  Future<void> _fetchGates({bool isManualRefresh = false}) async {
+  Future<void> _fetchGates({bool isManualRefresh = false, String? overrideScopeId}) async {
     if (!isManualRefresh) setState(() => _isLoading = true);
     try {
+      final activeScope = overrideScopeId ?? _developerScopeId;
+      final query = activeScope.isNotEmpty ? '?scopeGroupId=${Uri.encodeComponent(activeScope)}' : '';
+
       final res = await http.get(
-        Uri.parse('$baseUrl/lcgate'),
+        Uri.parse('$baseUrl/lcgate$query'),
         headers: {'Authorization': 'Bearer $_token'},
       );
       if (res.statusCode == 200) {
@@ -157,6 +185,17 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
       _filterLc.isNotEmpty ||
       _sortBy != 'newest';
 
+  int get _activeFilterCount {
+    int count = 0;
+    if (_filterZone.isNotEmpty) count++;
+    if (_filterDivision.isNotEmpty) count++;
+    if (_filterLocation.isNotEmpty) count++;
+    if (_filterName.isNotEmpty) count++;
+    if (_filterLc.isNotEmpty) count++;
+    if (_sortBy != 'newest') count++;
+    return count;
+  }
+
   List<dynamic> get _visibleGates {
     final filtered = _gates.where((g) {
       final zone = (g['zone'] as String?) ?? '';
@@ -164,17 +203,18 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
       final location = (g['locationName'] as String?) ?? '';
       final name = (g['name'] as String?) ?? '';
       final lc = (g['lcNumber'] as String?) ?? '';
-      final q = (s) => s.toLowerCase();
 
-      if (_filterZone.isNotEmpty && q(zone) != q(_filterZone)) return false;
-      if (_filterDivision.isNotEmpty && q(division) != q(_filterDivision)) return false;
-      if (_filterLocation.isNotEmpty && !q(location).contains(q(_filterLocation))) return false;
-      if (_filterName.isNotEmpty && !q(name).contains(q(_filterName))) return false;
-      if (_filterLc.isNotEmpty && !q(lc).contains(q(_filterLc))) return false;
+      bool matches(String val, String filter) =>
+          filter.isEmpty || val.toLowerCase().contains(filter.toLowerCase());
+
+      if (_filterZone.isNotEmpty && zone.toLowerCase() != _filterZone.toLowerCase()) return false;
+      if (_filterDivision.isNotEmpty && division.toLowerCase() != _filterDivision.toLowerCase()) return false;
+      if (!matches(location, _filterLocation)) return false;
+      if (!matches(name, _filterName)) return false;
+      if (!matches(lc, _filterLc)) return false;
       return true;
     }).toList();
 
-    int cmp(DateTime a, DateTime b) => b.compareTo(a);
     filtered.sort((a, b) {
       switch (_sortBy) {
         case 'name_asc':
@@ -189,10 +229,9 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           return ((a['locationName'] as String?) ?? '').compareTo((b['locationName'] as String?) ?? '');
         case 'newest':
         default:
-          return cmp(
-            DateTime.tryParse((a['createdAt'] as String?) ?? '') ?? DateTime(0),
-            DateTime.tryParse((b['createdAt'] as String?) ?? '') ?? DateTime(0),
-          );
+          final dateA = DateTime.tryParse((a['createdAt'] as String?) ?? '') ?? DateTime(0);
+          final dateB = DateTime.tryParse((b['createdAt'] as String?) ?? '') ?? DateTime(0);
+          return dateB.compareTo(dateA);
       }
     });
     return filtered;
@@ -233,6 +272,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           final lcCtrl = TextEditingController(text: _filterLc);
           final bottomInset = MediaQuery.of(sheetContext).viewInsets.bottom;
           final bottomPadding = MediaQuery.of(sheetContext).padding.bottom;
+
           return SafeArea(
             top: false,
             child: Padding(
@@ -261,8 +301,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text('Filter & Sort',
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                        const Text('Filter & Sort', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                         TextButton(
                           onPressed: () {
                             setSheetState(() {
@@ -281,19 +320,19 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                     ),
                     const SizedBox(height: 8),
                     DropdownButtonFormField<String>(
-                      value: zone.isEmpty ? null : zone,
+                      initialValue: zone.isEmpty ? null : zone,
                       decoration: const InputDecoration(labelText: 'Zone'),
                       items: _zones
                           .map((z) => DropdownMenuItem(value: z, child: Text(z, overflow: TextOverflow.ellipsis)))
                           .toList(),
                       onChanged: (val) => setSheetState(() {
                         zone = val ?? '';
-                        division = ''; // reset division when zone changes
+                        division = '';
                       }),
                     ),
                     const SizedBox(height: 12),
                     DropdownButtonFormField<String>(
-                      value: division.isEmpty ? null : division,
+                      initialValue: division.isEmpty ? null : division,
                       decoration: const InputDecoration(labelText: 'Division'),
                       items: divisions
                           .map((d) => DropdownMenuItem(value: d, child: Text(d, overflow: TextOverflow.ellipsis)))
@@ -318,7 +357,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                     ),
                     const SizedBox(height: 12),
                     DropdownButtonFormField<String>(
-                      value: sort,
+                      initialValue: sort,
                       decoration: const InputDecoration(labelText: 'Sort By'),
                       items: _sortOptions
                           .map((o) => DropdownMenuItem(value: o['value'], child: Text(o['label']!)))
@@ -348,10 +387,11 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                         }
                       },
                       style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 15),
+                        backgroundColor: AppColors.primary,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
-                      child: const Text('Apply Filters', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                      child: const Text('Apply Filters', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white)),
                     ),
                   ],
                 ),
@@ -438,20 +478,22 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
     final filtered = _visibleGates;
 
     return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
-        title: const Text('LC Gates & Clusters', style: TextStyle(fontWeight: FontWeight.bold)),
-        elevation: 0,
-        backgroundColor: Colors.transparent,
+        title: const Text('LC Gate Clusters', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        elevation: 1,
+        backgroundColor: Colors.white,
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh, color: AppColors.primary),
             tooltip: 'Refresh Gates',
             onPressed: () => _fetchGates(isManualRefresh: true),
           ),
           IconButton(
             icon: Badge(
               isLabelVisible: _hasActiveFilters,
-              child: const Icon(Icons.filter_list),
+              label: Text('$_activeFilterCount'),
+              child: const Icon(Icons.filter_list, color: AppColors.primary),
             ),
             tooltip: 'Filter & Sort',
             onPressed: _openFilterSheet,
@@ -459,6 +501,8 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
         icon: const Icon(Icons.add),
         label: const Text('Create Gate'),
         onPressed: () async {
@@ -471,220 +515,403 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           if (!mounted) return;
           if (result == true) {
             _fetchGates();
-            AppFeedback.showSuccess(context, 'New LC Gate created and added to cluster list.');
+            if (mounted) {
+              AppFeedback.showSuccess(context, 'New LC Gate created and added to cluster list.');
+            }
           }
         },
       ),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter, end: Alignment.bottomCenter,
-            colors: [Theme.of(context).primaryColor.withOpacity(0.05), Colors.white],
-          ),
-        ),
-        child: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _gates.isEmpty
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 32),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.shield_outlined, size: 56, color: Colors.grey.shade400),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'No Gates in Your Assigned Scope',
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17, color: Color(0xFF1E293B)),
-                          textAlign: TextAlign.center,
+      body: Column(
+        children: [
+          // 1. Developer Scope View Selector Strip (Parity with Web ClusterDashboard)
+          if (_isDeveloper && _allScopeGroupsList.isNotEmpty)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              color: Colors.white,
+              child: Row(
+                children: [
+                  const Icon(Icons.layers_outlined, size: 18, color: AppColors.primary),
+                  const SizedBox(width: 8),
+                  const Text('Scope View:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF334155))),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFCBD5E1)),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: _developerScopeId,
+                          isExpanded: true,
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primary),
+                          items: [
+                            const DropdownMenuItem(value: '', child: Text('My Assigned Scope')),
+                            const DropdownMenuItem(value: 'all', child: Text('All Gates (Admin View)')),
+                            ..._allScopeGroupsList.map((sg) {
+                              final idStr = sg['id'].toString();
+                              final name = sg['name'] ?? 'Scope';
+                              final count = sg['_count']?['gates'] ?? sg['gates']?.length ?? 0;
+                              return DropdownMenuItem(
+                                value: idStr,
+                                child: Text('$name ($count gates)', overflow: TextOverflow.ellipsis),
+                              );
+                            }),
+                          ],
+                          onChanged: (val) {
+                            if (val != null) {
+                              setState(() => _developerScopeId = val);
+                              _fetchGates(overrideScopeId: val);
+                              final msg = val == 'all'
+                                  ? 'Switched to All Gates (Admin View).'
+                                  : val.isNotEmpty
+                                      ? 'Filtered gates by selected scope group.'
+                                      : 'Switched to Assigned Scope.';
+                              AppFeedback.showInfo(context, msg);
+                            }
+                          },
                         ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'You have not been assigned to any Scope Groups containing LC Gates yet. Please contact your system administrator.',
-                          style: TextStyle(color: Colors.grey.shade600, fontSize: 13.5, height: 1.4),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
+                      ),
                     ),
                   ),
-                )
-              : filtered.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.search_off, size: 48, color: Colors.grey),
-                          const SizedBox(height: 12),
-                          const Text('No gates match the current filters.', style: TextStyle(color: Colors.grey, fontSize: 16)),
-                          const SizedBox(height: 12),
-                          OutlinedButton(onPressed: _resetFilters, child: const Text('Clear Filters')),
-                        ],
-                      ),
-                    )
-                  : RefreshIndicator(
-                      onRefresh: () => _fetchGates(isManualRefresh: true),
-                      child: ListView.builder(
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        padding: const EdgeInsets.all(16),
-                        itemCount: filtered.length + (_scopeNames.isNotEmpty ? 1 : 0),
-                        itemBuilder: (context, index) {
-                          if (_scopeNames.isNotEmpty && index == 0) {
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 14),
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF0B3C7A).withOpacity(0.06),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: const Color(0xFF0B3C7A).withOpacity(0.18)),
-                              ),
-                              child: Row(
-                                children: [
-                                  const Icon(Icons.layers, size: 18, color: Color(0xFF0B3C7A)),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      'Scope: ${_scopeNames.join(", ")}',
-                                      style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: Color(0xFF0B3C7A)),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF0B3C7A),
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Text(
-                                      '${filtered.length} ${filtered.length == 1 ? "Gate" : "Gates"}',
-                                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            );
-                          }
-                          final gateIndex = _scopeNames.isNotEmpty ? index - 1 : index;
-                          final gate = filtered[gateIndex];
-                          final masters = gate['masters'] as List? ?? [];
-                          final deviceCount = masters.fold<int>(0, (sum, m) => sum + ((m['childDevices'] as List?)?.length ?? 0));
-                          final zone = (gate['zone'] as String?) ?? '';
-                          final division = (gate['division'] as String?) ?? '';
+                ],
+              ),
+            ),
 
-                          return Card(
-                            elevation: 4,
-                            margin: const EdgeInsets.only(bottom: 16),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(16),
-                              onTap: () async {
-                                final result = await Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => GateDetailScreen(token: _token, gate: gate),
+          // 2. Assigned Scope Banner (when not in "All")
+          if (_scopeNames.isNotEmpty && _developerScopeId != 'all')
+            Container(
+              margin: const EdgeInsets.fromLTRB(14, 8, 14, 0),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppColors.primary.withValues(alpha: 0.15)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.layers, size: 16, color: AppColors.primary),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Assigned Scope: ${_scopeNames.join(", ")}',
+                      style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF0F172A)),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      '${filtered.length} Accessible',
+                      style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // 3. Active Filters Chips Strip (Visible when filters are active)
+          if (_hasActiveFilters)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              alignment: Alignment.centerLeft,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    const Text('Active:', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B))),
+                    const SizedBox(width: 6),
+                    if (_filterZone.isNotEmpty)
+                      _buildFilterChip('Zone: $_filterZone', () => setState(() {
+                        _filterZone = '';
+                        _filterDivision = '';
+                      })),
+                    if (_filterDivision.isNotEmpty)
+                      _buildFilterChip('Div: $_filterDivision', () => setState(() => _filterDivision = '')),
+                    if (_filterLocation.isNotEmpty)
+                      _buildFilterChip('Loc: $_filterLocation', () => setState(() => _filterLocation = '')),
+                    if (_filterName.isNotEmpty)
+                      _buildFilterChip('Gate: $_filterName', () => setState(() => _filterName = '')),
+                    if (_filterLc.isNotEmpty)
+                      _buildFilterChip('LC: $_filterLc', () => setState(() => _filterLc = '')),
+                    if (_sortBy != 'newest')
+                      _buildFilterChip('Sort: $_sortBy', () => setState(() => _sortBy = 'newest')),
+                    TextButton(
+                      style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                      onPressed: _resetFilters,
+                      child: const Text('Clear All', style: TextStyle(fontSize: 11, color: Colors.red)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          // 4. Gates List View
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : _gates.isEmpty
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 32),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.shield_outlined, size: 52, color: Colors.grey.shade400),
+                              const SizedBox(height: 14),
+                              const Text(
+                                'No Gates in Your Assigned Scope',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF1E293B)),
+                                textAlign: TextAlign.center,
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                'You have not been assigned to any Scope Groups containing LC Gates yet. Contact your system administrator.',
+                                style: TextStyle(color: Colors.grey.shade600, fontSize: 12.5, height: 1.4),
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    : filtered.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.search_off, size: 48, color: Colors.grey),
+                                const SizedBox(height: 12),
+                                const Text('No gates match the current filters.', style: TextStyle(color: Colors.grey, fontSize: 15)),
+                                const SizedBox(height: 12),
+                                OutlinedButton(onPressed: _resetFilters, child: const Text('Clear Filters')),
+                              ],
+                            ),
+                          )
+                        : RefreshIndicator(
+                            onRefresh: () => _fetchGates(isManualRefresh: true),
+                            child: ListView.builder(
+                              physics: const AlwaysScrollableScrollPhysics(),
+                              padding: const EdgeInsets.fromLTRB(14, 10, 14, 80),
+                              itemCount: filtered.length,
+                              itemBuilder: (context, index) {
+                                final gate = filtered[index];
+                                final masters = gate['masters'] as List? ?? [];
+                                final zone = (gate['zone'] as String?) ?? '';
+                                final division = (gate['division'] as String?) ?? '';
+                                final locName = (gate['locationName'] ?? 'Unnamed Location').toString();
+                                final gateTitle = (gate['name'] != null && (gate['name'] as String).isNotEmpty)
+                                    ? gate['name']
+                                    : locName;
+
+                                return Card(
+                                  elevation: 1,
+                                  margin: const EdgeInsets.only(bottom: 12),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    side: const BorderSide(color: Color(0xFFE2E8F0)),
+                                  ),
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(12),
+                                    onTap: () async {
+                                      final result = await Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => GateDetailScreen(token: _token, gate: gate),
+                                        ),
+                                      );
+                                      if (!mounted) return;
+                                      if (result == true) {
+                                        _fetchGates();
+                                        if (mounted) {
+                                          AppFeedback.showSuccess(context, 'LC Gate details refreshed.');
+                                        }
+                                      }
+                                    },
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(14),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          // Header row: Title + LC badge + Zone/Division + Delete button
+                                          Row(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      gateTitle,
+                                                      style: const TextStyle(
+                                                        fontSize: 16,
+                                                        fontWeight: FontWeight.bold,
+                                                        color: Color(0xFF0F172A),
+                                                      ),
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                    const SizedBox(height: 4),
+                                                    Row(
+                                                      children: [
+                                                        Container(
+                                                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                                          decoration: BoxDecoration(
+                                                            color: const Color(0xFFEFF6FF),
+                                                            borderRadius: BorderRadius.circular(4),
+                                                            border: Border.all(color: const Color(0xFFBFDBFE)),
+                                                          ),
+                                                          child: Text(
+                                                            gate['lcNumber'] ?? 'NO LC#',
+                                                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8)),
+                                                          ),
+                                                        ),
+                                                        if (zone.isNotEmpty) ...[
+                                                          const SizedBox(width: 6),
+                                                          Container(
+                                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                            decoration: BoxDecoration(
+                                                              color: const Color(0xFFEEF2FF),
+                                                              borderRadius: BorderRadius.circular(4),
+                                                            ),
+                                                            child: Text(
+                                                              zone,
+                                                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF4338CA)),
+                                                            ),
+                                                          ),
+                                                        ],
+                                                        if (division.isNotEmpty) ...[
+                                                          const SizedBox(width: 6),
+                                                          Container(
+                                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                            decoration: BoxDecoration(
+                                                              color: const Color(0xFFECFEFF),
+                                                              borderRadius: BorderRadius.circular(4),
+                                                            ),
+                                                            child: Text(
+                                                              division,
+                                                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF0E9AA7)),
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ],
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                              IconButton(
+                                                visualDensity: VisualDensity.compact,
+                                                icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                                                tooltip: 'Delete Gate',
+                                                onPressed: () => _deleteGate(gate),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 12),
+
+                                          // Location & Master Units Rows (Parity with Web gate card)
+                                          Row(
+                                            children: [
+                                              Container(
+                                                padding: const EdgeInsets.all(6),
+                                                decoration: BoxDecoration(
+                                                  color: const Color(0xFF0E9AA7).withValues(alpha: 0.1),
+                                                  borderRadius: BorderRadius.circular(8),
+                                                ),
+                                                child: const Icon(Icons.location_on_outlined, size: 16, color: Color(0xFF0E9AA7)),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  locName,
+                                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Color(0xFF334155)),
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 6),
+                                          Row(
+                                            children: [
+                                              Container(
+                                                padding: const EdgeInsets.all(6),
+                                                decoration: BoxDecoration(
+                                                  color: AppColors.primary.withValues(alpha: 0.08),
+                                                  borderRadius: BorderRadius.circular(8),
+                                                ),
+                                                child: const Icon(Icons.computer_outlined, size: 16, color: AppColors.primary),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Text(
+                                                '${masters.length} Master Unit${masters.length == 1 ? "" : "s"} Registered',
+                                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Color(0xFF334155)),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 10),
+                                          const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                                          const SizedBox(height: 8),
+
+                                          // Bottom Row: Gate ID and "Device Info" Action Button
+                                          Row(
+                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              Text(
+                                                'ID: ${gate['lcNumber'] ?? "N/A"}',
+                                                style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
+                                              ),
+                                              OutlinedButton.icon(
+                                                style: OutlinedButton.styleFrom(
+                                                  visualDensity: VisualDensity.compact,
+                                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                                  side: const BorderSide(color: Color(0xFFCBD5E1)),
+                                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                                ),
+                                                icon: const Icon(Icons.developer_board, size: 14, color: AppColors.primary),
+                                                label: const Text('Device Info', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                                                onPressed: () => DeviceInfoSheet.show(context, gate: Map<String, dynamic>.from(gate)),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
                                   ),
                                 );
-                                if (!mounted) return;
-                                if (result == true) {
-                                  _fetchGates();
-                                  AppFeedback.showSuccess(context, 'LC Gate details refreshed.');
-                                }
                               },
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Text(gate['locationName'] ?? 'Unknown', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                                            if (gate['name'] != null && gate['name'].isNotEmpty)
-                                              Text(gate['name'], style: const TextStyle(color: Colors.grey, fontSize: 14)),
-                                          ],
-                                        ),
-                                      ),
-                                      Column(
-                                        crossAxisAlignment: CrossAxisAlignment.end,
-                                        children: [
-                                          Container(
-                                            decoration: BoxDecoration(
-                                              color: Colors.red.withOpacity(0.1),
-                                              shape: BoxShape.circle,
-                                            ),
-                                            child: IconButton(
-                                              padding: EdgeInsets.zero,
-                                              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-                                              icon: const Icon(Icons.delete_outline, color: Colors.red, size: 22),
-                                              onPressed: () => _deleteGate(gate),
-                                            ),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          Chip(
-                                            label: Text('${gate['lcNumber'] ?? ''}', style: const TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold)),
-                                            backgroundColor: Colors.indigo.withOpacity(0.1),
-                                            side: BorderSide.none,
-                                          )
-                                        ],
-                                      )
-                                    ],
-                                  ),
-                                  if (zone.isNotEmpty || division.isNotEmpty) ...[
-                                    const SizedBox(height: 10),
-                                    Wrap(
-                                      spacing: 8,
-                                      runSpacing: 4,
-                                      children: [
-                                        if (zone.isNotEmpty)
-                                          Chip(
-                                            label: Text(zone, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
-                                            backgroundColor: Colors.indigo,
-                                            side: BorderSide.none,
-                                            visualDensity: VisualDensity.compact,
-                                          ),
-                                        if (division.isNotEmpty)
-                                          Chip(
-                                            label: Text(division, style: const TextStyle(color: Color(0xFF0E9AA7), fontSize: 12, fontWeight: FontWeight.w600)),
-                                            backgroundColor: const Color(0xFF0E9AA7).withOpacity(0.1),
-                                            side: BorderSide.none,
-                                            visualDensity: VisualDensity.compact,
-                                          ),
-                                      ],
-                                    ),
-                                  ],
-                                  const SizedBox(height: 16),
-                                  const Divider(height: 1),
-                                  const SizedBox(height: 12),
-                                  Row(
-                                    children: [
-                                      _buildStat(masters.length.toString(), 'MASTERS'),
-                                      const SizedBox(width: 32),
-                                      _buildStat(deviceCount.toString(), 'DEVICES'),
-                                    ],
-                                  )
-                                ],
-                              ),
                             ),
                           ),
-                        );
-                      },
-                    ),
-                  ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildStat(String value, String label) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.indigo)),
-        Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey, letterSpacing: 1.2)),
-      ],
+  Widget _buildFilterChip(String label, VoidCallback onRemove) {
+    return Container(
+      margin: const EdgeInsets.only(right: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEFF6FF),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFBFDBFE)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF1E40AF))),
+          const SizedBox(width: 4),
+          InkWell(
+            onTap: onRemove,
+            child: const Icon(Icons.close, size: 12, color: Color(0xFF1E40AF)),
+          ),
+        ],
+      ),
     );
   }
 }

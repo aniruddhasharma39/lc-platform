@@ -22,16 +22,51 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
   bool _isFetchingSequence = true;
   String? _seqError;
 
+  // Device Registry Integration (Parity with Web CreateMasterForm)
+  List<dynamic> _deviceList = [];
+  String? _selectedDeviceId;
+
   @override
   void initState() {
     super.initState();
     _fetchSequence();
+    _fetchMasterDevices();
   }
 
   @override
   void dispose() {
     _seqCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _fetchMasterDevices() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$baseUrl/devices?limit=100&deviceType=MASTER'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data is Map && data['devices'] is List && mounted) {
+          final list = data['devices'] as List;
+          setState(() {
+            _deviceList = list;
+            // Auto-select if a master device matches this gate's LC number
+            final gateLc = (widget.gate['lcNumber'] ?? '').toString();
+            final matching = list.firstWhere(
+              (d) =>
+                  (d['thingName']?.toString().startsWith(gateLc) ?? false) &&
+                  (d['gateId'] == null || d['gateId'] == widget.gate['id']) &&
+                  d['masterId'] == null,
+              orElse: () => null,
+            );
+            if (matching != null) {
+              _selectedDeviceId = matching['id'].toString();
+            }
+          });
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _fetchSequence({bool isManualRetry = false}) async {
@@ -84,32 +119,49 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
   }
 
   Future<void> _submit() async {
-    if (_seqCtrl.text.isEmpty || _isFetchingSequence) {
+    final dynamic chosenDevice = _selectedDeviceId != null && _selectedDeviceId!.isNotEmpty
+        ? _deviceList.firstWhere((d) => d['id'].toString() == _selectedDeviceId, orElse: () => null)
+        : null;
+
+    if (chosenDevice == null && (_seqCtrl.text.isEmpty || _isFetchingSequence)) {
       AppFeedback.showWarning(context, 'Master sequence is not ready yet. Please wait or retry.');
       return;
     }
     setState(() => _isLoading = true);
 
     try {
+      final body = <String, dynamic>{
+        'masterSequence': int.tryParse(_seqCtrl.text) ?? 1,
+        'powerSource': _powerSource,
+      };
+
+      if (chosenDevice != null) {
+        body['deviceId'] = chosenDevice['id'];
+        body['serialNumber'] = chosenDevice['thingName'];
+      }
+
       final res = await http.post(
         Uri.parse('$baseUrl/lcgate/${widget.gate['id']}/masters'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${widget.token}',
         },
-        body: json.encode({
-          'masterSequence': int.tryParse(_seqCtrl.text) ?? 1,
-          'powerSource': _powerSource,
-        }),
+        body: json.encode(body),
       );
 
       if (res.statusCode == 201) {
-        if (mounted) Navigator.pop(context, true);
+        if (mounted) {
+          final identifier = chosenDevice != null
+              ? chosenDevice['thingName']
+              : '${widget.gate['lcNumber']}-${_seqCtrl.text}';
+          AppFeedback.showSuccess(context, 'Master Unit "$identifier" added successfully.');
+          Navigator.pop(context, true);
+        }
       } else {
         String errMsg = 'Failed to create master unit';
         try {
-          final body = json.decode(res.body);
-          if (body['error'] != null) errMsg = body['error'];
+          final b = json.decode(res.body);
+          if (b['error'] != null) errMsg = b['error'];
         } catch (_) {}
         if (mounted) {
           AppFeedback.showError(context, errMsg);
@@ -126,115 +178,185 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final canSubmit = !_isLoading && !_isFetchingSequence && _seqCtrl.text.isNotEmpty;
+    final dynamic chosenDevice = _selectedDeviceId != null && _selectedDeviceId!.isNotEmpty
+        ? _deviceList.firstWhere((d) => d['id'].toString() == _selectedDeviceId, orElse: () => null)
+        : null;
+
+    final canSubmit = !_isLoading && (chosenDevice != null || (!_isFetchingSequence && _seqCtrl.text.isNotEmpty));
+
+    final serialPreview = chosenDevice != null
+        ? chosenDevice['thingName'].toString()
+        : '${widget.gate['lcNumber']}-${_seqCtrl.text.isEmpty ? "01" : _seqCtrl.text}';
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Add Master Unit'), elevation: 0),
+      appBar: AppBar(title: const Text('Add Master Unit', style: TextStyle(fontWeight: FontWeight.bold)), elevation: 0),
       body: Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
-            begin: Alignment.topCenter, end: Alignment.bottomCenter,
-            colors: [Theme.of(context).primaryColor.withOpacity(0.08), Colors.white],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Theme.of(context).primaryColor.withValues(alpha: 0.05), Colors.white],
           ),
         ),
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(16),
           child: Card(
-            elevation: 4,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            elevation: 2,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
             child: Padding(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(18),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text('Master Configuration', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 20),
-                  TextField(
-                    controller: _seqCtrl,
-                    readOnly: true,
-                    decoration: InputDecoration(
-                      labelText: 'Master Sequence (2 Digits) *',
-                      prefixText: _isFetchingSequence || _seqCtrl.text.isEmpty
-                          ? null
-                          : '${widget.gate['lcNumber']}-',
-                      prefixStyle: const TextStyle(fontWeight: FontWeight.bold, color: Colors.indigo),
-                      hintText: _isFetchingSequence
-                          ? 'Determining next sequence...'
-                          : (_seqError ?? 'No sequence available'),
-                      hintStyle: TextStyle(
-                        color: _seqError != null ? Colors.red.shade400 : Colors.grey.shade500,
-                        fontSize: 14,
-                      ),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                      prefixIcon: const Icon(Icons.confirmation_number),
-                      suffixIcon: _isFetchingSequence
-                          ? const Padding(
-                              padding: EdgeInsets.all(12),
-                              child: SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                  const Text('Master Configuration', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 16),
+
+                  // 1. Device Registry Selector Card
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.05),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppColors.primary.withValues(alpha: 0.15)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.developer_board, size: 18, color: AppColors.primary),
+                            SizedBox(width: 8),
+                            Text(
+                              'Select Provisioned Master from Registry',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.primary),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        DropdownButtonFormField<String>(
+                          initialValue: _selectedDeviceId,
+                          isExpanded: true,
+                          decoration: InputDecoration(
+                            isDense: true,
+                            fillColor: Colors.white,
+                            filled: true,
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          hint: Text(
+                            '— Auto-generate sequence (${widget.gate['lcNumber']}-${_seqCtrl.text.isEmpty ? "01" : _seqCtrl.text}) —',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          items: [
+                            DropdownMenuItem<String>(
+                              value: '',
+                              child: Text(
+                                '— Auto-generate sequence (${widget.gate['lcNumber']}-${_seqCtrl.text.isEmpty ? "01" : _seqCtrl.text}) —',
+                                style: const TextStyle(fontSize: 12),
                               ),
-                            )
-                          : (_seqError != null
-                              ? IconButton(
-                                  icon: const Icon(Icons.refresh, color: AppColors.primary),
-                                  tooltip: 'Retry',
-                                  onPressed: () => _fetchSequence(isManualRetry: true),
-                                )
-                              : null),
+                            ),
+                            ..._deviceList.map((dev) {
+                              final idStr = dev['id'].toString();
+                              final tName = (dev['thingName'] ?? 'Master').toString();
+                              final assigned = dev['gate'] != null ? '[Assigned to ${dev['gate']['lcNumber']}]' : '[Unassigned]';
+                              final fw = dev['firmwareVersion'] != null ? '(${dev['firmwareVersion']})' : '';
+                              return DropdownMenuItem<String>(
+                                value: idStr,
+                                child: Text(
+                                  '$tName $assigned $fw',
+                                  style: const TextStyle(fontSize: 12),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              );
+                            }),
+                          ],
+                          onChanged: (val) => setState(() => _selectedDeviceId = val),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          chosenDevice != null
+                              ? 'Using exact Thing Name "${chosenDevice['thingName']}" from Device Registry.'
+                              : 'Select a Thing registered via Fleet Provisioning / IoT Core to use its exact identifier.',
+                          style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                        ),
+                      ],
                     ),
                   ),
-                  if (_seqError != null) ...[
-                    const SizedBox(height: 6),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.error_outline, size: 14, color: Colors.red),
-                          const SizedBox(width: 4),
-                          Expanded(
-                            child: Text(
-                              _seqError!,
-                              style: TextStyle(fontSize: 12, color: Colors.red.shade700),
-                            ),
-                          ),
-                        ],
+                  const SizedBox(height: 16),
+
+                  // 2. Master Serial Identifier Display
+                  TextField(
+                    readOnly: true,
+                    controller: TextEditingController(text: serialPreview),
+                    decoration: InputDecoration(
+                      labelText: 'Master Serial Identifier *',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                      prefixIcon: const Icon(Icons.confirmation_number_outlined),
+                      filled: true,
+                      fillColor: const Color(0xFFF8FAFC),
+                      helperText: _seqError ??
+                          (chosenDevice != null
+                              ? 'Using exact Thing Name from Device Registry.'
+                              : 'Auto-generated sequence based on gate LC number.'),
+                      helperStyle: _seqError != null ? const TextStyle(color: Colors.red) : null,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // 3. Power Source Selector
+                  const Text('Power Source *', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Color(0xFF334155))),
+                  const SizedBox(height: 6),
+                  DropdownButtonFormField<String>(
+                    initialValue: _powerSource,
+                    decoration: InputDecoration(
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                      prefixIcon: Icon(
+                        _powerSource == 'SOLAR' ? Icons.wb_sunny_outlined : Icons.bolt,
+                        color: _powerSource == 'SOLAR' ? Colors.amber : Colors.blue,
                       ),
                     ),
-                  ],
-                  const SizedBox(height: 24),
-                  const Text('Power Source', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  DropdownButtonFormField<String>(
-                    value: _powerSource,
-                    decoration: InputDecoration(
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                      prefixIcon: const Icon(Icons.power),
-                    ),
                     items: const [
-                      DropdownMenuItem(value: 'SOLAR', child: Text('☀️ Solar Power')),
-                      DropdownMenuItem(value: 'DIRECT', child: Text('🔌 Direct Current Supply')),
+                      DropdownMenuItem(
+                        value: 'SOLAR',
+                        child: Row(
+                          children: [
+                            Icon(Icons.wb_sunny_outlined, size: 18, color: Colors.amber),
+                            SizedBox(width: 8),
+                            Text('Solar Power'),
+                          ],
+                        ),
+                      ),
+                      DropdownMenuItem(
+                        value: 'DIRECT',
+                        child: Row(
+                          children: [
+                            Icon(Icons.bolt, size: 18, color: Colors.blue),
+                            SizedBox(width: 8),
+                            Text('Direct Current Supply'),
+                          ],
+                        ),
+                      ),
                     ],
                     onChanged: (val) {
                       if (val != null) setState(() => _powerSource = val);
                     },
                   ),
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 28),
+
+                  // 4. Submit Button
                   ElevatedButton(
                     onPressed: canSubmit ? _submit : null,
                     style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      backgroundColor: AppColors.primary,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                     ),
-                    child: _isLoading 
-                      ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) 
-                      : Text(
-                          _isFetchingSequence 
-                              ? 'Determining Sequence...' 
-                              : 'Create Master Unit',
-                          style: const TextStyle(fontSize: 16),
-                        ),
+                    child: _isLoading
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Text(
+                            'Create Master Unit',
+                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                          ),
                   ),
                 ],
               ),

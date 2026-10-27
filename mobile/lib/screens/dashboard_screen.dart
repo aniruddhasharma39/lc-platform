@@ -1010,7 +1010,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_currentView == 'roles') return RolesScreen(user: widget.user);
     if (_currentView == 'branding') return BrandingScreen(user: widget.user);
     if (_currentView == 'registration') return RegistrationBuilderScreen(user: widget.user);
-    if (_currentView == 'cluster') return const ClusterMainScreen();
+    if (_currentView == 'cluster') return ClusterMainScreen(user: widget.user);
     if (_currentView == 'devices' || _currentView == 'device-registry') return DeviceRegistryScreen(user: widget.user);
     if (_currentView == 'scope-groups') return ScopeGroupsScreen(user: widget.user);
     

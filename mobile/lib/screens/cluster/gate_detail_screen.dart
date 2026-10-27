@@ -4,7 +4,9 @@ import 'dart:convert';
 import 'create_master_screen.dart';
 import 'evidence_checklist_screen.dart';
 import '../../config.dart';
+import '../../main.dart';
 import '../../utils/app_feedback.dart';
+import '../../components/device_info_sheet.dart';
 
 class GateDetailScreen extends StatefulWidget {
   final String token;
@@ -257,7 +259,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                 readOnly: true,
                 decoration: InputDecoration(
                   labelText: 'Device Sequence (2 Digits) *',
-                  prefixText: '${master['serialNumber']}-${selectedType == 'DEVICE_1' ? 'A' : 'B'}',
+                  prefixText: '${master['serialNumber']}-${selectedType == 'DEVICE_1' ? 'A' : 'B'}-',
                   prefixStyle: const TextStyle(fontWeight: FontWeight.bold, color: Colors.indigo),
                   suffixIcon: isSyncing
                       ? const Padding(
@@ -335,8 +337,19 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(gate['name'] ?? 'Gate Details'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(gate['name'] ?? (gate['locationName'] ?? 'Gate Details'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            Text(gate['lcNumber'] ?? '', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+          ],
+        ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.developer_board, color: AppColors.primary),
+            tooltip: 'Device Info & Manifest',
+            onPressed: () => DeviceInfoSheet.show(context, gate: Map<String, dynamic>.from(gate)),
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh Gate Details',
@@ -345,6 +358,8 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
         onPressed: () async {
           final result = await Navigator.push(context, MaterialPageRoute(
             builder: (_) => CreateMasterScreen(token: widget.token, gate: gate)
@@ -378,11 +393,12 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                   itemBuilder: (context, index) {
                     final master = masters[index];
                     final List devices = master['childDevices'] ?? [];
+                    final isSolar = master['powerSource'] == 'SOLAR';
                     
                     return Card(
                       margin: const EdgeInsets.only(bottom: 24),
-                      elevation: 4,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      elevation: 2,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                       child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: Column(
@@ -391,34 +407,62 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                Text(master['serialNumber'], style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                                Expanded(
+                                  child: Text(
+                                    master['serialNumber'] ?? 'Master Unit',
+                                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
                                 Row(
                                   children: [
-                                    Container(
-                                      decoration: BoxDecoration(
-                                        color: Colors.red.withOpacity(0.1),
-                                        borderRadius: BorderRadius.circular(8),
+                                    IconButton(
+                                      visualDensity: VisualDensity.compact,
+                                      icon: const Icon(Icons.developer_board, size: 20, color: AppColors.primary),
+                                      tooltip: 'Device Info',
+                                      onPressed: () => DeviceInfoSheet.show(
+                                        context,
+                                        master: Map<String, dynamic>.from(master),
+                                        gate: Map<String, dynamic>.from(gate),
                                       ),
-                                      child: IconButton(
-                                        icon: const Icon(Icons.delete_outline, color: Colors.red),
-                                        onPressed: () => _deleteMaster(master),
-                                        constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-                                        padding: EdgeInsets.zero,
-                                      ),
-                                    )
+                                    ),
+                                    IconButton(
+                                      visualDensity: VisualDensity.compact,
+                                      icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                                      tooltip: 'Delete Master Unit',
+                                      onPressed: () => _deleteMaster(master),
+                                    ),
                                   ],
                                 )
                               ],
                             ),
-                            const SizedBox(height: 8),
-                            Text('Power Source: ${master['powerSource'] == 'SOLAR' ? '☀️ Solar Power' : '🔌 Direct Current'}', style: const TextStyle(color: Colors.grey)),
+                            const SizedBox(height: 6),
+                            Row(
+                              children: [
+                                Icon(
+                                  isSolar ? Icons.wb_sunny_outlined : Icons.bolt,
+                                  size: 16,
+                                  color: isSolar ? Colors.amber.shade700 : Colors.blue.shade700,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Power Source: ${isSolar ? "Solar Power" : "Direct Current Supply"}',
+                                  style: TextStyle(
+                                    color: isSolar ? Colors.amber.shade800 : Colors.blue.shade800,
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
                             const SizedBox(height: 16),
                             
+                            // Connected Slave Devices
                             Container(
                               decoration: BoxDecoration(
-                                color: Colors.grey.shade50,
+                                color: const Color(0xFFF8FAFC),
                                 borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: Colors.grey.shade200)
+                                border: Border.all(color: const Color(0xFFE2E8F0))
                               ),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -428,13 +472,13 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                     child: Row(
                                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                       children: [
-                                        const Text('Slave Devices', style: TextStyle(fontWeight: FontWeight.bold)),
+                                        const Text('Slave Devices', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF1E293B))),
                                         TextButton.icon(
                                           icon: const Icon(Icons.add, size: 16),
-                                          label: const Text('Add Slave'),
+                                          label: const Text('Add Slave', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                                           onPressed: () => _addSlaveDevice(master),
                                           style: TextButton.styleFrom(
-                                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                                             minimumSize: Size.zero,
                                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                           ),
@@ -442,32 +486,47 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                       ],
                                     ),
                                   ),
-                                  const Divider(height: 1),
+                                  const Divider(height: 1, color: Color(0xFFE2E8F0)),
                                   if (devices.isEmpty)
                                     const Padding(
                                       padding: EdgeInsets.all(16),
-                                      child: Text('No slave devices added yet.', style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic)),
+                                      child: Text('No slave devices added yet.', style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic, fontSize: 12)),
                                     )
                                   else
                                     ...devices.map((device) => ListTile(
-                                      leading: const Icon(Icons.electrical_services, color: Colors.blueGrey),
-                                      title: Text(device['serialNumber'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.bold)),
-                                      subtitle: Text(device['type'] == 'DEVICE_1' ? 'Hall Effect + Limit Switch' : 'Tilt Sensor'),
+                                      leading: Container(
+                                        padding: const EdgeInsets.all(6),
+                                        decoration: BoxDecoration(
+                                          color: Colors.blue.shade50,
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: const Icon(Icons.power_outlined, color: Color(0xFF0284C7), size: 18),
+                                      ),
+                                      title: Text(device['serialNumber'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                      subtitle: Text(
+                                        device['type'] == 'DEVICE_1' ? 'Hall Effect + Limit Switch' : 'Tilt Sensor',
+                                        style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                                      ),
                                       trailing: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          Chip(label: Text(device['type'] == 'DEVICE_1' ? 'A' : 'B'), padding: EdgeInsets.zero),
                                           Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                                             decoration: BoxDecoration(
-                                              color: Colors.red.withOpacity(0.1),
-                                              shape: BoxShape.circle,
+                                              color: const Color(0xFFEFF6FF),
+                                              borderRadius: BorderRadius.circular(6),
+                                              border: Border.all(color: const Color(0xFFBFDBFE)),
                                             ),
-                                            child: IconButton(
-                                              icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
-                                              onPressed: () => _deleteDevice(device),
-                                              padding: EdgeInsets.zero,
-                                              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                                            child: Text(
+                                              device['type'] == 'DEVICE_1' ? 'TYPE A' : 'TYPE B',
+                                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF2563EB)),
                                             ),
+                                          ),
+                                          IconButton(
+                                            icon: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
+                                            onPressed: () => _deleteDevice(device),
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                                           )
                                         ],
                                       ),
@@ -476,16 +535,16 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                 ],
                               ),
                             ),
-                            const SizedBox(height: 16),
+                            const SizedBox(height: 14),
                             
                             SizedBox(
                               width: double.infinity,
                               child: OutlinedButton.icon(
-                                icon: const Icon(Icons.checklist),
-                                label: const Text('Upload Evidence Checklist'),
+                                icon: const Icon(Icons.camera_alt_outlined, size: 18),
+                                label: const Text('Upload Evidence Checklist', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                                 style: OutlinedButton.styleFrom(
                                   padding: const EdgeInsets.symmetric(vertical: 12),
-                                  side: const BorderSide(color: Colors.blue),
+                                  side: const BorderSide(color: AppColors.primary),
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                                 ),
                                 onPressed: () async {
