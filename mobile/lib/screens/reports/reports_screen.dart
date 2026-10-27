@@ -780,23 +780,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   ),
                   const SizedBox(height: 12),
 
-                  // 4. KPI Metrics Cards Grid
-                  GridView.count(
-                    crossAxisCount: 2,
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    crossAxisSpacing: 10,
-                    mainAxisSpacing: 10,
-                    childAspectRatio: 2.2,
-                    children: [
-                      _buildKpiCard('TOTAL OPERATIONS', '${_metrics['totalOperations']}', Icons.speed_rounded, const Color(0xFF0B3C7A)),
-                      _buildKpiCard('TOTAL DURATION', '${_metrics['totalDurationFormatted']}', Icons.timer_outlined, const Color(0xFF0D9488)),
-                      _buildKpiCard('AVG CLEARANCE', '${_metrics['avgDurationFormatted']}', Icons.av_timer_rounded, const Color(0xFF7C3AED)),
-                      _buildKpiCard('EXTENDED DELAYS', '${_metrics['extendedDelaysCount']}', Icons.warning_amber_rounded, const Color(0xFFD97706)),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-
                   // 5. Operational Records Logsheet
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -851,37 +834,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
         backgroundColor: Colors.grey.shade100,
         visualDensity: VisualDensity.compact,
         onSelected: (_) => _applyDatePreset(key),
-      ),
-    );
-  }
-
-  Widget _buildKpiCard(String label, String value, IconData icon, Color color) {
-    return Container(
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-            child: Icon(icon, color: color, size: 20),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(label, style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold, color: Colors.grey)),
-                Text(value, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: color), maxLines: 1, overflow: TextOverflow.ellipsis),
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }
