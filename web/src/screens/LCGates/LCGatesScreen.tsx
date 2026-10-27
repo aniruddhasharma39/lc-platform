@@ -349,7 +349,7 @@ export default function LCGatesScreen({ user }: Props) {
   const fetchGateTelemetry = useCallback(async (gateId: number, silent = false) => {
     if (!silent) setLoadingTelemetry(true);
     try {
-      const res = await fetch(`${API_URL}/api/v1/lcgates/${gateId}/telemetry`, {
+      const res = await fetch(`${API_URL}/api/v1/lcgate/${gateId}/telemetry`, {
         headers: authHeaders()
       });
       if (res.ok) {
@@ -450,7 +450,7 @@ export default function LCGatesScreen({ user }: Props) {
     if (!selectedGate) return;
     setTriggeringHealthCheck(true);
     try {
-      const res = await fetch(`${API_URL}/api/v1/lcgates/${selectedGate.id}/health-check`, {
+      const res = await fetch(`${API_URL}/api/v1/lcgate/${selectedGate.id}/health-check`, {
         method: 'POST',
         headers: authHeaders()
       });
