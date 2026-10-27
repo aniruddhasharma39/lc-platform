@@ -1458,7 +1458,6 @@ export default function LCGatesScreen({ user }: Props) {
                                 <th>Limit Switch</th>
                                 <th>Hall Effect</th>
                                 <th>Timestamp</th>
-                                <th style={{ textAlign: 'right' }}>Action</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -1475,7 +1474,7 @@ export default function LCGatesScreen({ user }: Props) {
                                     key={item.id || idx}
                                     onClick={() => setSelectedPayloadId(item.id)}
                                     style={{
-                                      background: isSelected ? 'rgba(11, 60, 122, 0.06)' : idx % 2 === 0 ? '#ffffff' : '#f8fafc',
+                                      background: isSelected ? 'rgba(11, 60, 122, 0.08)' : idx % 2 === 0 ? '#ffffff' : '#f8fafc',
                                       cursor: 'pointer',
                                       borderLeft: isSelected ? '3px solid #0B3C7A' : '3px solid transparent'
                                     }}
@@ -1502,20 +1501,6 @@ export default function LCGatesScreen({ user }: Props) {
                                     <td>{limitSwitch}</td>
                                     <td>{hallEffect}</td>
                                     <td><code>{ts}</code></td>
-                                    <td style={{ textAlign: 'right' }}>
-                                      <span
-                                        style={{
-                                          fontSize: '0.72rem',
-                                          padding: '2px 8px',
-                                          borderRadius: 4,
-                                          background: isSelected ? '#0B3C7A' : '#f1f5f9',
-                                          color: isSelected ? '#ffffff' : '#475569',
-                                          fontWeight: 700
-                                        }}
-                                      >
-                                        {isSelected ? 'Viewing' : 'Inspect'}
-                                      </span>
-                                    </td>
                                   </tr>
                                 );
                               })}

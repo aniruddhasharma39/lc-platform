@@ -2807,24 +2807,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                 ],
                               ),
                             ),
-
-                            // Action button
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                              decoration: BoxDecoration(
-                                color: isViewing ? AppColors.primary : Colors.transparent,
-                                borderRadius: BorderRadius.circular(4),
-                                border: Border.all(color: isViewing ? AppColors.primary : const Color(0xFFCBD5E1)),
-                              ),
-                              child: Text(
-                                isViewing ? 'Viewing' : 'Inspect',
-                                style: TextStyle(
-                                  fontSize: 9.5,
-                                  fontWeight: FontWeight.bold,
-                                  color: isViewing ? Colors.white : const Color(0xFF334155),
-                                ),
-                              ),
-                            ),
                           ],
                         ),
                       ),
