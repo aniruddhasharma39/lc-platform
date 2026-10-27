@@ -780,7 +780,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         case 'manage-users': return Icons.group;
         case 'roles': return Icons.security;
         case 'branding': return Icons.brush;
-        case 'registration': return Icons.build;
+        case 'registration': return Icons.description;
         case 'cluster': return Icons.device_hub;
         case 'devices':
         case 'device-registry': return Icons.developer_board;
