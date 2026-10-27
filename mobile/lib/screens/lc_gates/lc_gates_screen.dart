@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
+import '../../components/device_info_sheet.dart';
 
 Color parseHexColor(String? hexString) {
   if (hexString == null || hexString.isEmpty) return const Color(0xFF0B3C7A);
@@ -1390,9 +1391,12 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Back Button
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        // Back Button & Header Quick Actions
+        Wrap(
+          spacing: 8,
+          runSpacing: 6,
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             TextButton.icon(
               style: TextButton.styleFrom(padding: EdgeInsets.zero, visualDensity: VisualDensity.compact),
@@ -1403,31 +1407,57 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               icon: const Icon(Icons.arrow_back, size: 16),
               label: const Text('Back to Directory', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
             ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: isSolar ? const Color(0xFFFEF3C7) : const Color(0xFFDBEAFE),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    isSolar ? Icons.wb_sunny_outlined : Icons.bolt,
-                    size: 11,
-                    color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    isSolar ? 'Solar Powered' : 'Direct AC',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                InkWell(
+                  onTap: () => DeviceInfoSheet.show(context, gate: gate),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFBFDBFE)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.developer_board, size: 12, color: Color(0xFF1D4ED8)),
+                        SizedBox(width: 4),
+                        Text('Device Info', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
+                      ],
                     ),
                   ),
-                ],
-              ),
+                ),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isSolar ? const Color(0xFFFEF3C7) : const Color(0xFFDBEAFE),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        isSolar ? Icons.wb_sunny_outlined : Icons.bolt,
+                        size: 11,
+                        color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        isSolar ? 'Solar Powered' : 'Direct AC',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -1551,7 +1581,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                   onTap: () => setState(() => _clusterTab = 'about'),
                   borderRadius: BorderRadius.circular(6),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
                       color: _clusterTab == 'about' ? Colors.white : Colors.transparent,
@@ -1562,15 +1592,20 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                     ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(Icons.info_outline, size: 14, color: _clusterTab == 'about' ? AppColors.primary : const Color(0xFF64748B)),
-                        const SizedBox(width: 6),
-                        Text(
-                          'About Cluster & Hardware',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: _clusterTab == 'about' ? AppColors.primary : const Color(0xFF64748B),
+                        const SizedBox(width: 5),
+                        Flexible(
+                          child: Text(
+                            'About Cluster & Hardware',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: _clusterTab == 'about' ? AppColors.primary : const Color(0xFF64748B),
+                            ),
                           ),
                         ),
                       ],
@@ -1583,7 +1618,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                   onTap: () => setState(() => _clusterTab = 'telemetry'),
                   borderRadius: BorderRadius.circular(6),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
                       color: _clusterTab == 'telemetry' ? Colors.white : Colors.transparent,
@@ -1594,15 +1629,20 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                     ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(Icons.sensors, size: 14, color: _clusterTab == 'telemetry' ? AppColors.primary : const Color(0xFF64748B)),
-                        const SizedBox(width: 6),
-                        Text(
-                          'AWS Telemetry',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: _clusterTab == 'telemetry' ? AppColors.primary : const Color(0xFF64748B),
+                        const SizedBox(width: 5),
+                        Flexible(
+                          child: Text(
+                            'AWS Telemetry',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: _clusterTab == 'telemetry' ? AppColors.primary : const Color(0xFF64748B),
+                            ),
                           ),
                         ),
                       ],
@@ -1808,15 +1848,39 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                               Text(
                                 'Master #${master['masterSequence']}: ${master['serialNumber']}',
                                 style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                overflow: TextOverflow.ellipsis,
                               ),
                               Text(
                                 'Primary Gateway • ${master['powerSource'] == 'SOLAR' ? 'Solar Powered' : 'Direct AC Power'}',
                                 style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ],
                           ),
                         ),
-                        if (mEvidence != null)
+                        const SizedBox(width: 6),
+                        InkWell(
+                          onTap: () => DeviceInfoSheet.show(context, master: master, gate: gate),
+                          borderRadius: BorderRadius.circular(6),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFEFF6FF),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: const Color(0xFFBFDBFE)),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.developer_board, size: 12, color: Color(0xFF1D4ED8)),
+                                SizedBox(width: 4),
+                                Text('Info', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
+                              ],
+                            ),
+                          ),
+                        ),
+                        if (mEvidence != null) ...[
+                          const SizedBox(width: 6),
                           InkWell(
                             onTap: () => _showEvidenceDialog(
                               gate: gate,
@@ -1836,6 +1900,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                               ),
                             ),
                           ),
+                        ],
                       ],
                     ),
                     const SizedBox(height: 12),
@@ -1884,22 +1949,40 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                     border: Border.all(color: const Color(0xFFE2E8F0)),
                                   ),
                                   child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            child['serialNumber'] ?? 'Slave',
-                                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                                          ),
-                                          Text(
-                                            '${child['type'] ?? 'Device'} • Sequence #${child['deviceSequence']}',
-                                            style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
-                                          ),
-                                        ],
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              child['serialNumber'] ?? 'Slave',
+                                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                            Text(
+                                              '${child['type'] ?? 'Device'} • Sequence #${child['deviceSequence']}',
+                                              style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ],
+                                        ),
                                       ),
-                                      if (cEv != null)
+                                      const SizedBox(width: 6),
+                                      InkWell(
+                                        onTap: () => DeviceInfoSheet.show(context, device: child, master: master, gate: gate),
+                                        borderRadius: BorderRadius.circular(4),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2.5),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFEFF6FF),
+                                            borderRadius: BorderRadius.circular(4),
+                                            border: Border.all(color: const Color(0xFFBFDBFE)),
+                                          ),
+                                          child: const Text('Info', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
+                                        ),
+                                      ),
+                                      if (cEv != null) ...[
+                                        const SizedBox(width: 6),
                                         InkWell(
                                           onTap: () => _showEvidenceDialog(
                                             gate: gate,
@@ -1920,6 +2003,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                             ),
                                           ),
                                         ),
+                                      ],
                                     ],
                                   ),
                                 );
@@ -1955,11 +2039,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
                       color: const Color(0xFF1D4ED8),
                       borderRadius: BorderRadius.circular(6),
@@ -1967,24 +2054,31 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.sensors, size: 11, color: Colors.white),
+                        Icon(Icons.sensors, size: 12, color: Colors.white),
                         SizedBox(width: 4),
-                        Text('AWS IoT Core • Fleet Provisioning', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white)),
+                        Text(
+                          'AWS IoT Core • Fleet Provisioning',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
+                        ),
                       ],
                     ),
                   ),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
                       color: const Color(0xFFFEF3C7),
                       borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFFDE68A)),
                     ),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.schedule, size: 11, color: Color(0xFFD97706)),
+                        Icon(Icons.schedule, size: 12, color: Color(0xFFD97706)),
                         SizedBox(width: 4),
-                        Text('Upcoming AWS Integration', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFFD97706))),
+                        Text(
+                          'Upcoming AWS Integration',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFFD97706)),
+                        ),
                       ],
                     ),
                   ),
@@ -2019,10 +2113,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       const Icon(Icons.memory, size: 16, color: AppColors.primary),
                       const SizedBox(width: 6),
@@ -2033,17 +2131,21 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                     ],
                   ),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                     decoration: BoxDecoration(
                       color: const Color(0xFFFEF3C7),
                       borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFFDE68A)),
                     ),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(Icons.schedule, size: 10, color: Color(0xFFD97706)),
-                        SizedBox(width: 3),
-                        Text('Pending Fleet Provisioning', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFFD97706))),
+                        SizedBox(width: 4),
+                        Text(
+                          'Pending Fleet Provisioning',
+                          style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFFD97706)),
+                        ),
                       ],
                     ),
                   ),
@@ -2071,10 +2173,10 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                       children: [
                         // Master Unit Row
                         Container(
-                          padding: const EdgeInsets.all(10),
+                          padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
                             color: const Color(0xFFF8FAFC),
-                            borderRadius: BorderRadius.circular(8),
+                            borderRadius: BorderRadius.circular(10),
                             border: Border.all(color: const Color(0xFFE2E8F0)),
                           ),
                           child: Column(
@@ -2083,13 +2185,13 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                               Row(
                                 children: [
                                   Container(
-                                    width: 28,
-                                    height: 28,
+                                    width: 32,
+                                    height: 32,
                                     decoration: BoxDecoration(
                                       color: const Color(0xFF0369A1),
                                       borderRadius: BorderRadius.circular(6),
                                     ),
-                                    child: const Icon(Icons.memory, color: Colors.white, size: 14),
+                                    child: const Icon(Icons.memory, color: Colors.white, size: 16),
                                   ),
                                   const SizedBox(width: 8),
                                   Expanded(
@@ -2099,16 +2201,43 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                         Text(
                                           master['serialNumber'] ?? 'Master',
                                           style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                          overflow: TextOverflow.ellipsis,
                                         ),
-                                        Text('Sequence #${master['masterSequence']} • Primary Master Gateway', style: const TextStyle(fontSize: 10, color: Color(0xFF64748B))),
+                                        Text(
+                                          'Sequence #${master['masterSequence']} • Primary Master Gateway',
+                                          style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
                                       ],
                                     ),
                                   ),
+                                  const SizedBox(width: 6),
+                                  InkWell(
+                                    onTap: () => DeviceInfoSheet.show(context, master: master, gate: gate),
+                                    borderRadius: BorderRadius.circular(6),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFEFF6FF),
+                                        borderRadius: BorderRadius.circular(5),
+                                        border: Border.all(color: const Color(0xFFBFDBFE)),
+                                      ),
+                                      child: const Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(Icons.developer_board, size: 11, color: Color(0xFF1D4ED8)),
+                                          SizedBox(width: 3),
+                                          Text('Info', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: Color(0xFF1D4ED8))),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                                     decoration: BoxDecoration(
                                       color: master['powerSource'] == 'SOLAR' ? const Color(0xFFFEF3C7) : const Color(0xFFDBEAFE),
-                                      borderRadius: BorderRadius.circular(4),
+                                      borderRadius: BorderRadius.circular(5),
                                     ),
                                     child: Text(
                                       master['powerSource'] == 'SOLAR' ? 'Solar' : 'Direct AC',
@@ -2122,19 +2251,35 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                 ],
                               ),
                               const SizedBox(height: 8),
-                              const Row(
+                              const Divider(height: 1, color: Color(0xFFE2E8F0)),
+                              const SizedBox(height: 8),
+                              Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text('AWS Fleet Status:', style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
-                                  Text('Pending Fleet Provisioning', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFFD97706))),
+                                  const Text('AWS Fleet Status:', style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
+                                  Flexible(
+                                    child: Text(
+                                      'Pending Fleet Provisioning',
+                                      style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFFD97706)),
+                                      overflow: TextOverflow.ellipsis,
+                                      textAlign: TextAlign.end,
+                                    ),
+                                  ),
                                 ],
                               ),
-                              const SizedBox(height: 2),
-                              const Row(
+                              const SizedBox(height: 3),
+                              Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text('Live Telemetry:', style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
-                                  Text('Awaiting AWS IoT connection', style: TextStyle(fontSize: 10, fontStyle: FontStyle.italic, color: Color(0xFF94A3B8))),
+                                  const Text('Live Telemetry:', style: TextStyle(fontSize: 10, color: Color(0xFF64748B))),
+                                  Flexible(
+                                    child: Text(
+                                      'Awaiting AWS IoT connection',
+                                      style: const TextStyle(fontSize: 10, fontStyle: FontStyle.italic, color: Color(0xFF94A3B8)),
+                                      overflow: TextOverflow.ellipsis,
+                                      textAlign: TextAlign.end,
+                                    ),
+                                  ),
                                 ],
                               ),
                             ],
@@ -2151,10 +2296,10 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                 final child = c as Map<String, dynamic>;
                                 return Container(
                                   margin: const EdgeInsets.only(bottom: 6),
-                                  padding: const EdgeInsets.all(8),
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                                   decoration: BoxDecoration(
                                     color: Colors.white,
-                                    borderRadius: BorderRadius.circular(6),
+                                    borderRadius: BorderRadius.circular(8),
                                     border: Border.all(color: const Color(0xFFE2E8F0)),
                                   ),
                                   child: Row(
@@ -2168,14 +2313,31 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                             Text(
                                               child['serialNumber'] ?? 'Slave',
                                               style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                              overflow: TextOverflow.ellipsis,
                                             ),
                                             Text(
                                               'Slave #${child['deviceSequence']} • ${child['type'] ?? 'Sensor / Actuator'}',
                                               style: const TextStyle(fontSize: 9, color: Color(0xFF64748B)),
+                                              overflow: TextOverflow.ellipsis,
                                             ),
                                           ],
                                         ),
                                       ),
+                                      const SizedBox(width: 6),
+                                      InkWell(
+                                        onTap: () => DeviceInfoSheet.show(context, device: child, master: master, gate: gate),
+                                        borderRadius: BorderRadius.circular(4),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2.5),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFEFF6FF),
+                                            borderRadius: BorderRadius.circular(4),
+                                            border: Border.all(color: const Color(0xFFBFDBFE)),
+                                          ),
+                                          child: const Text('Info', style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
                                       const Text(
                                         'Awaiting AWS',
                                         style: TextStyle(fontSize: 9, fontStyle: FontStyle.italic, color: Color(0xFF94A3B8)),
