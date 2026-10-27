@@ -308,6 +308,16 @@
   cursor: pointer;
 }
 
+.gate-item-cluster-badge {
+  margin-left: auto;
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
 /* ── Date Presets Pill Bar ─────────────────────────────────── */
 .compact-presets-bar {
   display: grid;

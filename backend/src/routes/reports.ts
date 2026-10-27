@@ -444,7 +444,9 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
       },
       metrics: data.metrics,
       records: data.events.map(ev => {
-        const primaryGroup = ev.gate.scopeGroups[0]?.scopeGroup || null;
+        const matchingGroup = ev.gate.scopeGroups.find(sg => data.targetScopeGroupIds.includes(sg.scopeGroup.id))?.scopeGroup
+          || ev.gate.scopeGroups[0]?.scopeGroup
+          || null;
         return {
           id: ev.id,
           gateId: ev.gateId,
@@ -453,8 +455,8 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
           locationName: ev.gate.locationName,
           zone: ev.gate.zone,
           division: ev.gate.division,
-          scopeGroupName: primaryGroup ? primaryGroup.name : 'Unassigned',
-          scopeGroupColor: primaryGroup ? primaryGroup.color : '#0B3C7A',
+          scopeGroupName: matchingGroup ? matchingGroup.name : 'Unassigned',
+          scopeGroupColor: matchingGroup ? matchingGroup.color : '#0B3C7A',
           openedAt: ev.openedAt.toISOString(),
           closedAt: ev.closedAt ? ev.closedAt.toISOString() : null,
           durationSeconds: ev.durationSeconds,
@@ -508,7 +510,9 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
 
     // Map rows
     const rows = data.events.map(ev => {
-      const primaryGroup = ev.gate.scopeGroups[0]?.scopeGroup || null;
+      const matchingGroup = ev.gate.scopeGroups.find(sg => data.targetScopeGroupIds.includes(sg.scopeGroup.id))?.scopeGroup
+        || ev.gate.scopeGroups[0]?.scopeGroup
+        || null;
       const openedDateObj = new Date(ev.openedAt);
       const openedDateStr = openedDateObj.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
       const openedTimeStr = openedDateObj.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
@@ -517,7 +521,7 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
         : 'STILL OPEN';
 
       return {
-        scopeGroup: primaryGroup?.name || 'Unassigned',
+        scopeGroup: matchingGroup?.name || 'Unassigned',
         lcNumber: ev.gate.lcNumber,
         locationName: ev.gate.locationName,
         zone: ev.gate.zone || '-',

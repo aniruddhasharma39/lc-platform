@@ -197,7 +197,7 @@ export default function ReportsScreen({ user }: Props) {
 
       // Select all accessible clusters and gates by default
       const allClusterIds = clusterList.map(c => c.id);
-      const allGateIds = clusterList.flatMap(c => c.gates.map(g => g.id));
+      const allGateIds = Array.from(new Set(clusterList.flatMap(c => c.gates.map(g => g.id))));
       setSelectedClusterIds(allClusterIds);
       setSelectedGateIds(allGateIds);
     } catch (err) {
@@ -220,7 +220,7 @@ export default function ReportsScreen({ user }: Props) {
     end = endDateStr,
     search = debouncedSearch
   ) => {
-    if (targetClusterIds.length === 0 && !isDeveloper) {
+    if ((targetClusterIds.length === 0 && !isDeveloper) || targetGateIds.length === 0) {
       setRecords([]);
       return;
     }
@@ -286,10 +286,14 @@ export default function ReportsScreen({ user }: Props) {
   // Available gates pool based on selected clusters
   const availableGates = useMemo(() => {
     const list: (ClusterGate & { clusterName: string; clusterColor: string })[] = [];
+    const seenGateIds = new Set<number>();
     clusters.forEach(c => {
       if (selectedClusterIds.length === 0 || selectedClusterIds.includes(c.id)) {
         c.gates.forEach(g => {
-          list.push({ ...g, clusterName: c.name, clusterColor: c.color });
+          if (!seenGateIds.has(g.id)) {
+            seenGateIds.add(g.id);
+            list.push({ ...g, clusterName: c.name, clusterColor: c.color });
+          }
         });
       }
     });
@@ -312,14 +316,14 @@ export default function ReportsScreen({ user }: Props) {
     const val = e.target.value;
     if (val === 'ALL') {
       const allCIds = clusters.map(c => c.id);
-      const allGIds = clusters.flatMap(c => c.gates.map(g => g.id));
+      const allGIds = Array.from(new Set(clusters.flatMap(c => c.gates.map(g => g.id))));
       setSelectedClusterIds(allCIds);
       setSelectedGateIds(allGIds);
     } else {
       const cId = parseInt(val, 10);
       setSelectedClusterIds([cId]);
       const cluster = clusters.find(c => c.id === cId);
-      const clusterGateIds = (cluster?.gates || []).map(g => g.id);
+      const clusterGateIds = Array.from(new Set((cluster?.gates || []).map(g => g.id)));
       setSelectedGateIds(clusterGateIds);
     }
   };
@@ -365,6 +369,11 @@ export default function ReportsScreen({ user }: Props) {
 
   // Direct Download Trigger (Excel or PDF)
   const handleDownloadReport = async (format: 'xlsx' | 'pdf') => {
+    if (selectedGateIds.length === 0) {
+      toastInfo('Please select at least one gate to generate the report');
+      return;
+    }
+
     setIsExporting(true);
     try {
       const url = new URL(`${API_URL}/api/v1/reports/export`);
@@ -551,6 +560,18 @@ export default function ReportsScreen({ user }: Props) {
                             />
                             <strong className="text-primary">{g.lcNumber}</strong>
                             <span className="text-muted truncate ml-1">{g.locationName}</span>
+                            {selectedClusterIds.length > 1 && (
+                              <span
+                                className="gate-item-cluster-badge"
+                                style={{
+                                  backgroundColor: (g.clusterColor || '#0B3C7A') + '15',
+                                  color: g.clusterColor || '#0B3C7A',
+                                  borderColor: (g.clusterColor || '#0B3C7A') + '33'
+                                }}
+                              >
+                                {g.clusterName}
+                              </span>
+                            )}
                           </label>
                         );
                       })
