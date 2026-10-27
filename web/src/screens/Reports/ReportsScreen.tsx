@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   FaFileExcel,
   FaFilePdf,
@@ -11,10 +11,10 @@ import {
   FaSortAmountDown,
   FaSortAmountUp,
   FaTimes,
-  FaCheck,
-  FaEye,
   FaFilter,
-  FaColumns
+  FaColumns,
+  FaChevronDown,
+  FaChevronUp
 } from 'react-icons/fa';
 import type { User } from '../../types';
 import { API_URL } from '../../config';
@@ -89,6 +89,7 @@ export default function ReportsScreen({ user }: Props) {
   const [loadingClusters, setLoadingClusters] = useState<boolean>(true);
   const [selectedClusterIds, setSelectedClusterIds] = useState<number[]>([]);
   const [selectedGateIds, setSelectedGateIds] = useState<number[]>([]);
+  const [showGateDropdown, setShowGateDropdown] = useState<boolean>(false);
   const [gateSearchText, setGateSearchText] = useState<string>('');
 
   // 2. Date Range State (Default: Last 7 Days)
@@ -106,22 +107,49 @@ export default function ReportsScreen({ user }: Props) {
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [filterShift, setFilterShift] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [debouncedSearch, setDebouncedSearch] = useState<string>('');
   const [sortBy, setSortBy] = useState<string>('openedAt');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
-  // 4. Columns Selection State (controls both the View Log table and file export)
+  // 4. Columns Selection State
   const [selectedExportColumns, setSelectedExportColumns] = useState<string[]>(
     REPORT_COLUMNS.map(c => c.key)
   );
+  const [showColumnsPopover, setShowColumnsPopover] = useState<boolean>(false);
 
   // 5. Operational Records State
   const [records, setRecords] = useState<OperationalRecord[]>([]);
   const [loadingRecords, setLoadingRecords] = useState<boolean>(false);
 
-  // Pagination
+  // Pagination & Export
   const [rowsPerPage, setRowsPerPage] = useState<number>(25);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [isExporting, setIsExporting] = useState<boolean>(false);
+
+  const gateDropdownRef = useRef<HTMLDivElement>(null);
+  const columnPopoverRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (gateDropdownRef.current && !gateDropdownRef.current.contains(e.target as Node)) {
+        setShowGateDropdown(false);
+      }
+      if (columnPopoverRef.current && !columnPopoverRef.current.contains(e.target as Node)) {
+        setShowColumnsPopover(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  // Debounce search query (300ms)
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [searchQuery]);
 
   // Quick Date Preset Calculator
   const applyDatePreset = (preset: '7days' | 'today' | 'yesterday' | '30days' | 'month') => {
@@ -155,7 +183,7 @@ export default function ReportsScreen({ user }: Props) {
     }
   };
 
-  // 1. Fetch Clusters and Initialize Hierarchy Selection
+  // 1. Fetch Clusters on Initial Mount
   const fetchClusters = async () => {
     setLoadingClusters(true);
     try {
@@ -175,9 +203,6 @@ export default function ReportsScreen({ user }: Props) {
       const allGateIds = clusterList.flatMap(c => c.gates.map(g => g.id));
       setSelectedClusterIds(allClusterIds);
       setSelectedGateIds(allGateIds);
-
-      // Fetch preview data on initial load
-      fetchRecordsData(allClusterIds, allGateIds, startDateStr, endDateStr);
     } catch (err) {
       console.error('Error fetching accessible clusters:', err);
       toastError('Failed to load assigned clusters');
@@ -190,12 +215,13 @@ export default function ReportsScreen({ user }: Props) {
     fetchClusters();
   }, []);
 
-  // 2. Fetch Records Data from Backend
+  // 2. Core Fetch Records Data
   const fetchRecordsData = async (
     targetClusterIds = selectedClusterIds,
     targetGateIds = selectedGateIds,
     start = startDateStr,
-    end = endDateStr
+    end = endDateStr,
+    search = debouncedSearch
   ) => {
     if (targetClusterIds.length === 0 && !isDeveloper) {
       setRecords([]);
@@ -221,7 +247,7 @@ export default function ReportsScreen({ user }: Props) {
       url.searchParams.append('endDate', end);
       if (filterStatus !== 'ALL') url.searchParams.append('status', filterStatus);
       if (filterShift !== 'ALL') url.searchParams.append('shift', filterShift);
-      if (searchQuery.trim()) url.searchParams.append('search', searchQuery.trim());
+      if (search.trim()) url.searchParams.append('search', search.trim());
       url.searchParams.append('sortBy', sortBy);
       url.searchParams.append('sortOrder', sortOrder);
 
@@ -241,6 +267,24 @@ export default function ReportsScreen({ user }: Props) {
       setLoadingRecords(false);
     }
   };
+
+  // ── REAL-TIME REACTIVE SYNC ──────────────────────────────────────────────
+  // Automatically queries and updates the View Log table whenever any filter changes!
+  useEffect(() => {
+    if (clusters.length > 0) {
+      fetchRecordsData(selectedClusterIds, selectedGateIds, startDateStr, endDateStr, debouncedSearch);
+    }
+  }, [
+    selectedClusterIds,
+    selectedGateIds,
+    startDateStr,
+    endDateStr,
+    filterStatus,
+    filterShift,
+    sortBy,
+    sortOrder,
+    debouncedSearch
+  ]);
 
   // Available gates pool based on selected clusters
   const availableGates = useMemo(() => {
@@ -266,32 +310,21 @@ export default function ReportsScreen({ user }: Props) {
     );
   }, [availableGates, gateSearchText]);
 
-  // Cluster Selection Toggles
-  const handleToggleCluster = (clusterId: number) => {
-    const isSelected = selectedClusterIds.includes(clusterId);
-    const cluster = clusters.find(c => c.id === clusterId);
-    const clusterGateIds = (cluster?.gates || []).map(g => g.id);
-
-    if (isSelected) {
-      const nextClusterIds = selectedClusterIds.filter(id => id !== clusterId);
-      setSelectedClusterIds(nextClusterIds);
-      setSelectedGateIds(prev => prev.filter(id => !clusterGateIds.includes(id)));
+  // Scope Group Selection
+  const handleScopeGroupChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    if (val === 'ALL') {
+      const allCIds = clusters.map(c => c.id);
+      const allGIds = clusters.flatMap(c => c.gates.map(g => g.id));
+      setSelectedClusterIds(allCIds);
+      setSelectedGateIds(allGIds);
     } else {
-      setSelectedClusterIds(prev => [...prev, clusterId]);
-      setSelectedGateIds(prev => Array.from(new Set([...prev, ...clusterGateIds])));
+      const cId = parseInt(val, 10);
+      setSelectedClusterIds([cId]);
+      const cluster = clusters.find(c => c.id === cId);
+      const clusterGateIds = (cluster?.gates || []).map(g => g.id);
+      setSelectedGateIds(clusterGateIds);
     }
-  };
-
-  const handleSelectAllClusters = () => {
-    const allCIds = clusters.map(c => c.id);
-    const allGIds = clusters.flatMap(c => c.gates.map(g => g.id));
-    setSelectedClusterIds(allCIds);
-    setSelectedGateIds(allGIds);
-  };
-
-  const handleClearAllClusters = () => {
-    setSelectedClusterIds([]);
-    setSelectedGateIds([]);
   };
 
   // Gate Selection Toggles
@@ -303,7 +336,7 @@ export default function ReportsScreen({ user }: Props) {
     }
   };
 
-  const handleSelectAllAvailableGates = () => {
+  const handleSelectAllGates = () => {
     const allAvailGIds = availableGates.map(g => g.id);
     setSelectedGateIds(allAvailGIds);
   };
@@ -355,7 +388,7 @@ export default function ReportsScreen({ user }: Props) {
       url.searchParams.append('format', format);
       if (filterStatus !== 'ALL') url.searchParams.append('status', filterStatus);
       if (filterShift !== 'ALL') url.searchParams.append('shift', filterShift);
-      if (searchQuery.trim()) url.searchParams.append('search', searchQuery.trim());
+      if (debouncedSearch.trim()) url.searchParams.append('search', debouncedSearch.trim());
       url.searchParams.append('sortBy', sortBy);
       url.searchParams.append('sortOrder', sortOrder);
       url.searchParams.append('columns', selectedExportColumns.join(','));
@@ -406,17 +439,17 @@ export default function ReportsScreen({ user }: Props) {
             <div>
               <h2 className="reports-main-heading">Level Crossing Report Builder</h2>
               <p className="reports-sub-heading">
-                Configure parameters in the builder column to preview operational logsheets and export audit reports.
+                Live reactive reporting: select parameters in the sidebar to instantly update and export audit logsheets.
               </p>
             </div>
           </div>
 
           <div className="reports-header-actions">
             <button
-              className="btn btn-secondary"
+              className="btn btn-secondary btn-sm"
               onClick={() => fetchRecordsData()}
               disabled={loadingRecords}
-              title="Refresh current data"
+              title="Manually refresh data"
             >
               <FaSyncAlt className={loadingRecords ? 'spin' : ''} />
               <span>Refresh</span>
@@ -425,11 +458,11 @@ export default function ReportsScreen({ user }: Props) {
         </div>
       </div>
 
-      {/* ── TWO-COLUMN WORKSPACE: LEFT BUILDER PANEL + RIGHT VIEW LOG ── */}
+      {/* ── TWO-COLUMN WORKSPACE: LEFT COMPACT BUILDER + RIGHT VIEW LOG ── */}
       <div className="report-columns-layout">
         
         {/* ═══════════════════════════════════════════════════════════
-            LEFT COLUMN: REPORT BUILDER CONTROL PANEL
+            LEFT COLUMN: COMPACT REPORT BUILDER PANEL (Zero Scroll)
            ═══════════════════════════════════════════════════════════ */}
         <aside className="builder-sidebar-card">
           <div className="sidebar-header">
@@ -437,228 +470,222 @@ export default function ReportsScreen({ user }: Props) {
               <FaFilter className="text-primary" />
               <span>Report Parameters</span>
             </div>
-            <span className="sidebar-tag">BUILDER</span>
+            <span className="live-pill active">
+              <span className="live-dot" /> Auto-Sync
+            </span>
           </div>
 
-          <div className="sidebar-scrollable-body">
-            {/* SECTION 1: Scope Groups / Clusters */}
-            <div className="sidebar-section">
-              <div className="section-head-row">
-                <span className="section-title">
-                  <FaLayerGroup className="mr-1 text-primary" /> Scope Groups
-                </span>
-                <div className="section-quick-links">
-                  <button type="button" onClick={handleSelectAllClusters}>All</button>
-                  <span className="sep">|</span>
-                  <button type="button" onClick={handleClearAllClusters}>Clear</button>
-                </div>
-              </div>
-
-              {loadingClusters ? (
-                <div className="py-2 text-center text-muted small">
-                  <FaSyncAlt className="spin mr-1" /> Loading...
-                </div>
-              ) : (
-                <div className="sidebar-chips-wrap">
-                  {clusters.map(c => {
-                    const isSelected = selectedClusterIds.includes(c.id);
-                    return (
-                      <button
-                        key={c.id}
-                        type="button"
-                        className={`sidebar-pill-chip ${isSelected ? 'active' : ''}`}
-                        onClick={() => handleToggleCluster(c.id)}
-                      >
-                        <span className="pill-dot" style={{ backgroundColor: c.color || '#0B3C7A' }} />
-                        <span className="pill-text">{c.name}</span>
-                        <span className="pill-badge">{c.gates.length}</span>
-                        {isSelected && <FaCheck className="pill-check" size={9} />}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+          <div className="sidebar-compact-body">
+            
+            {/* 1. Scope Group Dropdown */}
+            <div className="compact-field">
+              <label>
+                <FaLayerGroup className="field-icon-label text-primary" /> Scope Group / Cluster
+              </label>
+              <select
+                value={selectedClusterIds.length === 1 ? selectedClusterIds[0] : 'ALL'}
+                onChange={handleScopeGroupChange}
+                disabled={loadingClusters}
+              >
+                <option value="ALL">All Accessible Groups ({clusters.length})</option>
+                {clusters.map(c => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.gates.length} gates)
+                  </option>
+                ))}
+              </select>
             </div>
 
-            {/* SECTION 2: LC Gates */}
-            <div className="sidebar-section">
-              <div className="section-head-row">
-                <span className="section-title">
-                  <FaArchway className="mr-1 text-primary" /> Level Crossing Gates
+            {/* 2. Gate Multi-Select Dropdown Popover */}
+            <div className="compact-field relative-anchor" ref={gateDropdownRef}>
+              <label>
+                <FaArchway className="field-icon-label text-primary" /> Target LC Gates
+              </label>
+              <button
+                type="button"
+                className="dropdown-trigger-btn"
+                onClick={() => setShowGateDropdown(prev => !prev)}
+              >
+                <span className="truncate">
+                  {selectedGateIds.length === 0
+                    ? '0 Gates Selected'
+                    : selectedGateIds.length === availableGates.length
+                    ? `All ${availableGates.length} Gates Active`
+                    : `${selectedGateIds.length} of ${availableGates.length} Gates`}
                 </span>
-                <div className="section-quick-links">
-                  <button type="button" onClick={handleSelectAllAvailableGates}>All</button>
-                  <span className="sep">|</span>
-                  <button type="button" onClick={handleClearGates}>Clear</button>
-                </div>
-              </div>
+                {showGateDropdown ? <FaChevronUp size={11} /> : <FaChevronDown size={11} />}
+              </button>
 
-              {availableGates.length > 4 && (
-                <div className="sidebar-search-box">
-                  <FaSearch size={11} className="text-muted" />
-                  <input
-                    type="text"
-                    placeholder="Search gate..."
-                    value={gateSearchText}
-                    onChange={(e) => setGateSearchText(e.target.value)}
-                  />
-                  {gateSearchText && (
-                    <button type="button" onClick={() => setGateSearchText('')}>
-                      <FaTimes size={10} />
-                    </button>
-                  )}
-                </div>
-              )}
-
-              <div className="sidebar-chips-wrap gate-chips-max">
-                {filteredAvailableGates.length === 0 ? (
-                  <div className="text-muted small py-1">
-                    {availableGates.length === 0 ? 'Select a Scope Group' : 'No match'}
+              {showGateDropdown && (
+                <div className="gate-popover-menu">
+                  <div className="popover-search">
+                    <FaSearch size={11} className="text-muted" />
+                    <input
+                      type="text"
+                      placeholder="Search gate..."
+                      value={gateSearchText}
+                      onChange={(e) => setGateSearchText(e.target.value)}
+                    />
+                    {gateSearchText && (
+                      <button type="button" onClick={() => setGateSearchText('')}>
+                        <FaTimes size={10} />
+                      </button>
+                    )}
                   </div>
-                ) : (
-                  filteredAvailableGates.map(g => {
-                    const isSelected = selectedGateIds.includes(g.id);
-                    return (
-                      <button
-                        key={g.id}
-                        type="button"
-                        className={`sidebar-pill-chip ${isSelected ? 'active' : ''}`}
-                        onClick={() => handleToggleGate(g.id)}
-                        title={`${g.lcNumber} - ${g.locationName}`}
-                      >
-                        <strong className="text-primary">{g.lcNumber}</strong>
-                        <span className="text-muted ml-1" style={{ fontSize: '0.72rem' }}>{g.locationName}</span>
-                        {isSelected && <FaCheck className="pill-check" size={9} />}
-                      </button>
-                    );
-                  })
-                )}
-              </div>
+
+                  <div className="popover-quick-bar">
+                    <button type="button" onClick={handleSelectAllGates}>Select All</button>
+                    <span className="sep">•</span>
+                    <button type="button" onClick={handleClearGates}>Clear</button>
+                  </div>
+
+                  <div className="popover-items-list">
+                    {filteredAvailableGates.length === 0 ? (
+                      <div className="text-muted small p-2">No matching gates</div>
+                    ) : (
+                      filteredAvailableGates.map(g => {
+                        const isChecked = selectedGateIds.includes(g.id);
+                        return (
+                          <label key={g.id} className="gate-checkbox-item">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => handleToggleGate(g.id)}
+                            />
+                            <strong className="text-primary">{g.lcNumber}</strong>
+                            <span className="text-muted truncate ml-1">{g.locationName}</span>
+                          </label>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* SECTION 3: Date Range & Operational Filters */}
-            <div className="sidebar-section">
-              <span className="section-title mb-2 d-block">
-                <FaCalendarAlt className="mr-1 text-primary" /> Date Window & Filters
-              </span>
-
-              {/* Date Presets */}
-              <div className="sidebar-presets-grid">
+            {/* 3. Date Window Presets & Inputs */}
+            <div className="compact-field">
+              <label>
+                <FaCalendarAlt className="field-icon-label text-primary" /> Date Range Window
+              </label>
+              <div className="compact-presets-bar">
                 <button
                   type="button"
-                  className={`preset-btn ${datePreset === '7days' ? 'active' : ''}`}
+                  className={`preset-pill-sm ${datePreset === '7days' ? 'active' : ''}`}
                   onClick={() => applyDatePreset('7days')}
                 >
-                  Last 7 Days
+                  7 Days
                 </button>
                 <button
                   type="button"
-                  className={`preset-btn ${datePreset === 'today' ? 'active' : ''}`}
+                  className={`preset-pill-sm ${datePreset === 'today' ? 'active' : ''}`}
                   onClick={() => applyDatePreset('today')}
                 >
                   Today
                 </button>
                 <button
                   type="button"
-                  className={`preset-btn ${datePreset === 'yesterday' ? 'active' : ''}`}
+                  className={`preset-pill-sm ${datePreset === 'yesterday' ? 'active' : ''}`}
                   onClick={() => applyDatePreset('yesterday')}
                 >
                   Yesterday
                 </button>
                 <button
                   type="button"
-                  className={`preset-btn ${datePreset === 'month' ? 'active' : ''}`}
+                  className={`preset-pill-sm ${datePreset === 'month' ? 'active' : ''}`}
                   onClick={() => applyDatePreset('month')}
                 >
                   This Month
                 </button>
               </div>
 
-              {/* Date Inputs */}
-              <div className="sidebar-field-row mt-2">
-                <div className="sidebar-field">
-                  <label>Start Date</label>
-                  <input
-                    type="date"
-                    value={startDateStr}
-                    onChange={(e) => {
-                      setStartDateStr(e.target.value);
-                      setDatePreset('custom');
-                    }}
-                  />
-                </div>
-                <div className="sidebar-field">
-                  <label>End Date</label>
-                  <input
-                    type="date"
-                    value={endDateStr}
-                    onChange={(e) => {
-                      setEndDateStr(e.target.value);
-                      setDatePreset('custom');
-                    }}
-                  />
-                </div>
+              <div className="dates-row-compact mt-1">
+                <input
+                  type="date"
+                  value={startDateStr}
+                  onChange={(e) => {
+                    setStartDateStr(e.target.value);
+                    setDatePreset('custom');
+                  }}
+                  title="Start Date"
+                />
+                <span className="date-arrow">➔</span>
+                <input
+                  type="date"
+                  value={endDateStr}
+                  onChange={(e) => {
+                    setEndDateStr(e.target.value);
+                    setDatePreset('custom');
+                  }}
+                  title="End Date"
+                />
               </div>
+            </div>
 
-              {/* Barrier Status & Shift */}
-              <div className="sidebar-field mt-2">
-                <label>Barrier Status</label>
+            {/* 4. Barrier Status & Operational Shift in 1 Row */}
+            <div className="compact-row-split">
+              <div className="compact-field">
+                <label>Status</label>
                 <select
                   value={filterStatus}
                   onChange={(e) => setFilterStatus(e.target.value)}
                 >
-                  <option value="ALL">All Statuses</option>
-                  <option value="CLOSED">Closed Only (Normal)</option>
-                  <option value="EXTENDED_DELAY">Extended Delays (&gt;15m)</option>
-                  <option value="OPEN">Currently Open</option>
+                  <option value="ALL">All</option>
+                  <option value="CLOSED">Closed Only</option>
+                  <option value="EXTENDED_DELAY">Delays (&gt;15m)</option>
+                  <option value="OPEN">Open Now</option>
                 </select>
               </div>
 
-              <div className="sidebar-field mt-2">
-                <label>Operational Shift</label>
+              <div className="compact-field">
+                <label>Shift</label>
                 <select
                   value={filterShift}
                   onChange={(e) => setFilterShift(e.target.value)}
                 >
-                  <option value="ALL">All 24 Hours</option>
-                  <option value="MORNING">Morning (06:00 - 14:00)</option>
-                  <option value="EVENING">Evening (14:00 - 22:00)</option>
-                  <option value="NIGHT">Night (22:00 - 06:00)</option>
+                  <option value="ALL">All 24h</option>
+                  <option value="MORNING">Morning</option>
+                  <option value="EVENING">Evening</option>
+                  <option value="NIGHT">Night</option>
                 </select>
               </div>
+            </div>
 
-              {/* Keyword Search */}
-              <div className="sidebar-field mt-2">
-                <label>Search Keyword</label>
-                <div className="sidebar-input-with-icon">
+            {/* 5. Keyword Search & Sort Order */}
+            <div className="compact-row-split">
+              <div className="compact-field search-flex">
+                <label>Keyword Search</label>
+                <div className="search-wrap-compact">
                   <FaSearch className="icon" />
                   <input
                     type="text"
                     placeholder="Search LC# or location..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') fetchRecordsData(); }}
                   />
+                  {searchQuery && (
+                    <button type="button" className="clear-search" onClick={() => setSearchQuery('')}>
+                      <FaTimes size={10} />
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {/* Sort Order */}
-              <div className="sidebar-field mt-2">
-                <label>Sort By</label>
-                <div className="sidebar-sort-group">
+              <div className="compact-field sort-flex">
+                <label>Sort</label>
+                <div className="sort-group-compact">
                   <select
                     value={sortBy}
                     onChange={(e) => setSortBy(e.target.value)}
                   >
-                    <option value="openedAt">Opened Time</option>
-                    <option value="closedAt">Closed Time</option>
+                    <option value="openedAt">Time</option>
                     <option value="durationSeconds">Duration</option>
-                    <option value="lcNumber">LC Number</option>
+                    <option value="lcNumber">LC#</option>
                     <option value="status">Status</option>
                   </select>
                   <button
                     type="button"
-                    className="btn btn-outline sidebar-sort-btn"
+                    className="btn btn-outline sort-btn-compact"
                     onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
                     title={`Order: ${sortOrder.toUpperCase()}`}
                   >
@@ -668,84 +695,98 @@ export default function ReportsScreen({ user }: Props) {
               </div>
             </div>
 
-            {/* SECTION 4: Select Columns */}
-            <div className="sidebar-section">
-              <div className="section-head-row">
-                <span className="section-title">
-                  <FaColumns className="mr-1 text-primary" /> Report Columns
-                </span>
-                <div className="section-quick-links">
-                  <button type="button" onClick={handleSelectAllColumns}>All</button>
-                  <span className="sep">|</span>
-                  <button type="button" onClick={handleResetDefaultColumns}>Reset</button>
-                </div>
+            {/* 6. Columns Customizer Popover Trigger */}
+            <div className="compact-field relative-anchor" ref={columnPopoverRef}>
+              <div className="column-label-head">
+                <label className="mb-0">
+                  <FaColumns className="field-icon-label text-primary" /> Active Columns ({selectedExportColumns.length})
+                </label>
+                <button
+                  type="button"
+                  className="popover-toggle-link"
+                  onClick={() => setShowColumnsPopover(prev => !prev)}
+                >
+                  {showColumnsPopover ? 'Close' : 'Customize ▾'}
+                </button>
               </div>
 
-              <div className="sidebar-columns-checkboxes">
-                {REPORT_COLUMNS.map(col => {
-                  const isChecked = selectedExportColumns.includes(col.key);
-                  return (
-                    <label key={col.key} className="sidebar-col-label">
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={() => handleToggleColumn(col.key)}
-                      />
-                      <span>{col.label}</span>
-                    </label>
-                  );
-                })}
-              </div>
+              {showColumnsPopover && (
+                <div className="columns-popover-menu">
+                  <div className="popover-quick-bar">
+                    <button type="button" onClick={handleSelectAllColumns}>Select All</button>
+                    <span className="sep">•</span>
+                    <button type="button" onClick={handleResetDefaultColumns}>Reset Default</button>
+                  </div>
+                  <div className="columns-grid-popover">
+                    {REPORT_COLUMNS.map(col => {
+                      const isChecked = selectedExportColumns.includes(col.key);
+                      return (
+                        <label key={col.key} className="col-check-item">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => handleToggleColumn(col.key)}
+                          />
+                          <span>{col.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
+
           </div>
 
-          {/* SIDEBAR FOOTER: ACTION BUTTONS (Pinned at bottom of builder column) */}
+          {/* SIDEBAR FOOTER: DIRECT 1-CLICK EXPORTS */}
           <div className="sidebar-action-footer">
-            <button
-              type="button"
-              className="btn btn-primary btn-block view-btn"
-              onClick={() => fetchRecordsData()}
-              disabled={loadingRecords}
-            >
-              <FaEye />
-              <span>{loadingRecords ? 'Loading...' : 'View Log / Preview'}</span>
-            </button>
-
-            <div className="export-buttons-pair mt-2">
+            <div className="export-label-row">
+              <span className="export-tag-title">Direct Report Generation</span>
+            </div>
+            <div className="export-buttons-pair">
               <button
                 type="button"
-                className="btn btn-success btn-sm export-btn"
+                className="btn btn-success btn-sm export-action-btn"
                 onClick={() => handleDownloadReport('xlsx')}
                 disabled={isExporting || selectedExportColumns.length === 0}
-                title="Download Excel report"
+                title="Download Excel spreadsheet"
               >
                 <FaFileExcel />
-                <span>Excel (.xlsx)</span>
+                <span>{isExporting ? 'Exporting...' : 'Excel (.xlsx)'}</span>
               </button>
 
               <button
                 type="button"
-                className="btn btn-danger btn-sm export-btn"
+                className="btn btn-danger btn-sm export-action-btn"
                 onClick={() => handleDownloadReport('pdf')}
                 disabled={isExporting || selectedExportColumns.length === 0}
-                title="Download PDF report"
+                title="Download printable PDF report"
               >
                 <FaFilePdf />
-                <span>PDF (.pdf)</span>
+                <span>{isExporting ? 'Exporting...' : 'PDF (.pdf)'}</span>
               </button>
             </div>
           </div>
         </aside>
 
         {/* ═══════════════════════════════════════════════════════════
-            RIGHT COLUMN: VIEW LOG MAIN WORKSPACE
+            RIGHT COLUMN: VIEW LOG MAIN WORKSPACE (Real-Time Reactive)
            ═══════════════════════════════════════════════════════════ */}
         <main className="view-log-main-card">
           <div className="view-log-header">
             <div>
               <div className="log-title-row">
-                <FaEye className="text-primary mr-2" />
-                <h3 className="log-title">View Log: Operational Logsheet Records</h3>
+                <FaArchway className="text-primary mr-2" />
+                <h3 className="log-title">View Log: Operational Records</h3>
+                {loadingRecords ? (
+                  <span className="live-status-pill updating">
+                    <FaSyncAlt className="spin mr-1" /> Updating...
+                  </span>
+                ) : (
+                  <span className="live-status-pill synced">
+                    <span className="pulse-dot" /> Live Synced
+                  </span>
+                )}
               </div>
               <span className="log-subtitle">
                 Displaying <strong>{records.length}</strong> events for selected criteria ({startDateStr} to {endDateStr})
@@ -781,7 +822,7 @@ export default function ReportsScreen({ user }: Props) {
             </div>
           </div>
 
-          {/* Table Container */}
+          {/* Real-time Table */}
           <div className="table-responsive">
             <table className="reports-table">
               <thead>
@@ -802,18 +843,18 @@ export default function ReportsScreen({ user }: Props) {
                 {loadingRecords ? (
                   <tr>
                     <td colSpan={selectedExportColumns.length || 1} className="text-center py-5">
-                      <FaSyncAlt className="spin mr-2" /> Loading operational records...
+                      <FaSyncAlt className="spin mr-2" /> Updating operational logs in real-time...
                     </td>
                   </tr>
                 ) : records.length === 0 ? (
                   <tr>
                     <td colSpan={selectedExportColumns.length || 1} className="text-center py-5 empty-cell">
-                      <FaArchway size={36} className="mb-2 text-muted" />
-                      <p style={{ margin: 0, fontWeight: 700, fontSize: '1rem', color: '#334155' }}>
+                      <FaArchway size={34} className="mb-2 text-muted" />
+                      <p style={{ margin: 0, fontWeight: 700, fontSize: '0.95rem', color: '#334155' }}>
                         No operational records found for this selection.
                       </p>
                       <small className="text-muted">
-                        Please select at least one cluster/gate or widen your date range in the left builder panel.
+                        Adjust scope groups, gates, or date range in the left builder panel.
                       </small>
                     </td>
                   </tr>
