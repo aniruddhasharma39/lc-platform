@@ -13,6 +13,22 @@ const clients = new Set<ClientSubscription>();
 let wss: WebSocketServer | null = null;
 
 /**
+ * Format duration in seconds to human readable string (e.g. "14m 22s", "2h 5m", "45s")
+ */
+export function formatDurationHuman(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || seconds < 0) return '—';
+  if (seconds === 0) return '0s';
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  const parts: string[] = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (secs > 0 || parts.length === 0) parts.push(`${secs}s`);
+  return parts.join(' ');
+}
+
+/**
  * Builds the comprehensive telemetry payload for a gate (mirrors GET /api/v1/lcgates/:id/telemetry)
  */
 export async function getGateTelemetryPayload(gateId: number) {
@@ -38,6 +54,7 @@ export async function getGateTelemetryPayload(gateId: number) {
 
   const deviceRegistryIds = gate.deviceRegistries.map(d => d.id);
 
+  // Fetch real device telemetry payloads from database
   const telemetries = await prisma.deviceTelemetry.findMany({
     where: {
       OR: [
@@ -48,6 +65,42 @@ export async function getGateTelemetryPayload(gateId: number) {
     orderBy: { receivedAt: 'desc' },
     take: 100,
   }).catch(() => []);
+
+  // Fetch operational cycles (Open / Close events)
+  const rawEvents = await prisma.lCGateEvent.findMany({
+    where: { gateId },
+    orderBy: { openedAt: 'desc' },
+    take: 100,
+  }).catch(() => []);
+
+  const nowMs = Date.now();
+  const operationalCycles = rawEvents.map(ev => {
+    let duration = ev.durationSeconds;
+    if (duration === null || duration === undefined) {
+      if (ev.closedAt) {
+        duration = Math.max(0, Math.round((new Date(ev.closedAt).getTime() - new Date(ev.openedAt).getTime()) / 1000));
+      } else {
+        duration = Math.max(0, Math.round((nowMs - new Date(ev.openedAt).getTime()) / 1000));
+      }
+    }
+    return {
+      id: ev.id,
+      gateId: ev.gateId,
+      openedAt: ev.openedAt.toISOString(),
+      closedAt: ev.closedAt ? ev.closedAt.toISOString() : null,
+      durationSeconds: duration,
+      formattedDuration: ev.closedAt ? formatDurationHuman(duration) : `${formatDurationHuman(duration)} (In Progress)`,
+      status: ev.status,
+      openedBy: ev.openedBy,
+      closedBy: ev.closedBy,
+      trainNumber: ev.trainNumber,
+      remarks: ev.remarks,
+      createdAt: ev.createdAt.toISOString(),
+    };
+  });
+
+  const activeOpenCycle = operationalCycles.find(c => c.status === 'OPEN' || !c.closedAt);
+  const lastClosedCycle = operationalCycles.find(c => c.closedAt !== null);
 
   const telemetryRecords = telemetries.filter(t =>
     (t.topic && t.topic.includes('/telemetry')) ||
@@ -65,7 +118,51 @@ export async function getGateTelemetryPayload(gateId: number) {
   );
 
   const latestTele = telemetryRecords[0]?.payload as any;
-  const currentStatus = latestTele?.Status || (gate.deviceRegistries[0]?.status ?? 'CONFIGURED');
+  const rawStatus = latestTele?.Status ? String(latestTele.Status).trim().toUpperCase() : null;
+  let resolvedGateState: 'OPEN' | 'CLOSED' = 'CLOSED';
+
+  if (rawStatus === 'CLOSED') {
+    resolvedGateState = 'CLOSED';
+  } else if (rawStatus === 'OPEN' || rawStatus === 'NOT_CLOSED') {
+    resolvedGateState = 'OPEN';
+  } else if (latestTele?.LimitSwitchClosed !== undefined) {
+    resolvedGateState = latestTele.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
+  } else if (activeOpenCycle) {
+    resolvedGateState = 'OPEN';
+  } else if (gate.deviceRegistries[0]?.status) {
+    const devStatus = gate.deviceRegistries[0].status.toUpperCase();
+    resolvedGateState = (devStatus === 'OPEN' || devStatus === 'NOT_CLOSED') ? 'OPEN' : 'CLOSED';
+  }
+
+  const isCurrentlyOpen = resolvedGateState === 'OPEN';
+  const currentStatus = resolvedGateState;
+
+  // Calculate duration in current state
+  let timeInCurrentStateSeconds = 0;
+  let currentStateStartedAt: string | null = null;
+  if (isCurrentlyOpen) {
+    currentStateStartedAt = activeOpenCycle?.openedAt || (telemetryRecords[0]?.receivedAt ? new Date(telemetryRecords[0].receivedAt).toISOString() : new Date().toISOString());
+    timeInCurrentStateSeconds = Math.max(0, Math.round((nowMs - new Date(currentStateStartedAt).getTime()) / 1000));
+  } else {
+    // Current state is CLOSED
+    currentStateStartedAt = lastClosedCycle?.closedAt || (telemetryRecords[0]?.receivedAt ? new Date(telemetryRecords[0].receivedAt).toISOString() : null);
+    if (currentStateStartedAt) {
+      timeInCurrentStateSeconds = Math.max(0, Math.round((nowMs - new Date(currentStateStartedAt).getTime()) / 1000));
+    }
+  }
+
+  const currentOperationalState = {
+    isCurrentlyOpen,
+    currentStatus,
+    rawReportedStatus: latestTele?.Status || currentStatus,
+    currentStateStartedAt,
+    timeInCurrentStateSeconds,
+    timeInCurrentStateFormatted: formatDurationHuman(timeInCurrentStateSeconds),
+    activeCycle: isCurrentlyOpen ? (activeOpenCycle || null) : null,
+    lastClosedCycle: lastClosedCycle || null,
+    totalCyclesRecorded: operationalCycles.length,
+  };
+
   const primaryThingName = gate.masters[0]?.serialNumber || gate.deviceRegistries[0]?.thingName || gate.lcNumber;
 
   return {
@@ -75,17 +172,20 @@ export async function getGateTelemetryPayload(gateId: number) {
     locationName: gate.locationName,
     thingName: primaryThingName,
     currentStatus,
+    currentOperationalState,
     topic: `lc-gate/${primaryThingName}/telemetry`,
     counts: {
       all: telemetries.length,
       telemetry: telemetryRecords.length,
       manifest: manifestRecords.length,
       healthCheck: healthRecords.length,
+      cycles: operationalCycles.length,
     },
     payloads: telemetries,
     telemetryRecords,
     manifestRecords,
     healthRecords,
+    operationalCycles,
     latestTelemetry: telemetryRecords[0] || null,
     latestManifest: manifestRecords[0] || null,
     latestHealthCheck: healthRecords[0] || null,

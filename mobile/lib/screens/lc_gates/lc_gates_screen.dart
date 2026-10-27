@@ -70,7 +70,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   bool _loadingTelemetry = false;
   bool _wsConnected = false;
   int? _selectedPayloadId;
-  String _inspectSubTab = 'telemetry'; // 'telemetry' | 'manifest' | 'health' | 'all'
+  String _inspectSubTab = 'cycles'; // 'cycles' | 'telemetry' | 'manifest' | 'health' | 'all'
   bool _showRawJson = false;
   bool _triggeringHealthCheck = false;
   WebSocketChannel? _telemetryWsChannel;
@@ -2247,9 +2247,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     final manifestRecords = (_gateTelemetry?['manifestRecords'] as List?) ?? [];
     final healthRecords = (_gateTelemetry?['healthRecords'] as List?) ?? [];
     final allRecords = (_gateTelemetry?['payloads'] as List?) ?? [];
+    final operationalCycles = (_gateTelemetry?['operationalCycles'] as List?) ?? [];
+    final currentOperationalState = (_gateTelemetry?['currentOperationalState'] as Map<String, dynamic>?) ?? {};
+    final lastClosedCycle = (currentOperationalState['lastClosedCycle'] as Map<String, dynamic>?) ?? {};
 
     List<dynamic> activeList = [];
-    if (_inspectSubTab == 'telemetry') {
+    if (_inspectSubTab == 'cycles') {
+      activeList = operationalCycles;
+    } else if (_inspectSubTab == 'telemetry') {
       activeList = telemetryRecords;
     } else if (_inspectSubTab == 'manifest') {
       activeList = manifestRecords;
@@ -2487,11 +2492,174 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         ),
         const SizedBox(height: 12),
 
+        // 2. Gate Operational Analytics KPI Banner
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: const [
+              BoxShadow(color: Color(0x06000000), offset: Offset(0, 1), blurRadius: 2),
+            ],
+          ),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  // Box 1: Status & Time in State
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('GATE STATUS', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: Color(0xFF64748B), letterSpacing: 0.5)),
+                          const SizedBox(height: 5),
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: statusBg,
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: statusBorder),
+                                ),
+                                child: Text(
+                                  currentStatus,
+                                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: statusColor),
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (currentOperationalState['timeInCurrentStateFormatted'] != null) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              'for ${currentOperationalState['timeInCurrentStateFormatted']}',
+                              style: const TextStyle(fontSize: 10, color: Color(0xFF64748B), fontWeight: FontWeight.w600),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Box 2: Last Cycle Duration
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('CYCLE DURATION', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: Color(0xFF64748B), letterSpacing: 0.5)),
+                          const SizedBox(height: 5),
+                          Text(
+                            lastClosedCycle['formattedDuration']?.toString() ?? '—',
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFF0B3C7A)),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            lastClosedCycle['status'] == 'EXTENDED_DELAY' ? 'Extended Delay (>15m)' : 'Normal Clearance',
+                            style: TextStyle(
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.w600,
+                              color: lastClosedCycle['status'] == 'EXTENDED_DELAY' ? const Color(0xFFB45309) : const Color(0xFF15803D),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  // Box 3: Last Opened At
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Row(
+                            children: [
+                              Icon(Icons.meeting_room_outlined, size: 12, color: Color(0xFFDC2626)),
+                              SizedBox(width: 4),
+                              Text('LAST OPENED', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: Color(0xFFDC2626))),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            operationalCycles.isNotEmpty ? _formatTimeOnly(operationalCycles.first['openedAt']) : '—',
+                            style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Box 4: Last Closed At
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Row(
+                            children: [
+                              Icon(Icons.lock_outline, size: 12, color: Color(0xFF15803D)),
+                              SizedBox(width: 4),
+                              Text('LAST CLOSED', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: Color(0xFF15803D))),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            lastClosedCycle['closedAt'] != null
+                                ? _formatTimeOnly(lastClosedCycle['closedAt'])
+                                : (operationalCycles.isNotEmpty && operationalCycles.first['closedAt'] != null
+                                    ? _formatTimeOnly(operationalCycles.first['closedAt'])
+                                    : 'Awaiting Closure'),
+                            style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+
         // 3. Sub-Tab Navigation Bar
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(
             children: [
+              _buildSubTabChip('cycles', 'Cycles', counts['cycles'] ?? operationalCycles.length),
+              const SizedBox(width: 6),
               _buildSubTabChip('telemetry', 'Telemetry', counts['telemetry'] ?? telemetryRecords.length),
               const SizedBox(width: 6),
               _buildSubTabChip('manifest', 'Manifest', counts['manifest'] ?? (manifestRecords.isNotEmpty ? manifestRecords.length : totalDevicesCount)),
@@ -2504,16 +2672,182 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         ),
         const SizedBox(height: 12),
 
-        // 4. Active Payload Breakdown Card
-        Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
-            boxShadow: const [
-              BoxShadow(color: Color(0x06000000), offset: Offset(0, 1), blurRadius: 2),
-            ],
-          ),
+        if (_inspectSubTab == 'cycles') ...[
+          // 4. Operational Cycles Log
+          if (operationalCycles.isEmpty)
+            Container(
+              padding: const EdgeInsets.all(28),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              alignment: Alignment.center,
+              child: const Column(
+                children: [
+                  Icon(Icons.history_toggle_off, size: 36, color: Color(0xFF94A3B8)),
+                  SizedBox(height: 8),
+                  Text('No Operational Gate Cycles Recorded Yet', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF0F172A))),
+                  SizedBox(height: 4),
+                  Text('Gate opening and closing cycles are logged automatically upon boom barrier operation.', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                ],
+              ),
+            )
+          else ...[
+            Padding(
+              padding: const EdgeInsets.only(left: 2, bottom: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'OPERATIONAL CYCLES LOG (${operationalCycles.length})',
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF0F172A), letterSpacing: 0.5),
+                  ),
+                  const Text('Chronological history', style: TextStyle(fontSize: 10, color: Color(0xFF64748B), fontStyle: FontStyle.italic)),
+                ],
+              ),
+            ),
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: operationalCycles.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 8),
+              itemBuilder: (ctx, idx) {
+                final cycle = operationalCycles[idx] as Map<String, dynamic>;
+                final status = (cycle['status'] ?? 'CLOSED').toString().toUpperCase();
+                final isOpenCycle = status == 'OPEN' || cycle['closedAt'] == null;
+                final isDelay = status == 'EXTENDED_DELAY';
+
+                return Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                    boxShadow: const [BoxShadow(color: Color(0x04000000), offset: Offset(0, 1), blurRadius: 2)],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Row(
+                            children: [
+                              Text('Cycle #${cycle['id']}', style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: Color(0xFF0F172A))),
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: isOpenCycle ? const Color(0xFFFEE2E2) : (isDelay ? const Color(0xFFFEF3C7) : const Color(0xFFDCFCE7)),
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: isOpenCycle ? const Color(0xFFFCA5A5) : (isDelay ? const Color(0xFFFDE68A) : const Color(0xFF86EFAC))),
+                                ),
+                                child: Text(
+                                  isOpenCycle ? 'OPEN' : (isDelay ? 'DELAY' : 'CLOSED'),
+                                  style: TextStyle(
+                                    fontSize: 9.5,
+                                    fontWeight: FontWeight.w800,
+                                    color: isOpenCycle ? const Color(0xFFB91C1C) : (isDelay ? const Color(0xFFB45309) : const Color(0xFF15803D)),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFEFF6FF),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.timer_outlined, size: 11, color: Color(0xFF1D4ED8)),
+                                const SizedBox(width: 4),
+                                Text(
+                                  cycle['formattedDuration']?.toString() ?? '—',
+                                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF1D4ED8)),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('OPENED AT', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: Color(0xFF64748B))),
+                                const SizedBox(height: 2),
+                                Text(_formatTimeOnly(cycle['openedAt']), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF0F172A))),
+                                Text(_formatDateTime(cycle['openedAt']).split(' • ').last, style: const TextStyle(fontSize: 9.5, color: Color(0xFF64748B))),
+                              ],
+                            ),
+                          ),
+                          const Icon(Icons.arrow_forward, size: 14, color: Color(0xFFCBD5E1)),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                const Text('CLOSED AT', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: Color(0xFF64748B))),
+                                const SizedBox(height: 2),
+                                Text(
+                                  cycle['closedAt'] != null ? _formatTimeOnly(cycle['closedAt']) : 'In Progress...',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: cycle['closedAt'] != null ? const Color(0xFF0F172A) : const Color(0xFFDC2626),
+                                  ),
+                                ),
+                                if (cycle['closedAt'] != null)
+                                  Text(_formatDateTime(cycle['closedAt']).split(' • ').last, style: const TextStyle(fontSize: 9.5, color: Color(0xFF64748B))),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (cycle['openedBy'] != null || cycle['trainNumber'] != null || cycle['remarks'] != null) ...[
+                        const SizedBox(height: 8),
+                        const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            const Icon(Icons.info_outline, size: 11, color: Color(0xFF94A3B8)),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                cycle['trainNumber'] != null
+                                    ? 'Train: ${cycle['trainNumber']} • ${cycle['openedBy'] ?? ''}'
+                                    : (cycle['remarks'] ?? cycle['openedBy'] ?? ''),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
+                );
+              },
+            ),
+          ],
+        ] else ...[
+          // 4. Active Payload Breakdown Card
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+              boxShadow: const [
+                BoxShadow(color: Color(0x06000000), offset: Offset(0, 1), blurRadius: 2),
+              ],
+            ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -2816,6 +3150,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             ],
           ),
         ),
+        ],
       ],
     );
   }

@@ -5,7 +5,7 @@ import { authenticate } from '../middleware/auth';
 import { RAILWAY_DATA, RAILWAY_ZONES, divisionsForZone } from '../lib/railwayData';
 import { getAllDescendantScopeGroupIds } from '../lib/scopeHierarchy';
 import { publishMqttMessage } from '../lib/iotClient';
-import { broadcastGateTelemetry } from '../lib/telemetryWs';
+import { broadcastGateTelemetry, getGateTelemetryPayload } from '../lib/telemetryWs';
 
 const router = Router();
 
@@ -537,7 +537,16 @@ router.get('/:id', authenticate, async (req, res, next) => {
     });
 
     if (!gate) return res.status(404).json({ error: 'Gate not found' });
-    res.json(gate);
+
+    const basePayload = await getGateTelemetryPayload(id);
+    if (!basePayload) return res.status(404).json({ error: 'Gate telemetry not available' });
+
+    const telemetryData = buildGateTelemetry(gate);
+    return res.json({
+      ...basePayload,
+      cluster: telemetryData.cluster,
+      awsConfig: telemetryData.awsConfig,
+    });
   } catch (error) {
     next(error);
   }

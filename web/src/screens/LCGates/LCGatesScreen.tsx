@@ -38,7 +38,11 @@ import {
   FaCopy,
   FaCheck,
   FaServer,
-  FaFileAlt
+  FaFileAlt,
+  FaHistory,
+  FaClock,
+  FaDoorOpen,
+  FaDoorClosed
 } from 'react-icons/fa';
 
 /**
@@ -178,7 +182,8 @@ export default function LCGatesScreen({ user }: Props) {
   const [wsConnected, setWsConnected] = useState<boolean>(false);
   const wsRef = useRef<WebSocket | null>(null);
   const [selectedPayloadId, setSelectedPayloadId] = useState<number | null>(null);
-  const [inspectSubTab, setInspectSubTab] = useState<'telemetry' | 'manifest' | 'health' | 'all'>('telemetry');
+  const [selectedCycleId, setSelectedCycleId] = useState<number | null>(null);
+  const [inspectSubTab, setInspectSubTab] = useState<'cycles' | 'telemetry' | 'manifest' | 'health' | 'all'>('cycles');
   const [telemetryViewMode, setTelemetryViewMode] = useState<'table' | 'raw'>('table');
   const [triggeringHealthCheck, setTriggeringHealthCheck] = useState<boolean>(false);
   const [isCopied, setIsCopied] = useState<boolean>(false);
@@ -473,6 +478,16 @@ export default function LCGatesScreen({ user }: Props) {
   const telemetryRecords: any[] = useMemo(() => gateTelemetry?.telemetryRecords || [], [gateTelemetry]);
   const manifestRecords: any[] = useMemo(() => gateTelemetry?.manifestRecords || [], [gateTelemetry]);
   const healthRecords: any[] = useMemo(() => gateTelemetry?.healthRecords || [], [gateTelemetry]);
+  const operationalCycles: any[] = useMemo(() => gateTelemetry?.operationalCycles || [], [gateTelemetry]);
+  const currentOperationalState = useMemo(() => gateTelemetry?.currentOperationalState || null, [gateTelemetry]);
+
+  const currentViewingCycle = useMemo(() => {
+    if (selectedCycleId !== null) {
+      const found = operationalCycles.find((c: any) => c.id === selectedCycleId);
+      if (found) return found;
+    }
+    return operationalCycles[0] || null;
+  }, [selectedCycleId, operationalCycles]);
 
   const activeRecordList = useMemo(() => {
     if (inspectSubTab === 'telemetry') return telemetryRecords;
@@ -1278,9 +1293,121 @@ export default function LCGatesScreen({ user }: Props) {
                 </div>
               </div>
 
+              {/* Gate Operational Lifecycle Analytics KPI Banner */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12, marginTop: 14 }}>
+                {/* 1. Live Gate Operational State */}
+                <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '12px 14px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                  <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 6 }}>
+                    Current Gate Status
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '4px 12px',
+                        borderRadius: 6,
+                        fontWeight: 800,
+                        fontSize: '0.88rem',
+                        background: (currentOperationalState?.currentStatus || gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#dcfce7' : '#fee2e2',
+                        color: (currentOperationalState?.currentStatus || gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#15803d' : '#b91c1c',
+                        border: `1px solid ${(currentOperationalState?.currentStatus || gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#86efac' : '#fca5a5'}`
+                      }}
+                    >
+                      <span
+                        className="pulse-dot"
+                        style={{
+                          width: 7,
+                          height: 7,
+                          borderRadius: '50%',
+                          background: (currentOperationalState?.currentStatus || gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#15803d' : '#b91c1c'
+                        }}
+                      />
+                      {(currentOperationalState?.currentStatus || gateTelemetry?.currentStatus || 'CLOSED').toUpperCase()}
+                    </span>
+                    <span style={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 600 }}>
+                      {currentOperationalState?.timeInCurrentStateFormatted ? `for ${currentOperationalState.timeInCurrentStateFormatted}` : ''}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 2. Last Gate Opened */}
+                <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '12px 14px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                  <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 6 }}>
+                    Last Opened At
+                  </div>
+                  <div style={{ fontSize: '0.92rem', fontWeight: 700, color: '#0f172a' }}>
+                    {operationalCycles[0]?.openedAt ? new Date(operationalCycles[0].openedAt).toLocaleTimeString() : '—'}
+                  </div>
+                  <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
+                    {operationalCycles[0]?.openedAt ? `${new Date(operationalCycles[0].openedAt).toLocaleDateString()} • ${operationalCycles[0].openedBy || 'IoT Telemetry'}` : 'No cycle recorded'}
+                  </div>
+                </div>
+
+                {/* 3. Last Gate Closed */}
+                <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '12px 14px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                  <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 6 }}>
+                    Last Closed At
+                  </div>
+                  <div style={{ fontSize: '0.92rem', fontWeight: 700, color: '#0f172a' }}>
+                    {currentOperationalState?.lastClosedCycle?.closedAt
+                      ? new Date(currentOperationalState.lastClosedCycle.closedAt).toLocaleTimeString()
+                      : (operationalCycles[0]?.closedAt ? new Date(operationalCycles[0].closedAt).toLocaleTimeString() : 'Active (Open)')}
+                  </div>
+                  <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
+                    {currentOperationalState?.lastClosedCycle?.closedAt
+                      ? `${new Date(currentOperationalState.lastClosedCycle.closedAt).toLocaleDateString()} • Closed & Locked`
+                      : 'Awaiting closure'}
+                  </div>
+                </div>
+
+                {/* 4. Last Operational Cycle Duration */}
+                <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '12px 14px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
+                  <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 6 }}>
+                    Last Cycle Duration
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0B3C7A' }}>
+                      {currentOperationalState?.lastClosedCycle?.formattedDuration || '—'}
+                    </div>
+                    {currentOperationalState?.lastClosedCycle && (
+                      <span
+                        style={{
+                          fontSize: '0.7rem',
+                          padding: '2px 8px',
+                          borderRadius: 4,
+                          fontWeight: 700,
+                          background: currentOperationalState.lastClosedCycle.status === 'EXTENDED_DELAY' ? '#fef3c7' : '#ecfdf5',
+                          color: currentOperationalState.lastClosedCycle.status === 'EXTENDED_DELAY' ? '#b45309' : '#047857',
+                          border: `1px solid ${currentOperationalState.lastClosedCycle.status === 'EXTENDED_DELAY' ? '#fde68a' : '#a7f3d0'}`
+                        }}
+                      >
+                        {currentOperationalState.lastClosedCycle.status === 'EXTENDED_DELAY' ? 'Extended Delay' : 'Normal'}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
+                    {currentOperationalState?.lastClosedCycle?.durationSeconds ? `${currentOperationalState.lastClosedCycle.durationSeconds}s open-to-close` : 'Cycle duration'}
+                  </div>
+                </div>
+              </div>
+
               {/* Sub-header Navigation Tabs */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', padding: '12px 0 10px 0', marginTop: 14, flexWrap: 'wrap', gap: 10 }}>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className={`telemetry-tab-btn ${inspectSubTab === 'cycles' ? 'active' : ''}`}
+                    onClick={() => { setInspectSubTab('cycles'); setSelectedCycleId(null); }}
+                  >
+                    <FaHistory size={13} />
+                    <span>Operational Cycles</span>
+                    <span className="badge badge-indigo" style={{ fontSize: '0.7rem', padding: '1px 6px', marginLeft: 4 }}>
+                      {operationalCycles.length}
+                    </span>
+                  </button>
+
                   <button
                     type="button"
                     className={`telemetry-tab-btn ${inspectSubTab === 'telemetry' ? 'active' : ''}`}
@@ -1372,6 +1499,193 @@ export default function LCGatesScreen({ user }: Props) {
                   <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)' }}>
                     <FaSyncAlt className="fa-spin" size={26} style={{ color: '#0B3C7A', marginBottom: 10 }} />
                     <div style={{ fontWeight: 700, color: '#1e293b' }}>Loading live operational telemetry from edge device...</div>
+                  </div>
+                ) : inspectSubTab === 'cycles' ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                    {/* Active or Selected Operational Cycle Lifecycle Breakdown Card */}
+                    {currentViewingCycle ? (
+                      <div style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 8, padding: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <span style={{ fontSize: '0.98rem', fontWeight: 800, color: '#0f172a' }}>
+                              Cycle #{currentViewingCycle.id} Operational Lifecycle
+                            </span>
+                            <span
+                              style={{
+                                padding: '3px 10px',
+                                borderRadius: 4,
+                                fontWeight: 800,
+                                fontSize: '0.78rem',
+                                background: currentViewingCycle.status === 'OPEN' ? '#fee2e2' : currentViewingCycle.status === 'EXTENDED_DELAY' ? '#fef3c7' : '#dcfce7',
+                                color: currentViewingCycle.status === 'OPEN' ? '#b91c1c' : currentViewingCycle.status === 'EXTENDED_DELAY' ? '#b45309' : '#15803d',
+                                border: `1px solid ${currentViewingCycle.status === 'OPEN' ? '#fca5a5' : currentViewingCycle.status === 'EXTENDED_DELAY' ? '#fde68a' : '#86efac'}`
+                              }}
+                            >
+                              {currentViewingCycle.status === 'OPEN' ? 'OPEN • IN PROGRESS' : currentViewingCycle.status === 'EXTENDED_DELAY' ? 'EXTENDED DELAY (>15 MIN)' : 'CLOSED • NORMAL CLEARANCE'}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontSize: '0.8rem', color: '#64748b' }}>Recorded on</span>
+                            <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#334155' }}>
+                              {new Date(currentViewingCycle.openedAt).toLocaleDateString()}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* 3-Step Lifecycle Visual Journey */}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, background: '#f8fafc', padding: 14, borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                          {/* Step 1: Opened */}
+                          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                            <div style={{ width: 34, height: 34, borderRadius: '50%', background: '#fee2e2', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}>
+                              <FaDoorOpen color="#dc2626" size={16} />
+                            </div>
+                            <div>
+                              <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#dc2626', textTransform: 'uppercase' }}>
+                                Gate Opened (Road Closed)
+                              </div>
+                              <div style={{ fontSize: '0.92rem', fontWeight: 800, color: '#0f172a', marginTop: 2 }}>
+                                {new Date(currentViewingCycle.openedAt).toLocaleTimeString()}
+                              </div>
+                              <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
+                                By: {currentViewingCycle.openedBy || 'AWS IoT Telemetry'}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Step 2: Duration */}
+                          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                            <div style={{ width: 34, height: 34, borderRadius: '50%', background: '#e0f2fe', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}>
+                              <FaClock color="#0284c7" size={16} />
+                            </div>
+                            <div>
+                              <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#0369a1', textTransform: 'uppercase' }}>
+                                Operational Open Duration
+                              </div>
+                              <div style={{ fontSize: '0.92rem', fontWeight: 800, color: '#0B3C7A', marginTop: 2 }}>
+                                {currentViewingCycle.formattedDuration}
+                              </div>
+                              <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
+                                {currentViewingCycle.trainNumber ? `Train: ${currentViewingCycle.trainNumber}` : (currentViewingCycle.remarks || 'Standard Operation')}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Step 3: Closed */}
+                          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                            <div style={{ width: 34, height: 34, borderRadius: '50%', background: currentViewingCycle.closedAt ? '#dcfce7' : '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}>
+                              <FaDoorClosed color={currentViewingCycle.closedAt ? '#16a34a' : '#94a3b8'} size={16} />
+                            </div>
+                            <div>
+                              <div style={{ fontSize: '0.72rem', fontWeight: 700, color: currentViewingCycle.closedAt ? '#15803d' : '#64748b', textTransform: 'uppercase' }}>
+                                Gate Closed (Traffic Restored)
+                              </div>
+                              <div style={{ fontSize: '0.92rem', fontWeight: 800, color: currentViewingCycle.closedAt ? '#0f172a' : '#64748b', marginTop: 2 }}>
+                                {currentViewingCycle.closedAt ? new Date(currentViewingCycle.closedAt).toLocaleTimeString() : 'Awaiting Closure (Active)'}
+                              </div>
+                              <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
+                                By: {currentViewingCycle.closedBy || (currentViewingCycle.closedAt ? 'AWS IoT Telemetry' : 'In Progress')}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ textAlign: 'center', padding: '36px 16px', background: '#f8fafc', borderRadius: 8, border: '1px dashed #cbd5e1' }}>
+                        <FaHistory size={28} style={{ color: '#94a3b8', margin: '0 auto 8px auto' }} />
+                        <h4 style={{ margin: '0 0 4px 0', color: '#1e293b', fontWeight: 700 }}>No Operational Gate Cycles Recorded Yet</h4>
+                        <p style={{ margin: 0, fontSize: '0.84rem', color: '#64748b' }}>
+                          Operational opening and closing cycles are automatically recorded as the boom barrier operates.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Operational Cycles Historical Stream Table */}
+                    {operationalCycles.length > 0 && (
+                      <div style={{ marginTop: 4 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                          <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                            Gate Operational Cycles Log ({operationalCycles.length} Total Cycles)
+                          </span>
+                          <small style={{ color: '#64748b', fontSize: '0.76rem' }}>Click any cycle to inspect its full timeline</small>
+                        </div>
+
+                        <div style={{ maxHeight: '280px', overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+                          <table className="dynamic-table" style={{ width: '100%', fontSize: '0.84rem' }}>
+                            <thead>
+                              <tr style={{ background: '#f8fafc' }}>
+                                <th style={{ width: '45px' }}>Cycle #</th>
+                                <th>Status</th>
+                                <th>Gate Opened At</th>
+                                <th>Gate Closed At</th>
+                                <th>Open Duration</th>
+                                <th>Trigger Source</th>
+                                <th>Train / Remarks</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {operationalCycles.map((cycle, idx) => {
+                                const isSelected = currentViewingCycle?.id === cycle.id;
+                                const isCycleOpen = cycle.status === 'OPEN' || !cycle.closedAt;
+                                const isDelay = cycle.status === 'EXTENDED_DELAY';
+
+                                return (
+                                  <tr
+                                    key={cycle.id || idx}
+                                    onClick={() => setSelectedCycleId(cycle.id)}
+                                    style={{
+                                      background: isSelected ? 'rgba(11, 60, 122, 0.08)' : idx % 2 === 0 ? '#ffffff' : '#f8fafc',
+                                      cursor: 'pointer',
+                                      borderLeft: isSelected ? '3px solid #0B3C7A' : '3px solid transparent'
+                                    }}
+                                  >
+                                    <td><strong>#{cycle.id}</strong></td>
+                                    <td>
+                                      <span
+                                        style={{
+                                          padding: '2px 8px',
+                                          borderRadius: 4,
+                                          fontWeight: 700,
+                                          fontSize: '0.76rem',
+                                          background: isCycleOpen ? '#fee2e2' : isDelay ? '#fef3c7' : '#dcfce7',
+                                          color: isCycleOpen ? '#b91c1c' : isDelay ? '#b45309' : '#15803d'
+                                        }}
+                                      >
+                                        {isCycleOpen ? 'OPEN' : isDelay ? 'DELAY' : 'CLOSED'}
+                                      </span>
+                                    </td>
+                                    <td>
+                                      <div style={{ fontWeight: 600 }}>{new Date(cycle.openedAt).toLocaleTimeString()}</div>
+                                      <div style={{ fontSize: '0.72rem', color: '#64748b' }}>{new Date(cycle.openedAt).toLocaleDateString()}</div>
+                                    </td>
+                                    <td>
+                                      {cycle.closedAt ? (
+                                        <>
+                                          <div style={{ fontWeight: 600 }}>{new Date(cycle.closedAt).toLocaleTimeString()}</div>
+                                          <div style={{ fontSize: '0.72rem', color: '#64748b' }}>{new Date(cycle.closedAt).toLocaleDateString()}</div>
+                                        </>
+                                      ) : (
+                                        <span style={{ color: '#dc2626', fontWeight: 700, fontSize: '0.78rem' }}>In Progress...</span>
+                                      )}
+                                    </td>
+                                    <td>
+                                      <strong style={{ color: '#0B3C7A' }}>{cycle.formattedDuration}</strong>
+                                    </td>
+                                    <td>
+                                      <div style={{ fontSize: '0.8rem', color: '#334155' }}>{cycle.openedBy || 'IoT Telemetry'}</div>
+                                    </td>
+                                    <td>
+                                      <div style={{ fontSize: '0.78rem', color: '#64748b' }}>
+                                        {cycle.trainNumber ? `Train ${cycle.trainNumber}` : (cycle.remarks || '—')}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>

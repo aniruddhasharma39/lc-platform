@@ -5,6 +5,7 @@ import { authenticate } from '../middleware/auth';
 import { publishMqttMessage } from '../lib/iotClient';
 import { checkAndDispatchGateStateAlert } from '../lib/gateAlertSms';
 import { recordGateTelemetryTransition } from '../lib/telemetryMonitor';
+import { broadcastGateTelemetry } from '../lib/telemetryWs';
 
 const router = Router();
 
