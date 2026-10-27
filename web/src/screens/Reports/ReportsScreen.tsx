@@ -8,8 +8,6 @@ import {
   FaPrint,
   FaArchway,
   FaLayerGroup,
-  FaSortAmountDown,
-  FaSortAmountUp,
   FaTimes,
   FaFilter,
   FaColumns,
@@ -622,15 +620,15 @@ export default function ReportsScreen({ user }: Props) {
               </div>
             </div>
 
-            {/* 4. Barrier Status & Operational Shift in 1 Row */}
+            {/* 4. Barrier Status & Operational Shift */}
             <div className="compact-row-split">
               <div className="compact-field">
-                <label>Status</label>
+                <label>Barrier Status</label>
                 <select
                   value={filterStatus}
                   onChange={(e) => setFilterStatus(e.target.value)}
                 >
-                  <option value="ALL">All</option>
+                  <option value="ALL">All Statuses</option>
                   <option value="CLOSED">Closed Only</option>
                   <option value="EXTENDED_DELAY">Delays (&gt;15m)</option>
                   <option value="OPEN">Open Now</option>
@@ -638,61 +636,57 @@ export default function ReportsScreen({ user }: Props) {
               </div>
 
               <div className="compact-field">
-                <label>Shift</label>
+                <label>Operational Shift</label>
                 <select
                   value={filterShift}
                   onChange={(e) => setFilterShift(e.target.value)}
                 >
-                  <option value="ALL">All 24h</option>
-                  <option value="MORNING">Morning</option>
-                  <option value="EVENING">Evening</option>
-                  <option value="NIGHT">Night</option>
+                  <option value="ALL">All 24 Hours</option>
+                  <option value="MORNING">Morning (06-14)</option>
+                  <option value="EVENING">Evening (14-22)</option>
+                  <option value="NIGHT">Night (22-06)</option>
                 </select>
               </div>
             </div>
 
-            {/* 5. Keyword Search & Sort Order */}
-            <div className="compact-row-split">
-              <div className="compact-field search-flex">
-                <label>Keyword Search</label>
-                <div className="search-wrap-compact">
-                  <FaSearch className="icon" />
-                  <input
-                    type="text"
-                    placeholder="Search LC# or location..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                  />
-                  {searchQuery && (
-                    <button type="button" className="clear-search" onClick={() => setSearchQuery('')}>
-                      <FaTimes size={10} />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <div className="compact-field sort-flex">
-                <label>Sort</label>
-                <div className="sort-group-compact">
-                  <select
-                    value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value)}
-                  >
-                    <option value="openedAt">Time</option>
-                    <option value="durationSeconds">Duration</option>
-                    <option value="lcNumber">LC#</option>
-                    <option value="status">Status</option>
-                  </select>
-                  <button
-                    type="button"
-                    className="btn btn-outline sort-btn-compact"
-                    onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
-                    title={`Order: ${sortOrder.toUpperCase()}`}
-                  >
-                    {sortOrder === 'asc' ? <FaSortAmountUp /> : <FaSortAmountDown />}
+            {/* 5. Keyword Search (Full Width, Zero Overlap) */}
+            <div className="compact-field">
+              <label>Filter by Keyword</label>
+              <div className="search-wrap-compact">
+                <FaSearch className="search-icon-left" />
+                <input
+                  type="text"
+                  placeholder="Filter by LC number or location..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+                {searchQuery && (
+                  <button type="button" className="clear-search-btn" onClick={() => setSearchQuery('')} title="Clear search">
+                    <FaTimes size={11} />
                   </button>
-                </div>
+                )}
               </div>
+            </div>
+
+            {/* 6. Unified Sort Selector (Full Width, Descriptive) */}
+            <div className="compact-field">
+              <label>Sort Records By</label>
+              <select
+                value={`${sortBy}_${sortOrder}`}
+                onChange={(e) => {
+                  const [field, order] = e.target.value.split('_');
+                  setSortBy(field);
+                  setSortOrder(order as 'asc' | 'desc');
+                }}
+              >
+                <option value="openedAt_desc">Date & Time: Newest to Oldest</option>
+                <option value="openedAt_asc">Date & Time: Oldest to Newest</option>
+                <option value="durationSeconds_desc">Duration: Longest to Shortest</option>
+                <option value="durationSeconds_asc">Duration: Shortest to Longest</option>
+                <option value="lcNumber_asc">LC Number: A to Z</option>
+                <option value="lcNumber_desc">LC Number: Z to A</option>
+                <option value="status_asc">Barrier Status (A to Z)</option>
+              </select>
             </div>
 
             {/* 6. Columns Customizer Popover Trigger */}
