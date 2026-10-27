@@ -167,6 +167,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   // 2. Fetch Operational Records
   Future<void> _fetchRecords() async {
+    if (_selectedGateIds.isEmpty) {
+      if (mounted) setState(() { _records = []; _isLoadingRecords = false; });
+      return;
+    }
     setState(() => _isLoadingRecords = true);
     try {
       final queryParams = <String, String>{
@@ -548,6 +552,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
                           onPressed: _isExporting
                               ? null
                               : () async {
+                                  if (_selectedGateIds.isEmpty) {
+                                    AppFeedback.showInfo(context, 'Please select at least one gate to export.');
+                                    return;
+                                  }
                                   Navigator.pop(ctx);
                                   setState(() => _isExporting = true);
                                   try {

@@ -11,6 +11,7 @@ import 'registration_builder_screen.dart';
 import 'cluster/cluster_main_screen.dart';
 import 'profile_screen.dart';
 import 'scope_groups/scope_groups_screen.dart';
+import 'device_registry/device_registry_screen.dart';
 import 'lc_gates/lc_gates_screen.dart';
 import 'reports/reports_screen.dart';
 import '../utils/app_feedback.dart';
@@ -28,6 +29,8 @@ const List<String> _canonicalModuleOrder = [
   'lc-gates',
   'reports',
   'cluster',
+  'devices',
+  'device-registry',
   'scope-groups',
   'manage-users',
   'registration',
@@ -39,6 +42,7 @@ const List<Map<String, String>> _defaultModules = [
   {'name': 'LC Gates', 'slug': 'lc-gates'},
   {'name': 'Reports', 'slug': 'reports'},
   {'name': 'Cluster', 'slug': 'cluster'},
+  {'name': 'Device Registry', 'slug': 'devices'},
   {'name': 'Scope Groups', 'slug': 'scope-groups'},
   {'name': 'Manage Users', 'slug': 'manage-users'},
   {'name': 'Registration Builder', 'slug': 'registration'},
@@ -57,6 +61,9 @@ String _getModuleTitle(dynamic m) {
       return 'Branding';
     case 'cluster':
       return 'Cluster';
+    case 'devices':
+    case 'device-registry':
+      return 'Device Registry';
     case 'scope-groups':
       return 'Scope Groups';
     case 'manage-users':
@@ -775,6 +782,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         case 'branding': return Icons.brush;
         case 'registration': return Icons.build;
         case 'cluster': return Icons.device_hub;
+        case 'devices':
+        case 'device-registry': return Icons.developer_board;
         case 'scope-groups': return Icons.layers;
         default: return Icons.extension;
       }
@@ -1002,6 +1011,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_currentView == 'branding') return BrandingScreen(user: widget.user);
     if (_currentView == 'registration') return RegistrationBuilderScreen(user: widget.user);
     if (_currentView == 'cluster') return const ClusterMainScreen();
+    if (_currentView == 'devices' || _currentView == 'device-registry') return DeviceRegistryScreen(user: widget.user);
     if (_currentView == 'scope-groups') return ScopeGroupsScreen(user: widget.user);
     
     return Center(child: Text('Module $_currentView not implemented yet.'));
