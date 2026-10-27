@@ -5,7 +5,6 @@ import {
   FaCalendarAlt,
   FaSearch,
   FaSyncAlt,
-  FaPrint,
   FaArchway,
   FaLayerGroup,
   FaTimes,
@@ -803,16 +802,6 @@ export default function ReportsScreen({ user }: Props) {
                   <option value={100}>100</option>
                 </select>
               </div>
-
-              <button
-                type="button"
-                className="btn btn-sm btn-outline"
-                onClick={() => window.print()}
-                title="Print current logsheet"
-              >
-                <FaPrint />
-                <span>Print</span>
-              </button>
             </div>
           </div>
 
