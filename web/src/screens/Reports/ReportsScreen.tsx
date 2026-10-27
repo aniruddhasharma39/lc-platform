@@ -12,7 +12,9 @@ import {
   FaSortAmountUp,
   FaTimes,
   FaCheck,
-  FaEye
+  FaEye,
+  FaFilter,
+  FaColumns
 } from 'react-icons/fa';
 import type { User } from '../../types';
 import { API_URL } from '../../config';
@@ -64,16 +66,16 @@ const authHeaders = () => ({
   'Authorization': `Bearer ${localStorage.getItem('token')}`
 });
 
-// Clean column definitions (Source, Train Movement, Remarks removed)
+// Clean column definitions
 const REPORT_COLUMNS = [
-  { key: 'scopeGroup', label: 'Cluster / Scope Group' },
+  { key: 'scopeGroup', label: 'Cluster' },
   { key: 'lcNumber', label: 'LC Number' },
-  { key: 'locationName', label: 'Location Name' },
+  { key: 'locationName', label: 'Location' },
   { key: 'zone', label: 'Zone' },
   { key: 'division', label: 'Division' },
   { key: 'openedDate', label: 'Date' },
-  { key: 'openedTime', label: 'Opened Time (IST)' },
-  { key: 'closedTime', label: 'Closed Time (IST)' },
+  { key: 'openedTime', label: 'Opened (IST)' },
+  { key: 'closedTime', label: 'Closed (IST)' },
   { key: 'durationFormatted', label: 'Duration' },
   { key: 'status', label: 'Status' },
 ];
@@ -115,7 +117,6 @@ export default function ReportsScreen({ user }: Props) {
   // 5. Operational Records State
   const [records, setRecords] = useState<OperationalRecord[]>([]);
   const [loadingRecords, setLoadingRecords] = useState<boolean>(false);
-  const [hasViewedLog, setHasViewedLog] = useState<boolean>(false);
 
   // Pagination
   const [rowsPerPage, setRowsPerPage] = useState<number>(25);
@@ -198,7 +199,6 @@ export default function ReportsScreen({ user }: Props) {
   ) => {
     if (targetClusterIds.length === 0 && !isDeveloper) {
       setRecords([]);
-      setHasViewedLog(true);
       return;
     }
 
@@ -230,7 +230,6 @@ export default function ReportsScreen({ user }: Props) {
         const data = await res.json();
         setRecords(data.records || []);
         setCurrentPage(1);
-        setHasViewedLog(true);
       } else {
         const err = await res.json().catch(() => ({}));
         toastError(err.error || 'Failed to load records');
@@ -407,7 +406,7 @@ export default function ReportsScreen({ user }: Props) {
             <div>
               <h2 className="reports-main-heading">Level Crossing Report Builder</h2>
               <p className="reports-sub-heading">
-                Configure parameters row-by-row to build, preview, and export customized Railway audit reports.
+                Configure parameters in the builder column to preview operational logsheets and export audit reports.
               </p>
             </div>
           </div>
@@ -426,366 +425,334 @@ export default function ReportsScreen({ user }: Props) {
         </div>
       </div>
 
-      {/* ── ROW-WISE REPORT BUILDER CONTROL PANEL ─────────────────────── */}
-      <div className="card report-builder-card">
-        <div className="builder-header-banner">
-          <span className="builder-badge">REPORT BUILDER</span>
-          <span className="builder-caption">Select target hierarchy, filters, and columns to build and export your report</span>
-        </div>
-
-        {/* ── ROW 1: SCOPE GROUPS & LC GATES ── */}
-        <div className="builder-row">
-          <div className="builder-row-header">
-            <span className="row-num">1</span>
-            <span className="row-title">Scope Group & LC Gate Selection</span>
-            <span className="row-meta">
-              {selectedClusterIds.length} Scope Groups · {selectedGateIds.length} Gates selected
-            </span>
+      {/* ── TWO-COLUMN WORKSPACE: LEFT BUILDER PANEL + RIGHT VIEW LOG ── */}
+      <div className="report-columns-layout">
+        
+        {/* ═══════════════════════════════════════════════════════════
+            LEFT COLUMN: REPORT BUILDER CONTROL PANEL
+           ═══════════════════════════════════════════════════════════ */}
+        <aside className="builder-sidebar-card">
+          <div className="sidebar-header">
+            <div className="sidebar-title-badge">
+              <FaFilter className="text-primary" />
+              <span>Report Parameters</span>
+            </div>
+            <span className="sidebar-tag">BUILDER</span>
           </div>
 
-          {loadingClusters ? (
-            <div className="py-3 text-center text-muted">
-              <FaSyncAlt className="spin mr-2" /> Loading assigned clusters and gates...
-            </div>
-          ) : (
-            <div className="builder-scope-grid">
-              {/* Cluster Choice Chips */}
-              <div className="scope-sub-block">
-                <div className="sub-block-title-row">
-                  <span className="sub-block-title">
-                    <FaLayerGroup className="mr-1 text-primary" /> Scope Groups / Clusters
-                  </span>
-                  <div className="quick-actions-bar">
-                    <button type="button" onClick={handleSelectAllClusters}>Select All</button>
-                    <span className="sep">|</span>
-                    <button type="button" onClick={handleClearAllClusters}>Clear</button>
-                  </div>
+          <div className="sidebar-scrollable-body">
+            {/* SECTION 1: Scope Groups / Clusters */}
+            <div className="sidebar-section">
+              <div className="section-head-row">
+                <span className="section-title">
+                  <FaLayerGroup className="mr-1 text-primary" /> Scope Groups
+                </span>
+                <div className="section-quick-links">
+                  <button type="button" onClick={handleSelectAllClusters}>All</button>
+                  <span className="sep">|</span>
+                  <button type="button" onClick={handleClearAllClusters}>Clear</button>
                 </div>
+              </div>
 
-                <div className="choice-chips-scroll">
+              {loadingClusters ? (
+                <div className="py-2 text-center text-muted small">
+                  <FaSyncAlt className="spin mr-1" /> Loading...
+                </div>
+              ) : (
+                <div className="sidebar-chips-wrap">
                   {clusters.map(c => {
                     const isSelected = selectedClusterIds.includes(c.id);
                     return (
                       <button
                         key={c.id}
                         type="button"
-                        className={`builder-chip ${isSelected ? 'active' : ''}`}
+                        className={`sidebar-pill-chip ${isSelected ? 'active' : ''}`}
                         onClick={() => handleToggleCluster(c.id)}
                       >
-                        <span className="chip-color-dot" style={{ backgroundColor: c.color || '#0B3C7A' }} />
-                        <span className="chip-label">{c.name}</span>
-                        <span className="chip-sub-count">{c.gates.length} gates</span>
-                        {isSelected && <FaCheck className="chip-check-icon" />}
+                        <span className="pill-dot" style={{ backgroundColor: c.color || '#0B3C7A' }} />
+                        <span className="pill-text">{c.name}</span>
+                        <span className="pill-badge">{c.gates.length}</span>
+                        {isSelected && <FaCheck className="pill-check" size={9} />}
                       </button>
                     );
                   })}
                 </div>
+              )}
+            </div>
+
+            {/* SECTION 2: LC Gates */}
+            <div className="sidebar-section">
+              <div className="section-head-row">
+                <span className="section-title">
+                  <FaArchway className="mr-1 text-primary" /> Level Crossing Gates
+                </span>
+                <div className="section-quick-links">
+                  <button type="button" onClick={handleSelectAllAvailableGates}>All</button>
+                  <span className="sep">|</span>
+                  <button type="button" onClick={handleClearGates}>Clear</button>
+                </div>
               </div>
 
-              {/* Gates Choice Chips */}
-              <div className="scope-sub-block">
-                <div className="sub-block-title-row">
-                  <span className="sub-block-title">
-                    <FaArchway className="mr-1 text-primary" /> Level Crossing Gates
-                  </span>
-                  <div className="quick-actions-bar">
-                    <button type="button" onClick={handleSelectAllAvailableGates}>All Gates</button>
-                    <span className="sep">|</span>
-                    <button type="button" onClick={handleClearGates}>Clear</button>
-                  </div>
-                </div>
-
-                {availableGates.length > 5 && (
-                  <div className="builder-gate-search">
-                    <FaSearch size={11} className="text-muted" />
-                    <input
-                      type="text"
-                      placeholder="Quick search LC number or station..."
-                      value={gateSearchText}
-                      onChange={(e) => setGateSearchText(e.target.value)}
-                    />
-                    {gateSearchText && (
-                      <button type="button" onClick={() => setGateSearchText('')}>
-                        <FaTimes size={10} />
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                <div className="choice-chips-scroll">
-                  {filteredAvailableGates.length === 0 ? (
-                    <div className="text-muted small py-2">
-                      {availableGates.length === 0 ? 'Select a Scope Group above to view gates' : 'No gates match search'}
-                    </div>
-                  ) : (
-                    filteredAvailableGates.map(g => {
-                      const isSelected = selectedGateIds.includes(g.id);
-                      return (
-                        <button
-                          key={g.id}
-                          type="button"
-                          className={`builder-chip gate-chip ${isSelected ? 'active' : ''}`}
-                          onClick={() => handleToggleGate(g.id)}
-                          title={`${g.lcNumber} - ${g.locationName} (${g.clusterName})`}
-                        >
-                          <strong className="chip-lc">{g.lcNumber}</strong>
-                          <span className="chip-loc">{g.locationName}</span>
-                          {isSelected && <FaCheck className="chip-check-icon" />}
-                        </button>
-                      );
-                    })
+              {availableGates.length > 4 && (
+                <div className="sidebar-search-box">
+                  <FaSearch size={11} className="text-muted" />
+                  <input
+                    type="text"
+                    placeholder="Search gate..."
+                    value={gateSearchText}
+                    onChange={(e) => setGateSearchText(e.target.value)}
+                  />
+                  {gateSearchText && (
+                    <button type="button" onClick={() => setGateSearchText('')}>
+                      <FaTimes size={10} />
+                    </button>
                   )}
                 </div>
-              </div>
-            </div>
-          )}
-        </div>
+              )}
 
-        {/* ── ROW 2: DATE RANGE & OPERATIONAL FILTERS ── */}
-        <div className="builder-row">
-          <div className="builder-row-header">
-            <span className="row-num">2</span>
-            <span className="row-title">Date Range & Operational Filters</span>
-            <div className="presets-pills-row">
-              <span className="presets-label">Preset:</span>
-              <button
-                type="button"
-                className={`preset-pill ${datePreset === '7days' ? 'active' : ''}`}
-                onClick={() => applyDatePreset('7days')}
-              >
-                Last 7 Days
-              </button>
-              <button
-                type="button"
-                className={`preset-pill ${datePreset === 'today' ? 'active' : ''}`}
-                onClick={() => applyDatePreset('today')}
-              >
-                Today
-              </button>
-              <button
-                type="button"
-                className={`preset-pill ${datePreset === 'yesterday' ? 'active' : ''}`}
-                onClick={() => applyDatePreset('yesterday')}
-              >
-                Yesterday
-              </button>
-              <button
-                type="button"
-                className={`preset-pill ${datePreset === '30days' ? 'active' : ''}`}
-                onClick={() => applyDatePreset('30days')}
-              >
-                Last 30 Days
-              </button>
-              <button
-                type="button"
-                className={`preset-pill ${datePreset === 'month' ? 'active' : ''}`}
-                onClick={() => applyDatePreset('month')}
-              >
-                This Month
-              </button>
-            </div>
-          </div>
-
-          <div className="builder-inputs-row">
-            <div className="builder-field">
-              <label>Start Date</label>
-              <div className="input-wrap">
-                <FaCalendarAlt className="field-icon" />
-                <input
-                  type="date"
-                  value={startDateStr}
-                  onChange={(e) => {
-                    setStartDateStr(e.target.value);
-                    setDatePreset('custom');
-                  }}
-                />
+              <div className="sidebar-chips-wrap gate-chips-max">
+                {filteredAvailableGates.length === 0 ? (
+                  <div className="text-muted small py-1">
+                    {availableGates.length === 0 ? 'Select a Scope Group' : 'No match'}
+                  </div>
+                ) : (
+                  filteredAvailableGates.map(g => {
+                    const isSelected = selectedGateIds.includes(g.id);
+                    return (
+                      <button
+                        key={g.id}
+                        type="button"
+                        className={`sidebar-pill-chip ${isSelected ? 'active' : ''}`}
+                        onClick={() => handleToggleGate(g.id)}
+                        title={`${g.lcNumber} - ${g.locationName}`}
+                      >
+                        <strong className="text-primary">{g.lcNumber}</strong>
+                        <span className="text-muted ml-1" style={{ fontSize: '0.72rem' }}>{g.locationName}</span>
+                        {isSelected && <FaCheck className="pill-check" size={9} />}
+                      </button>
+                    );
+                  })
+                )}
               </div>
             </div>
 
-            <div className="builder-field">
-              <label>End Date</label>
-              <div className="input-wrap">
-                <FaCalendarAlt className="field-icon" />
-                <input
-                  type="date"
-                  value={endDateStr}
-                  onChange={(e) => {
-                    setEndDateStr(e.target.value);
-                    setDatePreset('custom');
-                  }}
-                />
+            {/* SECTION 3: Date Range & Operational Filters */}
+            <div className="sidebar-section">
+              <span className="section-title mb-2 d-block">
+                <FaCalendarAlt className="mr-1 text-primary" /> Date Window & Filters
+              </span>
+
+              {/* Date Presets */}
+              <div className="sidebar-presets-grid">
+                <button
+                  type="button"
+                  className={`preset-btn ${datePreset === '7days' ? 'active' : ''}`}
+                  onClick={() => applyDatePreset('7days')}
+                >
+                  Last 7 Days
+                </button>
+                <button
+                  type="button"
+                  className={`preset-btn ${datePreset === 'today' ? 'active' : ''}`}
+                  onClick={() => applyDatePreset('today')}
+                >
+                  Today
+                </button>
+                <button
+                  type="button"
+                  className={`preset-btn ${datePreset === 'yesterday' ? 'active' : ''}`}
+                  onClick={() => applyDatePreset('yesterday')}
+                >
+                  Yesterday
+                </button>
+                <button
+                  type="button"
+                  className={`preset-btn ${datePreset === 'month' ? 'active' : ''}`}
+                  onClick={() => applyDatePreset('month')}
+                >
+                  This Month
+                </button>
               </div>
-            </div>
 
-            <div className="builder-field">
-              <label>Barrier Status</label>
-              <select
-                value={filterStatus}
-                onChange={(e) => setFilterStatus(e.target.value)}
-              >
-                <option value="ALL">All Statuses</option>
-                <option value="CLOSED">Closed Only (Normal)</option>
-                <option value="EXTENDED_DELAY">Extended Delays (&gt;15m)</option>
-                <option value="OPEN">Currently Open</option>
-              </select>
-            </div>
-
-            <div className="builder-field">
-              <label>Operational Shift</label>
-              <select
-                value={filterShift}
-                onChange={(e) => setFilterShift(e.target.value)}
-              >
-                <option value="ALL">All 24 Hours</option>
-                <option value="MORNING">Morning (06:00 - 14:00)</option>
-                <option value="EVENING">Evening (14:00 - 22:00)</option>
-                <option value="NIGHT">Night (22:00 - 06:00)</option>
-              </select>
-            </div>
-
-            <div className="builder-field search-grow">
-              <label>Search LC# or Location</label>
-              <div className="input-wrap">
-                <FaSearch className="field-icon" />
-                <input
-                  type="text"
-                  placeholder="Quick filter records..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') fetchRecordsData(); }}
-                />
+              {/* Date Inputs */}
+              <div className="sidebar-field-row mt-2">
+                <div className="sidebar-field">
+                  <label>Start Date</label>
+                  <input
+                    type="date"
+                    value={startDateStr}
+                    onChange={(e) => {
+                      setStartDateStr(e.target.value);
+                      setDatePreset('custom');
+                    }}
+                  />
+                </div>
+                <div className="sidebar-field">
+                  <label>End Date</label>
+                  <input
+                    type="date"
+                    value={endDateStr}
+                    onChange={(e) => {
+                      setEndDateStr(e.target.value);
+                      setDatePreset('custom');
+                    }}
+                  />
+                </div>
               </div>
-            </div>
 
-            <div className="builder-field sort-fixed">
-              <label>Sort Order</label>
-              <div className="sort-input-group">
+              {/* Barrier Status & Shift */}
+              <div className="sidebar-field mt-2">
+                <label>Barrier Status</label>
                 <select
-                  value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value)}
+                  value={filterStatus}
+                  onChange={(e) => setFilterStatus(e.target.value)}
                 >
-                  <option value="openedAt">Opened Time</option>
-                  <option value="closedAt">Closed Time</option>
-                  <option value="durationSeconds">Duration</option>
-                  <option value="lcNumber">LC Number</option>
-                  <option value="status">Status</option>
+                  <option value="ALL">All Statuses</option>
+                  <option value="CLOSED">Closed Only (Normal)</option>
+                  <option value="EXTENDED_DELAY">Extended Delays (&gt;15m)</option>
+                  <option value="OPEN">Currently Open</option>
                 </select>
-                <button
-                  type="button"
-                  className="btn btn-outline sort-toggle-btn"
-                  onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
-                  title={`Order: ${sortOrder.toUpperCase()}`}
+              </div>
+
+              <div className="sidebar-field mt-2">
+                <label>Operational Shift</label>
+                <select
+                  value={filterShift}
+                  onChange={(e) => setFilterShift(e.target.value)}
                 >
-                  {sortOrder === 'asc' ? <FaSortAmountUp /> : <FaSortAmountDown />}
-                </button>
+                  <option value="ALL">All 24 Hours</option>
+                  <option value="MORNING">Morning (06:00 - 14:00)</option>
+                  <option value="EVENING">Evening (14:00 - 22:00)</option>
+                  <option value="NIGHT">Night (22:00 - 06:00)</option>
+                </select>
+              </div>
+
+              {/* Keyword Search */}
+              <div className="sidebar-field mt-2">
+                <label>Search Keyword</label>
+                <div className="sidebar-input-with-icon">
+                  <FaSearch className="icon" />
+                  <input
+                    type="text"
+                    placeholder="Search LC# or location..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') fetchRecordsData(); }}
+                  />
+                </div>
+              </div>
+
+              {/* Sort Order */}
+              <div className="sidebar-field mt-2">
+                <label>Sort By</label>
+                <div className="sidebar-sort-group">
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value)}
+                  >
+                    <option value="openedAt">Opened Time</option>
+                    <option value="closedAt">Closed Time</option>
+                    <option value="durationSeconds">Duration</option>
+                    <option value="lcNumber">LC Number</option>
+                    <option value="status">Status</option>
+                  </select>
+                  <button
+                    type="button"
+                    className="btn btn-outline sidebar-sort-btn"
+                    onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+                    title={`Order: ${sortOrder.toUpperCase()}`}
+                  >
+                    {sortOrder === 'asc' ? <FaSortAmountUp /> : <FaSortAmountDown />}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* SECTION 4: Select Columns */}
+            <div className="sidebar-section">
+              <div className="section-head-row">
+                <span className="section-title">
+                  <FaColumns className="mr-1 text-primary" /> Report Columns
+                </span>
+                <div className="section-quick-links">
+                  <button type="button" onClick={handleSelectAllColumns}>All</button>
+                  <span className="sep">|</span>
+                  <button type="button" onClick={handleResetDefaultColumns}>Reset</button>
+                </div>
+              </div>
+
+              <div className="sidebar-columns-checkboxes">
+                {REPORT_COLUMNS.map(col => {
+                  const isChecked = selectedExportColumns.includes(col.key);
+                  return (
+                    <label key={col.key} className="sidebar-col-label">
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => handleToggleColumn(col.key)}
+                      />
+                      <span>{col.label}</span>
+                    </label>
+                  );
+                })}
               </div>
             </div>
           </div>
-        </div>
 
-        {/* ── ROW 3: REPORT COLUMNS CHOOSER ── */}
-        <div className="builder-row">
-          <div className="builder-row-header">
-            <span className="row-num">3</span>
-            <span className="row-title">Select Columns to Include in Log & Export</span>
-            <div className="quick-actions-bar">
-              <button type="button" onClick={handleSelectAllColumns}>Select All</button>
-              <span className="sep">|</span>
-              <button type="button" onClick={handleResetDefaultColumns}>Reset Default</button>
-            </div>
-          </div>
-
-          <div className="columns-pills-wrap">
-            {REPORT_COLUMNS.map(col => {
-              const isSelected = selectedExportColumns.includes(col.key);
-              return (
-                <button
-                  key={col.key}
-                  type="button"
-                  className={`column-select-pill ${isSelected ? 'active' : ''}`}
-                  onClick={() => handleToggleColumn(col.key)}
-                >
-                  {isSelected ? <FaCheck className="mr-1 text-success" size={10} /> : <span className="uncheck-dot mr-1" />}
-                  <span>{col.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* ── ROW 4: ACTION TOOLBAR (At the end of builder) ── */}
-        <div className="builder-actions-row">
-          <div className="builder-summary-text">
-            <span>Range: <strong>{startDateStr}</strong> to <strong>{endDateStr}</strong></span>
-            <span className="sep">•</span>
-            <span>{selectedClusterIds.length} Clusters</span>
-            <span className="sep">•</span>
-            <span>{selectedGateIds.length} Gates</span>
-            <span className="sep">•</span>
-            <span>{selectedExportColumns.length} Columns Active</span>
-          </div>
-
-          <div className="builder-buttons-group">
+          {/* SIDEBAR FOOTER: ACTION BUTTONS (Pinned at bottom of builder column) */}
+          <div className="sidebar-action-footer">
             <button
               type="button"
-              className="btn btn-primary view-log-btn"
+              className="btn btn-primary btn-block view-btn"
               onClick={() => fetchRecordsData()}
               disabled={loadingRecords}
             >
               <FaEye />
-              <span>{loadingRecords ? 'Loading Logs...' : 'View Log / Preview'}</span>
+              <span>{loadingRecords ? 'Loading...' : 'View Log / Preview'}</span>
             </button>
 
-            <button
-              type="button"
-              className="btn btn-success export-btn-excel"
-              onClick={() => handleDownloadReport('xlsx')}
-              disabled={isExporting || selectedExportColumns.length === 0}
-              title="Download Excel spreadsheet"
-            >
-              <FaFileExcel />
-              <span>{isExporting ? 'Exporting...' : 'Export Excel (.xlsx)'}</span>
-            </button>
+            <div className="export-buttons-pair mt-2">
+              <button
+                type="button"
+                className="btn btn-success btn-sm export-btn"
+                onClick={() => handleDownloadReport('xlsx')}
+                disabled={isExporting || selectedExportColumns.length === 0}
+                title="Download Excel report"
+              >
+                <FaFileExcel />
+                <span>Excel (.xlsx)</span>
+              </button>
 
-            <button
-              type="button"
-              className="btn btn-danger export-btn-pdf"
-              onClick={() => handleDownloadReport('pdf')}
-              disabled={isExporting || selectedExportColumns.length === 0}
-              title="Download official PDF report"
-            >
-              <FaFilePdf />
-              <span>{isExporting ? 'Exporting...' : 'Export PDF (.pdf)'}</span>
-            </button>
-
-            <button
-              type="button"
-              className="btn btn-outline"
-              onClick={() => window.print()}
-              title="Print logsheet"
-            >
-              <FaPrint />
-              <span>Print</span>
-            </button>
+              <button
+                type="button"
+                className="btn btn-danger btn-sm export-btn"
+                onClick={() => handleDownloadReport('pdf')}
+                disabled={isExporting || selectedExportColumns.length === 0}
+                title="Download PDF report"
+              >
+                <FaFilePdf />
+                <span>PDF (.pdf)</span>
+              </button>
+            </div>
           </div>
-        </div>
-      </div>
+        </aside>
 
-      {/* ── VIEW LOG: OPERATIONAL LOGSHEET RECORDS (Dynamic Preview) ──── */}
-      {hasViewedLog && (
-        <div className="card table-card">
-          <div className="table-header-row">
+        {/* ═══════════════════════════════════════════════════════════
+            RIGHT COLUMN: VIEW LOG MAIN WORKSPACE
+           ═══════════════════════════════════════════════════════════ */}
+        <main className="view-log-main-card">
+          <div className="view-log-header">
             <div>
-              <div className="table-title-group">
+              <div className="log-title-row">
                 <FaEye className="text-primary mr-2" />
-                <h3 className="table-title">View Log: Operational Logsheet Records</h3>
+                <h3 className="log-title">View Log: Operational Logsheet Records</h3>
               </div>
-              <span className="table-subtitle">
-                Displaying {records.length} operational events matching selected builder criteria ({startDateStr} to {endDateStr})
+              <span className="log-subtitle">
+                Displaying <strong>{records.length}</strong> events for selected criteria ({startDateStr} to {endDateStr})
               </span>
             </div>
 
-            <div className="table-controls-right">
+            <div className="view-log-header-right">
               <div className="rows-selector">
                 <span className="text-muted small mr-1">Show:</span>
                 <select
@@ -801,9 +768,20 @@ export default function ReportsScreen({ user }: Props) {
                   <option value={100}>100</option>
                 </select>
               </div>
+
+              <button
+                type="button"
+                className="btn btn-sm btn-outline"
+                onClick={() => window.print()}
+                title="Print current logsheet"
+              >
+                <FaPrint />
+                <span>Print</span>
+              </button>
             </div>
           </div>
 
+          {/* Table Container */}
           <div className="table-responsive">
             <table className="reports-table">
               <thead>
@@ -824,7 +802,7 @@ export default function ReportsScreen({ user }: Props) {
                 {loadingRecords ? (
                   <tr>
                     <td colSpan={selectedExportColumns.length || 1} className="text-center py-5">
-                      <FaSyncAlt className="spin mr-2" /> Loading operational logs...
+                      <FaSyncAlt className="spin mr-2" /> Loading operational records...
                     </td>
                   </tr>
                 ) : records.length === 0 ? (
@@ -835,7 +813,7 @@ export default function ReportsScreen({ user }: Props) {
                         No operational records found for this selection.
                       </p>
                       <small className="text-muted">
-                        Please adjust scope groups, gates, or date range in the builder above.
+                        Please select at least one cluster/gate or widen your date range in the left builder panel.
                       </small>
                     </td>
                   </tr>
@@ -920,8 +898,8 @@ export default function ReportsScreen({ user }: Props) {
               </div>
             </div>
           )}
-        </div>
-      )}
+        </main>
+      </div>
     </div>
   );
 }
