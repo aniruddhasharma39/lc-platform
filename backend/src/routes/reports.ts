@@ -359,11 +359,8 @@ async function fetchFilteredOperationalEvents(req: AuthRequest) {
       const matchLc = ev.gate.lcNumber.toLowerCase().includes(searchQuery);
       const matchLoc = (ev.gate.locationName || '').toLowerCase().includes(searchQuery);
       const matchName = (ev.gate.name || '').toLowerCase().includes(searchQuery);
-      const matchOperator = (ev.openedBy || '').toLowerCase().includes(searchQuery);
-      const matchTrain = (ev.trainNumber || '').toLowerCase().includes(searchQuery);
-      const matchRemarks = (ev.remarks || '').toLowerCase().includes(searchQuery);
 
-      if (!matchLc && !matchLoc && !matchName && !matchOperator && !matchTrain && !matchRemarks) {
+      if (!matchLc && !matchLoc && !matchName) {
         return false;
       }
     }
@@ -500,10 +497,7 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
       { key: 'closedTime', label: 'Closed Time (IST)' },
       { key: 'durationFormatted', label: 'Duration' },
       { key: 'durationSeconds', label: 'Duration (Sec)' },
-      { key: 'status', label: 'Status' },
-      { key: 'openedBy', label: 'Source / Operator' },
-      { key: 'trainNumber', label: 'Train Movement' },
-      { key: 'remarks', label: 'Remarks' },
+      { key: 'status', label: 'Status' }
     ];
 
     const activeColumns = columnsParam && columnsParam.length > 0
@@ -533,10 +527,7 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
         closedTime: closedTimeStr,
         durationFormatted: ev.durationSeconds ? formatDurationHuman(ev.durationSeconds) : 'In Progress',
         durationSeconds: ev.durationSeconds ?? '-',
-        status: ev.status,
-        openedBy: ev.openedBy || '-',
-        trainNumber: ev.trainNumber || '-',
-        remarks: ev.remarks || '-'
+        status: ev.status
       };
     });
 
@@ -711,7 +702,7 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
 
       // Table Setup
       yPos = 140;
-      const pdfCols = activeColumns.slice(0, 8); // Display first 8 critical columns in landscape PDF
+      const pdfCols = activeColumns;
       const colWidth = (doc.page.width - 72) / pdfCols.length;
 
       // Table Header

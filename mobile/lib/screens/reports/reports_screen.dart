@@ -72,9 +72,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
     {'key': 'closedTime', 'label': 'Closed Time (IST)'},
     {'key': 'durationFormatted', 'label': 'Duration'},
     {'key': 'status', 'label': 'Status'},
-    {'key': 'openedBy', 'label': 'Source / Operator'},
-    {'key': 'trainNumber', 'label': 'Train Movement'},
-    {'key': 'remarks', 'label': 'Remarks'},
   ];
 
   @override
@@ -938,10 +935,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
               Text('${rec['durationFormatted'] ?? '-'}', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
             ],
           ),
-          if (rec['openedBy'] != null || rec['remarks'] != null) ...[
-            const SizedBox(height: 6),
-            Text('Source: ${rec['openedBy'] ?? '-'} | ${rec['remarks'] ?? ''}', style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600), maxLines: 1, overflow: TextOverflow.ellipsis),
-          ],
         ],
       ),
     );

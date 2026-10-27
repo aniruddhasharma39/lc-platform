@@ -85,9 +85,6 @@ const REPORT_COLUMNS = [
   { key: 'closedTime', label: 'Closed Time (IST)' },
   { key: 'durationFormatted', label: 'Duration' },
   { key: 'status', label: 'Status' },
-  { key: 'openedBy', label: 'Source / Operator' },
-  { key: 'trainNumber', label: 'Train Movement' },
-  { key: 'remarks', label: 'Remarks' },
 ];
 
 export default function ReportsScreen({ user }: Props) {
@@ -666,7 +663,7 @@ export default function ReportsScreen({ user }: Props) {
               <FaSearch className="field-icon" />
               <input
                 type="text"
-                placeholder="Search LC#, station, operator..."
+                placeholder="Search LC# or location..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') fetchRecordsData(); }}
@@ -823,21 +820,18 @@ export default function ReportsScreen({ user }: Props) {
                 <th>Closed (IST)</th>
                 <th>Duration</th>
                 <th>Status</th>
-                <th>Source / Operator</th>
-                <th>Train / Action</th>
-                <th>Remarks</th>
               </tr>
             </thead>
             <tbody>
               {loadingRecords ? (
                 <tr>
-                  <td colSpan={11} className="text-center py-5">
+                  <td colSpan={8} className="text-center py-5">
                     <FaSyncAlt className="spin mr-2" /> Loading operational logs...
                   </td>
                 </tr>
               ) : records.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="text-center py-5 empty-cell">
+                  <td colSpan={8} className="text-center py-5 empty-cell">
                     <FaArchway size={36} className="mb-2 text-muted" />
                     <p style={{ margin: 0, fontWeight: 700, fontSize: '1rem', color: '#334155' }}>
                       No operational records found for this selection.
@@ -880,13 +874,6 @@ export default function ReportsScreen({ user }: Props) {
                         <span className={`status-badge ${rec.status.toLowerCase()}`}>
                           {rec.status}
                         </span>
-                      </td>
-                      <td>
-                        <span className="operator-text">{rec.openedBy || '-'}</span>
-                      </td>
-                      <td>{rec.trainNumber || '-'}</td>
-                      <td className="remarks-cell" title={rec.remarks || ''}>
-                        {rec.remarks || '-'}
                       </td>
                     </tr>
                   );
