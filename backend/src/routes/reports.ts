@@ -733,6 +733,10 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
 
       // Locate Indian Railways and Azadi logos
       const irLogoPath = [
+        path.join(__dirname, '../../assets/ir_logo.png'),
+        path.join(__dirname, '../assets/ir_logo.png'),
+        path.join(process.cwd(), 'assets/ir_logo.png'),
+        path.join(process.cwd(), 'backend/assets/ir_logo.png'),
         path.join(__dirname, '../../assets/ir_logo.jpg'),
         path.join(__dirname, '../assets/ir_logo.jpg'),
         path.join(process.cwd(), 'assets/ir_logo.jpg'),
@@ -748,12 +752,12 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
 
       // Left: IR Logo
       if (irLogoPath) {
-        try { doc.image(irLogoPath, 16, 10, { width: 68, height: 68 }); } catch (_) {}
+        try { doc.image(irLogoPath, 16, 11, { fit: [72, 68], align: 'center', valign: 'center' }); } catch (_) {}
       }
 
       // Right: Azadi Logo
       if (azadiLogoPath) {
-        try { doc.image(azadiLogoPath, doc.page.width - 92, 10, { width: 74, height: 68 }); } catch (_) {}
+        try { doc.image(azadiLogoPath, doc.page.width - 100, 11, { fit: [84, 68], align: 'center', valign: 'center' }); } catch (_) {}
       }
 
       // Center Typography: Government of India & Ministry of Railways
