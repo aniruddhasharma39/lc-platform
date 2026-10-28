@@ -185,11 +185,79 @@ function safeJson(val, defaultVal = null) {
 exports.handler = async (event, context) => {
   console.log('[DEVICE REGISTRATION EVENT RECEIVED]', JSON.stringify(event));
 
+  // Check if this is an AWS IoT Thing Deletion event
+  // Sources: $aws/events/thing/+/deleted, CloudTrail DeleteThing, or explicit eventType: 'deleted'
+  const isDeletionEvent = 
+    event.eventType === 'deleted' ||
+    event.eventType === 'thingDeleted' ||
+    (event.topic && event.topic.endsWith('/deleted')) ||
+    (event.detail && event.detail.eventName === 'DeleteThing');
+
+  if (isDeletionEvent) {
+    const thingToDelete = 
+      event.thingName || 
+      (event.detail && event.detail.requestParameters && event.detail.requestParameters.thingName) ||
+      (event.raw && event.raw.thingName);
+
+    if (thingToDelete) {
+      console.log(`[DELETING DEVICE FROM RDS VIA AWS IOT LIFECYCLE EVENT] thingName=${thingToDelete}`);
+      const dbPool = getDbPool();
+      const client = await dbPool.connect();
+      try {
+        await client.query('DELETE FROM "DeviceTelemetry" WHERE "thingName" = $1', [thingToDelete]);
+        try {
+          await client.query('DELETE FROM "ScopeGroupDevice" WHERE "thingName" = $1', [thingToDelete]);
+        } catch (_) {}
+        const deleteRes = await client.query('DELETE FROM "DeviceRegistry" WHERE "thingName" = $1 RETURNING id, "thingName"', [thingToDelete]);
+        console.log(`[DEVICE DELETED RESULT] thingName=${thingToDelete}, rowsDeleted=${deleteRes.rowCount}`);
+        return {
+          statusCode: 200,
+          body: JSON.stringify({
+            message: `Device ${thingToDelete} deleted from RDS upon AWS IoT Thing deletion event`,
+            rowsDeleted: deleteRes.rowCount,
+          }),
+        };
+      } catch (err) {
+        console.error('[ERROR DELETING DEVICE FROM RDS]', err);
+        return {
+          statusCode: 500,
+          body: JSON.stringify({ error: err.message }),
+        };
+      } finally {
+        client.release();
+      }
+    }
+  }
+
+  const topicStr = String(event.topic || (event.raw && event.raw.topic) || '');
+  if (topicStr.includes('/health/request') || (event.action === 'HEALTH_CHECK' && event.action !== 'HEALTH_CHECK_RESPONSE')) {
+    console.log('[IGNORING OUTBOUND HEALTH CHECK REQUEST TOPIC]', topicStr);
+    return { statusCode: 200, body: JSON.stringify({ message: 'Ignored outbound command' }) };
+  }
+
   const parsed = extractDevicePayload(event);
-  const thingName = parsed.thingName;
+  let thingName = parsed.thingName;
 
   if (!thingName) {
-    console.error('[ERROR] Missing thingName in event payload');
+    try {
+      const dbPool = getDbPool();
+      const client = await dbPool.connect();
+      try {
+        const fallbackRes = await client.query('SELECT "thingName" FROM "DeviceRegistry" WHERE "status" = \'ACTIVE\' ORDER BY "lastSeenAt" DESC NULLS LAST, "id" ASC LIMIT 1');
+        if (fallbackRes.rows.length > 0) {
+          thingName = fallbackRes.rows[0].thingName;
+          console.log(`[RESOLVED THINGNAME FALLBACK] Using active device: ${thingName}`);
+        }
+      } finally {
+        client.release();
+      }
+    } catch (e) {
+      console.warn('[FALLBACK RESOLUTION ERROR]', e.message);
+    }
+  }
+
+  if (!thingName) {
+    console.error('[ERROR] Missing thingName in event payload and no active devices found in RDS');
     return {
       statusCode: 400,
       body: JSON.stringify({ error: 'Missing thingName in event payload' }),
@@ -316,21 +384,73 @@ exports.handler = async (event, context) => {
     const result = await client.query(upsertSql, values);
     const savedRecord = result.rows[0];
 
-    // Also record into DeviceTelemetry table for historic payload inspection in web app
-    const telemetryTopic = event.topic || parsed.raw?.topic || (parsed.raw?.topicThingName ? `lc/devices/${parsed.raw.topicThingName}/manifest` : `lc-gate/${thingName}/telemetry`);
-    try {
-      await client.query(`
-        INSERT INTO "DeviceTelemetry" ("thingName", "topic", "payload", "status", "deviceRegistryId", "receivedAt")
-        VALUES ($1, $2, $3, 'ONLINE', $4, NOW())
-      `, [
-        thingName,
-        telemetryTopic,
-        JSON.stringify(parsed.raw || event),
-        savedRecord.id
-      ]);
-      console.log(`[SUCCESS] Recorded historic telemetry for thing=${thingName}`);
-    } catch (telErr) {
-      console.warn('[TELEMETRY INSERT WARNING]', telErr.message);
+    // Also record into appropriate table (DeviceHealthCheck vs DeviceTelemetry)
+    const topicStrReport = String(event.topic || parsed.raw?.topic || '');
+    const isHealthReport = 
+      (topicStrReport.includes('/health') && !topicStrReport.includes('/request')) ||
+      parsed.raw?.action === 'HEALTH_CHECK_RESPONSE' ||
+      (parsed.raw?.healthstatus !== undefined && parsed.raw?.action !== 'HEALTH_CHECK');
+
+    if (isHealthReport) {
+      try {
+        const raw = parsed.raw || event;
+        const resolvedGateStatus = raw.Status || (raw.LimitSwitchClosed !== undefined ? (raw.LimitSwitchClosed ? 'CLOSED' : 'NOT_CLOSED') : 'NOT_CLOSED');
+        await client.query(`
+          INSERT INTO "DeviceHealthCheck" (
+            "thingName", "requestId", "healthstatus", "gateStatus", "boomAngle",
+            "mcuTempC", "signalStrength", "networkType", "limitSwitchClosed", "hallClosed",
+            "batteryVoltage", "batteryPercentage", "solarVoltage", "solarCharging",
+            "uptimeSeconds", "firmwareVersion", "rawPayload", "deviceRegistryId", "createdAt"
+          ) VALUES (
+            $1, $2, $3, $4, $5,
+            $6, $7, $8, $9, $10,
+            $11, $12, $13, $14,
+            $15, $16, $17, $18, NOW()
+          )
+        `, [
+          thingName,
+          raw.requestId || null,
+          raw.healthstatus || 'HEALTHY',
+          resolvedGateStatus,
+          raw.BoomAngle !== undefined && raw.BoomAngle !== null ? parseFloat(raw.BoomAngle) : null,
+          raw.McuTempC !== undefined && raw.McuTempC !== null ? parseFloat(raw.McuTempC) : null,
+          raw.SignalStrength !== undefined && raw.SignalStrength !== null ? parseInt(raw.SignalStrength) : null,
+          raw.NetworkType || '4G_LTE',
+          raw.LimitSwitchClosed !== undefined && raw.LimitSwitchClosed !== null ? Boolean(raw.LimitSwitchClosed) : null,
+          raw.HallClosed !== undefined && raw.HallClosed !== null ? Boolean(raw.HallClosed) : null,
+          raw.BatteryVoltage !== undefined && raw.BatteryVoltage !== null ? parseFloat(raw.BatteryVoltage) : null,
+          raw.BatteryPercentage !== undefined && raw.BatteryPercentage !== null ? parseInt(raw.BatteryPercentage) : null,
+          raw.SolarVoltage !== undefined && raw.SolarVoltage !== null ? parseFloat(raw.SolarVoltage) : null,
+          raw.SolarCharging !== undefined && raw.SolarCharging !== null ? Boolean(raw.SolarCharging) : null,
+          raw.UptimeSeconds !== undefined && raw.UptimeSeconds !== null ? parseInt(raw.UptimeSeconds) : null,
+          raw.FirmwareVersion || '1.0.6',
+          JSON.stringify(raw),
+          savedRecord.id
+        ]);
+        console.log(`[SUCCESS] Recorded health diagnostic in DeviceHealthCheck for thing=${thingName}`);
+      } catch (hcErr) {
+        console.warn('[HEALTH CHECK INSERT WARNING]', hcErr.message);
+      }
+    } else {
+      // Regular Telemetry: strictly gate state telemetry
+      const telemetryTopic = event.topic || parsed.raw?.topic || (parsed.raw?.topicThingName ? `lc/devices/${parsed.raw.topicThingName}/manifest` : `lc-gate/${thingName}/telemetry`);
+      const teleStatus = parsed.raw?.Status || 'NOT_CLOSED';
+
+      try {
+        await client.query(`
+          INSERT INTO "DeviceTelemetry" ("thingName", "topic", "payload", "status", "deviceRegistryId", "receivedAt")
+          VALUES ($1, $2, $3, $4, $5, NOW())
+        `, [
+          thingName,
+          telemetryTopic,
+          JSON.stringify(parsed.raw || event),
+          teleStatus,
+          savedRecord.id
+        ]);
+        console.log(`[SUCCESS] Recorded historic telemetry for thing=${thingName} (topic=${telemetryTopic}, status=${teleStatus})`);
+      } catch (telErr) {
+        console.warn('[TELEMETRY INSERT WARNING]', telErr.message);
+      }
     }
 
     console.log(`[SUCCESS] Registered device ID=${savedRecord.id} in RDS for thing=${thingName}`);

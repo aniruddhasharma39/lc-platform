@@ -297,4 +297,64 @@ router.put('/:id/reactivate', requireModule('manage-users'), async (req: any, re
   }
 });
 
+router.delete('/:id', requireModule('manage-users'), async (req: any, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+
+    if (id === req.user.id) {
+      return res.status(400).json({ error: 'You cannot delete your own account' });
+    }
+
+    const existingUser = await prisma.user.findUnique({
+      where: { id },
+      include: { role: true },
+    });
+
+    if (!existingUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // 1. Delete RefreshTokens
+    await prisma.refreshToken.deleteMany({ where: { userId: id } }).catch(console.warn);
+
+    // 2. Disconnect audit logs so history remains intact
+    await prisma.auditLog.updateMany({
+      where: { userId: id },
+      data: { userId: null },
+    }).catch(console.warn);
+
+    // 3. Remove ScopeGroup memberships
+    await prisma.scopeGroupUser.deleteMany({ where: { userId: id } }).catch(console.warn);
+
+    // 4. Delete associated installation evidences
+    await prisma.installationEvidence.deleteMany({ where: { userId: id } }).catch(console.warn);
+
+    // 5. Delete User
+    await prisma.user.delete({ where: { id } });
+
+    // 6. Record in Audit Log
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        action: 'DELETE_USER',
+        details: `Permanently deleted user ${existingUser.fullName} (${existingUser.email || existingUser.employeeId})`,
+      },
+    }).catch(console.warn);
+
+    res.json({
+      success: true,
+      message: `User ${existingUser.fullName} deleted permanently`,
+      deletedUser: {
+        id: existingUser.id,
+        fullName: existingUser.fullName,
+        email: existingUser.email,
+        employeeId: existingUser.employeeId,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;
+

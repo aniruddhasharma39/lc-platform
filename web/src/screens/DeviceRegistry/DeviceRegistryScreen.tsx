@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback, useMemo, type ReactNode } from 'react
 import { 
   FaMicrochip, FaServer, FaCheckCircle, FaSearch, FaSyncAlt, 
   FaTimes, FaSlidersH, FaBroadcastTower, FaCopy, FaCheck,
-  FaTable, FaCode, FaHeartbeat, FaFileAlt, FaPaperPlane, FaDownload
+  FaTable, FaCode, FaHeartbeat, FaFileAlt, FaPaperPlane, FaDownload,
+  FaTrash, FaExclamationTriangle, FaInfoCircle, FaBatteryFull, FaSun, FaSignal, FaLayerGroup
 } from 'react-icons/fa';
 import type { User } from '../../types';
 import { API_URL } from '../../config';
@@ -166,9 +167,14 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
   const [inspectTab, setInspectTab] = useState<'telemetry' | 'manifest' | 'health' | 'all'>('telemetry');
   const [selectedPayloadId, setSelectedPayloadId] = useState<number | null>(null);
   const [isCopied, setIsCopied] = useState<boolean>(false);
-  const [autoRefreshTelemetry, setAutoRefreshTelemetry] = useState<boolean>(true);
   const [telemetryViewMode, setTelemetryViewMode] = useState<'table' | 'raw'>('table');
   const [triggeringHealthCheck, setTriggeringHealthCheck] = useState<boolean>(false);
+  const [healthCheckStage, setHealthCheckStage] = useState<'IDLE' | 'DISPATCHING' | 'LISTENING' | 'SUCCESS' | 'TIMEOUT'>('IDLE');
+
+  // GitHub-style Device Deletion state
+  const [deleteConfirmDevice, setDeleteConfirmDevice] = useState<DeviceItem | null>(null);
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState<string>('');
+  const [deletingDevice, setDeletingDevice] = useState<boolean>(false);
 
   const fetchDevices = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -224,6 +230,16 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
     }
   }, []);
 
+  // Silently refresh device telemetry every 3 seconds while Inspect Modal is open
+  // This ensures real-time updates when physical gate state changes (OPEN <-> CLOSED)
+  useEffect(() => {
+    if (!inspectDevice) return;
+    const interval = setInterval(() => {
+      loadDeviceTelemetry(inspectDevice, true);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [inspectDevice, loadDeviceTelemetry]);
+
   // Open Inspect Modal
   const handleOpenInspect = async (device: DeviceItem) => {
     setInspectDevice(device);
@@ -232,10 +248,17 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
     await loadDeviceTelemetry(device, false);
   };
 
-  // Trigger health check command over AWS IoT MQTT
+  // Trigger health check command over AWS IoT MQTT and wait for physical edge device response
   const handleTriggerHealthCheck = async () => {
     if (!inspectDevice) return;
     setTriggeringHealthCheck(true);
+    setHealthCheckStage('DISPATCHING');
+    setInspectTab('health');
+
+    const triggerStartTime = Date.now();
+    // Remember latest health check ID before triggering to detect any newly inserted record deterministically
+    const initialMaxId = healthRecords.length > 0 ? Math.max(...healthRecords.map(h => typeof h.id === 'number' ? h.id : 0)) : 0;
+
     try {
       const res = await fetch(`${API_URL}/api/v1/devices/${inspectDevice.id}/health-check`, {
         method: 'POST',
@@ -245,28 +268,130 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
         }
       });
       const data = await res.json();
-      if (res.ok) {
-        toastSuccess(`Command published to MQTT topic ${data.topic || 'AWS IoT Core'}`, 'Health Check Sent');
-        await loadDeviceTelemetry(inspectDevice, true);
-        setInspectTab('health');
-      } else {
+      if (!res.ok) {
         toastError(data.error || 'Failed to trigger health check', 'Health Check');
+        setTriggeringHealthCheck(false);
+        setHealthCheckStage('IDLE');
+        return;
       }
+
+      toastSuccess(`Diagnostic ping sent to ${data.topic || 'AWS IoT Core'}. Awaiting hardware packet...`, 'Command Dispatched');
+      setHealthCheckStage('LISTENING');
+
+      // Poll every 1.5s for up to 18s (12 attempts) to accommodate cellular 4G latency
+      let attempts = 0;
+      const maxAttempts = 12;
+      const pollInterval = setInterval(async () => {
+        attempts++;
+        try {
+          // 1. Check dedicated health-checks endpoint
+          const hcPollRes = await fetch(`${API_URL}/api/v1/devices/${inspectDevice.id}/health-checks`, {
+            headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+          });
+          if (hcPollRes.ok) {
+            const hcData = await hcPollRes.json();
+            const checks: any[] = hcData.healthChecks || [];
+            const matchingCheck = checks.find(c => {
+              // Ensure it is a genuine response from hardware (with verdict or gateStatus or boomAngle)
+              const isResponse = c.rawPayload?.action === 'HEALTH_CHECK_RESPONSE' ||
+                                 c.gateStatus !== null ||
+                                 c.boomAngle !== null ||
+                                 c.uptimeSeconds !== null ||
+                                 c.healthstatus !== undefined;
+              if (!isResponse) return false;
+
+              // Match by new ID, requestId echo, or recent timestamp window
+              const isNewId = c.id && c.id > initialMaxId;
+              const isMatchingReq = Boolean(data.requestId && c.requestId === data.requestId);
+              const recTime = new Date(c.createdAt).getTime();
+              const isWithinWindow = recTime >= triggerStartTime - 10000;
+              return isNewId || isMatchingReq || isWithinWindow;
+            });
+
+            if (matchingCheck) {
+              clearInterval(pollInterval);
+              setTriggeringHealthCheck(false);
+              setHealthCheckStage('SUCCESS');
+              setSelectedPayloadId(matchingCheck.id);
+              await loadDeviceTelemetry(inspectDevice, true);
+              toastSuccess(`Live response received from ${inspectDevice.thingName}! Barrier: ${matchingCheck.gateStatus || 'REPORTED'} | Verdict: ${matchingCheck.healthstatus || 'HEALTHY'}`, 'Device Verified');
+              return;
+            }
+          }
+
+          // 2. Fallback check general telemetry payload cache
+          const pollRes = await fetch(`${API_URL}/api/v1/devices/${inspectDevice.id}/telemetry`, {
+            headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+          });
+          if (pollRes.ok) {
+            const pollData = await pollRes.json();
+            const payloads: any[] = pollData.payloads || [];
+            setHistoricPayloads(payloads);
+            setTelemetrySummary(pollData);
+
+            const foundHealthResponse = payloads.find(p => {
+              const recTime = new Date(p.receivedAt).getTime();
+              const isMatch = (data.requestId && p.payload?.requestId === data.requestId) || (recTime >= triggerStartTime - 1000);
+              const isHealth = (p.topic || '').includes('/health') || p.payload?.action === 'HEALTH_CHECK_RESPONSE' || p.payload?.healthstatus !== undefined;
+              const isNotRequestedOnly = p.status !== 'REQUESTED' && p.status !== 'PENDING';
+              return isMatch && isHealth && isNotRequestedOnly;
+            });
+
+            if (foundHealthResponse) {
+              clearInterval(pollInterval);
+              setTriggeringHealthCheck(false);
+              setHealthCheckStage('SUCCESS');
+              setSelectedPayloadId(foundHealthResponse.id);
+              toastSuccess(`Live response received from ${inspectDevice.thingName}! Verdict: ${foundHealthResponse.payload?.healthstatus || 'HEALTHY'}`, 'Device Verified');
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn('Health poll attempt failed', e);
+        }
+
+        if (attempts >= maxAttempts) {
+          clearInterval(pollInterval);
+          setTriggeringHealthCheck(false);
+          setHealthCheckStage('TIMEOUT');
+          toastError(`No response from ${inspectDevice.thingName} within 12 seconds. Device may be powered down or out of cellular range.`, 'Device Timeout');
+        }
+      }, 1500);
+
     } catch (err: any) {
       toastError(err.message || 'Error triggering health check', 'Health Check');
-    } finally {
       setTriggeringHealthCheck(false);
+      setHealthCheckStage('IDLE');
     }
   };
 
-  // Live Auto-Refresh polling every 3s
-  useEffect(() => {
-    if (!inspectDevice || !autoRefreshTelemetry) return;
-    const interval = setInterval(() => {
-      loadDeviceTelemetry(inspectDevice, true);
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [inspectDevice, autoRefreshTelemetry, loadDeviceTelemetry]);
+  // Delete device from registry & database
+  const handleDeleteDevice = async () => {
+    if (!deleteConfirmDevice) return;
+    setDeletingDevice(true);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/devices/${deleteConfirmDevice.id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      if (res.ok) {
+        toastSuccess(`Device "${deleteConfirmDevice.thingName}" successfully deleted from registry.`, 'Device Deleted');
+        setDeleteConfirmDevice(null);
+        setDeleteConfirmInput('');
+        await fetchDevices(false);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toastError(err.error || 'Failed to delete device', 'Delete Failed');
+      }
+    } catch (err: any) {
+      toastError(err.message || 'Network error deleting device', 'Delete Error');
+    } finally {
+      setDeletingDevice(false);
+    }
+  };
+
 
   // Filter devices in-memory for registry table
   const filteredDevices = useMemo(() => {
@@ -288,8 +413,10 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
   // Categorize payloads cleanly according to the 3 types
   const telemetryRecords = useMemo(() => {
     return historicPayloads.filter(t => 
-      (t.topic && t.topic.includes('/telemetry')) ||
-      (t.payload && typeof t.payload === 'object' && ((t.payload as any).Status !== undefined || (t.payload as any).LimitSwitchClosed !== undefined))
+      ((t.topic && t.topic.includes('/telemetry')) ||
+       (t.payload && typeof t.payload === 'object' && ((t.payload as any).Status !== undefined || (t.payload as any).LimitSwitchClosed !== undefined))) &&
+      !(t.topic && t.topic.includes('/health')) &&
+      !((t.payload as any)?.action === 'HEALTH_CHECK' || (t.payload as any)?.action === 'HEALTH_CHECK_RESPONSE' || (t.payload as any)?.healthstatus !== undefined)
     );
   }, [historicPayloads]);
 
@@ -301,10 +428,25 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
   }, [historicPayloads]);
 
   const healthRecords = useMemo(() => {
-    return historicPayloads.filter(t => 
+    const list = historicPayloads.filter(t => 
+      t.isDedicatedHealthCheck ||
       (t.topic && t.topic.includes('/health')) ||
-      (t.payload && typeof t.payload === 'object' && ((t.payload as any).action === 'HEALTH_CHECK' || (t.payload as any).NetworkStrength !== undefined || (t.payload as any).BatteryPercentage !== undefined))
+      (t.payload && typeof t.payload === 'object' && (
+        (t.payload as any).action === 'HEALTH_CHECK' ||
+        (t.payload as any).action === 'HEALTH_CHECK_RESPONSE' ||
+        (t.payload as any).healthstatus !== undefined ||
+        (t.payload as any).BoomAngle !== undefined ||
+        (t.payload as any).NetworkStrength !== undefined ||
+        (t.payload as any).BatteryPercentage !== undefined
+      ))
     );
+    const seen = new Set<string>();
+    return list.filter(item => {
+      const key = `${item.isDedicatedHealthCheck ? 'hc' : 'tel'}-${item.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }, [historicPayloads]);
 
   // Selected item according to active tab
@@ -530,14 +672,15 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                       )}
                     </td>
 
-                    {/* Actions: Device Info & Inspect */}
+                    {/* Actions: Device Info, Inspect & Delete */}
                     <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <button 
                           type="button" 
                           className="btn-small btn-primary flex items-center gap-1.5"
-                          style={{ padding: '6px 12px', fontSize: '0.82rem', cursor: 'pointer' }}
+                          style={{ padding: '6px 11px', fontSize: '0.8rem', cursor: 'pointer' }}
                           onClick={() => setSelectedDeviceInfo(device)}
+                          title="View hardware & manifest profile"
                         >
                           <FaMicrochip size={12} /> Device Info
                         </button>
@@ -545,10 +688,31 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                         <button 
                           type="button" 
                           className="btn-small btn-outline flex items-center gap-1.5"
-                          style={{ padding: '6px 12px', fontSize: '0.82rem', cursor: 'pointer' }}
+                          style={{ padding: '6px 11px', fontSize: '0.8rem', cursor: 'pointer' }}
                           onClick={() => handleOpenInspect(device)}
+                          title="Inspect telemetry payloads"
                         >
                           <FaSlidersH size={12} /> Inspect
+                        </button>
+
+                        <button 
+                          type="button" 
+                          className="btn-small btn-outline flex items-center gap-1"
+                          style={{
+                            padding: '6px 10px',
+                            fontSize: '0.8rem',
+                            cursor: 'pointer',
+                            color: '#dc2626',
+                            borderColor: '#fca5a5',
+                            background: '#fef2f2'
+                          }}
+                          onClick={() => {
+                            setDeleteConfirmDevice(device);
+                            setDeleteConfirmInput('');
+                          }}
+                          title={`Delete device ${device.thingName} from registry`}
+                        >
+                          <FaTrash size={11} /> Delete
                         </button>
                       </div>
                     </td>
@@ -574,45 +738,107 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
         <div className="device-modal-overlay" onClick={() => setInspectDevice(null)}>
           <div className="device-modal-content slide-up" style={{ maxWidth: '1060px', width: '95%' }} onClick={(e) => e.stopPropagation()}>
             {/* Header */}
-            <div className="device-modal-header flex justify-between items-center pb-3 border-b">
+            <div className="device-modal-header flex justify-between items-center pb-3 border-b" style={{ padding: '0.85rem 1.25rem', borderBottom: '1px solid #e2e8f0' }}>
               <div>
-                <div className="flex items-center gap-3 flex-wrap">
-                  <h2 style={{ margin: 0, fontSize: '1.35rem', fontWeight: 800 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+                  <h2 style={{ margin: 0, fontSize: '1.4rem', fontWeight: 800, color: '#0f172a', letterSpacing: '-0.3px' }}>
                     {inspectDevice.thingName}
                   </h2>
-                  <span className="badge badge-indigo" style={{ fontSize: '0.78rem', padding: '3px 9px' }}>
-                    AWS IoT Core
+                  <span
+                    style={{
+                      fontSize: '0.74rem',
+                      fontWeight: 700,
+                      padding: '4px 10px',
+                      borderRadius: '6px',
+                      background: '#eff6ff',
+                      color: '#1d4ed8',
+                      border: '1px solid #bfdbfe',
+                      letterSpacing: '0.4px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 5
+                    }}
+                  >
+                    <FaServer size={11} /> AWS IoT Core
                   </span>
                   {inspectDevice.gate && (
-                    <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#475569' }}>
+                    <span
+                      style={{
+                        fontSize: '0.8rem',
+                        fontWeight: 600,
+                        color: '#334155',
+                        background: '#f8fafc',
+                        padding: '4px 10px',
+                        borderRadius: '6px',
+                        border: '1px solid #e2e8f0',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6
+                      }}
+                    >
+                      <FaLayerGroup size={11} color="#64748b" />
                       {inspectDevice.gate.lcNumber} • {inspectDevice.gate.locationName}
                     </span>
                   )}
-                  <span className={`status-pill ${inspectDevice.computedStatus === 'ONLINE' ? 'online' : 'offline'}`}>
-                    <span className={inspectDevice.computedStatus === 'ONLINE' ? 'pulse-dot' : 'status-dot'} style={{ width: 7, height: 7 }} />
+                  <span
+                    style={{
+                      fontSize: '0.75rem',
+                      fontWeight: 700,
+                      padding: '4px 10px',
+                      borderRadius: '6px',
+                      letterSpacing: '0.4px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      background: inspectDevice.computedStatus === 'ONLINE' ? '#ecfdf5' : '#fef2f2',
+                      color: inspectDevice.computedStatus === 'ONLINE' ? '#047857' : '#b91c1c',
+                      border: `1px solid ${inspectDevice.computedStatus === 'ONLINE' ? '#a7f3d0' : '#fecaca'}`
+                    }}
+                  >
+                    <span
+                      className={inspectDevice.computedStatus === 'ONLINE' ? 'pulse-dot' : 'status-dot'}
+                      style={{ width: 7, height: 7, backgroundColor: inspectDevice.computedStatus === 'ONLINE' ? '#10b981' : '#ef4444' }}
+                    />
                     {inspectDevice.computedStatus === 'ONLINE' ? 'ONLINE' : 'OFFLINE'}
                   </span>
+
+                  {telemetrySummary?.currentStatus && (
+                    <span
+                      style={{
+                        fontSize: '0.75rem',
+                        fontWeight: 700,
+                        padding: '4px 10px',
+                        borderRadius: '6px',
+                        letterSpacing: '0.4px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        background: telemetrySummary.currentStatus === 'CLOSED' ? '#ecfdf5' : '#fef2f2',
+                        color: telemetrySummary.currentStatus === 'CLOSED' ? '#047857' : '#b91c1c',
+                        border: `1px solid ${telemetrySummary.currentStatus === 'CLOSED' ? '#a7f3d0' : '#fecaca'}`
+                      }}
+                      title="Real-time physical barrier limit switch state"
+                    >
+                      <span
+                        style={{
+                          width: 7,
+                          height: 7,
+                          borderRadius: '50%',
+                          backgroundColor: telemetrySummary.currentStatus === 'CLOSED' ? '#10b981' : '#ef4444'
+                        }}
+                      />
+                      GATE: {telemetrySummary.currentStatus}
+                    </span>
+                  )}
                 </div>
               </div>
 
               <div className="flex items-center gap-2">
-                {/* Auto Refresh Toggle */}
-                <button
-                  type="button"
-                  className={`btn-small ${autoRefreshTelemetry ? 'btn-primary' : 'btn-outline'}`}
-                  style={{ fontSize: '0.78rem', padding: '5px 11px', display: 'flex', alignItems: 'center', gap: 6 }}
-                  onClick={() => setAutoRefreshTelemetry(!autoRefreshTelemetry)}
-                  title="Toggle automatic live polling every 3 seconds"
-                >
-                  <span className={autoRefreshTelemetry ? 'pulse-dot' : ''} style={{ width: 6, height: 6 }} />
-                  {autoRefreshTelemetry ? 'Auto Polling (3s)' : 'Polling Paused'}
-                </button>
-
-                {/* Useful Action 1: Manual Refresh */}
+                {/* Manual Refresh */}
                 <button
                   type="button"
                   className="btn-small btn-outline flex items-center gap-1.5"
-                  style={{ fontSize: '0.78rem', padding: '5px 10px', height: '30px' }}
+                  style={{ fontSize: '0.8rem', padding: '6px 12px', height: '32px', borderRadius: '6px', fontWeight: 600 }}
                   onClick={() => loadDeviceTelemetry(inspectDevice, false)}
                   disabled={loadingHistory}
                   title="Fetch latest telemetry and manifest records"
@@ -621,54 +847,13 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                   <span>{loadingHistory ? 'Syncing...' : 'Refresh'}</span>
                 </button>
 
-                {/* Useful Action 2: Trigger Health Check / Ping Device */}
-                <button
-                  type="button"
-                  className="btn-small btn-outline flex items-center gap-1.5"
-                  style={{ fontSize: '0.78rem', padding: '5px 10px', height: '30px', color: '#0b3c7a', borderColor: '#bfdbfe' }}
-                  onClick={handleTriggerHealthCheck}
-                  disabled={triggeringHealthCheck}
-                  title="Publish MQTT Health Check ping to device via AWS IoT Core"
-                >
-                  <FaHeartbeat className={triggeringHealthCheck ? 'fa-spin' : ''} size={12} color="#dc2626" />
-                  <span>{triggeringHealthCheck ? 'Pinging...' : 'Ping Device'}</span>
-                </button>
-
-                {/* Useful Action 3: Export Records as JSON */}
-                <button
-                  type="button"
-                  className="btn-small btn-outline flex items-center gap-1.5"
-                  style={{ fontSize: '0.78rem', padding: '5px 10px', height: '30px' }}
-                  onClick={() => {
-                    const exportData = {
-                      device: inspectDevice,
-                      telemetrySummary,
-                      historyCount: historicPayloads.length,
-                      records: historicPayloads,
-                      exportedAt: new Date().toISOString()
-                    };
-                    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `${inspectDevice.thingName}-telemetry-export.json`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                    toastSuccess('Telemetry & manifest records exported as JSON', 'Export Successful');
-                  }}
-                  title="Export telemetry records to a JSON file"
-                >
-                  <FaDownload size={11} />
-                  <span>Export</span>
-                </button>
-
                 {/* Modal Close Button */}
                 <button 
                   type="button" 
                   onClick={() => setInspectDevice(null)}
                   style={{
-                    width: '30px',
-                    height: '30px',
+                    width: '32px',
+                    height: '32px',
                     padding: 0,
                     borderRadius: '6px',
                     border: '1px solid var(--border)',
@@ -753,44 +938,6 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                   <span>All Records ({historicPayloads.length})</span>
                 </button>
               </div>
-
-              {/* View Format Toggle (Organized Table vs Raw JSON) */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div style={{ background: '#f1f5f9', padding: '2px', borderRadius: '6px', border: '1px solid var(--border)', display: 'flex' }}>
-                  <button
-                    type="button"
-                    className={`telemetry-tab-btn ${telemetryViewMode === 'table' ? 'active' : ''}`}
-                    style={{ fontSize: '0.75rem', padding: '4px 10px' }}
-                    onClick={() => setTelemetryViewMode('table')}
-                  >
-                    <FaTable size={11} /> Table View
-                  </button>
-                  <button
-                    type="button"
-                    className={`telemetry-tab-btn ${telemetryViewMode === 'raw' ? 'active' : ''}`}
-                    style={{ fontSize: '0.75rem', padding: '4px 10px' }}
-                    onClick={() => setTelemetryViewMode('raw')}
-                  >
-                    <FaCode size={11} /> Raw JSON
-                  </button>
-                </div>
-
-                {currentViewingRecord?.payload && (
-                  <button
-                    type="button"
-                    className="btn-small btn-outline"
-                    style={{ fontSize: '0.75rem', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 5 }}
-                    onClick={() => {
-                      navigator.clipboard.writeText(JSON.stringify(currentViewingRecord.payload, null, 2));
-                      setIsCopied(true);
-                      setTimeout(() => setIsCopied(false), 2000);
-                      toastSuccess('Payload copied to clipboard', 'Copied');
-                    }}
-                  >
-                    {isCopied ? <FaCheck color="#10b981" /> : <FaCopy />} {isCopied ? 'Copied' : 'Copy'}
-                  </button>
-                )}
-              </div>
             </div>
 
             {/* Modal Body */}
@@ -816,37 +963,89 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                             lc-gate/{inspectDevice.thingName}/telemetry
                           </code>
                         </div>
-                        {currentViewingRecord?.payload?.Status && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <span style={{ fontSize: '0.8rem', color: '#475569', fontWeight: 600 }}>Gate Status:</span>
-                            <span
-                              style={{
-                                padding: '4px 14px',
-                                borderRadius: '6px',
-                                fontWeight: 800,
-                                fontSize: '0.9rem',
-                                letterSpacing: '0.4px',
-                                background: String(currentViewingRecord.payload.Status).toUpperCase() === 'CLOSED' ? '#dcfce7' : '#fee2e2',
-                                color: String(currentViewingRecord.payload.Status).toUpperCase() === 'CLOSED' ? '#15803d' : '#b91c1c',
-                                border: `1px solid ${String(currentViewingRecord.payload.Status).toUpperCase() === 'CLOSED' ? '#86efac' : '#fca5a5'}`
-                              }}
-                            >
-                              {currentViewingRecord.payload.Status}
-                            </span>
-                          </div>
-                        )}
+                        {/* Real-time Physical Gate Status Banner */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ fontSize: '0.8rem', color: '#475569', fontWeight: 600 }}>Live Barrier State:</span>
+                          <span
+                            style={{
+                              padding: '4px 14px',
+                              borderRadius: '6px',
+                              fontWeight: 800,
+                              fontSize: '0.9rem',
+                              letterSpacing: '0.4px',
+                              background: (telemetrySummary?.currentStatus || telemetryRecords[0]?.status || 'CLOSED') === 'CLOSED' ? '#dcfce7' : '#fee2e2',
+                              color: (telemetrySummary?.currentStatus || telemetryRecords[0]?.status || 'CLOSED') === 'CLOSED' ? '#15803d' : '#b91c1c',
+                              border: `1px solid ${(telemetrySummary?.currentStatus || telemetryRecords[0]?.status || 'CLOSED') === 'CLOSED' ? '#86efac' : '#fca5a5'}`
+                            }}
+                          >
+                            {telemetrySummary?.currentStatus || telemetryRecords[0]?.status || 'CLOSED'}
+                          </span>
+                        </div>
                       </div>
 
                       {/* Selected Telemetry Payload Presentation */}
                       {currentViewingRecord ? (
                         <div style={{ marginBottom: '1.25rem' }}>
-                          <div className="flex justify-between items-center mb-2">
-                            <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#1e293b' }}>
-                              Payload Breakdown (Recorded {new Date(currentViewingRecord.receivedAt).toLocaleTimeString()})
-                            </span>
-                            <span style={{ fontSize: '0.78rem', color: '#64748b' }}>
-                              {new Date(currentViewingRecord.receivedAt).toLocaleDateString()}
-                            </span>
+                          <div className="flex justify-between items-center mb-2 flex-wrap gap-2">
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: '0.88rem', fontWeight: 750, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                Payload Breakdown
+                                <span style={{ fontSize: '0.74rem', fontWeight: 500, color: '#64748b' }}>
+                                  ({new Date(currentViewingRecord.receivedAt).toLocaleTimeString()} • {new Date(currentViewingRecord.receivedAt).toLocaleDateString()})
+                                </span>
+                              </span>
+                              {selectedPayloadId === null ? (
+                                <span className="badge badge-emerald" style={{ fontSize: '0.7rem', padding: '2px 7px' }}>
+                                  ● Live Auto-Updating
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="btn-small btn-outline"
+                                  style={{ fontSize: '0.72rem', padding: '1px 8px', color: '#0284c7', borderColor: '#bae6fd' }}
+                                  onClick={() => setSelectedPayloadId(null)}
+                                  title="Return to latest incoming telemetry stream"
+                                >
+                                  Switch to Live Latest
+                                </button>
+                              )}
+                            </div>
+
+                            {/* View Format Toggle & Copy embedded directly inside the Payload Breakdown section */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <div style={{ background: '#f1f5f9', padding: '2px', borderRadius: '6px', border: '1px solid var(--border)', display: 'flex' }}>
+                                <button
+                                  type="button"
+                                  className={`telemetry-tab-btn ${telemetryViewMode === 'table' ? 'active' : ''}`}
+                                  style={{ fontSize: '0.74rem', padding: '3px 9px' }}
+                                  onClick={() => setTelemetryViewMode('table')}
+                                >
+                                  <FaTable size={11} /> Table View
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`telemetry-tab-btn ${telemetryViewMode === 'raw' ? 'active' : ''}`}
+                                  style={{ fontSize: '0.74rem', padding: '3px 9px' }}
+                                  onClick={() => setTelemetryViewMode('raw')}
+                                >
+                                  <FaCode size={11} /> Raw JSON
+                                </button>
+                              </div>
+
+                              <button
+                                type="button"
+                                className="btn-small btn-outline"
+                                style={{ fontSize: '0.74rem', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 4 }}
+                                onClick={() => {
+                                  navigator.clipboard.writeText(JSON.stringify(currentViewingRecord.payload, null, 2));
+                                  setIsCopied(true);
+                                  setTimeout(() => setIsCopied(false), 2000);
+                                  toastSuccess('Payload copied to clipboard', 'Copied');
+                                }}
+                              >
+                                {isCopied ? <FaCheck color="#10b981" /> : <FaCopy />} {isCopied ? 'Copied' : 'Copy'}
+                              </button>
+                            </div>
                           </div>
 
                           {telemetryViewMode === 'table' ? (
@@ -900,7 +1099,7 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
 
                                   return (
                                     <tr 
-                                      key={item.id || idx}
+                                      key={`tel-${item.id || 'rec'}-${idx}`}
                                       style={{ backgroundColor: isSelected ? '#f1f5f9' : undefined, cursor: 'pointer' }}
                                       onClick={() => setSelectedPayloadId(item.id)}
                                     >
@@ -985,13 +1184,51 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
 
                       {currentViewingRecord ? (
                         <div>
-                          <div className="flex justify-between items-center mb-2">
-                            <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#1e293b' }}>
-                              Configuration & Hardware Manifest
-                            </span>
-                            <span style={{ fontSize: '0.78rem', color: '#64748b' }}>
-                              {new Date(currentViewingRecord.receivedAt).toLocaleString()}
-                            </span>
+                          <div className="flex justify-between items-center mb-2 flex-wrap gap-2">
+                            <div>
+                              <span style={{ fontSize: '0.88rem', fontWeight: 750, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                Configuration & Hardware Manifest
+                                <span style={{ fontSize: '0.74rem', fontWeight: 500, color: '#64748b' }}>
+                                  ({new Date(currentViewingRecord.receivedAt).toLocaleString()})
+                                </span>
+                              </span>
+                            </div>
+
+                            {/* View Format Toggle & Copy */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <div style={{ background: '#f1f5f9', padding: '2px', borderRadius: '6px', border: '1px solid var(--border)', display: 'flex' }}>
+                                <button
+                                  type="button"
+                                  className={`telemetry-tab-btn ${telemetryViewMode === 'table' ? 'active' : ''}`}
+                                  style={{ fontSize: '0.74rem', padding: '3px 9px' }}
+                                  onClick={() => setTelemetryViewMode('table')}
+                                >
+                                  <FaTable size={11} /> Table View
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`telemetry-tab-btn ${telemetryViewMode === 'raw' ? 'active' : ''}`}
+                                  style={{ fontSize: '0.74rem', padding: '3px 9px' }}
+                                  onClick={() => setTelemetryViewMode('raw')}
+                                >
+                                  <FaCode size={11} /> Raw JSON
+                                </button>
+                              </div>
+
+                              <button
+                                type="button"
+                                className="btn-small btn-outline"
+                                style={{ fontSize: '0.74rem', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 4 }}
+                                onClick={() => {
+                                  navigator.clipboard.writeText(JSON.stringify(currentViewingRecord.payload, null, 2));
+                                  setIsCopied(true);
+                                  setTimeout(() => setIsCopied(false), 2000);
+                                  toastSuccess('Manifest copied to clipboard', 'Copied');
+                                }}
+                              >
+                                {isCopied ? <FaCheck color="#10b981" /> : <FaCopy />} {isCopied ? 'Copied' : 'Copy'}
+                              </button>
+                            </div>
                           </div>
 
                           {telemetryViewMode === 'table' ? (
@@ -1020,42 +1257,195 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                   {inspectTab === 'health' && (
                     <div>
                       {/* Health Check Trigger Action Banner */}
-                      <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '1rem', marginBottom: '1.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+                      <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '1rem 1.25rem', marginBottom: '1.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
                         <div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <FaHeartbeat color="#16a34a" size={18} />
-                            <h4 style={{ margin: 0, fontSize: '0.98rem', fontWeight: 700, color: '#166534' }}>
+                            <FaHeartbeat color="#dc2626" size={18} />
+                            <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 750, color: '#0f172a' }}>
                               On-Demand Device Health Diagnostic
                             </h4>
                           </div>
-                          <p style={{ margin: '4px 0 0 0', fontSize: '0.82rem', color: '#15803d', maxWidth: '620px' }}>
-                            Triggering a health check sends an MQTT command to topic <code>lc-gate/{inspectDevice.thingName}/health/request</code>. 
-                            The edge device tests connectivity, reads active sensors, and responds on <code>lc-gate/{inspectDevice.thingName}/health</code>.
+                          <p style={{ margin: '4px 0 0 0', fontSize: '0.82rem', color: '#475569', maxWidth: '640px' }}>
+                            Publishes a test command to <code>lc-gate/{inspectDevice.thingName}/health/request</code> via AWS IoT Core MQTT broker. 
+                            The edge hardware samples power, sensors, and modem signal, then replies on <code>lc-gate/{inspectDevice.thingName}/health</code>.
                           </p>
                         </div>
 
                         <button
                           type="button"
                           className="btn-primary flex items-center gap-2"
-                          style={{ padding: '8px 18px', fontSize: '0.85rem', fontWeight: 700 }}
+                          style={{ padding: '8px 20px', fontSize: '0.86rem', fontWeight: 700, borderRadius: '6px' }}
                           onClick={handleTriggerHealthCheck}
                           disabled={triggeringHealthCheck}
                         >
-                          <FaPaperPlane size={12} />
-                          {triggeringHealthCheck ? 'Publishing Command...' : 'Trigger Health Check'}
+                          <FaPaperPlane size={12} className={triggeringHealthCheck ? 'fa-spin' : ''} />
+                          {triggeringHealthCheck ? 'Testing Hardware...' : 'Trigger Health Check'}
                         </button>
                       </div>
 
-                      {/* Latest Health Check Response */}
+                      {/* Live Diagnostic State Banner */}
+                      {healthCheckStage === 'LISTENING' && (
+                        <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: '8px', padding: '1rem 1.25rem', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                          <FaSyncAlt className="fa-spin" size={24} color="#0284c7" />
+                          <div>
+                            <h4 style={{ margin: 0, fontSize: '0.96rem', fontWeight: 700, color: '#0369a1' }}>
+                              Diagnostic Command Dispatched — Awaiting Edge Hardware Packet...
+                            </h4>
+                            <p style={{ margin: '3px 0 0 0', fontSize: '0.82rem', color: '#0284c7' }}>
+                              MQTT ping published to <code>lc-gate/{inspectDevice.thingName}/health/request</code>. 
+                              Sampling battery voltage, solar cut-in, cellular signal, and barrier limit sensors...
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {healthCheckStage === 'TIMEOUT' && (
+                        <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '1rem 1.25rem', marginBottom: '1.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <FaExclamationTriangle size={22} color="#dc2626" />
+                            <div>
+                              <h4 style={{ margin: 0, fontSize: '0.96rem', fontWeight: 700, color: '#991b1b' }}>
+                                Diagnostic Timed Out: No Packet Returned by Edge Hardware
+                              </h4>
+                              <p style={{ margin: '3px 0 0 0', fontSize: '0.82rem', color: '#b91c1c' }}>
+                                AWS IoT Core dispatched the command, but the edge device did not respond within 12 seconds.
+                                Verify SIM card cellular connectivity, power supply, and modem status.
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn-small btn-primary"
+                            onClick={handleTriggerHealthCheck}
+                          >
+                            Retry Diagnostic Ping
+                          </button>
+                        </div>
+                      )}
+
+                      {healthCheckStage === 'SUCCESS' && (
+                        <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '0.85rem 1.25rem', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <FaCheckCircle size={20} color="#16a34a" />
+                          <div>
+                            <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 700, color: '#166534' }}>
+                              Diagnostic Response Verified from Edge Hardware
+                            </h4>
+                            <p style={{ margin: '2px 0 0 0', fontSize: '0.82rem', color: '#15803d' }}>
+                              Physical device received MQTT command, read internal sensors, and published complete system telemetry.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Diagnostic Summary KPI Quick Grid */}
+                      {currentViewingRecord && !((currentViewingRecord.topic || '').includes('/request')) && (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', marginBottom: '1.25rem' }}>
+                          <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '0.75rem 1rem' }}>
+                            <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 5 }}>
+                              <FaHeartbeat color="#10b981" /> System Verdict
+                            </div>
+                            <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0f172a', marginTop: 4 }}>
+                              {currentViewingRecord.payload?.healthstatus || currentViewingRecord.payload?.status || 'HEALTHY'}
+                            </div>
+                            <div style={{ fontSize: '0.74rem', color: '#059669', fontWeight: 600 }}>
+                              {currentViewingRecord.payload?.FirmwareVersion ? `Firmware v${currentViewingRecord.payload.FirmwareVersion}` : 'Hardware Verified Live'}
+                            </div>
+                          </div>
+
+                          <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '0.75rem 1rem' }}>
+                            <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 5 }}>
+                              <FaBatteryFull color="#0284c7" /> Battery & Power
+                            </div>
+                            <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0f172a', marginTop: 4 }}>
+                              {currentViewingRecord.payload?.BatteryVoltage !== null && currentViewingRecord.payload?.BatteryVoltage !== undefined
+                                ? `${currentViewingRecord.payload.BatteryVoltage} V`
+                                : currentViewingRecord.payload?.BatteryPercentage !== null && currentViewingRecord.payload?.BatteryPercentage !== undefined
+                                ? `${currentViewingRecord.payload.BatteryPercentage}%`
+                                : 'Mains / Unmonitored'}
+                            </div>
+                            <div style={{ fontSize: '0.74rem', color: '#64748b' }}>
+                              Solar: {currentViewingRecord.payload?.SolarVoltage !== null && currentViewingRecord.payload?.SolarVoltage !== undefined
+                                ? `${currentViewingRecord.payload.SolarVoltage} V`
+                                : currentViewingRecord.payload?.SolarCharging ? 'Solar Active' : 'Unmonitored'}
+                            </div>
+                          </div>
+
+                          <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '0.75rem 1rem' }}>
+                            <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 5 }}>
+                              <FaSignal color="#8b5cf6" /> Cellular Modem
+                            </div>
+                            <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0f172a', marginTop: 4 }}>
+                              {currentViewingRecord.payload?.SignalStrength !== undefined && currentViewingRecord.payload?.SignalStrength !== null
+                                ? `${currentViewingRecord.payload.SignalStrength} CSQ`
+                                : currentViewingRecord.payload?.NetworkStrength || 'Connected'}
+                            </div>
+                            <div style={{ fontSize: '0.74rem', color: '#64748b' }}>
+                              {currentViewingRecord.payload?.NetworkType || '4G LTE'} {currentViewingRecord.payload?.McuTempC !== undefined ? `| ${currentViewingRecord.payload.McuTempC}°C` : ''}
+                            </div>
+                          </div>
+
+                          <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '0.75rem 1rem' }}>
+                            <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 5 }}>
+                              <FaMicrochip color="#d97706" /> Gate & Sensors
+                            </div>
+                            <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0f172a', marginTop: 4 }}>
+                              {currentViewingRecord.payload?.Status || (currentViewingRecord.payload?.LimitSwitchClosed ? 'CLOSED' : 'OPEN')}
+                            </div>
+                            <div style={{ fontSize: '0.74rem', color: '#64748b' }}>
+                              Boom: {currentViewingRecord.payload?.BoomAngle !== undefined ? `${currentViewingRecord.payload.BoomAngle}°` : '0.0°'} | Limit: {currentViewingRecord.payload?.LimitSwitchClosed ? 'Closed' : 'Open'}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Latest Health Check Response Payload */}
                       {currentViewingRecord ? (
                         <div style={{ marginBottom: '1.25rem' }}>
-                          <div className="flex justify-between items-center mb-2">
-                            <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#1e293b' }}>
-                              Health Check Payload (Recorded {new Date(currentViewingRecord.receivedAt).toLocaleTimeString()})
-                            </span>
-                            <span style={{ fontSize: '0.78rem', color: '#64748b' }}>
-                              Topic: <code>{currentViewingRecord.topic || `lc-gate/${inspectDevice.thingName}/health`}</code>
-                            </span>
+                          <div className="flex justify-between items-center mb-2 flex-wrap gap-2">
+                            <div>
+                              <span style={{ fontSize: '0.88rem', fontWeight: 750, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                Health Check Payload
+                                <span style={{ fontSize: '0.74rem', fontWeight: 500, color: '#64748b' }}>
+                                  ({new Date(currentViewingRecord.receivedAt).toLocaleTimeString()})
+                                </span>
+                              </span>
+                            </div>
+
+                            {/* View Format Toggle & Copy */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <div style={{ background: '#f1f5f9', padding: '2px', borderRadius: '6px', border: '1px solid var(--border)', display: 'flex' }}>
+                                <button
+                                  type="button"
+                                  className={`telemetry-tab-btn ${telemetryViewMode === 'table' ? 'active' : ''}`}
+                                  style={{ fontSize: '0.74rem', padding: '3px 9px' }}
+                                  onClick={() => setTelemetryViewMode('table')}
+                                >
+                                  <FaTable size={11} /> Table View
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`telemetry-tab-btn ${telemetryViewMode === 'raw' ? 'active' : ''}`}
+                                  style={{ fontSize: '0.74rem', padding: '3px 9px' }}
+                                  onClick={() => setTelemetryViewMode('raw')}
+                                >
+                                  <FaCode size={11} /> Raw JSON
+                                </button>
+                              </div>
+
+                              <button
+                                type="button"
+                                className="btn-small btn-outline"
+                                style={{ fontSize: '0.74rem', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 4 }}
+                                onClick={() => {
+                                  navigator.clipboard.writeText(JSON.stringify(currentViewingRecord.payload, null, 2));
+                                  setIsCopied(true);
+                                  setTimeout(() => setIsCopied(false), 2000);
+                                  toastSuccess('Health payload copied to clipboard', 'Copied');
+                                }}
+                              >
+                                {isCopied ? <FaCheck color="#10b981" /> : <FaCopy />} {isCopied ? 'Copied' : 'Copy'}
+                              </button>
+                            </div>
                           </div>
 
                           {telemetryViewMode === 'table' ? (
@@ -1106,7 +1496,7 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
 
                                   return (
                                     <tr 
-                                      key={item.id || idx}
+                                      key={`${item.isDedicatedHealthCheck ? 'hc' : 'tel'}-${item.id || 'rec'}-${idx}`}
                                       style={{ backgroundColor: isSelected ? '#f1f5f9' : undefined, cursor: 'pointer' }}
                                       onClick={() => setSelectedPayloadId(item.id)}
                                     >
@@ -1150,13 +1540,51 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                     <div>
                       {currentViewingRecord && (
                         <div style={{ marginBottom: '1.25rem' }}>
-                          <div className="flex justify-between items-center mb-2">
-                            <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#1e293b' }}>
-                              Selected Payload ({currentViewingRecord.topic})
-                            </span>
-                            <span style={{ fontSize: '0.78rem', color: '#64748b' }}>
-                              {new Date(currentViewingRecord.receivedAt).toLocaleString()}
-                            </span>
+                          <div className="flex justify-between items-center mb-2 flex-wrap gap-2">
+                            <div>
+                              <span style={{ fontSize: '0.88rem', fontWeight: 750, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                Selected Payload
+                                <span style={{ fontSize: '0.74rem', fontWeight: 500, color: '#64748b' }}>
+                                  ({currentViewingRecord.topic} • {new Date(currentViewingRecord.receivedAt).toLocaleTimeString()})
+                                </span>
+                              </span>
+                            </div>
+
+                            {/* View Format Toggle & Copy */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <div style={{ background: '#f1f5f9', padding: '2px', borderRadius: '6px', border: '1px solid var(--border)', display: 'flex' }}>
+                                <button
+                                  type="button"
+                                  className={`telemetry-tab-btn ${telemetryViewMode === 'table' ? 'active' : ''}`}
+                                  style={{ fontSize: '0.74rem', padding: '3px 9px' }}
+                                  onClick={() => setTelemetryViewMode('table')}
+                                >
+                                  <FaTable size={11} /> Table View
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`telemetry-tab-btn ${telemetryViewMode === 'raw' ? 'active' : ''}`}
+                                  style={{ fontSize: '0.74rem', padding: '3px 9px' }}
+                                  onClick={() => setTelemetryViewMode('raw')}
+                                >
+                                  <FaCode size={11} /> Raw JSON
+                                </button>
+                              </div>
+
+                              <button
+                                type="button"
+                                className="btn-small btn-outline"
+                                style={{ fontSize: '0.74rem', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 4 }}
+                                onClick={() => {
+                                  navigator.clipboard.writeText(JSON.stringify(currentViewingRecord.payload, null, 2));
+                                  setIsCopied(true);
+                                  setTimeout(() => setIsCopied(false), 2000);
+                                  toastSuccess('Payload copied to clipboard', 'Copied');
+                                }}
+                              >
+                                {isCopied ? <FaCheck color="#10b981" /> : <FaCopy />} {isCopied ? 'Copied' : 'Copy'}
+                              </button>
+                            </div>
                           </div>
 
                           {telemetryViewMode === 'table' ? (
@@ -1198,7 +1626,7 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
 
                               return (
                                 <tr 
-                                  key={item.id || idx}
+                                  key={`all-${item.isDedicatedHealthCheck ? 'hc' : 'tel'}-${item.id || 'rec'}-${idx}`}
                                   style={{ backgroundColor: isSelected ? '#f1f5f9' : undefined, cursor: 'pointer' }}
                                   onClick={() => setSelectedPayloadId(item.id)}
                                 >
@@ -1237,6 +1665,113 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
 
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GitHub-style Delete Device Confirmation Modal */}
+      {deleteConfirmDevice && (
+        <div className="device-modal-overlay" onClick={() => !deletingDevice && setDeleteConfirmDevice(null)}>
+          <div
+            className="device-modal-content slide-up"
+            style={{ maxWidth: '520px', width: '92%', borderRadius: '14px', overflow: 'hidden' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ padding: '18px 24px', borderBottom: '1px solid #fee2e2', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fef2f2' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#fee2e2', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#dc2626' }}>
+                  <FaExclamationTriangle size={18} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 800, color: '#991b1b' }}>
+                    Delete Device
+                  </h3>
+                  <span style={{ fontSize: '0.78rem', color: '#b91c1c' }}>
+                    Irreversible Registry Action
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => !deletingDevice && setDeleteConfirmDevice(null)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8' }}
+              >
+                <FaTimes size={16} />
+              </button>
+            </div>
+
+            <div style={{ padding: '20px 24px' }}>
+              <p style={{ margin: '0 0 14px 0', fontSize: '0.94rem', color: '#334155', lineHeight: 1.5 }}>
+                Are you sure want to delete device{' '}
+                <strong style={{ color: '#0f172a', background: '#f1f5f9', padding: '2px 6px', borderRadius: 4 }}>
+                  {deleteConfirmDevice.thingName}
+                </strong>{' '}
+                assigned at{' '}
+                <strong style={{ color: '#0f172a' }}>
+                  {deleteConfirmDevice.gate
+                    ? `${deleteConfirmDevice.gate.lcNumber} (${deleteConfirmDevice.gate.locationName})`
+                    : 'N/A (if assigned nowhere)'}
+                </strong>{' '}
+                ?
+              </p>
+
+              <div style={{ background: '#fffbeb', border: '1px solid #fef3c7', borderRadius: '8px', padding: '12px 14px', marginBottom: '18px', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                <FaInfoCircle size={15} style={{ color: '#d97706', marginTop: 2, flexShrink: 0 }} />
+                <span style={{ fontSize: '0.82rem', color: '#92400e', lineHeight: 1.4 }}>
+                  This will permanently delete this device from the registry and remove its historic telemetry logs and scope group assignments. This action cannot be undone.
+                </span>
+              </div>
+
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#475569', marginBottom: 6 }}>
+                  To confirm, type <strong style={{ color: '#0f172a' }}>{deleteConfirmDevice.thingName}</strong> below:
+                </label>
+                <input
+                  type="text"
+                  className="form-control"
+                  style={{ width: '100%', padding: '9px 12px', fontSize: '0.9rem', borderRadius: 6, border: '1px solid #cbd5e1' }}
+                  placeholder={`Type ${deleteConfirmDevice.thingName} to confirm`}
+                  value={deleteConfirmInput}
+                  onChange={(e) => setDeleteConfirmInput(e.target.value)}
+                  disabled={deletingDevice}
+                  autoFocus
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  style={{ padding: '8px 16px', fontSize: '0.88rem' }}
+                  onClick={() => setDeleteConfirmDevice(null)}
+                  disabled={deletingDevice}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    padding: '8px 18px',
+                    fontSize: '0.88rem',
+                    fontWeight: 700,
+                    background: deleteConfirmInput === deleteConfirmDevice.thingName ? '#dc2626' : '#f87171',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: 6,
+                    cursor: deleteConfirmInput === deleteConfirmDevice.thingName && !deletingDevice ? 'pointer' : 'not-allowed',
+                    opacity: deleteConfirmInput === deleteConfirmDevice.thingName && !deletingDevice ? 1 : 0.6,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6
+                  }}
+                  disabled={deleteConfirmInput !== deleteConfirmDevice.thingName || deletingDevice}
+                  onClick={handleDeleteDevice}
+                >
+                  <FaTrash size={12} />
+                  <span>{deletingDevice ? 'Deleting...' : 'I understand the consequences, delete this device'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

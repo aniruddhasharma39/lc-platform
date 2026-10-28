@@ -313,25 +313,39 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
       return res.status(404).json({ error: 'Device not found in registry' });
     }
 
-    const telemetries = await prisma.deviceTelemetry.findMany({
-      where: {
-        OR: [
-          { thingName: device.thingName },
-          { deviceRegistryId: device.id },
-          ...(device.serialNumber ? [{ thingName: device.serialNumber }] : [])
-        ]
-      },
-      orderBy: { receivedAt: 'desc' },
-      take: 100,
-    }).catch(() => []);
+    const [telemetries, healthChecks] = await Promise.all([
+      prisma.deviceTelemetry.findMany({
+        where: {
+          OR: [
+            { thingName: device.thingName },
+            { deviceRegistryId: device.id },
+            ...(device.serialNumber ? [{ thingName: device.serialNumber }] : [])
+          ]
+        },
+        orderBy: { receivedAt: 'desc' },
+        take: 100,
+      }).catch(() => []),
+      (prisma as any).deviceHealthCheck.findMany({
+        where: {
+          OR: [
+            { thingName: device.thingName },
+            { deviceRegistryId: device.id },
+            ...(device.serialNumber ? [{ thingName: device.serialNumber }] : [])
+          ]
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      }).catch(() => [])
+    ]);
 
     // Categorize payloads:
-    // 1. Telemetry (lc-gate/+/telemetry or payload with Status / MasterDeviceId)
-    // 2. Manifest (lc/devices/+/manifest or thing.Master)
-    // 3. Health Check (lc-gate/+/health or action === 'HEALTH_CHECK')
+    // 1. Telemetry: strictly gate state telemetry (lc-gate/+/telemetry)
+    // 2. Manifest: firmware hardware profile (lc/devices/+/manifest)
+    // 3. Health Check: hardware diagnostic records
     const telemetryRecords = telemetries.filter(t =>
-      (t.topic && t.topic.includes('/telemetry')) ||
-      (t.payload && typeof t.payload === 'object' && ((t.payload as any).Status !== undefined || (t.payload as any).LimitSwitchClosed !== undefined))
+      (t.topic && t.topic.includes('/telemetry')) &&
+      !(t.topic && t.topic.includes('/health')) &&
+      !((t.payload as any)?.action === 'HEALTH_CHECK' || (t.payload as any)?.action === 'HEALTH_CHECK_RESPONSE')
     );
 
     const manifestRecords = telemetries.filter(t =>
@@ -339,13 +353,50 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
       (t.payload && typeof t.payload === 'object' && ((t.payload as any).thing !== undefined || (t.payload as any).Master !== undefined))
     );
 
-    const healthRecords = telemetries.filter(t =>
+    // Map healthChecks from dedicated table or legacy telemetry records
+    const healthRecords = healthChecks.length > 0 ? healthChecks.map((h: any) => ({
+      id: h.id,
+      thingName: h.thingName,
+      topic: `lc-gate/${h.thingName}/health`,
+      payload: h.rawPayload,
+      status: h.healthstatus || 'HEALTHY',
+      receivedAt: h.createdAt,
+      deviceRegistryId: h.deviceRegistryId,
+      gateStatus: h.gateStatus,
+      isDedicatedHealthCheck: true,
+    })) : telemetries.filter(t =>
       (t.topic && t.topic.includes('/health')) ||
-      (t.payload && typeof t.payload === 'object' && ((t.payload as any).action === 'HEALTH_CHECK' || (t.payload as any).NetworkStrength !== undefined || (t.payload as any).BatteryPercentage !== undefined))
+      (t.payload && typeof t.payload === 'object' && ((t.payload as any).action === 'HEALTH_CHECK' || (t.payload as any).action === 'HEALTH_CHECK_RESPONSE' || (t.payload as any).healthstatus !== undefined))
     );
 
     const latestTele = telemetryRecords[0]?.payload as any;
-    const currentStatus = latestTele?.Status || device.status || 'UNKNOWN';
+    // Physical Gate Status is always OPEN / CLOSED / NOT_CLOSED (never "HEALTHY")
+    const currentStatus = latestTele?.Status || (latestTele?.LimitSwitchClosed !== undefined ? (latestTele.LimitSwitchClosed ? 'CLOSED' : 'NOT_CLOSED') : (device.status || 'UNKNOWN'));
+
+    // Construct unified payload list without duplicates
+    const seenUids = new Set<string>();
+    const deduplicatedPayloads: any[] = [];
+    
+    // 1. Add dedicated health records first (if any)
+    if (healthChecks.length > 0) {
+      for (const h of healthRecords) {
+        const uid = `hc-${h.id}`;
+        if (!seenUids.has(uid)) {
+          seenUids.add(uid);
+          deduplicatedPayloads.push(h);
+        }
+      }
+    }
+
+    // 2. Add telemetry/manifest records (preventing any duplicate ID collision)
+    for (const t of telemetries) {
+      const uid = `tel-${t.id}`;
+      if (!seenUids.has(uid)) {
+        seenUids.add(uid);
+        deduplicatedPayloads.push(t);
+      }
+    }
+    deduplicatedPayloads.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
 
     res.json({
       thingName: device.thingName,
@@ -355,7 +406,7 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
       gate: device.gate,
       currentStatus,
       counts: {
-        all: telemetries.length,
+        all: deduplicatedPayloads.length,
         telemetry: telemetryRecords.length,
         manifest: manifestRecords.length,
         healthCheck: healthRecords.length,
@@ -363,7 +414,112 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
       latestTelemetry: telemetryRecords[0] || null,
       latestManifest: manifestRecords[0] || (device.metadata ? { topic: `lc/devices/${device.thingName}/manifest`, payload: (device.metadata as any).rawPayload || device.metadata, receivedAt: device.createdAt } : null),
       latestHealthCheck: healthRecords[0] || null,
-      payloads: telemetries,
+      healthChecks: healthRecords,
+      payloads: deduplicatedPayloads,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/devices/:id/health-checks
+ * Dedicated endpoint for real-time edge device diagnostic history
+ */
+router.get(['/:id/health-checks', '/:thingName/health-checks'], authenticate, async (req, res, next) => {
+  try {
+    const param = req.params.id || req.params.thingName;
+    const isNumeric = /^\d+$/.test(param);
+
+    const device = await prisma.deviceRegistry.findFirst({
+      where: isNumeric ? { id: parseInt(param, 10) } : { thingName: param }
+    });
+
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found in registry' });
+    }
+
+    const checks = await (prisma as any).deviceHealthCheck.findMany({
+      where: {
+        OR: [
+          { thingName: device.thingName },
+          { deviceRegistryId: device.id },
+          ...(device.serialNumber ? [{ thingName: device.serialNumber }] : [])
+        ]
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+
+    res.json({
+      thingName: device.thingName,
+      count: checks.length,
+      latest: checks[0] || null,
+      healthChecks: checks,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /api/v1/devices/:id
+ * DELETE /api/v1/devices/:thingName
+ * Deletes a device from the DeviceRegistry and cleans up telemetry/scope mappings.
+ */
+router.delete(['/:id', '/:thingName'], authenticate, async (req, res, next) => {
+  try {
+    const param = req.params.id || req.params.thingName;
+    const isNumeric = /^\d+$/.test(param);
+
+    const device = await prisma.deviceRegistry.findFirst({
+      where: isNumeric ? { id: parseInt(param, 10) } : { thingName: param },
+      include: {
+        gate: {
+          select: { id: true, lcNumber: true, locationName: true }
+        }
+      }
+    });
+
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found in registry' });
+    }
+
+    const thingName = device.thingName;
+
+    // 1. Delete associated telemetry records
+    await prisma.deviceTelemetry.deleteMany({
+      where: {
+        OR: [
+          { thingName },
+          { deviceRegistryId: device.id },
+        ],
+      },
+    }).catch(console.warn);
+
+    // 2. Delete ScopeGroupDevice associations if table exists
+    try {
+      await (prisma as any).scopeGroupDevice?.deleteMany({
+        where: { thingName },
+      });
+    } catch {
+      // Table may not exist or not linked
+    }
+
+    // 3. Delete from DeviceRegistry
+    await prisma.deviceRegistry.delete({
+      where: { id: device.id },
+    });
+
+    res.json({
+      success: true,
+      message: `Device ${thingName} deleted successfully from registry`,
+      deletedDevice: {
+        id: device.id,
+        thingName: device.thingName,
+        serialNumber: device.serialNumber,
+        gate: device.gate,
+      },
     });
   } catch (error) {
     next(error);
@@ -457,7 +613,7 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
 
     // Default topic according to user's real-world topic format
     if (!topic) {
-      if (raw.action === 'HEALTH_CHECK' || raw.action === 'HEALTH_CHECK_RESPONSE' || raw.BatteryPercentage !== undefined || raw.NetworkStrength !== undefined) {
+      if (raw.action === 'HEALTH_CHECK' || raw.action === 'HEALTH_CHECK_RESPONSE' || raw.healthstatus !== undefined || raw.BatteryPercentage !== undefined || raw.NetworkStrength !== undefined) {
         topic = `lc-gate/${thingName}/health`;
       } else if (raw.thing?.Master || raw.Master) {
         topic = `lc/devices/${thingName}/manifest`;
@@ -551,13 +707,50 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
       }
     }
 
-    // 4. Save the telemetry record
+    // 4. Save into appropriate table (DeviceHealthCheck vs DeviceTelemetry)
+    const isHealthTopic = String(topic).includes('/health') || payload.action === 'HEALTH_CHECK_RESPONSE' || payload.healthstatus !== undefined;
+    const isHealthResponse = isHealthTopic && (payload.healthstatus !== undefined || payload.action === 'HEALTH_CHECK_RESPONSE' || payload.BoomAngle !== undefined);
+
+    if (isHealthResponse) {
+      const healthCheck = await (prisma as any).deviceHealthCheck.create({
+        data: {
+          thingName: device.thingName,
+          requestId: payload.requestId || null,
+          healthstatus: payload.healthstatus || 'HEALTHY',
+          gateStatus: payload.Status || (payload.LimitSwitchClosed !== undefined ? (payload.LimitSwitchClosed ? 'CLOSED' : 'NOT_CLOSED') : null),
+          boomAngle: payload.BoomAngle !== undefined && payload.BoomAngle !== null ? parseFloat(payload.BoomAngle) : null,
+          mcuTempC: payload.McuTempC !== undefined && payload.McuTempC !== null ? parseFloat(payload.McuTempC) : null,
+          signalStrength: payload.SignalStrength !== undefined && payload.SignalStrength !== null ? parseInt(payload.SignalStrength) : null,
+          networkType: payload.NetworkType || '4G_LTE',
+          limitSwitchClosed: payload.LimitSwitchClosed !== undefined && payload.LimitSwitchClosed !== null ? Boolean(payload.LimitSwitchClosed) : null,
+          hallClosed: payload.HallClosed !== undefined && payload.HallClosed !== null ? Boolean(payload.HallClosed) : null,
+          batteryVoltage: payload.BatteryVoltage !== undefined && payload.BatteryVoltage !== null ? parseFloat(payload.BatteryVoltage) : null,
+          batteryPercentage: payload.BatteryPercentage !== undefined && payload.BatteryPercentage !== null ? parseInt(payload.BatteryPercentage) : null,
+          solarVoltage: payload.SolarVoltage !== undefined && payload.SolarVoltage !== null ? parseFloat(payload.SolarVoltage) : null,
+          solarCharging: payload.SolarCharging !== undefined && payload.SolarCharging !== null ? Boolean(payload.SolarCharging) : null,
+          uptimeSeconds: payload.UptimeSeconds !== undefined && payload.UptimeSeconds !== null ? parseInt(payload.UptimeSeconds) : null,
+          firmwareVersion: payload.FirmwareVersion || fwVersion || '1.0.6',
+          rawPayload: payload,
+          deviceRegistryId: device.id,
+          createdAt: raw.timestamp ? new Date(raw.timestamp) : new Date(),
+        }
+      });
+
+      return res.status(201).json({
+        message: 'Health diagnostic report recorded in DeviceHealthCheck table',
+        healthCheck,
+        device: { id: device.id, thingName: device.thingName, status: 'ACTIVE' }
+      });
+    }
+
+    // Strictly Gate State Telemetry
+    const effectiveStatus = currentState || statusVal || 'ONLINE';
     const telemetry = await prisma.deviceTelemetry.create({
       data: {
         thingName: device.thingName,
         topic,
         payload,
-        status: statusVal,
+        status: effectiveStatus,
         deviceRegistryId: device.id,
         receivedAt: raw.timestamp ? new Date(raw.timestamp) : new Date(),
       }
@@ -581,6 +774,11 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
         newState: currentState,
         timestamp: telemetry.receivedAt,
       }).catch(err => console.error('Error recording telemetry event for reports:', err));
+    }
+
+    // Broadcast live telemetry update over WebSocket to any connected clients
+    if (device.gateId) {
+      broadcastGateTelemetry(device.gateId).catch(console.warn);
     }
 
     res.status(201).json({
@@ -820,8 +1018,39 @@ router.delete('/:id', authenticate, async (req, res, next) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid device ID' });
 
+    const device = await prisma.deviceRegistry.findUnique({
+      where: { id },
+      select: { id: true, thingName: true, serialNumber: true }
+    });
+
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found in registry' });
+    }
+
+    // Clean up associated telemetries
+    await prisma.deviceTelemetry.deleteMany({
+      where: {
+        OR: [
+          { deviceRegistryId: id },
+          { thingName: device.thingName },
+          ...(device.serialNumber ? [{ thingName: device.serialNumber }] : [])
+        ]
+      }
+    }).catch(console.warn);
+
+    // Clean up scope group device mappings
+    await prisma.scopeGroupDevice.deleteMany({
+      where: { deviceId: id }
+    }).catch(console.warn);
+
+    // Delete device from registry
     await prisma.deviceRegistry.delete({ where: { id } });
-    res.status(204).send();
+
+    res.status(200).json({
+      success: true,
+      message: `Device "${device.thingName}" successfully deleted from registry.`,
+      deletedThingName: device.thingName
+    });
   } catch (error) {
     next(error);
   }

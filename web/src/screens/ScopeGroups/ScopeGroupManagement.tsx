@@ -909,29 +909,54 @@ export default function ScopeGroupManagement({ user }: Props) {
                     />
 
                     <div className="sg-card-top">
-                      <div>
+                      <div className="sg-card-top-main">
                         {(() => {
                           const p = resolveParent(group);
                           return p ? (
-                            <div style={{ marginBottom: 4 }}>
-                              <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f1f5f9', padding: '2px 8px', borderRadius: 4 }}>
-                                <FaFolder size={11} color="#64748b" /> {p.name} /
+                            <div style={{ marginBottom: 6 }}>
+                              <span className="sg-level-badge child">
+                                <FaFolder size={11} /> {p.name} /
                               </span>
                             </div>
                           ) : (
-                            <div style={{ marginBottom: 4 }}>
-                              <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#0369a1', display: 'inline-flex', alignItems: 'center', gap: 4, background: '#e0f2fe', padding: '2px 8px', borderRadius: 4 }}>
-                                <FaFolderOpen size={11} color="#0369a1" /> Railway Zone (Main Scope)
+                            <div style={{ marginBottom: 6 }}>
+                              <span className="sg-level-badge root">
+                                <FaLayerGroup size={11} /> Railway Zone (Main Scope)
                               </span>
                             </div>
                           );
                         })()}
                         <h3 className="sg-card-title">{group.name}</h3>
                       </div>
+
+                      {canManage && (
+                        <div className="sg-card-header-actions" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            className="sg-icon-btn edit"
+                            onClick={() => handleOpenEdit(group)}
+                            title="Edit scope group"
+                          >
+                            <FaEdit size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            className="sg-icon-btn delete"
+                            onClick={() => setDeleteConfirmGroup(group)}
+                            title="Delete scope group"
+                          >
+                            <FaTrash size={12} />
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     <p className="sg-card-desc">
-                      {group.description || 'No description provided.'}
+                      {group.description ? (
+                        group.description
+                      ) : (
+                        <span className="sg-card-empty-desc">No description provided.</span>
+                      )}
                     </p>
 
                     <div className="sg-card-meta">
@@ -1090,20 +1115,21 @@ export default function ScopeGroupManagement({ user }: Props) {
 
                                 {/* Child Card Footer Actions */}
                                 <div className="sg-nested-card-footer" onClick={e => e.stopPropagation()}>
-                                  <span
-                                    style={{ fontSize: '0.78rem', color: '#0B3C7A', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
+                                  <button
+                                    type="button"
+                                    className="sg-nested-open-btn"
                                     onClick={() => handleCardClick(child)}
                                   >
-                                    Open Sub-Division <FaChevronRight size={10} />
-                                  </span>
+                                    <span>Open Sub-Division</span>
+                                    <FaChevronRight size={10} />
+                                  </button>
                                   {canManage && (
-                                    <div style={{ display: 'flex', gap: 6 }}>
+                                    <div className="sg-nested-actions-group">
                                       <button
                                         type="button"
                                         className="btn btn-xs btn-primary"
                                         onClick={(e) => handleOpenAssignClusters(child, e)}
                                         title={`Assign clusters directly to ${child.name}`}
-                                        style={{ display: 'flex', alignItems: 'center', gap: 4 }}
                                       >
                                         <FaMicrochip size={10} /> + Clusters
                                       </button>
@@ -1112,22 +1138,20 @@ export default function ScopeGroupManagement({ user }: Props) {
                                         className="btn btn-xs btn-secondary"
                                         onClick={(e) => handleOpenCreateSubDivision(child, e)}
                                         title={`Add sub-group inside ${child.name}`}
-                                        style={{ display: 'flex', alignItems: 'center', gap: 4 }}
                                       >
                                         <FaPlus size={10} /> Sub-Group
                                       </button>
                                       <button
                                         type="button"
-                                        className="btn btn-xs btn-secondary"
+                                        className="sg-icon-btn edit mini"
                                         onClick={() => handleOpenEdit(child)}
                                         title="Edit sub-group"
                                       >
-                                        <FaEdit size={10} />
+                                        <FaEdit size={11} />
                                       </button>
                                       <button
                                         type="button"
-                                        className="btn btn-xs"
-                                        style={{ color: '#ef4444', borderColor: '#fecaca', background: '#fef2f2' }}
+                                        className="sg-icon-btn delete mini"
                                         onClick={() => setDeleteConfirmGroup(child)}
                                         title="Delete sub-group"
                                       >
@@ -1145,19 +1169,27 @@ export default function ScopeGroupManagement({ user }: Props) {
 
                     {/* Direct Gate Preview for this card */}
                     <div className="sg-gates-preview">
-                      <div className="sg-preview-label">Direct Included Gates</div>
+                      <div className="sg-preview-header">
+                        <span className="sg-preview-label">DIRECT INCLUDED GATES</span>
+                        {directGateCount > 0 && (
+                          <span className="sg-preview-badge">{directGateCount}</span>
+                        )}
+                      </div>
                       {directGateCount === 0 ? (
-                        <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
+                        <div className="sg-empty-gates-hint">
                           {childSubGroups.length > 0
                             ? 'Assigned via sub-divisions above'
-                            : 'No gates assigned directly'}
-                        </span>
+                            : 'No clusters assigned directly'}
+                        </div>
                       ) : (
                         <div className="sg-preview-chips">
                           {previewGates.map(item => (
                             <span key={item.gate.id} className="sg-gate-chip">
-                              {item.gate.lcNumber}
-                              {item.gate.locationName ? ` (${item.gate.locationName})` : ''}
+                              <span className="sg-chip-dot" />
+                              <span className="sg-chip-num">{item.gate.lcNumber}</span>
+                              {item.gate.locationName && (
+                                <span className="sg-chip-loc">({item.gate.locationName})</span>
+                              )}
                             </span>
                           ))}
                           {remainingGates > 0 && (
@@ -1167,62 +1199,46 @@ export default function ScopeGroupManagement({ user }: Props) {
                       )}
                     </div>
 
-                    {/* Open Hint CTA */}
-                    <div className="sg-card-footer-cta">
-                      <span>View Scope Group & Gates ({directGateCount})</span>
-                      <FaChevronRight size={13} />
-                    </div>
-
-                    {/* Admin Actions */}
-                    {canManage && (
-                      <div
-                        className="sg-card-actions"
-                        style={{ marginTop: 12, display: 'flex', gap: 6, flexWrap: 'wrap' }}
-                        onClick={(e) => e.stopPropagation()}
+                    {/* Organized Card Footer */}
+                    <div className="sg-card-footer" onClick={(e) => e.stopPropagation()}>
+                      {/* Primary Navigation Button */}
+                      <button
+                        type="button"
+                        className="sg-view-btn"
+                        onClick={() => handleCardClick(group)}
+                        title={`View all LC gates and details for ${group.name}`}
                       >
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-primary"
-                          onClick={(e) => handleOpenAssignClusters(group, e)}
-                          title="Assign clusters directly to this Scope Group"
-                          style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-                        >
-                          <FaMicrochip /> Assign Clusters
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-secondary"
-                          onClick={(e) => handleOpenCreateSubDivision(group, e)}
-                          title="Create a child Sub-Division inside this Scope Group"
-                          style={{ color: '#0B3C7A', display: 'flex', alignItems: 'center', gap: 6 }}
-                        >
-                          <FaPlus /> Sub-Division
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-secondary"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenEdit(group);
-                          }}
-                          title="Edit scope group"
-                        >
-                          <FaEdit /> Edit
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm"
-                          style={{ color: '#ef4444', borderColor: '#fecaca', background: '#fef2f2' }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setDeleteConfirmGroup(group);
-                          }}
-                          title="Delete scope group"
-                        >
-                          <FaTrash />
-                        </button>
-                      </div>
-                    )}
+                        <span className="sg-view-btn-left">
+                          <FaFolderOpen size={13} />
+                          <span>View Scope Group & Gates ({directGateCount})</span>
+                        </span>
+                        <FaChevronRight size={11} className="sg-chevron-icon" />
+                      </button>
+
+                      {/* Admin Operational Actions: Balanced side-by-side buttons */}
+                      {canManage && (
+                        <div className="sg-card-action-bar">
+                          <button
+                            type="button"
+                            className="sg-btn-action primary"
+                            onClick={(e) => handleOpenAssignClusters(group, e)}
+                            title="Assign clusters directly to this Scope Group"
+                          >
+                            <FaMicrochip size={12} />
+                            <span>Assign Clusters</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="sg-btn-action secondary"
+                            onClick={(e) => handleOpenCreateSubDivision(group, e)}
+                            title="Create a child Sub-Division inside this Scope Group"
+                          >
+                            <FaPlus size={11} />
+                            <span>Sub-Division</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -1421,18 +1437,26 @@ export default function ScopeGroupManagement({ user }: Props) {
                               <FaFolderPlus size={11} /> {childGrandChildren.length} Nested Sub-Unit{childGrandChildren.length > 1 ? 's' : ''}
                             </div>
                           )}
-                          <div className="sg-subdivision-footer">
-                            <span style={{ fontSize: '0.8rem', color: '#0B3C7A', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
-                              Open Sub-Division <FaChevronRight size={10} />
-                            </span>
+                          <div className="sg-subdivision-footer" onClick={e => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              className="sg-nested-open-btn"
+                              onClick={() => {
+                                setActiveGroup(child);
+                                setActiveGate(null);
+                                setActiveGateSearch('');
+                              }}
+                            >
+                              <span>Open Sub-Division</span>
+                              <FaChevronRight size={10} />
+                            </button>
                             {canManage && (
-                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
+                              <div className="sg-nested-actions-group">
                                 <button
                                   type="button"
                                   className="btn btn-xs btn-primary"
                                   onClick={(e) => handleOpenAssignClusters(child, e)}
                                   title={`Assign clusters directly to ${child.name}`}
-                                  style={{ display: 'flex', alignItems: 'center', gap: 4 }}
                                 >
                                   <FaMicrochip size={10} /> + Clusters
                                 </button>
@@ -1441,17 +1465,16 @@ export default function ScopeGroupManagement({ user }: Props) {
                                   className="btn btn-xs btn-secondary"
                                   onClick={(e) => handleOpenCreateSubDivision(child, e)}
                                   title={`Add sub-group inside ${child.name}`}
-                                  style={{ display: 'flex', alignItems: 'center', gap: 4 }}
                                 >
                                   <FaPlus size={10} /> Sub-Group
                                 </button>
                                 <button
                                   type="button"
-                                  className="btn btn-xs btn-secondary"
+                                  className="sg-icon-btn edit mini"
                                   onClick={() => handleOpenEdit(child)}
                                   title="Edit division"
                                 >
-                                  <FaEdit size={10} />
+                                  <FaEdit size={11} />
                                 </button>
                               </div>
                             )}

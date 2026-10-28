@@ -866,6 +866,18 @@ select.filter-select:focus,
   border-color: #6ee7b7;
 }
 
+.btn-user-action.delete {
+  background-color: #fff1f2;
+  color: #e11d48;
+  border-color: #ffe4e6;
+}
+
+.btn-user-action.delete:hover {
+  background-color: #ffe4e6;
+  border-color: #fca5a5;
+  color: #be123c;
+}
+
 /* User Details Information Grid */
 .user-details-grid {
   display: grid;

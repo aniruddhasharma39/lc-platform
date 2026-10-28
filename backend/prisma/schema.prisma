@@ -273,6 +273,7 @@ model DeviceRegistry {
   metadata        Json?        // Additional custom specs or dynamic properties
 
   telemetries     DeviceTelemetry[]
+  healthChecks    DeviceHealthCheck[]
   scopeGroups     ScopeGroupDevice[]
 
   lastSeenAt      DateTime?
@@ -297,6 +298,34 @@ model DeviceTelemetry {
 
   @@index([thingName])
   @@index([receivedAt])
+}
+
+model DeviceHealthCheck {
+  id                 Int             @id @default(autoincrement())
+  thingName          String
+  requestId          String?
+  healthstatus       String          @default("HEALTHY") // HEALTHY or DEGRADED
+  gateStatus         String?         // CLOSED or NOT_CLOSED
+  boomAngle          Float?
+  mcuTempC           Float?
+  signalStrength     Int?
+  networkType        String?         @default("4G_LTE")
+  limitSwitchClosed  Boolean?
+  hallClosed         Boolean?
+  batteryVoltage     Float?
+  batteryPercentage  Int?
+  solarVoltage       Float?
+  solarCharging      Boolean?
+  uptimeSeconds      Int?
+  firmwareVersion    String?
+  rawPayload         Json
+  deviceRegistryId   Int?
+  deviceRegistry     DeviceRegistry? @relation(fields: [deviceRegistryId], references: [id], onDelete: Cascade)
+  createdAt          DateTime        @default(now())
+
+  @@index([thingName])
+  @@index([requestId])
+  @@index([createdAt])
 }
 
 model GateStateAlertLog {

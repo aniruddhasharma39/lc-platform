@@ -26,6 +26,7 @@ import {
   FaSpinner,
   FaFilter,
   FaLayerGroup,
+  FaTrash,
 } from 'react-icons/fa';
 import type { User } from '../types';
 import { API_URL } from '../config';
@@ -78,7 +79,7 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
 
   // Modals & Action States
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
-  const [confirmModal, setConfirmModal] = useState<{ id: number; action: 'deactivate' | 'reactivate'; name: string } | null>(null);
+  const [confirmModal, setConfirmModal] = useState<{ id: number; action: 'deactivate' | 'reactivate' | 'delete'; name: string; roleName?: string } | null>(null);
   const [rejectModal, setRejectModal] = useState<{ id: number; name: string } | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
   const [actionLoading, setActionLoading] = useState<{ id: number; action: string } | null>(null);
@@ -219,31 +220,48 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
     }, 2000);
   };
 
-  // Actions: Deactivate / Reactivate / Approve / Reject
-  const handleUserStatusChange = async (id: number, action: 'deactivate' | 'reactivate', userName: string) => {
+  // Actions: Deactivate / Reactivate / Delete
+  const handleUserStatusChange = async (id: number, action: 'deactivate' | 'reactivate' | 'delete', userName: string) => {
     setActionLoading({ id, action });
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`${API_URL}/api/v1/users/${id}/${action}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      if (action === 'delete') {
+        const res = await fetch(`${API_URL}/api/v1/users/${id}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        });
 
-      if (res.ok) {
-        if (action === 'deactivate') {
-          toastWarning(`User account "${userName}" has been deactivated.`, 'Account Deactivated');
+        if (res.ok) {
+          toastSuccess(`User account "${userName}" has been permanently deleted.`, 'User Deleted');
+          setConfirmModal(null);
+          await fetchAllData();
+          if (onUserUpdate) onUserUpdate();
         } else {
-          toastSuccess(`User account "${userName}" has been reactivated successfully!`, 'Account Reactivated');
+          const err = await res.json().catch(() => ({}));
+          toastError(err.error || 'Failed to delete user', 'Delete Failed');
         }
-        setConfirmModal(null);
-        await fetchAllData();
-        if (onUserUpdate) onUserUpdate();
       } else {
-        const err = await res.json().catch(() => ({}));
-        toastError(err.error || `Failed to ${action} user`, 'Action Failed');
+        const res = await fetch(`${API_URL}/api/v1/users/${id}/${action}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (res.ok) {
+          if (action === 'deactivate') {
+            toastWarning(`User account "${userName}" has been deactivated.`, 'Account Deactivated');
+          } else {
+            toastSuccess(`User account "${userName}" has been reactivated successfully!`, 'Account Reactivated');
+          }
+          setConfirmModal(null);
+          await fetchAllData();
+          if (onUserUpdate) onUserUpdate();
+        } else {
+          const err = await res.json().catch(() => ({}));
+          toastError(err.error || `Failed to ${action} user`, 'Action Failed');
+        }
       }
     } catch (err: any) {
       console.error(err);
@@ -960,7 +978,7 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
                                     <button
                                       type="button"
                                       className="btn-user-action deactivate"
-                                      onClick={() => setConfirmModal({ id: u.id, action: 'deactivate', name: u.fullName })}
+                                      onClick={() => setConfirmModal({ id: u.id, action: 'deactivate', name: u.fullName, roleName })}
                                       title={`Deactivate account for ${u.fullName}`}
                                       disabled={actionLoading?.id === u.id}
                                     >
@@ -971,7 +989,7 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
                                     <button
                                       type="button"
                                       className="btn-user-action reactivate"
-                                      onClick={() => setConfirmModal({ id: u.id, action: 'reactivate', name: u.fullName })}
+                                      onClick={() => setConfirmModal({ id: u.id, action: 'reactivate', name: u.fullName, roleName })}
                                       title={`Reactivate account for ${u.fullName}`}
                                       disabled={actionLoading?.id === u.id}
                                     >
@@ -979,6 +997,17 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
                                       <span>Reactivate</span>
                                     </button>
                                   )}
+
+                                  <button
+                                    type="button"
+                                    className="btn-user-action delete"
+                                    onClick={() => setConfirmModal({ id: u.id, action: 'delete', name: u.fullName, roleName })}
+                                    title={`Permanently delete user ${u.fullName}`}
+                                    disabled={actionLoading?.id === u.id}
+                                  >
+                                    <FaTrash />
+                                    <span>Delete</span>
+                                  </button>
                                 </div>
                               )}
                             </div>
@@ -1232,26 +1261,45 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
       )}
 
       {/* ====================================================================
-          MODAL: DEACTIVATE / REACTIVATE CONFIRMATION
+          MODAL: DEACTIVATE / REACTIVATE / DELETE CONFIRMATION
           ==================================================================== */}
       {confirmModal && (
         <div className="users-modal-backdrop" onClick={() => setConfirmModal(null)}>
           <div className="users-modal-dialog" onClick={(e) => e.stopPropagation()}>
             <div className="users-modal-header">
-              <div className={`users-modal-icon-badge ${confirmModal.action === 'deactivate' ? 'danger' : 'success'}`}>
-                {confirmModal.action === 'deactivate' ? <FaExclamationTriangle /> : <FaUserCheck />}
+              <div className={`users-modal-icon-badge ${confirmModal.action === 'delete' ? 'danger' : confirmModal.action === 'deactivate' ? 'danger' : 'success'}`}>
+                {confirmModal.action === 'delete' ? <FaTrash /> : confirmModal.action === 'deactivate' ? <FaExclamationTriangle /> : <FaUserCheck />}
               </div>
-              <h3>Confirm Account {confirmModal.action === 'deactivate' ? 'Deactivation' : 'Reactivation'}</h3>
+              <h3>
+                {confirmModal.action === 'delete'
+                  ? 'Delete User Account'
+                  : `Confirm Account ${confirmModal.action === 'deactivate' ? 'Deactivation' : 'Reactivation'}`}
+              </h3>
             </div>
             <div className="users-modal-body">
-              <p>
-                Are you sure you want to <strong>{confirmModal.action}</strong> the account for{' '}
-                <strong>"{confirmModal.name}"</strong>?
-              </p>
-              {confirmModal.action === 'deactivate' && (
-                <p style={{ fontSize: '0.85rem', color: '#b91c1c' }}>
-                  Deactivated users are immediately prevented from logging into the portal and mobile application.
-                </p>
+              {confirmModal.action === 'delete' ? (
+                <div>
+                  <p>
+                    Are you sure you want to permanently delete the user account for <strong>"{confirmModal.name}"</strong>{confirmModal.roleName ? ` (${confirmModal.roleName})` : ''}?
+                  </p>
+                  <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '0.75rem 1rem', marginTop: '0.75rem' }}>
+                    <p style={{ fontSize: '0.84rem', color: '#b91c1c', margin: 0, fontWeight: 600 }}>
+                      ⚠️ This action is permanent and cannot be undone. All active sessions, tokens, and role permissions will be removed immediately.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <p>
+                    Are you sure you want to <strong>{confirmModal.action}</strong> the account for{' '}
+                    <strong>"{confirmModal.name}"</strong>?
+                  </p>
+                  {confirmModal.action === 'deactivate' && (
+                    <p style={{ fontSize: '0.85rem', color: '#b91c1c' }}>
+                      Deactivated users are immediately prevented from logging into the portal and mobile application.
+                    </p>
+                  )}
+                </div>
               )}
             </div>
             <div className="users-modal-footer">
@@ -1276,8 +1324,18 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
                   </>
                 ) : (
                   <>
-                    {confirmModal.action === 'deactivate' ? <FaUserSlash /> : <FaUserCheck />}
-                    <span>Confirm {confirmModal.action === 'deactivate' ? 'Deactivation' : 'Reactivation'}</span>
+                    {confirmModal.action === 'delete' ? (
+                      <FaTrash />
+                    ) : confirmModal.action === 'deactivate' ? (
+                      <FaUserSlash />
+                    ) : (
+                      <FaUserCheck />
+                    )}
+                    <span>
+                      {confirmModal.action === 'delete'
+                        ? 'Confirm Delete'
+                        : `Confirm ${confirmModal.action === 'deactivate' ? 'Deactivation' : 'Reactivation'}`}
+                    </span>
                   </>
                 )}
               </button>
