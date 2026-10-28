@@ -563,10 +563,9 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
       }
     });
 
-    // 5. Trigger DLT SMS dispatch if state genuinely transitioned or if initial state is OPEN
-    const isTransition = previousState ? (previousState !== currentState) : (currentState === 'OPEN');
-    if (currentState && isTransition) {
-      console.log(`⚡ [STATE TRANSITION DETECTED] Gate "${device.thingName}": ${previousState || 'INITIAL'} ➔ ${currentState}`);
+    // 5. Trigger DLT SMS dispatch if state genuinely transitioned between OPEN and CLOSED
+    if (currentState && previousState && currentState !== previousState) {
+      console.log(`⚡ [STATE TRANSITION DETECTED] Gate "${device.thingName}": ${previousState} ➔ ${currentState}`);
       checkAndDispatchGateStateAlert({
         deviceId: device.id,
         gateId: device.gateId,

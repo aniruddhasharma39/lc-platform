@@ -227,10 +227,8 @@ export async function pollTelemetryTransitions() {
       const prevState = lastKnownState.get(thingName);
 
       // Transition detected! (e.g., OPEN ➔ CLOSED or CLOSED ➔ OPEN)
-      // Also triggers if gate is observed OPEN on initial / cold start payload
-      const isTransition = prevState ? (prevState !== currentState) : (currentState === 'OPEN');
-      if (isTransition) {
-        console.log(`⚡ [TELEMETRY MONITOR] State transition detected for "${thingName}": ${prevState || 'INITIAL'} ➔ ${currentState}`);
+      if (prevState && prevState !== currentState) {
+        console.log(`⚡ [TELEMETRY MONITOR] State transition detected for "${thingName}": ${prevState} ➔ ${currentState}`);
 
         // Find device metadata
         const device = await prisma.deviceRegistry.findFirst({

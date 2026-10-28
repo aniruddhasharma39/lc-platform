@@ -7,7 +7,6 @@ import fs from 'fs';
 import { prisma } from '../lib/prisma';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { getAllDescendantScopeGroupIds } from '../lib/scopeHierarchy';
-import { checkAndDispatchGateStateAlert } from '../lib/gateAlertSms';
 
 const router = Router();
 router.use(authenticate);
@@ -955,16 +954,6 @@ router.post('/events', async (req: AuthRequest, res, next) => {
         remarks: data.remarks
       }
     });
-
-    // Dispatch DLT Gate State SMS alert
-    if (data.status === 'OPEN' || data.status === 'CLOSED') {
-      checkAndDispatchGateStateAlert({
-        gateId: gate.id,
-        thingName: gate.lcNumber,
-        newState: data.status,
-        timestamp: closedAt || openedAt,
-      }).catch(err => console.error('Error dispatching SMS from reports event create:', err));
-    }
 
     res.status(201).json(event);
   } catch (error) {
