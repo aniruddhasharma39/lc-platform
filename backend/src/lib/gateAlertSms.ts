@@ -244,21 +244,8 @@ export async function checkAndDispatchGateStateAlert(options: GateStateAlertOpti
     deviceScopeRecords.forEach(r => scopeGroupIds.add(r.scopeGroupId));
   }
 
-  // Fallback: If gate or device is not explicitly mapped to a scope group (or testing / newly registered device),
-  // check if any scope group with allowSms === true exists in the system so SMS alerts are never silently dropped
   if (scopeGroupIds.size === 0) {
-    const activeSmsGroups = await prisma.scopeGroup.findMany({
-      where: { allowSms: true },
-      select: { id: true, name: true }
-    });
-    if (activeSmsGroups.length > 0) {
-      console.log(`ℹ️ [GATE STATE ALERT] Gate/Device "${effectiveLcNumber}" is not explicitly mapped to a scope group. Routing alert to active SMS scope group(s): ${activeSmsGroups.map(g => g.name).join(', ')}`);
-      activeSmsGroups.forEach(g => scopeGroupIds.add(g.id));
-    }
-  }
-
-  if (scopeGroupIds.size === 0) {
-    console.log(`ℹ️ [GATE STATE ALERT] No scope groups mapped to gate "${effectiveLcNumber}" and no SMS-enabled scope groups found. SMS dispatch skipped.`);
+    console.log(`ℹ️ [GATE STATE ALERT] No scope groups mapped to gate "${effectiveLcNumber}". SMS dispatch skipped.`);
     return { dispatched: 0, reason: 'NO_MAPPED_SCOPE_GROUPS' };
   }
 
