@@ -1,7 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:open_filex/open_filex.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
@@ -576,8 +579,24 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                     final res = await http.get(uri, headers: _headers);
 
                                     if (res.statusCode == 200) {
-                                      if (mounted) {
-                                        AppFeedback.showSuccess(context, 'Report generated (${res.bodyBytes.length} bytes)! Ready for download.');
+                                      try {
+                                        final dir = await getApplicationDocumentsDirectory();
+                                        final ext = selectedFormat == 'pdf' ? 'pdf' : 'xlsx';
+                                        final timestamp = DateTime.now().millisecondsSinceEpoch;
+                                        final file = File('${dir.path}/LC_Gate_Report_$timestamp.$ext');
+                                        await file.writeAsBytes(res.bodyBytes, flush: true);
+
+                                        if (mounted) {
+                                          AppFeedback.showSuccess(context, 'Report saved (${(res.bodyBytes.length / 1024).toStringAsFixed(1)} KB)! Opening...');
+                                          final openResult = await OpenFilex.open(file.path);
+                                          if (openResult.type != ResultType.done && mounted) {
+                                            AppFeedback.showInfo(context, 'Saved to ${file.path}');
+                                          }
+                                        }
+                                      } catch (fileErr) {
+                                        if (mounted) {
+                                          AppFeedback.showWarning(context, 'Report downloaded, but could not open viewer: $fileErr');
+                                        }
                                       }
                                     } else {
                                       if (mounted) AppFeedback.showError(context, 'Export failed: HTTP ${res.statusCode}');

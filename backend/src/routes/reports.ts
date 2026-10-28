@@ -2,6 +2,8 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
+import path from 'path';
+import fs from 'fs';
 import { prisma } from '../lib/prisma';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { getAllDescendantScopeGroupIds } from '../lib/scopeHierarchy';
@@ -486,6 +488,8 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
     const data = await fetchFilteredOperationalEvents(req);
     const format = (req.query.format as string || 'xlsx').toLowerCase();
     const columnsParam = req.query.columns ? (req.query.columns as string).split(',').map(c => c.trim()) : null;
+    const statusFilter = typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL';
+    const shiftFilter = typeof req.query.shift === 'string' ? req.query.shift.toUpperCase() : 'ALL';
 
     // Default column set
     const ALL_COLUMNS = [
@@ -540,51 +544,96 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
     // ─────────────────────────────────────────────────────────────
     if (format === 'xlsx' || format === 'excel') {
       const workbook = new ExcelJS.Workbook();
-      workbook.creator = 'LC Platform';
+      workbook.creator = 'LC Platform - Indian Railways';
       workbook.created = new Date();
 
       const sheet = workbook.addWorksheet('Operations Report', {
         pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 }
       });
 
-      // 1. Title Block
-      sheet.mergeCells('A1', 'H1');
-      const titleCell = sheet.getCell('A1');
-      titleCell.value = 'INDIAN RAILWAYS / LC GATE PLATFORM';
-      titleCell.font = { name: 'Calibri', size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
-      titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B3C7A' } };
-      titleCell.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-      sheet.getRow(1).height = 36;
+      const lastColLetter = String.fromCharCode(64 + Math.max(8, activeColumns.length));
 
-      sheet.mergeCells('A2', 'H2');
-      const subtitleCell = sheet.getCell('A2');
-      subtitleCell.value = `Level Crossing Operational Audit & History Log (${data.startDateStr} to ${data.endDateStr})`;
-      subtitleCell.font = { name: 'Calibri', size: 12, italic: true, color: { argb: 'FF475569' } };
-      sheet.getRow(2).height = 24;
+      // Row 1: Government of India / Ministry of Railways
+      sheet.mergeCells(`A1:${lastColLetter}1`);
+      const r1 = sheet.getCell('A1');
+      r1.value = 'GOVERNMENT OF INDIA — MINISTRY OF RAILWAYS';
+      r1.font = { name: 'Calibri', size: 12, bold: true, color: { argb: 'FFFFFFFF' } };
+      r1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
+      r1.alignment = { horizontal: 'center', vertical: 'middle' };
+      sheet.getRow(1).height = 24;
 
-      // 2. Metadata / KPI Summary Block
-      sheet.getCell('A4').value = 'Date Range:';
-      sheet.getCell('B4').value = `${data.startDateStr} to ${data.endDateStr}`;
-      sheet.getCell('C4').value = 'Total Operations:';
-      sheet.getCell('D4').value = data.metrics.totalOperations;
-      sheet.getCell('E4').value = 'Total Open Time:';
-      sheet.getCell('F4').value = data.metrics.totalDurationFormatted;
-      sheet.getCell('G4').value = 'Extended Delays (>15m):';
-      sheet.getCell('H4').value = data.metrics.extendedDelaysCount;
+      // Row 2: Indian Railways Header
+      sheet.mergeCells(`A2:${lastColLetter}2`);
+      const r2 = sheet.getCell('A2');
+      r2.value = 'INDIAN RAILWAYS — LEVEL CROSSING SAFETY & OPERATIONS PLATFORM';
+      r2.font = { name: 'Calibri', size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
+      r2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
+      r2.alignment = { horizontal: 'center', vertical: 'middle' };
+      sheet.getRow(2).height = 32;
 
-      ['A4', 'C4', 'E4', 'G4'].forEach(cell => {
-        sheet.getCell(cell).font = { bold: true, color: { argb: 'FF0B3C7A' } };
+      // Row 3: Subtitle
+      sheet.mergeCells(`A3:${lastColLetter}3`);
+      const r3 = sheet.getCell('A3');
+      r3.value = `Level Crossing Operational Audit & History Log (${data.startDateStr} to ${data.endDateStr})`;
+      r3.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF003580' } };
+      r3.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8D5A3' } };
+      r3.alignment = { horizontal: 'center', vertical: 'middle' };
+      sheet.getRow(3).height = 22;
+
+      // Rows 4-6: National Tricolor Ribbons
+      sheet.mergeCells(`A4:${lastColLetter}4`);
+      sheet.getCell('A4').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6600' } }; // Saffron
+      sheet.getRow(4).height = 4;
+
+      sheet.mergeCells(`A5:${lastColLetter}5`);
+      sheet.getCell('A5').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } }; // White
+      sheet.getRow(5).height = 3;
+
+      sheet.mergeCells(`A6:${lastColLetter}6`);
+      sheet.getCell('A6').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF046A38' } }; // Green
+      sheet.getRow(6).height = 4;
+
+      // Row 7: Spacer
+      sheet.getRow(7).height = 8;
+
+      // Row 8: Metadata Block
+      sheet.getCell('A8').value = 'Date Range:';
+      sheet.getCell('B8').value = `${data.startDateStr} to ${data.endDateStr}`;
+      sheet.getCell('C8').value = 'Generated At:';
+      sheet.getCell('D8').value = `${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`;
+      sheet.getCell('E8').value = 'Shift Filter:';
+      sheet.getCell('F8').value = shiftFilter || 'ALL';
+      sheet.getCell('G8').value = 'Status Filter:';
+      sheet.getCell('H8').value = statusFilter || 'ALL';
+
+      ['A8', 'C8', 'E8', 'G8'].forEach(cell => {
+        sheet.getCell(cell).font = { bold: true, color: { argb: 'FF003580' } };
       });
-      sheet.getRow(4).height = 20;
+      sheet.getRow(8).height = 20;
 
-      // Spacer
-      sheet.getRow(5).height = 10;
+      // Row 9: KPI Summary Block
+      sheet.getCell('A9').value = 'Total Operations:';
+      sheet.getCell('B9').value = data.metrics.totalOperations;
+      sheet.getCell('C9').value = 'Total Open Time:';
+      sheet.getCell('D9').value = data.metrics.totalDurationFormatted;
+      sheet.getCell('E9').value = 'Average Open Pace:';
+      sheet.getCell('F9').value = data.metrics.avgDurationFormatted;
+      sheet.getCell('G9').value = 'Extended Delays (>15m):';
+      sheet.getCell('H9').value = data.metrics.extendedDelaysCount;
 
-      // 3. Table Header
-      const headerRowIndex = 6;
+      ['A9', 'C9', 'E9', 'G9'].forEach(cell => {
+        sheet.getCell(cell).font = { bold: true, color: { argb: 'FF003580' } };
+      });
+      sheet.getRow(9).height = 20;
+
+      // Row 10: Spacer
+      sheet.getRow(10).height = 8;
+
+      // Row 11: Table Header
+      const headerRowIndex = 11;
       const headerRow = sheet.getRow(headerRowIndex);
       headerRow.values = activeColumns.map(c => c.label);
-      headerRow.height = 28;
+      headerRow.height = 26;
 
       headerRow.eachCell((cell) => {
         cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
@@ -592,15 +641,15 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
         cell.alignment = { horizontal: 'center', vertical: 'middle' };
         cell.border = {
           top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-          bottom: { style: 'medium', color: { argb: 'FF0B3C7A' } }
+          bottom: { style: 'medium', color: { argb: 'FF003580' } }
         };
       });
 
-      // 4. Data Rows
+      // Rows 12+: Data Rows
       rows.forEach((r, idx) => {
         const rowValues = activeColumns.map(c => (r as any)[c.key]);
         const dataRow = sheet.addRow(rowValues);
-        dataRow.height = 22;
+        dataRow.height = 21;
 
         const isEven = idx % 2 === 0;
         dataRow.eachCell((cell, colNum) => {
@@ -656,7 +705,7 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
         margin: 36,
         info: {
           Title: `LC Gate Operations Report (${data.startDateStr} - ${data.endDateStr})`,
-          Author: 'LC Platform',
+          Author: 'Indian Railways - Level Crossing Safety Platform',
         }
       });
 
@@ -675,37 +724,92 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
         }
       });
 
-      // Header Banner
-      doc.rect(36, 36, doc.page.width - 72, 44).fill('#0B3C7A');
-      doc.fillColor('#FFFFFF')
-        .fontSize(16)
-        .font('Helvetica-Bold')
-        .text('INDIAN RAILWAYS / LEVEL CROSSING PLATFORM', 48, 48);
+      const navyBlue = '#003580';
+      const saffron = '#FF6600';
+      const deepGreen = '#046A38';
 
-      doc.fillColor('#E2E8F0')
-        .fontSize(10)
-        .font('Helvetica')
-        .text(`Operational Logsheet Audit Report | Range: ${data.startDateStr} to ${data.endDateStr}`, 48, 66);
+      // 1. Official Header Top Banner
+      doc.rect(0, 0, doc.page.width, 90).fill(navyBlue);
 
-      // KPI Metric Badges
-      let yPos = 92;
+      // Locate Indian Railways and Azadi logos
+      const irLogoPath = [
+        path.join(__dirname, '../../assets/ir_logo.jpg'),
+        path.join(__dirname, '../assets/ir_logo.jpg'),
+        path.join(process.cwd(), 'assets/ir_logo.jpg'),
+        path.join(process.cwd(), 'backend/assets/ir_logo.jpg'),
+      ].find(p => p && fs.existsSync(p));
+
+      const azadiLogoPath = [
+        path.join(__dirname, '../../assets/azadi_logo.png'),
+        path.join(__dirname, '../assets/azadi_logo.png'),
+        path.join(process.cwd(), 'assets/azadi_logo.png'),
+        path.join(process.cwd(), 'backend/assets/azadi_logo.png'),
+      ].find(p => p && fs.existsSync(p));
+
+      // Left: IR Logo
+      if (irLogoPath) {
+        try { doc.image(irLogoPath, 16, 10, { width: 68, height: 68 }); } catch (_) {}
+      }
+
+      // Right: Azadi Logo
+      if (azadiLogoPath) {
+        try { doc.image(azadiLogoPath, doc.page.width - 92, 10, { width: 74, height: 68 }); } catch (_) {}
+      }
+
+      // Center Typography: Government of India & Ministry of Railways
+      doc.fillColor('white').fontSize(9.5).font('Helvetica')
+         .text('Government of India', 0, 11, { align: 'center' })
+         .text('Ministry of Railways', 0, 24, { align: 'center' });
+
+      doc.fillColor('white').fontSize(18).font('Helvetica-Bold')
+         .text('INDIAN RAILWAYS', 0, 37, { align: 'center' });
+
+      doc.fillColor('#E8D5A3').fontSize(10.5).font('Helvetica')
+         .text('Level Crossing Safety & Operational Audit Report', 0, 59, { align: 'center' });
+
+      // National Tricolor Ribbon
+      doc.rect(0, 75, doc.page.width, 5).fill(saffron);
+      doc.rect(0, 80, doc.page.width, 5).fill('white');
+      doc.rect(0, 85, doc.page.width, 5).fill(deepGreen);
+
+      // 2. Structured Metadata & Applied Filters Box
+      let yPos = 98;
+      doc.rect(36, yPos, doc.page.width - 72, 42).strokeColor('#CCCCCC').lineWidth(1).stroke();
+      
+      const mY = yPos + 7;
+      const col1X = 46;
+      const col2X = doc.page.width * 0.38;
+      const col3X = doc.page.width * 0.72;
+
+      doc.fillColor('#334155').fontSize(8.5).font('Helvetica');
+      doc.text(`Date Range: ${data.startDateStr}  —  ${data.endDateStr}`, col1X, mY);
+      doc.text(`Generated At: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`, col2X, mY);
+      doc.text(`Shift Filter: ${shiftFilter || 'ALL SHIFTS'}`, col3X, mY);
+
+      doc.text(`Scope Groups: ${data.targetScopeGroupIds?.length ? `${data.targetScopeGroupIds.length} Groups` : 'All Assigned'}`, col1X, mY + 16);
+      doc.text(`Gates Filtered: ${data.metrics.reportingGatesCount} Reporting Gates`, col2X, mY + 16);
+      doc.text(`Status Filter: ${statusFilter || 'ALL STATUSES'}`, col3X, mY + 16);
+
+      yPos += 48;
+
+      // 3. KPI Metric Badges
       const kpiWidth = (doc.page.width - 72 - 30) / 4;
       const kpis = [
         { label: 'TOTAL OPERATIONS', val: `${data.metrics.totalOperations}` },
         { label: 'TOTAL OPEN TIME', val: data.metrics.totalDurationFormatted },
-        { label: 'AVERAGE OPEN PACE', val: data.metrics.avgDurationFormatted },
+        { label: 'AVERAGE CLEARANCE PACE', val: data.metrics.avgDurationFormatted },
         { label: 'EXTENDED DELAYS (>15m)', val: `${data.metrics.extendedDelaysCount}` },
       ];
 
       kpis.forEach((kpi, i) => {
         const xPos = 36 + i * (kpiWidth + 10);
-        doc.rect(xPos, yPos, kpiWidth, 36).fillAndStroke('#F1F5F9', '#CBD5E1');
-        doc.fillColor('#475569').fontSize(7.5).font('Helvetica-Bold').text(kpi.label, xPos + 8, yPos + 6);
-        doc.fillColor('#0B3C7A').fontSize(12).font('Helvetica-Bold').text(kpi.val, xPos + 8, yPos + 18);
+        doc.rect(xPos, yPos, kpiWidth, 34).fillAndStroke('#F1F5F9', '#CBD5E1');
+        doc.fillColor('#475569').fontSize(7.5).font('Helvetica-Bold').text(kpi.label, xPos + 8, yPos + 5);
+        doc.fillColor('#003580').fontSize(11.5).font('Helvetica-Bold').text(kpi.val, xPos + 8, yPos + 17);
       });
 
-      // Table Setup
-      yPos = 140;
+      // 4. Data Table
+      yPos += 42;
       const pdfCols = activeColumns;
       const colWidth = (doc.page.width - 72) / pdfCols.length;
 
@@ -732,6 +836,13 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
           // Page overflow check
           if (yPos > doc.page.height - 50) {
             doc.addPage({ layout: 'landscape', size: 'A4', margin: 36 });
+            
+            // Sub-header on subsequent pages
+            doc.rect(0, 0, doc.page.width, 24).fill(navyBlue);
+            doc.fillColor('white').fontSize(9).font('Helvetica-Bold')
+               .text('INDIAN RAILWAYS — Level Crossing Operations Audit Report (Continued)', 0, 7, { align: 'center' });
+            doc.rect(0, 24, doc.page.width, 2).fill(saffron);
+
             yPos = 36;
             // Redraw header on new page
             doc.rect(36, yPos, doc.page.width - 72, 20).fill('#1E293B');
@@ -762,12 +873,12 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
         });
       }
 
-      // Footer
+      // Footer with page numbering on every page
       const range = doc.bufferedPageRange();
       for (let i = range.start; i < range.start + range.count; i++) {
         doc.switchToPage(i);
         doc.fillColor('#94A3B8').fontSize(7.5).font('Helvetica')
-          .text(`Generated on ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST | Level Crossing Automated Telemetry | Page ${i - range.start + 1} of ${range.count}`, 36, doc.page.height - 25, {
+          .text(`Generated on ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST | Level Crossing Automated Telemetry Platform | Page ${i - range.start + 1} of ${range.count}`, 36, doc.page.height - 24, {
             align: 'center',
             width: doc.page.width - 72
           });
