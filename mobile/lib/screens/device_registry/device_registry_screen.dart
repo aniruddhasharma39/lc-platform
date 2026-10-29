@@ -766,15 +766,15 @@ class _DeviceInspectSheetState extends State<_DeviceInspectSheet> {
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                             decoration: BoxDecoration(
-                              color: strVal.toUpperCase() == 'CLOSED' ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
+                              color: (strVal.toUpperCase() == 'NOT_CLOSED' ? 'OPEN' : strVal).toUpperCase() == 'CLOSED' ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
-                              strVal,
+                              strVal.toUpperCase() == 'NOT_CLOSED' ? 'OPEN' : strVal,
                               style: TextStyle(
                                 fontSize: 11,
                                 fontWeight: FontWeight.bold,
-                                color: strVal.toUpperCase() == 'CLOSED' ? const Color(0xFF15803D) : const Color(0xFFB91C1C),
+                                color: (strVal.toUpperCase() == 'NOT_CLOSED' ? 'OPEN' : strVal).toUpperCase() == 'CLOSED' ? const Color(0xFF15803D) : const Color(0xFFB91C1C),
                               ),
                             ),
                           ),

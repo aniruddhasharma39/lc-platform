@@ -65,12 +65,12 @@ function renderCleanKeyValueTable(data: any): ReactNode {
                         fontWeight: 800,
                         fontSize: '0.82rem',
                         letterSpacing: '0.3px',
-                        background: strVal.toUpperCase() === 'CLOSED' ? 'rgba(16, 185, 129, 0.14)' : 'rgba(239, 68, 68, 0.14)',
-                        color: strVal.toUpperCase() === 'CLOSED' ? '#047857' : '#b91c1c',
-                        border: `1px solid ${strVal.toUpperCase() === 'CLOSED' ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.35)'}`,
+                        background: (strVal.toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : strVal).toUpperCase() === 'CLOSED' ? 'rgba(16, 185, 129, 0.14)' : 'rgba(239, 68, 68, 0.14)',
+                        color: (strVal.toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : strVal).toUpperCase() === 'CLOSED' ? '#047857' : '#b91c1c',
+                        border: `1px solid ${(strVal.toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : strVal).toUpperCase() === 'CLOSED' ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.35)'}`,
                       }}
                     >
-                      {strVal}
+                      {strVal.toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : strVal}
                     </span>
                   ) : isBool ? (
                     <span
@@ -314,7 +314,8 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
               setHealthCheckStage('SUCCESS');
               setSelectedPayloadId(matchingCheck.id);
               await loadDeviceTelemetry(inspectDevice, true);
-              toastSuccess(`Live response received from ${inspectDevice.thingName}! Barrier: ${matchingCheck.gateStatus || 'REPORTED'} | Verdict: ${matchingCheck.healthstatus || 'HEALTHY'}`, 'Device Verified');
+              const displayBarrier = matchingCheck.gateStatus === 'NOT_CLOSED' ? 'OPEN' : (matchingCheck.gateStatus || 'REPORTED');
+          toastSuccess(`Live response received from ${inspectDevice.thingName}! Barrier: ${displayBarrier} | Verdict: ${matchingCheck.healthstatus || 'HEALTHY'}`, 'Device Verified');
               return;
             }
           }
@@ -1359,7 +1360,7 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                               <FaMicrochip color="#d97706" /> Gate & Sensors
                             </div>
                             <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0f172a', marginTop: 4 }}>
-                              {currentViewingRecord.payload?.Status || (currentViewingRecord.payload?.LimitSwitchClosed ? 'CLOSED' : 'OPEN')}
+                              {(currentViewingRecord.payload?.Status === 'NOT_CLOSED' ? 'OPEN' : currentViewingRecord.payload?.Status) || (currentViewingRecord.payload?.LimitSwitchClosed ? 'CLOSED' : 'OPEN')}
                             </div>
                             <div style={{ fontSize: '0.74rem', color: '#64748b' }}>
                               Boom: {currentViewingRecord.payload?.BoomAngle !== undefined ? `${currentViewingRecord.payload.BoomAngle}°` : '0.0°'} | Limit: {currentViewingRecord.payload?.LimitSwitchClosed ? 'Closed' : 'Open'}

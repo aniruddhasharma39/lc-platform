@@ -423,47 +423,7 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
                             padding: const EdgeInsets.all(14),
                             children: [
                               ..._manifestPayload!.entries.map((entry) {
-                                final isObj = entry.value is Map || entry.value is List;
-                                final valStr = isObj ? json.encode(entry.value) : entry.value.toString();
-
-                                return Container(
-                                  margin: const EdgeInsets.only(bottom: 6),
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFF8FAFC),
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(color: const Color(0xFFE2E8F0)),
-                                  ),
-                                  child: Row(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Expanded(
-                                        flex: 2,
-                                        child: Text(
-                                          entry.key,
-                                          style: const TextStyle(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.bold,
-                                            color: Color(0xFF1E293B),
-                                            fontFamily: 'monospace',
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        flex: 3,
-                                        child: Text(
-                                          valStr,
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: isObj ? const Color(0xFF0284C7) : const Color(0xFF475569),
-                                            fontFamily: isObj ? 'monospace' : null,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                );
+                                return _buildFormattedEntry(entry.key, entry.value, depth: 0);
                               }),
                             ],
                           ),
@@ -472,4 +432,177 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
       ),
     );
   }
+
+  dynamic _tryParseJson(dynamic val) {
+    if (val is String) {
+      final s = val.trim();
+      if ((s.startsWith('{') && s.endsWith('}')) || (s.startsWith('[') && s.endsWith(']'))) {
+        try {
+          return json.decode(s);
+        } catch (_) {}
+      }
+    }
+    return val;
+  }
+
+  String _formatKey(String key) {
+    if (key == 'S.No.' || key == 'sNo') return 'Serial Number';
+    if (key == 'Mfg' || key == 'mfg') return 'Manufacturing Date';
+    if (key == 'Desc' || key == 'desc') return 'Description';
+    if (key == 'version') return 'Firmware Version';
+    if (key == 'Device_Name') return 'Device Name';
+    if (key == 'SensorName') return 'Connected Sensors';
+    if (key == 'topicThingName') return 'Thing Topic ID';
+    if (key == 'thing') return 'Hardware Manifest';
+    return key.replaceAll('_', ' ');
+  }
+
+  Widget _buildFormattedEntry(String key, dynamic rawVal, {int depth = 0}) {
+    final val = _tryParseJson(rawVal);
+
+    if (val is Map) {
+      final mapVal = Map<String, dynamic>.from(val);
+      return Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        decoration: BoxDecoration(
+          color: depth == 0 ? Colors.white : const Color(0xFFF8FAFC),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: depth == 0 ? const Color(0xFFF1F5F9) : const Color(0xFFE2E8F0),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(7)),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    depth == 0 ? Icons.developer_board : Icons.subdirectory_arrow_right,
+                    size: 13,
+                    color: AppColors.primary,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    _formatKey(key),
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF0F172A),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Column(
+                children: mapVal.entries
+                    .map((e) => _buildFormattedEntry(e.key, e.value, depth: depth + 1))
+                    .toList(),
+              ),
+            ),
+          ],
+        ),
+      );
+    } else if (val is List) {
+      final isPrimitiveList = val.every((item) => item is! Map && item is! List);
+      if (isPrimitiveList) {
+        return Container(
+          margin: const EdgeInsets.only(bottom: 5),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF8FAFC),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 2,
+                child: Text(
+                  _formatKey(key),
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF334155),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 3,
+                child: Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: val.map((item) {
+                    return Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEFF6FF),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: const Color(0xFFBFDBFE)),
+                      ),
+                      child: Text(
+                        item.toString(),
+                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF1D4ED8)),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            ],
+          ),
+        );
+      } else {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: val.asMap().entries.map((e) => _buildFormattedEntry('[${e.key}]', e.value, depth: depth + 1)).toList(),
+        );
+      }
+    } else {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF8FAFC),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              flex: 2,
+              child: Text(
+                _formatKey(key),
+                style: const TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF334155),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 3,
+              child: Text(
+                (val?.toString().toUpperCase() == 'NOT_CLOSED' ? 'OPEN' : val?.toString()) ?? '—',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF0F172A),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
 }

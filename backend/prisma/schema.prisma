@@ -305,7 +305,7 @@ model DeviceHealthCheck {
   thingName          String
   requestId          String?
   healthstatus       String          @default("HEALTHY") // HEALTHY or DEGRADED
-  gateStatus         String?         // CLOSED or NOT_CLOSED
+  gateStatus         String?         // CLOSED or OPEN
   boomAngle          Float?
   mcuTempC           Float?
   signalStrength     Int?

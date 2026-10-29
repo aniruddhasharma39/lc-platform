@@ -206,6 +206,10 @@ router.get('/', authenticate, async (req: any, res, next) => {
       orderBy: { createdAt: 'desc' },
       include: {
         deviceRegistries: true,
+        events: {
+          orderBy: { openedAt: 'desc' },
+          take: 1
+        },
         scopeGroups: {
           include: {
             scopeGroup: {
@@ -688,7 +692,6 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
   }
 });
 
-// Delete an LC Gate (cascades) - declared last so it doesn't shadow the paths above.
 // Trigger health check command to gate's master hardware over AWS IoT Core MQTT broker
 router.post('/:id/health-check', authenticate, async (req, res, next) => {
   try {

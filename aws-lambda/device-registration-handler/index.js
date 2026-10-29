@@ -394,7 +394,8 @@ exports.handler = async (event, context) => {
     if (isHealthReport) {
       try {
         const raw = parsed.raw || event;
-        const resolvedGateStatus = raw.Status || (raw.LimitSwitchClosed !== undefined ? (raw.LimitSwitchClosed ? 'CLOSED' : 'NOT_CLOSED') : 'NOT_CLOSED');
+        const rawState = raw.Status ? String(raw.Status).trim().toUpperCase() : null;
+        const resolvedGateStatus = rawState === 'CLOSED' ? 'CLOSED' : 'OPEN';
         await client.query(`
           INSERT INTO "DeviceHealthCheck" (
             "thingName", "requestId", "healthstatus", "gateStatus", "boomAngle",
@@ -434,7 +435,8 @@ exports.handler = async (event, context) => {
     } else {
       // Regular Telemetry: strictly gate state telemetry
       const telemetryTopic = event.topic || parsed.raw?.topic || (parsed.raw?.topicThingName ? `lc/devices/${parsed.raw.topicThingName}/manifest` : `lc-gate/${thingName}/telemetry`);
-      const teleStatus = parsed.raw?.Status || 'NOT_CLOSED';
+      const rawTeleState = parsed.raw?.Status ? String(parsed.raw.Status).trim().toUpperCase() : null;
+      const teleStatus = rawTeleState === 'CLOSED' ? 'CLOSED' : 'OPEN';
 
       try {
         await client.query(`

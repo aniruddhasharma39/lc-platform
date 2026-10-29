@@ -103,12 +103,12 @@ function renderCleanKeyValueTable(data: any): React.ReactNode {
                         fontWeight: 800,
                         fontSize: '0.82rem',
                         letterSpacing: '0.3px',
-                        background: strVal.toUpperCase() === 'CLOSED' ? 'rgba(16, 185, 129, 0.14)' : 'rgba(239, 68, 68, 0.14)',
-                        color: strVal.toUpperCase() === 'CLOSED' ? '#047857' : '#b91c1c',
-                        border: `1px solid ${strVal.toUpperCase() === 'CLOSED' ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.35)'}`,
+                        background: (strVal.toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : strVal).toUpperCase() === 'CLOSED' ? 'rgba(16, 185, 129, 0.14)' : 'rgba(239, 68, 68, 0.14)',
+                        color: (strVal.toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : strVal).toUpperCase() === 'CLOSED' ? '#047857' : '#b91c1c',
+                        border: `1px solid ${(strVal.toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : strVal).toUpperCase() === 'CLOSED' ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.35)'}`,
                       }}
                     >
-                      {strVal}
+                      {strVal.toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : strVal}
                     </span>
                   ) : isBool ? (
                     <span
@@ -2095,7 +2095,7 @@ export default function LCGatesScreen({ user: _user }: Props) {
                               border: `1px solid ${String(currentViewingRecord.payload.Status).toUpperCase() === 'CLOSED' ? '#86efac' : '#fca5a5'}`
                             }}
                           >
-                            {currentViewingRecord.payload.Status}
+                            {String(currentViewingRecord.payload.Status).toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : currentViewingRecord.payload.Status}
                           </span>
                         </div>
                       )}
@@ -2159,7 +2159,8 @@ export default function LCGatesScreen({ user: _user }: Props) {
                               {activeRecordList.map((item, idx) => {
                                 const isSelected = currentViewingRecord?.id === item.id;
                                 const p = item.payload || {};
-                                const status = p.Status || '—';
+                                const rawStatus = p.Status;
+                                const status = (rawStatus === 'NOT_CLOSED' || rawStatus === 'OPEN') ? 'OPEN' : (rawStatus || '—');
                                 const limitSwitch = p.LimitSwitchClosed !== undefined ? (p.LimitSwitchClosed ? 'Closed' : 'Open') : '—';
                                 const hallEffect = p.HallClosed !== undefined ? (p.HallClosed ? 'Closed' : 'Open') : '—';
                                 const ts = p.TimeStampMs ? `${p.TimeStampMs} ms` : '—';

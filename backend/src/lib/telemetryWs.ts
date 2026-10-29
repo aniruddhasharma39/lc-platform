@@ -83,6 +83,16 @@ export async function getGateTelemetryPayload(gateId: number) {
     }).catch(() => [])
   ]);
 
+  // Normalize any NOT_CLOSED payload to OPEN across the system
+  telemetries.forEach(t => {
+    if (t.payload && typeof t.payload === 'object') {
+      const p = t.payload as any;
+      if (p.Status === 'NOT_CLOSED') p.Status = 'OPEN';
+      if (p.status === 'NOT_CLOSED') p.status = 'OPEN';
+    }
+    if (t.status === 'NOT_CLOSED') (t as any).status = 'OPEN';
+  });
+
   const nowMs = Date.now();
   const operationalCycles = rawEvents.map(ev => {
     let duration = ev.durationSeconds;
@@ -200,7 +210,7 @@ export async function getGateTelemetryPayload(gateId: number) {
   const currentOperationalState = {
     isCurrentlyOpen,
     currentStatus,
-    rawReportedStatus: latestTele?.Status || currentStatus,
+    rawReportedStatus: (latestTele?.Status === 'NOT_CLOSED' ? 'OPEN' : latestTele?.Status) || currentStatus,
     currentStateStartedAt,
     timeInCurrentStateSeconds,
     timeInCurrentStateFormatted: formatDurationHuman(timeInCurrentStateSeconds),
