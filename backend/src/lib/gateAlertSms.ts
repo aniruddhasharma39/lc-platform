@@ -1,4 +1,7 @@
 import { prisma } from './prisma';
+import { checkAndDispatchGateStateEmailAlert } from './emailService';
+
+export { checkAndDispatchGateStateEmailAlert };
 
 /**
  * Format date into Indian Standard Time (IST) string: DD-MM-YYYY HH:mm
@@ -340,11 +343,19 @@ export async function checkAndDispatchGateStateAlert(options: GateStateAlertOpti
     }
   }
 
+  // Also dispatch Brevo email alerts in parallel for authorized scope group users with email
+  const emailAlertResult = await checkAndDispatchGateStateEmailAlert(options).catch((err) => {
+    console.error("❌ [GATE STATE ALERT] Error dispatching email alerts:", err?.message || err);
+    return null;
+  });
+
   return {
     dispatched: results.length,
+    dispatchedEmails: emailAlertResult?.dispatched || 0,
     lcNumber: effectiveLcNumber,
     newState,
     timestamp: dateTimeStr,
-    results
+    results,
+    emailResults: emailAlertResult?.results || [],
   };
 }

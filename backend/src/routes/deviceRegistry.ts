@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { publishMqttMessage } from '../lib/iotClient';
-import { checkAndDispatchGateStateAlert } from '../lib/gateAlertSms';
+import { checkAndDispatchGateStateAlert, checkAndDispatchGateStateEmailAlert } from '../lib/gateAlertSms';
 import { recordGateTelemetryTransition } from '../lib/telemetryMonitor';
 import { broadcastGateTelemetry } from '../lib/telemetryWs';
 
@@ -832,6 +832,84 @@ router.post('/:id/test-sms-alert', authenticate, async (req, res, next) => {
 
     res.json({
       message: `Gate state change alert test triggered for ${targetState}`,
+      device: { id: device.id, thingName: device.thingName, gate: device.gate },
+      alertResult
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/v1/devices/:id/test-email-alert
+ * Test endpoint to simulate a gate state change (OPEN or CLOSED) and test Brevo email alert dispatch
+ */
+router.post('/:id/test-email-alert', authenticate, async (req, res, next) => {
+  try {
+    const param = req.params.id;
+    const isNumeric = /^\d+$/.test(param);
+    const { state = 'OPEN' } = req.body;
+    const targetState: 'OPEN' | 'CLOSED' = String(state).toUpperCase() === 'CLOSED' ? 'CLOSED' : 'OPEN';
+
+    const device = await prisma.deviceRegistry.findFirst({
+      where: isNumeric ? { id: parseInt(param, 10) } : { thingName: param },
+      include: { gate: true }
+    });
+
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const emailAlertResult = await checkAndDispatchGateStateEmailAlert({
+      deviceId: device.id,
+      gateId: device.gateId,
+      thingName: device.thingName,
+      serialNumber: device.serialNumber,
+      newState: targetState,
+      timestamp: new Date()
+    });
+
+    res.json({
+      message: `Gate state change email alert test triggered for ${targetState}`,
+      device: { id: device.id, thingName: device.thingName, gate: device.gate },
+      emailAlertResult
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/v1/devices/:id/test-alert
+ * Test endpoint to simulate a gate state change and test BOTH DLT SMS and Brevo Email dispatch
+ */
+router.post('/:id/test-alert', authenticate, async (req, res, next) => {
+  try {
+    const param = req.params.id;
+    const isNumeric = /^\d+$/.test(param);
+    const { state = 'OPEN' } = req.body;
+    const targetState: 'OPEN' | 'CLOSED' = String(state).toUpperCase() === 'CLOSED' ? 'CLOSED' : 'OPEN';
+
+    const device = await prisma.deviceRegistry.findFirst({
+      where: isNumeric ? { id: parseInt(param, 10) } : { thingName: param },
+      include: { gate: true }
+    });
+
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const alertResult = await checkAndDispatchGateStateAlert({
+      deviceId: device.id,
+      gateId: device.gateId,
+      thingName: device.thingName,
+      serialNumber: device.serialNumber,
+      newState: targetState,
+      timestamp: new Date()
+    });
+
+    res.json({
+      message: `Full dual-channel (SMS + Brevo Email) alert test triggered for ${targetState}`,
       device: { id: device.id, thingName: device.thingName, gate: device.gate },
       alertResult
     });
