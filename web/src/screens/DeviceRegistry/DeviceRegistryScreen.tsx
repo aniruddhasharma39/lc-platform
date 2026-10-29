@@ -2,8 +2,8 @@ import { useEffect, useState, useCallback, useMemo, type ReactNode } from 'react
 import { 
   FaMicrochip, FaServer, FaCheckCircle, FaSearch, FaSyncAlt, 
   FaTimes, FaSlidersH, FaBroadcastTower, FaCopy, FaCheck,
-  FaTable, FaCode, FaHeartbeat, FaFileAlt, FaPaperPlane, FaDownload,
-  FaTrash, FaExclamationTriangle, FaInfoCircle, FaBatteryFull, FaSun, FaSignal, FaLayerGroup
+  FaTable, FaCode, FaHeartbeat, FaFileAlt, FaPaperPlane,
+  FaTrash, FaExclamationTriangle, FaInfoCircle, FaBatteryFull, FaSignal, FaLayerGroup
 } from 'react-icons/fa';
 import type { User } from '../../types';
 import { API_URL } from '../../config';
