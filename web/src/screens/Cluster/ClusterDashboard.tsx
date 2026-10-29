@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   FaArchway, FaMapMarkerAlt, FaCogs, FaCamera, FaSun, 
   FaBolt, FaPlug, FaCheckCircle, FaSearchPlus, FaTimes, FaRedo, FaTrash,
-  FaFilter, FaChevronDown, FaChevronUp, FaLayerGroup, FaShieldAlt, FaMicrochip
+  FaFilter, FaChevronDown, FaChevronUp, FaLayerGroup, FaShieldAlt, FaMicrochip,
+  FaSearch, FaPlus
 } from 'react-icons/fa';
 import type { User } from '../../types';
 import './ClusterDashboard.css';
@@ -46,6 +47,7 @@ export default function ClusterDashboard(_props: Props) {
   const [refDivisions, setRefDivisions] = useState<Record<string, string[]>>(RAILWAY_DATA);
 
   // Filters & sort
+  const [quickSearch, setQuickSearch] = useState('');
   const [filterZone, setFilterZone] = useState('');
   const [filterDivision, setFilterDivision] = useState('');
   const [filterLocation, setFilterLocation] = useState('');
@@ -141,13 +143,21 @@ export default function ClusterDashboard(_props: Props) {
   }, [filterZone, refDivisions]);
 
   const visibleGates = useMemo(() => {
+    const q = quickSearch.trim().toLowerCase();
     const filtered = gates.filter((g) => {
+      const quickMatch = !q || (
+        (g.name || '').toLowerCase().includes(q) ||
+        (g.lcNumber || '').toLowerCase().includes(q) ||
+        (g.locationName || '').toLowerCase().includes(q) ||
+        (g.zone || '').toLowerCase().includes(q) ||
+        (g.division || '').toLowerCase().includes(q)
+      );
       const zoneMatch = !filterZone || (g.zone || '').toLowerCase() === filterZone.toLowerCase();
       const divisionMatch = !filterDivision || (g.division || '').toLowerCase() === filterDivision.toLowerCase();
       const locMatch = !filterLocation || (g.locationName || '').toLowerCase().includes(filterLocation.toLowerCase());
       const nameMatch = !filterName || (g.name || '').toLowerCase().includes(filterName.toLowerCase());
       const lcMatch = !filterLc || (g.lcNumber || '').toLowerCase().includes(filterLc.toLowerCase());
-      return zoneMatch && divisionMatch && locMatch && nameMatch && lcMatch;
+      return quickMatch && zoneMatch && divisionMatch && locMatch && nameMatch && lcMatch;
     });
     const sorted = [...filtered];
     switch (sortBy) {
@@ -159,9 +169,10 @@ export default function ClusterDashboard(_props: Props) {
       default: sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     }
     return sorted;
-  }, [gates, filterZone, filterDivision, filterLocation, filterName, filterLc, sortBy]);
+  }, [gates, quickSearch, filterZone, filterDivision, filterLocation, filterName, filterLc, sortBy]);
 
   const resetFilters = () => {
+    setQuickSearch('');
     setFilterZone('');
     setFilterDivision('');
     setFilterLocation('');
@@ -173,6 +184,7 @@ export default function ClusterDashboard(_props: Props) {
 
   const activeFilterCount = useMemo(() => {
     let count = 0;
+    if (quickSearch.trim()) count++;
     if (filterZone) count++;
     if (filterDivision) count++;
     if (filterLocation.trim()) count++;
@@ -180,7 +192,7 @@ export default function ClusterDashboard(_props: Props) {
     if (filterLc.trim()) count++;
     if (sortBy !== 'newest') count++;
     return count;
-  }, [filterZone, filterDivision, filterLocation, filterName, filterLc, sortBy]);
+  }, [quickSearch, filterZone, filterDivision, filterLocation, filterName, filterLc, sortBy]);
 
   const hasActiveFilters = activeFilterCount > 0;
 
@@ -216,14 +228,29 @@ export default function ClusterDashboard(_props: Props) {
     <div className="cluster-container fade-in">
       {view === 'list' && (
         <div className="gate-list-view">
-          {/* Header Row: Actions */}
-          <div className="cluster-header-row mb-4" style={{ justifyContent: 'flex-end' }}>
+          {/* Header Row: Search on Left, Filter Toggle & Actions on Right */}
+          <div className="cluster-header-row mb-4">
+            <div className="cluster-search-box">
+              <FaSearch className="cluster-search-icon" size={14} />
+              <input
+                type="text"
+                placeholder="Search gates by LC Number, Name, Zone, Location..."
+                value={quickSearch}
+                onChange={(e) => setQuickSearch(e.target.value)}
+              />
+              {quickSearch && (
+                <button type="button" className="cluster-clear-btn" onClick={() => setQuickSearch('')}>
+                  <FaTimes size={12} />
+                </button>
+              )}
+            </div>
+
             <div className="cluster-header-actions">
               {/* Developer Scope Selector */}
               {_props.user.role === 'Developer' && allScopeGroupsList.length > 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 8, padding: '4px 10px' }}>
-                  <FaLayerGroup size={13} style={{ color: 'var(--primary)' }} />
-                  <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#334155' }}>Scope View:</span>
+                <div className="cluster-scope-selector-box">
+                  <FaLayerGroup size={13} style={{ color: 'var(--primary)', flexShrink: 0 }} />
+                  <span className="cluster-scope-label">Scope View:</span>
                   <select
                     value={developerScopeId}
                     onChange={(e) => {
@@ -232,7 +259,7 @@ export default function ClusterDashboard(_props: Props) {
                       fetchGates(val);
                       toastInfo(val === 'all' ? 'Switched to All Gates (Admin View).' : val ? 'Filtered gates by selected scope group.' : 'Switched to Assigned Scope.', 'Scope View');
                     }}
-                    style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: '0.82rem', fontWeight: 600, color: 'var(--primary)', cursor: 'pointer' }}
+                    className="cluster-scope-select"
                   >
                     <option value="">My Assigned Scope</option>
                     <option value="all">All Gates (Admin View)</option>
@@ -258,8 +285,8 @@ export default function ClusterDashboard(_props: Props) {
                 {showFilters ? <FaChevronUp size={11} /> : <FaChevronDown size={11} />}
               </button>
 
-              <button className="btn-primary flex items-center gap-2 pulse-hover" onClick={() => setView('create_gate')}>
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14m-7-7h14"/></svg>
+              <button className="btn-primary flex items-center gap-2 pulse-hover cluster-create-btn" onClick={() => setView('create_gate')}>
+                <FaPlus size={13} />
                 <span>Create New Gate</span>
               </button>
             </div>
