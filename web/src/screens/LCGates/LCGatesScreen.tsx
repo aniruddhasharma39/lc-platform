@@ -728,16 +728,6 @@ export default function LCGatesScreen({ user: _user }: Props) {
 
   return (
     <div className="lcg-container">
-      {/* 1. CLEAN & LIGHTWEIGHT HEADER */}
-      <div className="lcg-header-light">
-        <div className="lcg-header-info">
-          <div className="lcg-header-title" style={{ margin: 0 }}>
-            <FaArchway />
-            <span>LC Gates</span>
-          </div>
-        </div>
-      </div>
-
       {/* 2. NAVIGATION & TOOLBAR (SINGLE ROW ALIGNED) */}
       <div className="lcg-nav-toolbar">
         {viewMode === 'detail' && selectedGate ? (

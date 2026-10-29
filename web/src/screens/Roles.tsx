@@ -348,11 +348,6 @@ export default function Roles({}: Props) {
     <div className="roles-container">
       {/* Header bar */}
       <div className="roles-header">
-        <div className="roles-title-group">
-          <h2>Manage Roles & Access Control</h2>
-          <p>Configure role hierarchy and assign functional permission modules.</p>
-        </div>
-
         <div className="roles-top-actions">
           <div className="roles-search-box">
             <FaSearch className="roles-search-icon" />
@@ -365,26 +360,28 @@ export default function Roles({}: Props) {
             />
           </div>
 
-          <button
-            type="button"
-            className="btn-refresh-roles"
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            title="Refresh roles from server"
-          >
-            <FaSyncAlt className={isRefreshing ? 'spin' : ''} />
-            <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <button
+              type="button"
+              className="btn-refresh-roles"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              title="Refresh roles from server"
+            >
+              <FaSyncAlt className={isRefreshing ? 'spin' : ''} />
+              <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
+            </button>
 
-          <button 
-            className="btn-create-role" 
-            onClick={openCreateModal}
-            title="Create a new system role"
-            data-tooltip="Create new role"
-          >
-            <FaPlus />
-            Create Role
-          </button>
+            <button 
+              className="btn-create-role" 
+              onClick={openCreateModal}
+              title="Create a new system role"
+              data-tooltip="Create new role"
+            >
+              <FaPlus />
+              Create Role
+            </button>
+          </div>
         </div>
       </div>
 

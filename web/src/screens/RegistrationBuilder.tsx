@@ -1364,38 +1364,6 @@ export default function RegistrationBuilder() {
   return (
     <div className="reg-builder-root">
       <div className="reg-builder-dashboard">
-        {/* Dashboard Header */}
-        <div className="reg-dashboard-header">
-          <div className="reg-title-group">
-            <div className="reg-title-icon-badge">
-              <FaWpforms />
-            </div>
-            <div className="reg-title-text">
-              <h2>Registration Builder</h2>
-              <p>Design, customize, and publish dynamic user onboarding and verification forms</p>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', gap: '0.65rem', alignItems: 'center' }}>
-            <button 
-              className="btn-editor publish" 
-              disabled={isCreatingForm}
-              onClick={createForm}
-              title="Create a new registration form template"
-            >
-              {isCreatingForm ? (
-                <>
-                  <FaSpinner className="spin" /> Creating...
-                </>
-              ) : (
-                <>
-                  <FaPlus /> Create Form
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-
         {/* Real-time Metric Stats Cards */}
         <div className="reg-stats-grid">
           <div className="reg-stat-card">
@@ -1444,7 +1412,7 @@ export default function RegistrationBuilder() {
         </div>
 
         {/* Search & Filter Bar */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
           <div style={{ position: 'relative', flex: 1, maxWidth: '400px' }}>
             <input 
               type="text" 
@@ -1462,6 +1430,23 @@ export default function RegistrationBuilder() {
             />
             <FaSearch style={{ position: 'absolute', left: '0.8rem', top: '0.85rem', color: '#94a3b8' }} />
           </div>
+
+          <button 
+            className="btn-editor publish" 
+            disabled={isCreatingForm}
+            onClick={createForm}
+            title="Create a new registration form template"
+          >
+            {isCreatingForm ? (
+              <>
+                <FaSpinner className="spin" /> Creating...
+              </>
+            ) : (
+              <>
+                <FaPlus /> Create Form
+              </>
+            )}
+          </button>
         </div>
 
         {/* Template Catalog Grid */}

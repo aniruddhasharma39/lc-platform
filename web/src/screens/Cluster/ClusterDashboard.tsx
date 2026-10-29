@@ -216,15 +216,8 @@ export default function ClusterDashboard(_props: Props) {
     <div className="cluster-container fade-in">
       {view === 'list' && (
         <div className="gate-list-view">
-          {/* Header Row: Title on Left, Filter Toggle & Create Button on Right */}
-          <div className="cluster-header-row mb-4">
-            <div className="cluster-header-left">
-              <h2 className="title-gradient" style={{ margin: 0 }}>LC Gate Clusters</h2>
-              <span className="cluster-gates-count-badge">
-                {visibleGates.length} {visibleGates.length === 1 ? 'Gate' : 'Gates'}
-              </span>
-            </div>
-
+          {/* Header Row: Actions */}
+          <div className="cluster-header-row mb-4" style={{ justifyContent: 'flex-end' }}>
             <div className="cluster-header-actions">
               {/* Developer Scope Selector */}
               {_props.user.role === 'Developer' && allScopeGroupsList.length > 0 && (

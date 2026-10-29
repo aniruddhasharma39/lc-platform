@@ -435,32 +435,6 @@ export default function ReportsScreen({ user }: Props) {
 
   return (
     <div className="reports-container">
-      {/* ── Top Header Bar ─────────────────────────────────────────── */}
-      <div className="reports-header-card">
-        <div className="reports-header-title-row">
-          <div className="reports-title-group">
-            <div className="reports-icon-badge">
-              <FaArchway />
-            </div>
-            <div>
-              <h2 className="reports-main-heading">Level Crossing Report Builder</h2>
-            </div>
-          </div>
-
-          <div className="reports-header-actions">
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={() => fetchRecordsData()}
-              disabled={loadingRecords}
-              title="Manually refresh data"
-            >
-              <FaSyncAlt className={loadingRecords ? 'spin' : ''} />
-              <span>Refresh</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
       {/* ── TWO-COLUMN WORKSPACE: LEFT COMPACT BUILDER + RIGHT VIEW LOG ── */}
       <div className="report-columns-layout">
         
@@ -804,7 +778,7 @@ export default function ReportsScreen({ user }: Props) {
               </span>
             </div>
 
-            <div className="view-log-header-right">
+            <div className="view-log-header-right" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
               <div className="rows-selector">
                 <span className="text-muted small mr-1">Show:</span>
                 <select
@@ -820,6 +794,18 @@ export default function ReportsScreen({ user }: Props) {
                   <option value={100}>100</option>
                 </select>
               </div>
+
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => fetchRecordsData()}
+                disabled={loadingRecords}
+                title="Manually refresh data"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.35rem 0.75rem', borderRadius: '8px' }}
+              >
+                <FaSyncAlt className={loadingRecords ? 'spin' : ''} />
+                <span>Refresh</span>
+              </button>
             </div>
           </div>
 

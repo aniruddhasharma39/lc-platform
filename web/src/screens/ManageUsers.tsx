@@ -494,32 +494,6 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
 
   return (
     <div className="manage-users-container">
-      {/* Page Header */}
-      <div className="manage-users-header">
-        <div className="manage-users-title-group">
-          <div className="manage-users-title-icon-badge">
-            <FaUsers />
-          </div>
-          <div className="manage-users-title-text">
-            <h2>User Management & Directory</h2>
-            <p>Administer verified personnel, approve access requests, and manage system roles.</p>
-          </div>
-        </div>
-
-        <div className="manage-users-top-actions">
-          <button
-            type="button"
-            className="btn-refresh-users"
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            title="Refresh user records from database"
-          >
-            <FaSyncAlt className={isRefreshing ? 'spin' : ''} />
-            <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
-          </button>
-        </div>
-      </div>
-
       {/* Metric Stats Cards */}
       <div className="users-stats-grid">
         <div className="user-stat-card">
@@ -648,6 +622,18 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
                   <span>{allRolesExpanded ? 'Collapse All' : 'Expand All'}</span>
                 </button>
               )}
+
+              {/* Refresh Button */}
+              <button
+                type="button"
+                className="btn-refresh-users"
+                onClick={handleRefresh}
+                disabled={isRefreshing}
+                title="Refresh user records from database"
+              >
+                <FaSyncAlt className={isRefreshing ? 'spin' : ''} />
+                <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
+              </button>
             </div>
           )}
         </div>
