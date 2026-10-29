@@ -239,8 +239,8 @@ router.get('/', authenticate, async (req, res, next) => {
     ]);
 
     const now = Date.now();
-    // A device is truly live ONLINE if powered on and transmitting over GSM/MQTT within the last 5 minutes (300,000 ms)
-    const ONLINE_TIMEOUT_MS = 5 * 60 * 1000;
+    // A device is live ONLINE if powered on and transmitting within 30 minutes (heartbeat/telemetry)
+    const ONLINE_TIMEOUT_MS = 30 * 60 * 1000;
 
     const enrichedDevices = await Promise.all(devices.map(async (device) => {
       const latestTele = await prisma.deviceTelemetry.findFirst({
@@ -258,7 +258,14 @@ router.get('/', authenticate, async (req, res, next) => {
       const isRecentlyActive = Boolean(
         lastTimestamp && (now - new Date(lastTimestamp).getTime() <= ONLINE_TIMEOUT_MS)
       );
-      const isOnline = isRecentlyActive && device.status !== 'DECOMMISSIONED' && device.status !== 'INACTIVE';
+      // Standby check: healthy device with recent transmission within 2 hours
+      const isStandbyActive = Boolean(
+        !isRecentlyActive &&
+        device.status === 'ACTIVE' &&
+        lastTimestamp &&
+        (now - new Date(lastTimestamp).getTime() <= 2 * 60 * 60 * 1000)
+      );
+      const isOnline = (isRecentlyActive || isStandbyActive) && device.status !== 'DECOMMISSIONED' && device.status !== 'INACTIVE';
 
       return {
         ...device,
@@ -325,7 +332,7 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
         orderBy: { receivedAt: 'desc' },
         take: 100,
       }).catch(() => []),
-      (prisma as any).deviceHealthCheck.findMany({
+      prisma.deviceHealthCheck.findMany({
         where: {
           OR: [
             { thingName: device.thingName },
@@ -439,7 +446,7 @@ router.get(['/:id/health-checks', '/:thingName/health-checks'], authenticate, as
       return res.status(404).json({ error: 'Device not found in registry' });
     }
 
-    const checks = await (prisma as any).deviceHealthCheck.findMany({
+    const checks = await prisma.deviceHealthCheck.findMany({
       where: {
         OR: [
           { thingName: device.thingName },
@@ -712,7 +719,7 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
     const isHealthResponse = isHealthTopic && (payload.healthstatus !== undefined || payload.action === 'HEALTH_CHECK_RESPONSE' || payload.BoomAngle !== undefined);
 
     if (isHealthResponse) {
-      const healthCheck = await (prisma as any).deviceHealthCheck.create({
+      const healthCheck = await prisma.deviceHealthCheck.create({
         data: {
           thingName: device.thingName,
           requestId: payload.requestId || null,

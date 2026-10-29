@@ -64,7 +64,7 @@ const uploadSchema = z.object({
     (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
     z.number().nullable().optional()
   ),
-  category: z.enum(['MASTER', 'DEVICE_1', 'DEVICE_2', 'POWER_SOURCE']),
+  category: z.enum(['MASTER', 'DEVICE_1', 'DEVICE_2', 'POWER_SOURCE', 'SIM_CARD']),
   imageBase64: z.string(),
   latitude: z.preprocess(
     (val) => (val === '' || val === null || val === undefined ? undefined : Number(val)),

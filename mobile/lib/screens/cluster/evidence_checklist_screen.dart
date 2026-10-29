@@ -187,6 +187,7 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
   @override
   Widget build(BuildContext context) {
     bool hasMaster = _hasEvidence('MASTER');
+    bool hasSim = _hasEvidence('SIM_CARD');
     bool hasPower = _hasEvidence('POWER_SOURCE');
     List childDevices = widget.master['childDevices'] ?? [];
 
@@ -218,6 +219,14 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
               isDone: hasMaster,
               evidence: _findEvidence('MASTER'),
               onUpload: () => _navigateToUpload('MASTER', 'Master ESP'),
+            ),
+
+            _buildChecklistItem(
+              title: 'SIM Card Photo',
+              description: 'Photo showing the installed SIM card & ICCID number',
+              isDone: hasSim,
+              evidence: _findEvidence('SIM_CARD'),
+              onUpload: () => _navigateToUpload('SIM_CARD', 'SIM Card'),
             ),
             
             _buildChecklistItem(

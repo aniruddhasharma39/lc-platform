@@ -143,6 +143,29 @@
   cursor: default;
 }
 
+
+.lcg-context-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  font-size: 0.82rem;
+  padding: 0.42rem 0.9rem;
+  border-radius: 7px;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  color: #1e293b;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.lcg-context-back-btn:hover {
+  background: #e2e8f0;
+  color: #0B3C7A;
+  border-color: #94a3b8;
+}
+
 .lcg-crumb-separator {
   color: #94a3b8;
   font-size: 0.82rem;
@@ -1093,4 +1116,248 @@
   color: #0B3C7A;
   border-color: #cbd5e1;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+
+/* Top Back / Up One Level Button */
+.lcg-top-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 0.82rem;
+  padding: 5px 12px;
+  border-radius: 7px;
+  background: #f1f5f9 !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #1e293b !important;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.lcg-top-back-btn:hover {
+  background: #e2e8f0 !important;
+  color: #0b3c7a !important;
+  border-color: #94a3b8 !important;
+  transform: translateX(-1px);
+}
+
+
+/* ========================================================
+   ENHANCED TOOLBAR SEARCH, FILTER & SORT STYLES (STRICT 1-LINE)
+   ======================================================== */
+.lcg-toolbar-filter-row {
+  display: flex !important;
+  align-items: center !important;
+  flex-wrap: nowrap !important; /* STRICT SINGLE HORIZONTAL LINE */
+  gap: 0.5rem !important;
+  width: 100% !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+  scrollbar-width: thin;
+}
+
+.lcg-toolbar-filter-row::-webkit-scrollbar {
+  height: 4px;
+}
+
+.lcg-toolbar-filter-row::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.lcg-toolbar-filter-row .lcg-search-input-wrap {
+  flex: 1 1 200px !important;
+  min-width: 160px !important;
+  margin-bottom: 0 !important;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.lcg-toolbar-filter-row .lcg-search-input-wrap input.lcg-search-input {
+  width: 100% !important;
+  height: 38px !important;
+  line-height: 38px !important;
+  margin-bottom: 0 !important;
+  padding-left: 2.35rem !important;
+  padding-right: 2rem !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 8px !important;
+  font-size: 0.85rem !important;
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  box-sizing: border-box !important;
+}
+
+.lcg-toolbar-filter-row .lcg-search-input-wrap input.lcg-search-input:focus {
+  border-color: #0B3C7A !important;
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(11, 60, 122, 0.1) !important;
+}
+
+/* Force selects to not expand to 100% width and stay on the single line */
+.lcg-toolbar-filter-row select.lcg-filter-select,
+select.lcg-filter-select,
+.lcg-filter-select {
+  width: auto !important;
+  max-width: 185px !important;
+  min-width: 130px !important;
+  flex-shrink: 0 !important;
+  height: 38px !important;
+  margin-bottom: 0 !important;
+  margin-top: 0 !important;
+  padding: 0 1.5rem 0 0.75rem !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 8px !important;
+  font-size: 0.82rem !important;
+  background-color: #ffffff !important;
+  color: #1e293b !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  outline: none !important;
+  white-space: nowrap !important;
+  text-overflow: ellipsis !important;
+  box-sizing: border-box !important;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.lcg-toolbar-filter-row select.lcg-filter-select:focus,
+.lcg-filter-select:focus {
+  border-color: #0B3C7A !important;
+  box-shadow: 0 0 0 3px rgba(11, 60, 122, 0.1) !important;
+}
+
+.lcg-context-back-btn {
+  flex-shrink: 0 !important;
+  margin-bottom: 0 !important;
+  height: 38px !important;
+  box-sizing: border-box !important;
+}
+
+.lcg-clear-btn {
+  height: 38px !important;
+  padding: 0 0.75rem !important;
+  border: 1px solid #fecaca !important;
+  border-radius: 8px !important;
+  font-size: 0.8rem !important;
+  font-weight: 700 !important;
+  background: #fef2f2 !important;
+  color: #b91c1c !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 0.35rem !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+  white-space: nowrap !important;
+  flex-shrink: 0 !important;
+  margin-bottom: 0 !important;
+  box-sizing: border-box !important;
+}
+
+.lcg-clear-btn:hover {
+  background: #fee2e2 !important;
+  color: #991b1b !important;
+}
+
+.lcg-refresh-btn {
+  height: 38px !important;
+  padding: 0 0.85rem !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 0.4rem !important;
+  font-size: 0.82rem !important;
+  font-weight: 600 !important;
+  margin: 0 !important;
+  margin-bottom: 0 !important;
+  flex-shrink: 0 !important;
+  white-space: nowrap !important;
+  border-radius: 8px !important;
+  box-sizing: border-box !important;
+}
+
+/* ========================================================
+   DEVICE TOPOLOGY INSTALLATION EVIDENCE STYLES
+   ======================================================== */
+.lcg-topology-evidence-panel {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+
+.lcg-topology-evidence-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.lcg-topology-evidence-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #334155;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lcg-topology-evidence-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.lcg-topology-evidence-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.lcg-topology-evidence-card:hover {
+  border-color: #0B3C7A;
+  box-shadow: 0 2px 6px rgba(11, 60, 122, 0.08);
+}
+
+.lcg-topology-evidence-img {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+
+.lcg-slave-evidence-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 3px 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.lcg-slave-evidence-chip:hover {
+  border-color: #0B3C7A;
+  background: #f0f7ff;
+}
+
+.lcg-slave-evidence-thumb {
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  object-fit: cover;
+  border: 1px solid #cbd5e1;
+  flex-shrink: 0;
 }

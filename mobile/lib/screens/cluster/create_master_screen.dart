@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:image_picker/image_picker.dart';
+import 'package:geolocator/geolocator.dart';
+import 'dart:io' as io;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
@@ -25,6 +29,21 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
   // Device Registry Integration (Parity with Web CreateMasterForm)
   List<dynamic> _deviceList = [];
   String? _selectedDeviceId;
+
+  // SIM Card Photo Attachment
+  XFile? _simImage;
+  final ImagePicker _picker = ImagePicker();
+
+  Future<void> _pickSimImage(ImageSource source) async {
+    try {
+      final img = await _picker.pickImage(source: source, imageQuality: 85);
+      if (img != null && mounted) {
+        setState(() => _simImage = img);
+      }
+    } catch (e) {
+      debugPrint('Error picking SIM image: $e');
+    }
+  }
 
   @override
   void initState() {
@@ -150,11 +169,51 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
       );
 
       if (res.statusCode == 201) {
+        final masterData = json.decode(res.body);
+        final createdMasterId = masterData['id'];
+
+        if (_simImage != null && createdMasterId != null) {
+          try {
+            final bytes = await _simImage!.readAsBytes();
+            final base64Img = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+
+            double? lat;
+            double? lng;
+            try {
+              final pos = await Geolocator.getCurrentPosition(
+                locationSettings: const LocationSettings(timeLimit: Duration(seconds: 4)),
+              );
+              lat = pos.latitude;
+              lng = pos.longitude;
+            } catch (_) {
+              lat = double.tryParse((widget.gate['latitude'] ?? '0').toString());
+              lng = double.tryParse((widget.gate['longitude'] ?? '0').toString());
+            }
+
+            await http.post(
+              Uri.parse('$baseUrl/evidence'),
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ${widget.token}',
+              },
+              body: json.encode({
+                'masterId': createdMasterId,
+                'category': 'SIM_CARD',
+                'imageBase64': base64Img,
+                'latitude': lat ?? 0.0,
+                'longitude': lng ?? 0.0,
+              }),
+            );
+          } catch (e) {
+            debugPrint('Failed to upload SIM card evidence: $e');
+          }
+        }
+
         if (mounted) {
           final identifier = chosenDevice != null
               ? chosenDevice['thingName']
               : '${widget.gate['lcNumber']}-${_seqCtrl.text}';
-          AppFeedback.showSuccess(context, 'Master Unit "$identifier" added successfully.');
+          AppFeedback.showSuccess(context, 'Master Unit "$identifier" added successfully${_simImage != null ? ' with SIM photo' : ''}.');
           Navigator.pop(context, true);
         }
       } else {
@@ -341,9 +400,75 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
                       if (val != null) setState(() => _powerSource = val);
                     },
                   ),
+                  const SizedBox(height: 16),
+
+                  // Optional SIM Card Photo
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF0FDF4),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFF86EFAC)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.sim_card_outlined, size: 18, color: Color(0xFF166534)),
+                            SizedBox(width: 8),
+                            Text(
+                              'Upload SIM Card Photo (Optional)',
+                              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Color(0xFF166534)),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'Attach photo of the installed SIM card & ICCID number. You can also view or update it anytime in the Evidence Checklist.',
+                          style: TextStyle(fontSize: 11, color: Color(0xFF475569)),
+                        ),
+                        const SizedBox(height: 10),
+                        if (_simImage != null)
+                          Row(
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: kIsWeb
+                                    ? Image.network(_simImage!.path, width: 64, height: 64, fit: BoxFit.cover)
+                                    : Image.file(io.File(_simImage!.path), width: 64, height: 64, fit: BoxFit.cover),
+                              ),
+                              const SizedBox(width: 12),
+                              TextButton.icon(
+                                onPressed: () => setState(() => _simImage = null),
+                                icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+                                label: const Text('Remove', style: TextStyle(color: Colors.red, fontSize: 12)),
+                              ),
+                            ],
+                          )
+                        else
+                          Row(
+                            children: [
+                              OutlinedButton.icon(
+                                onPressed: () => _pickSimImage(ImageSource.camera),
+                                icon: const Icon(Icons.camera_alt, size: 16),
+                                label: const Text('Camera', style: TextStyle(fontSize: 12)),
+                              ),
+                              const SizedBox(width: 8),
+                              OutlinedButton.icon(
+                                onPressed: () => _pickSimImage(ImageSource.gallery),
+                                icon: const Icon(Icons.photo_library, size: 16),
+                                label: const Text('Gallery', style: TextStyle(fontSize: 12)),
+                              ),
+                            ],
+                          ),
+                      ],
+                    ),
+                  ),
+
                   const SizedBox(height: 28),
 
-                  // 4. Submit Button
+                  // 5. Submit Button
                   ElevatedButton(
                     onPressed: canSubmit ? _submit : null,
                     style: ElevatedButton.styleFrom(

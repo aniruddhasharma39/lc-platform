@@ -763,29 +763,6 @@ export default function ScopeGroupManagement({ user }: Props) {
       {/* 1. SCOPE GROUPS LIST VIEW */}
       {viewMode === 'list' && (
         <>
-          {/* Header */}
-          <div className="sg-header">
-            <div className="sg-header-titles">
-              <h2>
-                <FaLayerGroup /> {canManage ? 'Scope Groups Console' : 'My Assigned Scope Groups'}
-              </h2>
-              <p>
-                {canManage
-                  ? 'Create granular access groups. Manually assign specific clusters & LC gates to designated team members.'
-                  : 'View the scope groups and LC gates assigned to your account. Your operational access is restricted to these gates.'}
-              </p>
-            </div>
-            {canManage ? (
-              <button className="btn btn-primary" onClick={handleOpenCreate}>
-                <FaPlus /> Create Scope Group
-              </button>
-            ) : (
-              <div className="sg-readonly-badge">
-                <FaLock style={{ color: '#0B3C7A' }} /> Assigned Member • Read-Only
-              </div>
-            )}
-          </div>
-
           {/* Stats Cards */}
           <div className="sg-stats-grid">
             <div className="sg-stat-card">
@@ -854,6 +831,16 @@ export default function ScopeGroupManagement({ user }: Props) {
             >
               <FaSyncAlt /> Refresh
             </button>
+
+            {canManage ? (
+              <button className="btn btn-primary" onClick={handleOpenCreate}>
+                <FaPlus /> Create Scope Group
+              </button>
+            ) : (
+              <div className="sg-readonly-badge">
+                <FaLock style={{ color: '#0B3C7A' }} /> Assigned Member • Read-Only
+              </div>
+            )}
           </div>
 
           {/* Groups Grid */}
@@ -1491,12 +1478,9 @@ export default function ScopeGroupManagement({ user }: Props) {
           {/* Included Gates Section */}
           <div className="sg-section-header">
             <div>
-              <h3 style={{ margin: '0 0 4px 0', fontSize: '1.25rem', fontWeight: 700, color: '#1e293b' }}>
+              <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, color: '#1e293b' }}>
                 Included LC Gates ({activeGroupGates.length})
               </h3>
-              <p style={{ margin: 0, fontSize: '0.88rem', color: '#64748b' }}>
-                Click on any gate card below to inspect its connected master units and slave devices.
-              </p>
             </div>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
               <div className="sg-search-box" style={{ maxWidth: 300 }}>

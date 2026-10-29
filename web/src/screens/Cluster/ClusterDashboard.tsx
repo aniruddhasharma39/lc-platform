@@ -573,6 +573,7 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
   const [deviceList, setDeviceList] = useState<any[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
 
+
   useEffect(() => {
     fetch(`${API_URL}/api/v1/devices?limit=100`, {
       headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
@@ -1032,6 +1033,26 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
   // Device Registry Integration
   const [deviceList, setDeviceList] = useState<any[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  // SIM Photo Attachment
+  const [simPhotoBase64, setSimPhotoBase64] = useState<string | null>(null);
+  const [simPhotoPreview, setSimPhotoPreview] = useState<string | null>(null);
+
+  const handleSimFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      setSimPhotoBase64(result);
+      setSimPhotoPreview(result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const clearSimPhoto = () => {
+    setSimPhotoBase64(null);
+    setSimPhotoPreview(null);
+  };
 
   useEffect(() => {
     fetch(`${API_URL}/api/v1/lcgate/${gate.id}/next-master-sequence`, {
@@ -1082,7 +1103,43 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
         })
       });
       if (res.ok) {
-        toastSuccess(`Master Unit ${chosenDevice ? chosenDevice.thingName : `${gate.lcNumber}-${masterSequence.padStart(2, '0')}`} added successfully.`, 'Master Unit Added');
+        const createdMaster = await res.json().catch(() => ({}));
+        const masterIdToUse = createdMaster?.id;
+
+        // If SIM photo was selected, upload evidence immediately
+        if (simPhotoBase64 && masterIdToUse) {
+          try {
+            let lat = gate.latitude || 0;
+            let lng = gate.longitude || 0;
+            if ('geolocation' in navigator) {
+              const pos: any = await new Promise((resolve) => {
+                navigator.geolocation.getCurrentPosition(resolve, () => resolve(null), { timeout: 3500 });
+              });
+              if (pos?.coords) {
+                lat = pos.coords.latitude;
+                lng = pos.coords.longitude;
+              }
+            }
+            await fetch(`${API_URL}/api/v1/evidence`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...authHeaders()
+              },
+              body: JSON.stringify({
+                masterId: masterIdToUse,
+                category: 'SIM_CARD',
+                imageBase64: simPhotoBase64,
+                latitude: lat,
+                longitude: lng
+              })
+            });
+          } catch (evErr) {
+            console.warn('Failed to upload SIM photo on creation:', evErr);
+          }
+        }
+
+        toastSuccess(`Master Unit ${chosenDevice ? chosenDevice.thingName : `${gate.lcNumber}-${masterSequence.padStart(2, '0')}`} added successfully${simPhotoBase64 ? ' with SIM photo' : ''}.`, 'Master Unit Added');
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
@@ -1145,6 +1202,28 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
             <option value="SOLAR">Solar Power</option>
             <option value="DIRECT">Direct Current Supply</option>
           </select>
+        </div>
+
+        {/* Optional SIM Card Photo Upload */}
+        <div className="form-group" style={{ background: 'rgba(16, 185, 129, 0.05)', padding: 12, borderRadius: 8, border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#047857', fontWeight: 600 }}>
+            <FaCamera /> Upload SIM Card Photo (Optional)
+          </label>
+          <input 
+            type="file" 
+            accept="image/*" 
+            className="glass-input mt-2" 
+            onChange={handleSimFileChange} 
+          />
+          {simPhotoPreview && (
+            <div className="mt-2 flex items-center gap-3">
+              <img src={simPhotoPreview} alt="SIM Preview" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '2px solid #10b981' }} />
+              <button type="button" className="btn-secondary text-xs" onClick={clearSimPhoto} style={{ padding: '4px 8px' }}>Remove</button>
+            </div>
+          )}
+          <small className="text-muted mt-1 block">
+            Attach photo of the installed SIM card & ICCID number. You can also view or update it anytime in the Evidence Checklist.
+          </small>
         </div>
         <button type="submit" className="btn-primary w-full mt-4 py-3" disabled={submitting}>
           {submitting ? 'Saving...' : 'Create Master Unit'}
@@ -1309,6 +1388,7 @@ function CentralizedEvidenceUpload({ master, onClose }: any) {
   };
 
   const masterEv = findEv('MASTER');
+  const simEv = findEv('SIM_CARD');
   const powerEv = findEv('POWER_SOURCE');
 
   return (
@@ -1327,6 +1407,16 @@ function CentralizedEvidenceUpload({ master, onClose }: any) {
           evidence={masterEv}
           masterId={master.id}
           category="MASTER"
+          onUploaded={handleUploaded}
+          onDeleted={handleDeleted}
+        />
+
+        <EvidenceItem 
+          title="SIM Card Photo" 
+          description="Photo showing the installed SIM card & ICCID number"
+          evidence={simEv}
+          masterId={master.id}
+          category="SIM_CARD"
           onUploaded={handleUploaded}
           onDeleted={handleDeleted}
         />

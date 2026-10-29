@@ -478,27 +478,6 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
 
   return (
     <div className="device-registry-container">
-      {/* Header */}
-      <div className="device-registry-header">
-        <div>
-          <h1 className="device-registry-title">Device Registry</h1>
-          <p className="device-registry-subtitle">
-            Authenticated AWS IoT Master Units and their hardwired barrier sensor sub-assemblies.
-          </p>
-        </div>
-        <div className="device-registry-header-actions">
-          <button 
-            type="button" 
-            className="btn-outline flex items-center gap-2" 
-            onClick={() => fetchDevices(false)} 
-            disabled={loading}
-          >
-            <FaSyncAlt className={loading ? 'fa-spin' : ''} size={13} />
-            <span>Refresh</span>
-          </button>
-        </div>
-      </div>
-
       {/* KPI Stats Bar */}
       <div className="registry-stats-grid">
         <div className="stat-card">
@@ -566,6 +545,17 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
             <option value="OFFLINE">Offline</option>
           </select>
         </div>
+
+        <button 
+          type="button" 
+          className="registry-refresh-btn" 
+          onClick={() => fetchDevices(false)} 
+          disabled={loading}
+          title="Refresh device registry"
+        >
+          <FaSyncAlt className={loading ? 'fa-spin' : ''} size={13} />
+          <span>Refresh</span>
+        </button>
       </div>
 
       {/* Device Registry Table */}
@@ -1177,9 +1167,6 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                         <code style={{ fontSize: '0.85rem', color: '#0369a1', fontWeight: 600 }}>
                           lc/devices/{inspectDevice.thingName}/manifest
                         </code>
-                        <p style={{ margin: '4px 0 0 0', fontSize: '0.8rem', color: '#475569' }}>
-                          Transmitted by edge device firmware upon boot or commissioning with configured sensors and hardware identifiers.
-                        </p>
                       </div>
 
                       {currentViewingRecord ? (
@@ -1256,25 +1243,12 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                   {/* TAB 3: HEALTH CHECK VIEW */}
                   {inspectTab === 'health' && (
                     <div>
-                      {/* Health Check Trigger Action Banner */}
-                      <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '1rem 1.25rem', marginBottom: '1.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <FaHeartbeat color="#dc2626" size={18} />
-                            <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 750, color: '#0f172a' }}>
-                              On-Demand Device Health Diagnostic
-                            </h4>
-                          </div>
-                          <p style={{ margin: '4px 0 0 0', fontSize: '0.82rem', color: '#475569', maxWidth: '640px' }}>
-                            Publishes a test command to <code>lc-gate/{inspectDevice.thingName}/health/request</code> via AWS IoT Core MQTT broker. 
-                            The edge hardware samples power, sensors, and modem signal, then replies on <code>lc-gate/{inspectDevice.thingName}/health</code>.
-                          </p>
-                        </div>
-
+                      {/* Health Check Trigger Action */}
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: '1rem' }}>
                         <button
                           type="button"
                           className="btn-primary flex items-center gap-2"
-                          style={{ padding: '8px 20px', fontSize: '0.86rem', fontWeight: 700, borderRadius: '6px' }}
+                          style={{ padding: '8px 18px', fontSize: '0.86rem', fontWeight: 700, borderRadius: '6px' }}
                           onClick={handleTriggerHealthCheck}
                           disabled={triggeringHealthCheck}
                         >
@@ -1307,10 +1281,6 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                               <h4 style={{ margin: 0, fontSize: '0.96rem', fontWeight: 700, color: '#991b1b' }}>
                                 Diagnostic Timed Out: No Packet Returned by Edge Hardware
                               </h4>
-                              <p style={{ margin: '3px 0 0 0', fontSize: '0.82rem', color: '#b91c1c' }}>
-                                AWS IoT Core dispatched the command, but the edge device did not respond within 12 seconds.
-                                Verify SIM card cellular connectivity, power supply, and modem status.
-                              </p>
                             </div>
                           </div>
                           <button

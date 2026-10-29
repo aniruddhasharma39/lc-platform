@@ -54,24 +54,34 @@ export async function getGateTelemetryPayload(gateId: number) {
 
   const deviceRegistryIds = gate.deviceRegistries.map(d => d.id);
 
-  // Fetch real device telemetry payloads from database
-  const telemetries = await prisma.deviceTelemetry.findMany({
-    where: {
-      OR: [
-        { thingName: { in: thingIdentifiers } },
-        ...(deviceRegistryIds.length > 0 ? [{ deviceRegistryId: { in: deviceRegistryIds } }] : [])
-      ]
-    },
-    orderBy: { receivedAt: 'desc' },
-    take: 100,
-  }).catch(() => []);
-
-  // Fetch operational cycles (Open / Close events)
-  const rawEvents = await prisma.lCGateEvent.findMany({
-    where: { gateId },
-    orderBy: { openedAt: 'desc' },
-    take: 100,
-  }).catch(() => []);
+  // Fetch real device telemetry, health checks, and operational cycles from database
+  const [telemetries, healthChecks, rawEvents] = await Promise.all([
+    prisma.deviceTelemetry.findMany({
+      where: {
+        OR: [
+          { thingName: { in: thingIdentifiers } },
+          ...(deviceRegistryIds.length > 0 ? [{ deviceRegistryId: { in: deviceRegistryIds } }] : [])
+        ]
+      },
+      orderBy: { receivedAt: 'desc' },
+      take: 100,
+    }).catch(() => []),
+    prisma.deviceHealthCheck.findMany({
+      where: {
+        OR: [
+          { thingName: { in: thingIdentifiers } },
+          ...(deviceRegistryIds.length > 0 ? [{ deviceRegistryId: { in: deviceRegistryIds } }] : [])
+        ]
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    }).catch(() => []),
+    prisma.lCGateEvent.findMany({
+      where: { gateId },
+      orderBy: { openedAt: 'desc' },
+      take: 100,
+    }).catch(() => [])
+  ]);
 
   const nowMs = Date.now();
   const operationalCycles = rawEvents.map(ev => {
@@ -102,20 +112,56 @@ export async function getGateTelemetryPayload(gateId: number) {
   const activeOpenCycle = operationalCycles.find(c => c.status === 'OPEN' || !c.closedAt);
   const lastClosedCycle = operationalCycles.find(c => c.closedAt !== null);
 
+  // Categorize payloads matching DeviceRegistry 1:1
+  // 1. Telemetry: strictly gate state telemetry
   const telemetryRecords = telemetries.filter(t =>
-    (t.topic && t.topic.includes('/telemetry')) ||
-    (t.payload && typeof t.payload === 'object' && ((t.payload as any).Status !== undefined || (t.payload as any).LimitSwitchClosed !== undefined))
+    (t.topic && t.topic.includes('/telemetry')) &&
+    !(t.topic && t.topic.includes('/health')) &&
+    !((t.payload as any)?.action === 'HEALTH_CHECK' || (t.payload as any)?.action === 'HEALTH_CHECK_RESPONSE')
   );
 
+  // 2. Manifest: firmware and hardware configurations
   const manifestRecords = telemetries.filter(t =>
     (t.topic && t.topic.includes('/manifest')) ||
     (t.payload && typeof t.payload === 'object' && ((t.payload as any).thing !== undefined || (t.payload as any).Master !== undefined))
   );
 
-  const healthRecords = telemetries.filter(t =>
+  // 3. Health Checks: dedicated health checks combined with legacy health payloads
+  const healthRecords = healthChecks.length > 0 ? healthChecks.map((h: any) => ({
+    id: h.id,
+    thingName: h.thingName,
+    topic: `lc-gate/${h.thingName}/health`,
+    payload: h.rawPayload,
+    status: h.healthstatus || 'HEALTHY',
+    receivedAt: h.createdAt,
+    deviceRegistryId: h.deviceRegistryId,
+    gateStatus: h.gateStatus,
+    isDedicatedHealthCheck: true,
+  })) : telemetries.filter(t =>
     (t.topic && t.topic.includes('/health')) ||
-    (t.payload && typeof t.payload === 'object' && ((t.payload as any).action === 'HEALTH_CHECK' || (t.payload as any).NetworkStrength !== undefined || (t.payload as any).BatteryPercentage !== undefined))
+    (t.payload && typeof t.payload === 'object' && ((t.payload as any).action === 'HEALTH_CHECK' || (t.payload as any).action === 'HEALTH_CHECK_RESPONSE' || (t.payload as any).healthstatus !== undefined))
   );
+
+  // Unified deduplicated payloads
+  const seenUids = new Set<string>();
+  const deduplicatedPayloads: any[] = [];
+  if (healthChecks.length > 0) {
+    for (const h of healthRecords) {
+      const uid = `hc-${h.id}`;
+      if (!seenUids.has(uid)) {
+        seenUids.add(uid);
+        deduplicatedPayloads.push(h);
+      }
+    }
+  }
+  for (const t of telemetries) {
+    const uid = `tel-${t.id}`;
+    if (!seenUids.has(uid)) {
+      seenUids.add(uid);
+      deduplicatedPayloads.push(t);
+    }
+  }
+  deduplicatedPayloads.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
 
   const latestTele = telemetryRecords[0]?.payload as any;
   const rawStatus = latestTele?.Status ? String(latestTele.Status).trim().toUpperCase() : null;
@@ -175,13 +221,13 @@ export async function getGateTelemetryPayload(gateId: number) {
     currentOperationalState,
     topic: `lc-gate/${primaryThingName}/telemetry`,
     counts: {
-      all: telemetries.length,
+      all: deduplicatedPayloads.length,
       telemetry: telemetryRecords.length,
       manifest: manifestRecords.length,
       healthCheck: healthRecords.length,
       cycles: operationalCycles.length,
     },
-    payloads: telemetries,
+    payloads: deduplicatedPayloads,
     telemetryRecords,
     manifestRecords,
     healthRecords,

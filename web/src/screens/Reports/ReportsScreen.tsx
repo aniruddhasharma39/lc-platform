@@ -444,9 +444,6 @@ export default function ReportsScreen({ user }: Props) {
             </div>
             <div>
               <h2 className="reports-main-heading">Level Crossing Report Builder</h2>
-              <p className="reports-sub-heading">
-                Live reactive reporting: select parameters in the sidebar to instantly update and export audit logsheets.
-              </p>
             </div>
           </div>
 

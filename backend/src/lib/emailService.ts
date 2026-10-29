@@ -79,7 +79,7 @@ async function sendViaBrevoApi(options: {
     };
   }
 
-  const senderEmail = process.env.BREVO_SENDER_EMAIL || process.env.SMTP_USER || 'no-reply@lcgate.in';
+  const senderEmail = process.env.BREVO_SENDER_EMAIL || process.env.SMTP_USER || 'mirthatechnology1@gmail.com';
   const senderName = process.env.BREVO_SENDER_NAME || 'Indian Railways Level Crossing Platform';
 
   try {
@@ -178,7 +178,7 @@ export async function sendEmail(options: {
       (process.env.BREVO_SENDER_EMAIL
         ? `"${process.env.BREVO_SENDER_NAME || 'Indian Railways Level Crossing Platform'}" <${process.env.BREVO_SENDER_EMAIL}>`
         : null) ||
-      `"Indian Railways LC Platform" <${process.env.SMTP_USER}>`;
+      `"Indian Railways Level Crossing Platform" <${process.env.SMTP_USER || 'mirthatechnology1@gmail.com'}>`;
 
     try {
       const info = await transporter.sendMail({
@@ -315,9 +315,6 @@ export async function sendGateStateEmail(params: {
   const statusBg = isOpen ? '#FEF2F2' : '#F0FDF4';
   const statusBorder = isOpen ? '#EF4444' : '#22C55E';
   const statusText = isOpen ? 'GATE OPEN' : 'GATE CLOSED';
-  const statusSubtext = isOpen
-    ? 'Level Crossing is OPEN to Road Traffic — Rail Traffic Interlocked'
-    : 'Level Crossing is CLOSED to Road Traffic — Tracks Secured for Train Movement';
 
   const advisoryBox = isOpen
     ? `
@@ -358,17 +355,14 @@ export async function sendGateStateEmail(params: {
         <div style="padding: 28px 24px; color: #1e293b;">
           <p style="font-size: 15px; margin: 0 0 16px 0;">Dear Official <strong>${toName}</strong>,</p>
           <p style="font-size: 14px; color: #475569; margin: 0 0 20px 0; line-height: 1.5;">
-            An automated state transition has been detected at your assigned Level Crossing under <strong>${scopeGroupName}</strong>:
+            An automated state transition has been detected at your assigned Level Crossing:
           </p>
 
           <!-- Status Highlight Card -->
-          <div style="background-color: ${statusBg}; border: 2px solid ${statusBorder}; border-radius: 10px; padding: 20px; text-align: center; margin: 20px 0;">
-            <span style="display: inline-block; background-color: ${statusColor}; color: #ffffff; font-weight: 800; font-size: 18px; letter-spacing: 1.5px; padding: 8px 24px; border-radius: 9999px; text-transform: uppercase;">
+          <div style="background-color: ${statusBg}; border: 2px solid ${statusBorder}; border-radius: 10px; padding: 18px; text-align: center; margin: 20px 0;">
+            <span style="display: inline-block; background-color: ${statusColor}; color: #ffffff; font-weight: 800; font-size: 18px; letter-spacing: 1.5px; padding: 8px 26px; border-radius: 9999px; text-transform: uppercase;">
               ${statusText}
             </span>
-            <p style="margin: 12px 0 0 0; font-size: 14px; font-weight: 600; color: ${statusColor};">
-              ${statusSubtext}
-            </p>
           </div>
 
           <!-- Gate Specification Table -->
@@ -386,17 +380,9 @@ export async function sendGateStateEmail(params: {
                 <td style="padding: 10px 12px; font-weight: 600; color: #64748b;">Zone / Division:</td>
                 <td style="padding: 10px 12px; font-weight: 600; color: #1e293b;">${zone || 'WR'} / ${division || 'Operations'}</td>
               </tr>
-              <tr style="border-bottom: 1px solid #f1f5f9; background-color: #f8fafc;">
-                <td style="padding: 10px 12px; font-weight: 600; color: #64748b;">Assigned Scope Group:</td>
-                <td style="padding: 10px 12px; font-weight: 600; color: #1e293b;">${scopeGroupName}</td>
-              </tr>
-              <tr style="border-bottom: 1px solid #f1f5f9;">
+              <tr style="background-color: #f8fafc;">
                 <td style="padding: 10px 12px; font-weight: 600; color: #64748b;">Timestamp (IST):</td>
                 <td style="padding: 10px 12px; font-weight: 700; color: #0f172a;">${timestampStr}</td>
-              </tr>
-              <tr style="background-color: #f8fafc;">
-                <td style="padding: 10px 12px; font-weight: 600; color: #64748b;">Detection Source:</td>
-                <td style="padding: 10px 12px; font-weight: 600; color: #1e293b;">IoT Telemetry & Boom Barrier Sensors</td>
               </tr>
             </tbody>
           </table>
@@ -404,14 +390,14 @@ export async function sendGateStateEmail(params: {
           ${advisoryBox}
 
           <p style="font-size: 12px; color: #94a3b8; margin: 24px 0 0 0; text-align: center;">
-            You received this automated transmission because your official email is authorized for <strong>${scopeGroupName}</strong> alerts.
+            You received this automated transmission because your official email is authorized for this Level Crossing.
           </p>
         </div>
 
         <!-- Official Footer -->
         <div style="background-color: #f8fafc; padding: 18px 24px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 12px; color: #64748b;">
           <p style="margin: 0 0 4px 0; font-weight: 600; color: #334155;">Ministry of Railways — Government of India</p>
-          <p style="margin: 0; font-size: 11px; color: #94a3b8;">Automated Level Crossing Safety Monitoring System • Dispatched via Brevo</p>
+          <p style="margin: 0; font-size: 11px; color: #94a3b8;">Automated Level Crossing Safety Monitoring System</p>
         </div>
       </div>
     </body>
@@ -420,7 +406,7 @@ export async function sendGateStateEmail(params: {
 
   const subjectPrefix = isOpen ? '🔴 [ALERT - GATE OPEN]' : '🟢 [ALERT - GATE CLOSED]';
   const subject = `${subjectPrefix} Level Crossing ${lcNumber} is now ${status} (${timestampStr})`;
-  const textContent = `Indian Railways Alert: Level Crossing ${lcNumber} (${locationName}) transitioned to ${status} at ${timestampStr} IST. Scope Group: ${scopeGroupName}.`;
+  const textContent = `Indian Railways Alert: Level Crossing ${lcNumber} (${locationName}) transitioned to ${status} at ${timestampStr} IST.`;
 
   return sendEmail({
     toEmail,

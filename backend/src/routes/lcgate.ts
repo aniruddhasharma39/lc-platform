@@ -673,76 +673,15 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
     });
 
     if (!gate) return res.status(404).json({ error: 'Gate not found' });
-    // Collect all possible thing / serial identifiers for this gate
-    const thingIdentifiers = Array.from(new Set([
-      gate.lcNumber,
-      ...gate.masters.map(m => m.serialNumber),
-      ...gate.deviceRegistries.map(d => d.thingName),
-      ...gate.deviceRegistries.map(d => d.serialNumber).filter(Boolean) as string[],
-    ])).filter(Boolean);
 
-    const deviceRegistryIds = gate.deviceRegistries.map(d => d.id);
-
-    // Fetch real device telemetry payloads from database
-    const telemetries = await prisma.deviceTelemetry.findMany({
-      where: {
-        OR: [
-          { thingName: { in: thingIdentifiers } },
-          ...(deviceRegistryIds.length > 0 ? [{ deviceRegistryId: { in: deviceRegistryIds } }] : [])
-        ]
-      },
-      orderBy: { receivedAt: 'desc' },
-      take: 100,
-    }).catch(() => []);
-
-    // Categorize payloads:
-    // 1. Telemetry
-    const telemetryRecords = telemetries.filter(t =>
-      (t.topic && t.topic.includes('/telemetry')) ||
-      (t.payload && typeof t.payload === 'object' && ((t.payload as any).Status !== undefined || (t.payload as any).LimitSwitchClosed !== undefined))
-    );
-
-    // 2. Manifest
-    const manifestRecords = telemetries.filter(t =>
-      (t.topic && t.topic.includes('/manifest')) ||
-      (t.payload && typeof t.payload === 'object' && ((t.payload as any).thing !== undefined || (t.payload as any).Master !== undefined))
-    );
-
-    // 3. Health Check
-    const healthRecords = telemetries.filter(t =>
-      (t.topic && t.topic.includes('/health')) ||
-      (t.payload && typeof t.payload === 'object' && ((t.payload as any).action === 'HEALTH_CHECK' || (t.payload as any).NetworkStrength !== undefined || (t.payload as any).BatteryPercentage !== undefined))
-    );
-
-    const latestTele = telemetryRecords[0]?.payload as any;
-    const currentStatus = latestTele?.Status || (gate.deviceRegistries[0]?.status ?? 'CONFIGURED');
-    const primaryThingName = gate.masters[0]?.serialNumber || gate.deviceRegistries[0]?.thingName || gate.lcNumber;
+    const basePayload = await getGateTelemetryPayload(id);
+    if (!basePayload) return res.status(404).json({ error: 'Gate telemetry not available' });
 
     const telemetryData = buildGateTelemetry(gate);
-    res.json({
-      success: true,
-      gateId: gate.id,
-      lcNumber: gate.lcNumber,
-      locationName: gate.locationName,
-      thingName: primaryThingName,
-      currentStatus,
-      topic: `lc-gate/${primaryThingName}/telemetry`,
-      counts: {
-        all: telemetries.length,
-        telemetry: telemetryRecords.length,
-        manifest: manifestRecords.length,
-        healthCheck: healthRecords.length,
-      },
-      payloads: telemetries,
-      telemetryRecords,
-      manifestRecords,
-      healthRecords,
-      latestTelemetry: telemetryRecords[0] || null,
-      latestManifest: manifestRecords[0] || null,
-      latestHealthCheck: healthRecords[0] || null,
+    return res.json({
+      ...basePayload,
       cluster: telemetryData.cluster,
       awsConfig: telemetryData.awsConfig,
-      timestamp: new Date().toISOString()
     });
   } catch (error) {
     next(error);
