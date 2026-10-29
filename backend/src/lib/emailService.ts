@@ -80,7 +80,7 @@ async function sendViaBrevoApi(options: {
   }
 
   const senderEmail = process.env.BREVO_SENDER_EMAIL || process.env.SMTP_USER || 'no-reply@lcgate.in';
-  const senderName = process.env.BREVO_SENDER_NAME || 'Indian Railways LC Platform';
+  const senderName = process.env.BREVO_SENDER_NAME || 'Indian Railways Level Crossing Platform';
 
   try {
     const payload = {
@@ -176,7 +176,7 @@ export async function sendEmail(options: {
     const fromAddress =
       process.env.SMTP_FROM ||
       (process.env.BREVO_SENDER_EMAIL
-        ? `"${process.env.BREVO_SENDER_NAME || 'Indian Railways LC Platform'}" <${process.env.BREVO_SENDER_EMAIL}>`
+        ? `"${process.env.BREVO_SENDER_NAME || 'Indian Railways Level Crossing Platform'}" <${process.env.BREVO_SENDER_EMAIL}>`
         : null) ||
       `"Indian Railways LC Platform" <${process.env.SMTP_USER}>`;
 
