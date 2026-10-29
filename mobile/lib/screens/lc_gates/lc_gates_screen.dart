@@ -12,8 +12,15 @@ import '../../components/device_info_sheet.dart';
 
 class LCGatesScreen extends StatefulWidget {
   final Map<String, dynamic> user;
+  final int? initialGateId;
+  final String? initialTab;
 
-  const LCGatesScreen({super.key, required this.user});
+  const LCGatesScreen({
+    super.key,
+    required this.user,
+    this.initialGateId,
+    this.initialTab,
+  });
 
   @override
   State<LCGatesScreen> createState() => _LCGatesScreenState();
@@ -163,7 +170,20 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
       }
 
       if (mounted) {
-        setState(() => _isLoading = false);
+        setState(() {
+          _isLoading = false;
+          if (widget.initialGateId != null && _selectedGate == null) {
+            final found = _gates.firstWhere(
+              (g) => g['id'] == widget.initialGateId,
+              orElse: () => null,
+            );
+            if (found != null) {
+              _selectedGate = Map<String, dynamic>.from(found);
+              _viewMode = 'detail';
+              _clusterTab = widget.initialTab ?? 'about';
+            }
+          }
+        });
         if (isManual) {
           AppFeedback.showSuccess(context, 'LC Gates directory refreshed.');
         }

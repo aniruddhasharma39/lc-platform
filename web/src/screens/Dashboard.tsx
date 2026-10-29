@@ -15,6 +15,7 @@ import ClusterDashboard from './Cluster/ClusterDashboard';
 import ManageUsers from './ManageUsers';
 import ScopeGroupManagement from './ScopeGroups/ScopeGroupManagement';
 import LCGatesScreen from './LCGates/LCGatesScreen';
+import HomeDashboard from './Home/HomeDashboard';
 import DeviceRegistryScreen from './DeviceRegistry/DeviceRegistryScreen';
 import ReportsScreen from './Reports/ReportsScreen';
 import { API_URL } from '../config';
@@ -86,6 +87,14 @@ const getSidebarModuleIcon = (name: string, slug?: string) => {
 export default function Dashboard({ user, onLogout }: Props) {
   const { success: toastSuccess, info: toastInfo } = useToast();
   const [currentView, setCurrentView] = useState<string>('home');
+  const [targetGateId, setTargetGateId] = useState<number | null>(null);
+  const [targetGateTab, setTargetGateTab] = useState<'about' | 'telemetry'>('about');
+
+  const handleNavigateToGate = (gateId: number, tab: 'about' | 'telemetry' = 'about') => {
+    setTargetGateId(gateId);
+    setTargetGateTab(tab);
+    setCurrentView('lc-gates');
+  };
   const [systemModules, setSystemModules] = useState<any[]>(DEFAULT_SYSTEM_MODULES);
   const [branding, setBranding] = useState({ appName: 'LC Platform' });
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -633,7 +642,14 @@ if (m.slug === 'cluster') return true;
         </header>
 
         <main className="content-area">
-          {currentView === 'lc-gates' && <LCGatesScreen user={user} />}
+          {currentView === 'lc-gates' && (
+            <LCGatesScreen
+              user={user}
+              initialGateId={targetGateId}
+              initialTab={targetGateTab}
+              
+            />
+          )}
           {currentView === 'reports' && <ReportsScreen user={user} />}
           {currentView === 'roles' && <Roles user={user} />}
           {currentView === 'registration' && <RegistrationBuilder />}
@@ -644,10 +660,11 @@ if (m.slug === 'cluster') return true;
           {(currentView === 'devices' || currentView === 'device-registry') && <DeviceRegistryScreen user={user} />}
 
           {currentView === 'home' && (
-            <div className="card text-center" style={{ padding: 64, marginTop: 32 }}>
-              <h2 style={{ fontSize: '2rem', color: 'var(--primary)', marginBottom: 16 }}>Welcome to LC Platform</h2>
-              <p className="text-muted" style={{ fontSize: '1.2rem' }}>You are logged in as <strong>{user.role}</strong>.</p>
-            </div>
+            <HomeDashboard
+              user={user}
+              onNavigateToGate={handleNavigateToGate}
+              onNavigateToModule={setCurrentView}
+            />
           )}
 
           {!['roles', 'registration', 'branding', 'cluster', 'scope-groups', 'manage-users', 'lc-gates', 'reports', 'home', 'devices', 'device-registry'].includes(currentView) && (() => {
