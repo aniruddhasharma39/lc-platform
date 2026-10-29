@@ -7,6 +7,7 @@ import { v2 as cloudinary } from 'cloudinary';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { send2FactorSmsOtp } from '../lib/twofactor';
+import { sendEmailOtp } from '../lib/emailService';
 import { extractRegistrationUserFields, checkRegistrationUniqueness } from '../lib/userExtract';
 import { validateRegistrationUniqueness } from '../lib/uniqueness';
 
@@ -411,6 +412,13 @@ router.post('/otp/send', async (req, res, next) => {
           error: `Failed to deliver SMS text via 2Factor.in: ${smsResult.details || 'Gateway error'}. Please check your phone number and 2Factor account credits.`
         });
       }
+    } else if (type === 'email') {
+      const emailResult = await sendEmailOtp(targetIdentifier, otp);
+      if (!emailResult.success) {
+        return res.status(502).json({
+          error: emailResult.error || 'Failed to dispatch email verification OTP.'
+        });
+      }
     }
 
     await prisma.otpVerification.deleteMany({
@@ -439,8 +447,7 @@ router.post('/otp/send', async (req, res, next) => {
       message: type === 'phone'
         ? `OTP has been sent to your registered mobile number as an SMS text message.`
         : `OTP has been sent to your registered email address.`,
-      expiresInSeconds: 600,
-      demoOtp: otp
+      expiresInSeconds: 600
     });
   } catch (error) {
     next(error);

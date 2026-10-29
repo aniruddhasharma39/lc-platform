@@ -36,7 +36,6 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _sendingOtp = false;
   int _countdown = 0;
   Timer? _countdownTimer;
-  String? _demoOtp;
 
   // Forgot Password / Reset on OTP State
   bool _wantsReset = false;
@@ -252,7 +251,6 @@ class _LoginScreenState extends State<LoginScreen> {
         final successMsg = data['message'] ?? 'OTP sent successfully!';
         setState(() {
           _otpSent = true;
-          _demoOtp = data['demoOtp']?.toString();
           _successMsg = successMsg;
         });
         _startCountdown();
@@ -819,7 +817,6 @@ class _LoginScreenState extends State<LoginScreen> {
                   setState(() {
                     _otpSent = false;
                     _otpCtrl.clear();
-                    _demoOtp = null;
                   });
                 },
               ),
@@ -830,45 +827,6 @@ class _LoginScreenState extends State<LoginScreen> {
         if (_otpSent) ...[
           const Divider(height: 28),
 
-          // Demo OTP Badge for convenient testing
-          if (_demoOtp != null) ...[
-            InkWell(
-              onTap: () {
-                _otpCtrl.text = _demoOtp!;
-                Clipboard.setData(ClipboardData(text: _demoOtp!));
-                AppFeedback.showSuccess(
-                  context,
-                  'Test OTP ($_demoOtp) filled and copied to clipboard!',
-                );
-              },
-              borderRadius: BorderRadius.circular(8),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Row(
-                      children: const [
-                        Icon(Icons.content_copy, size: 14, color: AppColors.primary),
-                        SizedBox(width: 6),
-                        Text('Test OTP (Tap to auto-fill):', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.primary)),
-                      ],
-                    ),
-                    Text(
-                      _demoOtp!,
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, letterSpacing: 3, color: AppColors.primary),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 14),
-          ],
 
           // OTP Input
           Row(

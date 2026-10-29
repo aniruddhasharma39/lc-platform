@@ -29,7 +29,6 @@ export default function Login({ onLogin, onGoToRegister, sessionExpiredMsg }: Pr
   const [otpSent, setOtpSent] = useState(false);
   const [sendingOtp, setSendingOtp] = useState(false);
   const [countdown, setCountdown] = useState(0);
-  const [demoOtp, setDemoOtp] = useState<string | null>(null);
 
   // Optional Password Reset on OTP
   const [wantsReset, setWantsReset] = useState(false);
@@ -189,9 +188,6 @@ export default function Login({ onLogin, onGoToRegister, sessionExpiredMsg }: Pr
       const msg = data.message || `OTP dispatched successfully to ${target}!`;
       setSuccessMsg(msg);
       toastSuccess(msg, 'OTP Dispatched');
-      if (data.demoOtp) {
-        setDemoOtp(data.demoOtp);
-      }
     } catch (err: any) {
       setError(err.message);
       toastError(err.message || 'Failed to send OTP.', 'OTP Request Failed');
@@ -622,7 +618,6 @@ export default function Login({ onLogin, onGoToRegister, sessionExpiredMsg }: Pr
                     onClick={() => {
                       setOtpSent(false);
                       setOtpCode('');
-                      setDemoOtp(null);
                     }}
                     style={{ whiteSpace: 'nowrap', padding: '10px 14px', fontSize: '0.85rem' }}
                   >
@@ -640,32 +635,6 @@ export default function Login({ onLogin, onGoToRegister, sessionExpiredMsg }: Pr
             {/* OTP Verification Section (Revealed when OTP is sent) */}
             {otpSent && (
               <form onSubmit={handleVerifyOtp} className="flex-col gap-4 mt-2 fade-in">
-                {demoOtp && (
-                  <div
-                    onClick={() => {
-                      setOtpCode(demoOtp);
-                      toastInfo(`Demo OTP ${demoOtp} autofilled into verification field!`, 'Autofilled');
-                    }}
-                    style={{
-                      backgroundColor: 'rgba(79, 70, 229, 0.08)',
-                      border: '1px dashed var(--primary)',
-                      padding: '10px 14px',
-                      borderRadius: '8px',
-                      fontSize: '0.85rem',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                    }}
-                    title="Click to automatically fill this code"
-                  >
-                    <span>Test OTP (Click to autofill):</span>
-                    <strong style={{ letterSpacing: '2px', color: 'var(--primary)', fontSize: '1.05rem' }}>
-                      {demoOtp}
-                    </strong>
-                  </div>
-                )}
 
                 <div>
                   <div className="flex justify-between items-center mb-1">
