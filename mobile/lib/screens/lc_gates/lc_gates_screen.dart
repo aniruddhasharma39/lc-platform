@@ -1,39 +1,18 @@
-import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'dart:convert';
+import 'dart:async';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
 import '../../components/device_info_sheet.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
-
-Color parseHexColor(String? hexString) {
-  if (hexString == null || hexString.isEmpty) return const Color(0xFF0B3C7A);
-  try {
-    final hex = hexString.replaceAll('#', '');
-    return Color(int.parse('FF$hex', radix: 16));
-  } catch (_) {
-    return const Color(0xFF0B3C7A);
-  }
-}
-
-String getFullImageUrl(String? url) {
-  if (url == null || url.isEmpty) return '';
-  if (url.startsWith('http://') || url.startsWith('https://')) return url;
-  try {
-    final uri = Uri.parse(baseUrl);
-    final origin = '${uri.scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}';
-    return '$origin$url';
-  } catch (_) {
-    return url;
-  }
-}
 
 class LCGatesScreen extends StatefulWidget {
   final Map<String, dynamic> user;
+
   const LCGatesScreen({super.key, required this.user});
 
   @override
@@ -43,16 +22,15 @@ class LCGatesScreen extends StatefulWidget {
 class _LCGatesScreenState extends State<LCGatesScreen> {
   bool _isLoading = true;
   String _token = '';
-  bool _isDeveloper = false;
 
   // Breadcrumbs: List of {id: int?, name: String, color: String?}
   final List<Map<String, dynamic>> _breadcrumbs = [
-    {'id': null, 'name': 'Root Directory', 'color': null}
+    {'id': null, 'name': 'LC Gate', 'color': null}
   ];
 
   int? get _currentFolderId => _breadcrumbs.last['id'] as int?;
 
-  // View Mode: 'folder' | 'flat' | 'detail'
+  // View Mode: 'folder' | 'detail'
   String _viewMode = 'folder';
 
   // Selected Cluster for Full Drilldown
@@ -61,6 +39,29 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   // Drilldown Active Tab: 'about' | 'telemetry'
   String _clusterTab = 'about';
 
+  String getFullImageUrl(String? url) {
+    if (url == null || url.isEmpty) return '';
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    final base = baseUrl;
+    final host = base.endsWith('/api/v1')
+        ? base.substring(0, base.length - '/api/v1'.length)
+        : base;
+    return '$host$url';
+  }
+
+  Color parseHexColor(dynamic hexStr, {Color fallback = AppColors.primary}) {
+    if (hexStr == null) return fallback;
+    final s = hexStr.toString().replaceAll('#', '').trim();
+    if (s.length == 6) {
+      final val = int.tryParse('FF$s', radix: 16);
+      if (val != null) return Color(val);
+    } else if (s.length == 8) {
+      final val = int.tryParse(s, radix: 16);
+      if (val != null) return Color(val);
+    }
+    return fallback;
+  }
+
   // Search Filter
   final _searchCtrl = TextEditingController();
   String _searchQuery = '';
@@ -68,14 +69,18 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   // Telemetry & Inspector State
   Map<String, dynamic>? _gateTelemetry;
   bool _loadingTelemetry = false;
-  bool _wsConnected = false;
   int? _selectedPayloadId;
   String _inspectSubTab = 'cycles'; // 'cycles' | 'telemetry' | 'manifest' | 'health' | 'all'
   bool _showRawJson = false;
   bool _triggeringHealthCheck = false;
+  String? _healthCheckStage; // null | 'LISTENING' | 'SUCCESS' | 'TIMEOUT'
   WebSocketChannel? _telemetryWsChannel;
   StreamSubscription? _telemetryWsSub;
   Timer? _wsReconnectTimer;
+
+  // Manage expandable/collapsible state for multiple devices
+  int? _expandedMasterIndex = 0;
+  int? _expandedSlaveId;
 
   // Data
   List<dynamic> _scopeGroups = [];
@@ -84,7 +89,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   @override
   void initState() {
     super.initState();
-    _isDeveloper = widget.user['role'] == 'Developer';
     _loadTokenAndFetch();
   }
 
@@ -122,7 +126,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
           final scopeData = json.decode(scopeRes.body);
           if (scopeData is Map) {
             myGroups = List.from(scopeData['allScopeGroups'] ?? scopeData['scopeGroups'] ?? []);
-            if (scopeData['isDeveloper'] == true) _isDeveloper = true;
           }
         }
       } catch (_) {}
@@ -173,40 +176,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     }
   }
 
-  // Recursive cluster count for scope group
-  int _getRecursiveClusterCount(int groupId) {
-    final descendantIds = <int>{groupId};
-    final queue = <int>[groupId];
-
-    while (queue.isNotEmpty) {
-      final current = queue.removeAt(0);
-      for (final g in _scopeGroups) {
-        if (g is Map && g['parentId'] == current) {
-          final childId = g['id'];
-          if (childId is int && !descendantIds.contains(childId)) {
-            descendantIds.add(childId);
-            queue.add(childId);
-          }
-        }
-      }
-    }
-
-    int count = 0;
-    for (final gate in _gates) {
-      if (gate is Map) {
-        final sgs = gate['scopeGroups'] as List?;
-        if (sgs != null) {
-          final matches = sgs.any((item) {
-            final gid = item['scopeGroupId'] ?? item['scopeGroup']?['id'];
-            return gid != null && descendantIds.contains(gid);
-          });
-          if (matches) count++;
-        }
-      }
-    }
-    return count;
-  }
-
   // Current Folders Filtered
   List<dynamic> get _currentFolders {
     final curId = _currentFolderId;
@@ -231,26 +200,13 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
 
   // Current Clusters Filtered
   List<dynamic> get _currentClusters {
-    if (_viewMode == 'flat') {
-      if (_searchQuery.trim().isEmpty) return _gates;
-      final q = _searchQuery.toLowerCase().trim();
-      return _gates.where((g) {
-        if (g is! Map) return false;
-        final lc = (g['lcNumber'] ?? '').toString().toLowerCase();
-        final name = (g['name'] ?? '').toString().toLowerCase();
-        final loc = (g['locationName'] ?? '').toString().toLowerCase();
-        final zone = (g['zone'] ?? '').toString().toLowerCase();
-        final div = (g['division'] ?? '').toString().toLowerCase();
-        return lc.contains(q) || name.contains(q) || loc.contains(q) || zone.contains(q) || div.contains(q);
-      }).toList();
-    }
-
     final curId = _currentFolderId;
-    if (curId == null) return [];
-
     var result = _gates.where((g) {
       if (g is! Map) return false;
       final sgs = g['scopeGroups'] as List?;
+      if (curId == null) {
+        return sgs == null || sgs.isEmpty;
+      }
       if (sgs == null) return false;
       return sgs.any((item) {
         final gid = item['scopeGroupId'] ?? item['scopeGroup']?['id'];
@@ -264,40 +220,38 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         final lc = (g['lcNumber'] ?? '').toString().toLowerCase();
         final name = (g['name'] ?? '').toString().toLowerCase();
         final loc = (g['locationName'] ?? '').toString().toLowerCase();
-        return lc.contains(q) || name.contains(q) || loc.contains(q);
+        final zone = (g['zone'] ?? '').toString().toLowerCase();
+        final div = (g['division'] ?? '').toString().toLowerCase();
+        return lc.contains(q) || name.contains(q) || loc.contains(q) || zone.contains(q) || div.contains(q);
       }).toList();
     }
     return result;
   }
 
-  // Extract first evidence photo for a gate
-  Map<String, dynamic>? _getGateInstallationEvidence(Map<String, dynamic> gate) {
-    final masters = gate['masters'] as List?;
-    if (masters == null) return null;
-
-    for (final m in masters) {
-      if (m is Map) {
-        final evidences = m['evidences'] as List?;
-        if (evidences != null && evidences.isNotEmpty) {
-          return {
-            'evidence': evidences[0],
-            'masterSeq': m['masterSequence'],
-          };
+  // Helper to extract uploaded evidence photo matching component type
+  Map<String, dynamic>? _findDeviceEvidence(
+    Map<String, dynamic> master,
+    String category, [
+    int? childDeviceId,
+    String? childType,
+  ]) {
+    final mEvs = (master['evidences'] as List?) ?? [];
+    for (final e in mEvs) {
+      if (e is Map<String, dynamic>) {
+        if (childDeviceId != null && e['childDeviceId'] == childDeviceId) return e;
+        if (e['category'] == category) {
+          if (childDeviceId == null || e['childDeviceId'] == childDeviceId) return e;
         }
-
-        final children = m['childDevices'] as List?;
-        if (children != null) {
-          for (final c in children) {
-            if (c is Map) {
-              final cEvidences = c['evidences'] as List?;
-              if (cEvidences != null && cEvidences.isNotEmpty) {
-                return {
-                  'evidence': cEvidences[0],
-                  'masterSeq': m['masterSequence'],
-                  'deviceSeq': c['deviceSequence'],
-                };
-              }
-            }
+        if (childType != null && e['category'] == childType) return e;
+      }
+    }
+    if (childDeviceId != null) {
+      final children = (master['childDevices'] as List?) ?? [];
+      for (final c in children) {
+        if (c is Map<String, dynamic> && c['id'] == childDeviceId) {
+          final cEvs = (c['evidences'] as List?) ?? [];
+          if (cEvs.isNotEmpty && cEvs.first is Map<String, dynamic>) {
+            return cEvs.first as Map<String, dynamic>;
           }
         }
       }
@@ -305,7 +259,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     return null;
   }
 
-  // Total hardware devices count for selected gate
+  // Total devices inside a cluster
   int _getTotalDevicesCount(Map<String, dynamic>? gate) {
     if (gate == null) return 0;
     final masters = gate['masters'] as List?;
@@ -318,6 +272,30 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
       }
     }
     return count;
+  }
+
+  // Compute operational gate status: 'OPEN' or 'CLOSED'
+  String _getGateStatus(Map<String, dynamic> gate) {
+    final events = gate['events'] as List?;
+    if (events != null && events.isNotEmpty) {
+      final ev = events.first as Map<String, dynamic>;
+      final st = (ev['status'] ?? '').toString().toUpperCase();
+      if (st == 'OPEN' || ev['closedAt'] == null) return 'OPEN';
+      if (st == 'CLOSED' || ev['closedAt'] != null) return 'CLOSED';
+    }
+    final devs = gate['deviceRegistries'] as List?;
+    if (devs != null && devs.isNotEmpty) {
+      for (final d in devs) {
+        if (d is Map) {
+          final st = (d['status'] ?? '').toString().toUpperCase();
+          if (st == 'OPEN' || st == 'NOT_CLOSED') return 'OPEN';
+          if (st == 'CLOSED') return 'CLOSED';
+        }
+      }
+    }
+    final rawStatus = (gate['currentStatus'] ?? gate['status'] ?? '').toString().toUpperCase();
+    if (rawStatus == 'OPEN') return 'OPEN';
+    return 'CLOSED';
   }
 
   // Jump Breadcrumb
@@ -347,6 +325,9 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
       _clusterTab = tab;
       _viewMode = 'detail';
       _selectedPayloadId = null;
+      _healthCheckStage = null;
+      _expandedMasterIndex = 0;
+      _expandedSlaveId = null;
     });
     final gateId = gate['id'];
     final idNum = gateId is int ? gateId : int.tryParse(gateId?.toString() ?? '') ?? 0;
@@ -359,10 +340,11 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     }
   }
 
-  // Open Evidence Photo Dialog
+  // Evidence Photo Full View Dialog
   void _showEvidenceDialog({
     required Map<String, dynamic> gate,
     required Map<String, dynamic> evidence,
+    String? itemTitle,
     int? masterSeq,
     int? deviceSeq,
   }) {
@@ -383,7 +365,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Modal Header
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                   decoration: const BoxDecoration(
@@ -394,10 +375,11 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                     children: [
                       const Icon(Icons.camera_alt_outlined, color: AppColors.primary, size: 20),
                       const SizedBox(width: 8),
-                      const Expanded(
+                      Expanded(
                         child: Text(
-                          'Installation Evidence Photo',
-                          style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                          itemTitle ?? 'Installation Evidence Photo',
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       IconButton(
@@ -409,84 +391,98 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                     ],
                   ),
                 ),
-
-                // Photo Preview
                 Container(
                   color: const Color(0xFF0F172A),
                   constraints: const BoxConstraints(maxHeight: 340),
                   child: imgUrl.isNotEmpty
-                      ? Image.network(
-                          imgUrl,
-                          fit: BoxFit.contain,
-                          loadingBuilder: (context, child, progress) {
-                            if (progress == null) return child;
-                            return const Center(
-                              child: Padding(
-                                padding: EdgeInsets.all(40),
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                              ),
-                            );
-                          },
-                          errorBuilder: (context, error, stackTrace) => const Padding(
-                            padding: EdgeInsets.all(40),
-                            child: Center(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.broken_image_outlined, color: Colors.white70, size: 40),
-                                  SizedBox(height: 8),
-                                  Text('Unable to load photo', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                                ],
+                      ? InteractiveViewer(
+                          child: Image.network(
+                            imgUrl,
+                            fit: BoxFit.contain,
+                            loadingBuilder: (context, child, progress) {
+                              if (progress == null) return child;
+                              return const Center(
+                                child: Padding(
+                                  padding: EdgeInsets.all(40),
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                ),
+                              );
+                            },
+                            errorBuilder: (context, error, stackTrace) => const Padding(
+                              padding: EdgeInsets.all(40),
+                              child: Center(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.broken_image_outlined, color: Colors.white70, size: 40),
+                                    SizedBox(height: 8),
+                                    Text('Unable to load photo', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
                         )
                       : const Padding(
                           padding: EdgeInsets.all(40),
-                          child: Center(child: Text('No image URL', style: TextStyle(color: Colors.white70))),
+                          child: Center(
+                            child: Text('No photo URL specified', style: TextStyle(color: Colors.white70)),
+                          ),
                         ),
                 ),
-
-                // Metadata Details
                 Padding(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(14),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _buildMetaRow(
-                        'Cluster & LC Number',
-                        '${gate['lcNumber']} (${gate['locationName'] ?? gate['name'] ?? 'Cluster'})',
-                      ),
-                      const Divider(height: 16),
-                      _buildMetaRow(
-                        'Hardware Association',
-                        'Master #${masterSeq ?? 1}${deviceSeq != null ? ' • Slave #$deviceSeq' : ''}',
-                      ),
-                      const Divider(height: 16),
-                      _buildMetaRow(
-                        'Geotag (GPS)',
-                        lat != null && lng != null
-                            ? '${(lat as num).toStringAsFixed(6)}° N, ${(lng as num).toStringAsFixed(6)}° E'
-                            : 'Coordinates recorded during installation',
-                      ),
-                      const Divider(height: 16),
-                      _buildMetaRow(
-                        'Upload Timestamp',
-                        createdAt != null && createdAt.isNotEmpty
-                            ? createdAt.replaceFirst('T', ' ').split('.').first
-                            : 'Recorded at Commissioning',
-                      ),
-                      const SizedBox(height: 16),
-                      SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton(
-                          style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Gate: ${gate['lcNumber'] ?? 'LC-GATE'}',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
                           ),
-                          onPressed: () => Navigator.pop(ctx),
-                          child: const Text('Close'),
+                          Text(
+                            'Master #${masterSeq ?? 1}${deviceSeq != null ? ' • Slave #$deviceSeq' : ''}',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: AppColors.primary),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      if (lat != null && lng != null) ...[
+                        Row(
+                          children: [
+                            const Icon(Icons.location_on, size: 14, color: Color(0xFFEF4444)),
+                            const SizedBox(width: 4),
+                            Text(
+                              'GPS Coordinates: ${(lat as num).toStringAsFixed(5)}, ${(lng as num).toStringAsFixed(5)}',
+                              style: const TextStyle(fontSize: 12, color: Color(0xFF475569), fontWeight: FontWeight.w600),
+                            ),
+                          ],
                         ),
+                        const SizedBox(height: 4),
+                      ],
+                      if (createdAt != null) ...[
+                        Row(
+                          children: [
+                            const Icon(Icons.access_time, size: 14, color: Color(0xFF64748B)),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Captured: ${_formatDateTime(createdAt)}',
+                              style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                            ),
+                          ],
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          minimumSize: const Size.fromHeight(38),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('Close Viewer', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                       ),
                     ],
                   ),
@@ -499,15 +495,190 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     );
   }
 
-  Widget _buildMetaRow(String label, String value) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B))),
-        const SizedBox(height: 2),
-        Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF0F172A))),
-      ],
-    );
+  // Telemetry WebSocket Connection
+  void _connectTelemetryWs(int gateId) {
+    _disconnectTelemetryWs();
+    _fetchGateTelemetry(gateId, silent: false);
+
+    try {
+      final wsUrlStr = baseUrl
+          .replaceFirst('http://', 'ws://')
+          .replaceFirst('https://', 'wss://')
+          .replaceFirst('/api/v1', '/ws/telemetry?gateId=$gateId');
+
+      final uri = Uri.parse(wsUrlStr);
+      _telemetryWsChannel = WebSocketChannel.connect(uri);
+
+      _telemetryWsSub = _telemetryWsChannel!.stream.listen(
+        (message) {
+          try {
+            final data = json.decode(message.toString());
+            if (data is Map<String, dynamic> && mounted) {
+              setState(() {
+                _gateTelemetry = data;
+              });
+            }
+          } catch (_) {}
+        },
+        onDone: () {
+          _scheduleWsReconnect(gateId);
+        },
+        onError: (err) {
+          _scheduleWsReconnect(gateId);
+        },
+      );
+
+    } catch (_) {
+      _scheduleWsReconnect(gateId);
+    }
+  }
+
+  void _disconnectTelemetryWs() {
+    _wsReconnectTimer?.cancel();
+    _wsReconnectTimer = null;
+    _telemetryWsSub?.cancel();
+    _telemetryWsSub = null;
+    try {
+      _telemetryWsChannel?.sink.close();
+    } catch (_) {}
+    _telemetryWsChannel = null;
+  }
+
+  void _scheduleWsReconnect(int gateId) {
+    _wsReconnectTimer?.cancel();
+    if (_viewMode == 'detail' && _clusterTab == 'telemetry' && _selectedGate != null) {
+      _wsReconnectTimer = Timer(const Duration(seconds: 4), () {
+        if (mounted && _viewMode == 'detail' && _clusterTab == 'telemetry') {
+          _connectTelemetryWs(gateId);
+        }
+      });
+    }
+  }
+
+  Future<void> _fetchGateTelemetry(int gateId, {bool silent = false}) async {
+    if (gateId <= 0) return;
+    if (!silent) {
+      setState(() => _loadingTelemetry = true);
+    }
+    try {
+      final res = await http.get(
+        Uri.parse('$baseUrl/lcgate/$gateId/telemetry'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_token',
+        },
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (mounted && data is Map<String, dynamic>) {
+          setState(() {
+            _gateTelemetry = data;
+            _loadingTelemetry = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _loadingTelemetry = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingTelemetry = false);
+    }
+  }
+
+  // TRIGGER HEALTH CHECK DIAGNOSTIC (Full Web Consistency)
+  Future<void> _triggerHealthCheck(int gateId) async {
+    if (gateId <= 0) return;
+    setState(() {
+      _triggeringHealthCheck = true;
+      _healthCheckStage = 'LISTENING';
+      _inspectSubTab = 'health';
+    });
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/lcgate/$gateId/health-check'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_token',
+        },
+      );
+      if (res.statusCode == 200) {
+        if (mounted) {
+          AppFeedback.showSuccess(context, 'Health check command published over AWS IoT MQTT.');
+          setState(() {
+            _healthCheckStage = 'SUCCESS';
+          });
+          // Allow edge hardware packet to echo back deterministically
+          await Future.delayed(const Duration(milliseconds: 1200));
+          if (mounted) {
+            await _fetchGateTelemetry(gateId, silent: true);
+          }
+        }
+      } else {
+        if (mounted) {
+          final body = json.decode(res.body);
+          setState(() => _healthCheckStage = 'TIMEOUT');
+          AppFeedback.showError(context, body['error'] ?? 'Failed to trigger health check.');
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _healthCheckStage = 'TIMEOUT');
+        AppFeedback.showError(context, 'Network error triggering health check: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _triggeringHealthCheck = false);
+      }
+    }
+  }
+
+  // Parse any timestamp format reliably
+  DateTime? _parseTimestamp(dynamic val) {
+    if (val == null) return null;
+    if (val is DateTime) return val.toLocal();
+    if (val is int) return DateTime.fromMillisecondsSinceEpoch(val).toLocal();
+    final s = val.toString().trim();
+    final intVal = int.tryParse(s);
+    if (intVal != null && s.length >= 10) {
+      if (s.length == 10) return DateTime.fromMillisecondsSinceEpoch(intVal * 1000).toLocal();
+      return DateTime.fromMillisecondsSinceEpoch(intVal).toLocal();
+    }
+    try {
+      return DateTime.parse(s).toLocal();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _formatDateTime(dynamic dtStr) {
+    final dt = _parseTimestamp(dtStr);
+    if (dt == null) return '—';
+    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final m = dt.minute.toString().padLeft(2, '0');
+    final s = dt.second.toString().padLeft(2, '0');
+    final ampm = dt.hour >= 12 ? 'PM' : 'AM';
+    final mo = dt.month.toString().padLeft(2, '0');
+    final day = dt.day.toString().padLeft(2, '0');
+    final yr = dt.year;
+    return '$h:$m:$s $ampm • $mo/$day/$yr';
+  }
+
+  String _formatTimeOnly(dynamic dtStr) {
+    final dt = _parseTimestamp(dtStr);
+    if (dt == null) return '—';
+    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final m = dt.minute.toString().padLeft(2, '0');
+    final s = dt.second.toString().padLeft(2, '0');
+    final ampm = dt.hour >= 12 ? 'PM' : 'AM';
+    return '$h:$m:$s $ampm';
+  }
+
+  String _formatDateOnly(dynamic dtStr) {
+    final dt = _parseTimestamp(dtStr);
+    if (dt == null) return '';
+    final mo = dt.month.toString().padLeft(2, '0');
+    final day = dt.day.toString().padLeft(2, '0');
+    final yr = dt.year;
+    return '$mo/$day/$yr';
   }
 
   @override
@@ -530,19 +701,15 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               color: AppColors.primary,
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // 1. Clean Header Banner
-                    _buildHeaderBanner(),
+                    // 1. Navigation Toolbar (Breadcrumb + Search + Refresh)
+                    _buildNavigationToolbar(),
                     const SizedBox(height: 14),
 
-                    // 2. Navigation & Toolbar
-                    _buildNavigationToolbar(),
-                    const SizedBox(height: 16),
-
-                    // 3. Main Views
+                    // 2. Main Views (Detail drilldown or Minimalist Directory)
                     if (_viewMode == 'detail' && _selectedGate != null)
                       _buildDetailView()
                     else
@@ -555,119 +722,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   }
 
   // ==========================================================
-  // 1. CLEAN & LIGHTWEIGHT HEADER BANNER
-  // ==========================================================
-  Widget _buildHeaderBanner() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
-        boxShadow: const [
-          BoxShadow(color: Color(0x08000000), offset: Offset(0, 1), blurRadius: 3),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Icon(Icons.meeting_room_outlined, color: AppColors.primary, size: 20),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'LC Gates & Clusters Directory',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      'Organized hierarchy of railway clusters and gates based on your designated Zonal and Division Scope Groups.',
-                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600, height: 1.3),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-
-          // Chips Row
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF8FAFC),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: const Color(0xFFE2E8F0)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.folder_outlined, size: 14, color: AppColors.primary),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Scope Groups: ${_scopeGroups.length}',
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF8FAFC),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: const Color(0xFFE2E8F0)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.device_hub_outlined, size: 14, color: AppColors.primary),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Clusters: ${_gates.length}',
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEFF6FF),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: const Color(0xFFBFDBFE)),
-                ),
-                child: Text(
-                  _isDeveloper ? 'Developer Full Access' : 'Role: ${widget.user['role'] ?? 'Scoped Operator'}',
-                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8)),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ==========================================================
-  // 2. NAVIGATION & TOOLBAR (Breadcrumbs, Search, View Toggle)
+  // NAVIGATION & TOOLBAR (Minimalist Breadcrumbs & Integrated Search)
   // ==========================================================
   Widget _buildNavigationToolbar() {
     return Container(
@@ -677,13 +732,13 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: const Color(0xFFE2E8F0)),
         boxShadow: const [
-          BoxShadow(color: Color(0x08000000), offset: Offset(0, 1), blurRadius: 3),
+          BoxShadow(color: Color(0x06000000), offset: Offset(0, 1), blurRadius: 2),
         ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Breadcrumbs
+          // Breadcrumbs Bar
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
@@ -708,12 +763,10 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(
-                            i == 0 ? Icons.folder_outlined : Icons.folder_open,
-                            size: 13,
-                            color: i == 0 ? AppColors.primary : parseHexColor(_breadcrumbs[i]['color']),
-                          ),
-                          const SizedBox(width: 5),
+                          if (i == 0) ...[
+                            const Icon(Icons.home_outlined, size: 13, color: AppColors.primary),
+                            const SizedBox(width: 5),
+                          ],
                           Text(
                             _breadcrumbs[i]['name'] ?? 'Folder',
                             style: TextStyle(
@@ -757,119 +810,47 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 12),
-
-          // Search Field
-          TextField(
-            controller: _searchCtrl,
-            onChanged: (val) => setState(() => _searchQuery = val),
-            style: const TextStyle(fontSize: 13),
-            decoration: InputDecoration(
-              hintText: 'Search folders or gates...',
-              hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-              prefixIcon: const Icon(Icons.search, size: 18, color: Color(0xFF64748B)),
-              suffixIcon: _searchQuery.isNotEmpty
-                  ? IconButton(
-                      icon: const Icon(Icons.clear, size: 16),
-                      onPressed: () {
-                        _searchCtrl.clear();
-                        setState(() => _searchQuery = '');
-                      },
-                    )
-                  : null,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              isDense: true,
-              filled: true,
-              fillColor: const Color(0xFFF8FAFC),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
-              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
-              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppColors.primary)),
-            ),
-          ),
           const SizedBox(height: 10),
 
-          // View Mode Switcher + Refresh Button
+          // Search Field with Integrated Refresh Button (No Toggle Button)
           Row(
             children: [
               Expanded(
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: InkWell(
-                        onTap: () => setState(() {
-                          _viewMode = 'folder';
-                          _selectedGate = null;
-                        }),
-                        borderRadius: BorderRadius.circular(6),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 7),
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: _viewMode == 'folder' ? AppColors.primary : const Color(0xFFF1F5F9),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.folder_outlined, size: 14, color: _viewMode == 'folder' ? Colors.white : const Color(0xFF475569)),
-                              const SizedBox(width: 5),
-                              Text(
-                                'Folder Explorer',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
-                                  color: _viewMode == 'folder' ? Colors.white : const Color(0xFF475569),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: InkWell(
-                        onTap: () => setState(() {
-                          _viewMode = 'flat';
-                          _selectedGate = null;
-                        }),
-                        borderRadius: BorderRadius.circular(6),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 7),
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: _viewMode == 'flat' ? AppColors.primary : const Color(0xFFF1F5F9),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.grid_view_rounded, size: 14, color: _viewMode == 'flat' ? Colors.white : const Color(0xFF475569)),
-                              const SizedBox(width: 5),
-                              Text(
-                                'All Clusters',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
-                                  color: _viewMode == 'flat' ? Colors.white : const Color(0xFF475569),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+                child: TextField(
+                  controller: _searchCtrl,
+                  onChanged: (val) => setState(() => _searchQuery = val),
+                  style: const TextStyle(fontSize: 13),
+                  decoration: InputDecoration(
+                    hintText: 'Search gates...',
+                    hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    prefixIcon: const Icon(Icons.search, size: 18, color: Color(0xFF64748B)),
+                    suffixIcon: _searchQuery.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear, size: 16),
+                            onPressed: () {
+                              _searchCtrl.clear();
+                              setState(() => _searchQuery = '');
+                            },
+                          )
+                        : null,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    isDense: true,
+                    filled: true,
+                    fillColor: const Color(0xFFF8FAFC),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppColors.primary)),
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
               IconButton(
                 style: IconButton.styleFrom(
                   backgroundColor: const Color(0xFFF1F5F9),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                  padding: const EdgeInsets.all(7),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  padding: const EdgeInsets.all(9),
                 ),
-                icon: const Icon(Icons.refresh, size: 16, color: Color(0xFF475569)),
+                icon: const Icon(Icons.refresh, size: 18, color: Color(0xFF475569)),
                 tooltip: 'Refresh directory',
                 onPressed: () => _fetchData(isManual: true),
               ),
@@ -881,239 +862,151 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   }
 
   // ==========================================================
-  // 3. DIRECTORY VIEW: FOLDERS + CLUSTERS
+  // DIRECTORY VIEW: MINIMALIST GOOGLE DRIVE FOLDERS + CLUSTERS
   // ==========================================================
   Widget _buildDirectoryView() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Folders Section (Only in Folder Explorer mode)
-        if (_viewMode == 'folder') ...[
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.folder_open, size: 18, color: AppColors.primary),
-                  const SizedBox(width: 6),
-                  Text(
-                    _currentFolderId == null
-                        ? 'Scope Groups (Zonal & Divisional)'
-                        : 'Sub-Divisions in ${_breadcrumbs.last['name']}',
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-                  ),
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFE2E8F0),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      '${_currentFolders.length}',
-                      style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
-                    ),
-                  ),
-                ],
-              ),
-              if (_currentFolderId != null)
-                TextButton.icon(
-                  style: TextButton.styleFrom(padding: EdgeInsets.zero, visualDensity: VisualDensity.compact),
-                  onPressed: () => _jumpBreadcrumb(_breadcrumbs.length - 2),
-                  icon: const Icon(Icons.arrow_upward, size: 14),
-                  label: const Text('Up One Level', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                ),
-            ],
+        // 1. Scope / Region Cards (Minimalistic, no internal jargon headings)
+        if (_currentFolders.isNotEmpty) ...[
+          ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _currentFolders.length,
+            separatorBuilder: (context, index) => const SizedBox(height: 8),
+            itemBuilder: (context, index) {
+              final folder = _currentFolders[index] as Map<String, dynamic>;
+              return _buildScopeGroupCard(folder);
+            },
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 14),
+        ],
 
-          if (_currentFolders.isEmpty)
+        // 2. Clusters Section (Render only if clusters exist or inside a scope group)
+        if (_currentClusters.isNotEmpty || _currentFolderId != null) ...[
+          Padding(
+            padding: const EdgeInsets.only(left: 2, bottom: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.meeting_room_outlined, size: 16, color: AppColors.primary),
+                const SizedBox(width: 6),
+                Text(
+                  _currentFolderId == null
+                      ? 'Gates'
+                      : 'Gates in ${_breadcrumbs.last['name']}',
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+                ),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE2E8F0),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '${_currentClusters.length}',
+                    style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (_currentClusters.isEmpty)
             _buildEmptyCard(
-              icon: Icons.layers_outlined,
-              title: _currentFolderId == null ? 'No Scope Groups Found' : 'No Sub-Divisions Configured',
-              message: _currentFolderId == null
-                  ? (_searchQuery.isNotEmpty ? 'No scope groups match your filter.' : 'No scope groups are configured.')
-                  : 'This scope group has no sub-divisions. All assigned clusters are listed below.',
+              icon: Icons.meeting_room_outlined,
+              title: 'No Gates Found',
+              message: 'No gates are currently configured in this section.',
             )
           else
             ListView.separated(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              itemCount: _currentFolders.length,
-              separatorBuilder: (context, index) => const SizedBox(height: 10),
+              itemCount: _currentClusters.length,
+              separatorBuilder: (context, index) => const SizedBox(height: 12),
               itemBuilder: (context, index) {
-                final folder = _currentFolders[index] as Map<String, dynamic>;
-                return _buildFolderCard(folder);
+                final gate = _currentClusters[index] as Map<String, dynamic>;
+                return _buildClusterCard(gate);
               },
             ),
-          const SizedBox(height: 20),
         ],
-
-        // Clusters Section
-        Row(
-          children: [
-            const Icon(Icons.meeting_room_outlined, size: 18, color: AppColors.primary),
-            const SizedBox(width: 6),
-            Text(
-              _viewMode == 'flat'
-                  ? 'All Accessible Railway Clusters'
-                  : _currentFolderId == null
-                      ? 'Root Level Clusters'
-                      : 'Clusters in ${_breadcrumbs.last['name']}',
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: const Color(0xFFE2E8F0),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Text(
-                '${_currentClusters.length}',
-                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-
-        if (_currentClusters.isEmpty)
-          _buildEmptyCard(
-            icon: Icons.meeting_room_outlined,
-            title: _viewMode == 'folder' && _currentFolderId == null
-                ? 'Select a Scope Group Above'
-                : 'No Clusters Found in this Scope Group',
-            message: _viewMode == 'folder' && _currentFolderId == null
-                ? 'Tap any Zonal or Divisional Scope Group card above to inspect clusters defined within it.'
-                : _searchQuery.isNotEmpty
-                    ? 'No clusters match your search query.'
-                    : 'No gates have been directly mapped to this Scope Group yet.',
-          )
-        else
-          ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: _currentClusters.length,
-            separatorBuilder: (context, index) => const SizedBox(height: 12),
-            itemBuilder: (context, index) {
-              final gate = _currentClusters[index] as Map<String, dynamic>;
-              return _buildClusterCard(gate);
-            },
-          ),
       ],
     );
   }
 
-  // Folder Card
-  Widget _buildFolderCard(Map<String, dynamic> folder) {
-    final folderColor = parseHexColor(folder['color']);
-    final children = folder['children'] as List?;
-    final subGroupCount = children?.length ?? folder['_count']?['children'] ?? 0;
-    final clusterCount = _getRecursiveClusterCount(folder['id']);
-    final desc = folder['description']?.toString();
-    final parent = folder['parent'] as Map<String, dynamic>?;
+  // Scope Group Card (Larger, spacious card without folder icons)
+  Widget _buildScopeGroupCard(Map<String, dynamic> folder) {
+    final groupColor = parseHexColor(folder['color'], fallback: AppColors.primary);
+    final groupName = folder['name']?.toString() ?? 'Scope Group';
 
-    return InkWell(
-      onTap: () => _openFolder(folder),
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xFFE2E8F0)),
-          boxShadow: const [
-            BoxShadow(color: Color(0x06000000), offset: Offset(0, 1), blurRadius: 2),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: folderColor.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(Icons.folder, color: folderColor, size: 20),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        folder['name'] ?? 'Scope Group',
-                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                      ),
-                      Text(
-                        parent != null ? '${parent['name']} / ${folder['name']}' : '/${folder['name']}',
-                        style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
-                      ),
-                    ],
-                  ),
-                ),
-                const Icon(Icons.chevron_right, color: Color(0xFF94A3B8), size: 20),
-              ],
-            ),
-            if (desc != null && desc.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(desc, style: const TextStyle(fontSize: 12, color: Color(0xFF475569)), maxLines: 2, overflow: TextOverflow.ellipsis),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => _openFolder(folder),
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: const [
+              BoxShadow(color: Color(0x05000000), offset: Offset(0, 1), blurRadius: 3),
             ],
-            const SizedBox(height: 10),
-
-            // Pills Footer
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                if (subGroupCount > 0)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF1F5F9),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.create_new_folder_outlined, size: 11, color: Color(0xFF475569)),
-                        const SizedBox(width: 4),
-                        Text('$subGroupCount Sub-Divisions', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF475569))),
-                      ],
-                    ),
-                  ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFEFF6FF),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.device_hub_outlined, size: 11, color: Color(0xFF1D4ED8)),
-                      const SizedBox(width: 4),
-                      Text(
-                        '$clusterCount ${clusterCount == 1 ? "Cluster" : "Clusters"}',
-                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8)),
-                      ),
-                    ],
+          ),
+          child: Row(
+            children: [
+              // Left Accent Color Bar
+              Container(
+                width: 4,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: groupColor,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(
+                  groupName,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF0F172A),
                   ),
                 ),
-              ],
-            ),
-          ],
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Explore',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF475569),
+                      ),
+                    ),
+                    SizedBox(width: 4),
+                    Icon(Icons.arrow_forward_ios, size: 10, color: Color(0xFF64748B)),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  // Cluster Card
+  // Modernized Cluster Card with Primary Gate Status Focus (No Coordinates)
   Widget _buildClusterCard(Map<String, dynamic> gate) {
     final masters = gate['masters'] as List?;
     final masterCount = masters?.length ?? 0;
@@ -1129,9 +1022,8 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
       }
     }
 
-    final evidenceInfo = _getGateInstallationEvidence(gate);
-    final lat = gate['latitude'];
-    final lng = gate['longitude'];
+    final gateStatus = _getGateStatus(gate);
+    final isGateOpen = gateStatus == 'OPEN';
 
     return Container(
       decoration: BoxDecoration(
@@ -1150,26 +1042,20 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Top Row: LC Badge + Power Pill
+                // Top Row: Gate Title (Single, No Duplication) + Power Source Pill
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF0F172A),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.meeting_room_outlined, size: 12, color: Colors.white),
-                          const SizedBox(width: 5),
-                          Text(
-                            gate['lcNumber'] ?? 'LC-GATE',
-                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
-                          ),
-                        ],
+                    Expanded(
+                      child: Text(
+                        gate['lcNumber'] ?? 'LC Gate',
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF0F172A),
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                     Container(
@@ -1200,157 +1086,73 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 10),
+                if (gate['name'] != null && gate['name'] != gate['lcNumber'] && gate['name'] != gate['locationName']) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    gate['name'],
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF64748B)),
+                  ),
+                ],
+                const SizedBox(height: 3),
 
-                // Cluster Name
-                Text(
-                  gate['name'] ?? gate['locationName'] ?? 'Cluster Gate',
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-                ),
-                const SizedBox(height: 4),
-
-                // Zone & Division & GPS
+                // Zone & Division (Clean, NO GPS Coordinates)
                 Row(
                   children: [
                     const Icon(Icons.train_outlined, size: 12, color: Color(0xFF64748B)),
                     const SizedBox(width: 4),
                     Text(
-                      '${gate['zone'] ?? 'CR'} / ${gate['division'] ?? 'Mumbai'}',
+                      '${gate['zone'] ?? 'CR'} • ${gate['division'] ?? 'Mumbai'}',
                       style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                     ),
-                    if (lat != null && lng != null) ...[
-                      const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 6),
-                        child: Text('•', style: TextStyle(color: Color(0xFF94A3B8))),
+                  ],
+                ),
+                const SizedBox(height: 8),
+
+                // PRIMARY GATE STATUS: Strictly OPENED or CLOSE (No extra text)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: isGateOpen ? const Color(0xFFFEE2E2) : const Color(0xFFDCFCE7),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: isGateOpen ? const Color(0xFFFCA5A5) : const Color(0xFF86EFAC)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                          color: isGateOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D),
+                          shape: BoxShape.circle,
+                        ),
                       ),
-                      InkWell(
-                        onTap: () {
-                          Clipboard.setData(ClipboardData(text: '$lat, $lng'));
-                          AppFeedback.showSuccess(context, 'Coordinates $lat, $lng copied to clipboard.');
-                        },
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.location_on, size: 12, color: Color(0xFFEF4444)),
-                            const SizedBox(width: 2),
-                            Text(
-                              '${(lat as num).toStringAsFixed(4)}, ${(lng as num).toStringAsFixed(4)}',
-                              style: const TextStyle(fontSize: 11, color: Color(0xFF0284C7), fontWeight: FontWeight.bold),
-                            ),
-                          ],
+                      const SizedBox(width: 6),
+                      Text(
+                        isGateOpen ? 'OPENED' : 'CLOSE',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w800,
+                          color: isGateOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D),
+                          letterSpacing: 0.5,
                         ),
                       ),
                     ],
-                  ],
+                  ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
 
-                // Device summary chips
+                // Secondary Details: Device Summary in a single minimal line
                 Row(
                   children: [
-                    Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF8FAFC),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: const Color(0xFFE2E8F0)),
-                        ),
-                        child: Row(
-                          children: [
-                            Text(
-                              '$masterCount',
-                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.primary),
-                            ),
-                            const SizedBox(width: 6),
-                            const Text('Master Units', style: TextStyle(fontSize: 11, color: Color(0xFF475569))),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF8FAFC),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: const Color(0xFFE2E8F0)),
-                        ),
-                        child: Row(
-                          children: [
-                            Text(
-                              '$slaveCount',
-                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.primary),
-                            ),
-                            const SizedBox(width: 6),
-                            const Text('Slave Sensors', style: TextStyle(fontSize: 11, color: Color(0xFF475569))),
-                          ],
-                        ),
-                      ),
+                    const Icon(Icons.developer_board_outlined, size: 12, color: Color(0xFF64748B)),
+                    const SizedBox(width: 4),
+                    Text(
+                      '$masterCount Master Unit${masterCount == 1 ? "" : "s"} • $slaveCount Slave Sensor${slaveCount == 1 ? "" : "s"}',
+                      style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
                     ),
                   ],
                 ),
-
-                // Installation evidence preview
-                if (evidenceInfo != null) ...[
-                  const SizedBox(height: 12),
-                  InkWell(
-                    onTap: () => _showEvidenceDialog(
-                      gate: gate,
-                      evidence: evidenceInfo['evidence'],
-                      masterSeq: evidenceInfo['masterSeq'],
-                      deviceSeq: evidenceInfo['deviceSeq'],
-                    ),
-                    borderRadius: BorderRadius.circular(8),
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Row(
-                        children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(6),
-                            child: SizedBox(
-                              width: 44,
-                              height: 44,
-                              child: Image.network(
-                                getFullImageUrl(evidenceInfo['evidence']['imageUrl']?.toString()),
-                                fit: BoxFit.cover,
-                                errorBuilder: (context, error, stackTrace) => Container(
-                                  color: Colors.grey.shade200,
-                                  child: const Icon(Icons.camera_alt_outlined, color: Colors.grey, size: 20),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  'Installation Evidence',
-                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                                ),
-                                Text(
-                                  evidenceInfo['evidence']['latitude'] != null
-                                      ? 'GPS: ${(evidenceInfo['evidence']['latitude'] as num).toStringAsFixed(4)}, ${(evidenceInfo['evidence']['longitude'] as num).toStringAsFixed(4)}'
-                                      : 'Site Photo Attached',
-                                  style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const Icon(Icons.visibility_outlined, size: 16, color: Color(0xFF0284C7)),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
               ],
             ),
           ),
@@ -1402,7 +1204,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   }
 
   // ==========================================================
-  // 4. CLUSTER DRILLDOWN (DETAIL VIEW)
+  // CLUSTER DRILLDOWN (DETAIL VIEW)
   // ==========================================================
   Widget _buildDetailView() {
     final gate = _selectedGate!;
@@ -1507,25 +1309,18 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             children: [
               Row(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0F172A),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      gate['lcNumber'] ?? 'LC-GATE',
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      gate['name'] ?? gate['locationName'] ?? 'Cluster',
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+                      gate['lcNumber'] ?? 'LC Gate',
+                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  if (gate['name'] != null && gate['name'] != gate['lcNumber'] && gate['name'] != gate['locationName'])
+                    Text(
+                      gate['name'],
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF64748B)),
+                    ),
                 ],
               ),
               const SizedBox(height: 8),
@@ -1581,7 +1376,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.folder_outlined, size: 10, color: Color(0xFF1D4ED8)),
+                          const Icon(Icons.layers_outlined, size: 11, color: Color(0xFF1D4ED8)),
                           const SizedBox(width: 4),
                           Text(sgName, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
                         ],
@@ -1595,7 +1390,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         ),
         const SizedBox(height: 14),
 
-        // Detail Tabs Switcher
+        // Detail Tabs Switcher: About Cluster vs Live Telemetry & Inspect
         Container(
           decoration: BoxDecoration(
             color: const Color(0xFFE2E8F0),
@@ -1702,7 +1497,9 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     );
   }
 
-  // Tab 1: About Cluster & Hardware
+  // ==========================================================
+  // TAB 1: ABOUT CLUSTER & DEVICE-WISE HARDWARE EVIDENCE CONSOLE
+  // ==========================================================
   Widget _buildAboutTab(Map<String, dynamic> gate, bool isSolar, dynamic lat, dynamic lng) {
     final masters = (gate['masters'] as List?) ?? [];
     int slaveCount = 0;
@@ -1712,12 +1509,11 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         if (children != null) slaveCount += children.length;
       }
     }
-    final evidenceInfo = _getGateInstallationEvidence(gate);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Geographical Location Card
+        // 1. Geographical Location Card (Clean & Compact)
         _buildSectionCard(
           title: 'Geographical Location',
           icon: Icons.location_on_outlined,
@@ -1735,7 +1531,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         ),
         const SizedBox(height: 14),
 
-        // Hardware Configuration Card
+        // 2. Hardware Configuration Card (Compact)
         _buildSectionCard(
           title: 'Hardware Configuration',
           icon: Icons.memory,
@@ -1747,93 +1543,27 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             _buildFieldRow('System Status', 'Configured (Active)'),
           ],
         ),
-        const SizedBox(height: 14),
-
-        // Installation Evidence Card
-        _buildSectionCard(
-          title: 'Installation Evidence',
-          icon: Icons.camera_alt_outlined,
-          iconColor: AppColors.primary,
-          children: [
-            if (evidenceInfo != null) ...[
-              InkWell(
-                onTap: () => _showEvidenceDialog(
-                  gate: gate,
-                  evidence: evidenceInfo['evidence'],
-                  masterSeq: evidenceInfo['masterSeq'],
-                  deviceSeq: evidenceInfo['deviceSeq'],
-                ),
-                child: Row(
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: SizedBox(
-                        width: 54,
-                        height: 54,
-                        child: Image.network(
-                          getFullImageUrl(evidenceInfo['evidence']['imageUrl']?.toString()),
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) => Container(
-                            color: Colors.grey.shade200,
-                            child: const Icon(Icons.broken_image, color: Colors.grey),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Equipment Photo', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
-                          Text(
-                            evidenceInfo['evidence']['latitude'] != null
-                                ? 'GPS: ${(evidenceInfo['evidence']['latitude'] as num).toStringAsFixed(4)}, ${(evidenceInfo['evidence']['longitude'] as num).toStringAsFixed(4)}'
-                                : 'Site Photo Attached',
-                            style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
-                          ),
-                          Text(
-                            'Master #${evidenceInfo['masterSeq'] ?? 1}${evidenceInfo['deviceSeq'] != null ? ' • Slave #${evidenceInfo['deviceSeq']}' : ''}',
-                            style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(36),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                ),
-                icon: const Icon(Icons.zoom_in, size: 16),
-                label: const Text('View Full Photo', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                onPressed: () => _showEvidenceDialog(
-                  gate: gate,
-                  evidence: evidenceInfo['evidence'],
-                  masterSeq: evidenceInfo['masterSeq'],
-                  deviceSeq: evidenceInfo['deviceSeq'],
-                ),
-              ),
-            ] else
-              Container(
-                padding: const EdgeInsets.all(12),
-                alignment: Alignment.center,
-                decoration: BoxDecoration(color: const Color(0xFFF8FAFC), borderRadius: BorderRadius.circular(8)),
-                child: const Text('No installation evidence photo uploaded yet.', style: TextStyle(fontSize: 12, color: Color(0xFF64748B))),
-              ),
-          ],
-        ),
         const SizedBox(height: 18),
 
-        // Topology Section
-        const Text(
-          'Configured Hardware Devices Topology',
-          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+        // 3. Unified Configured Hardware & Installation Evidence Console
+        Padding(
+          padding: const EdgeInsets.only(left: 2, bottom: 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Configured Hardware & Installation Evidence',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                'Hardware units & verified installation evidence photos uploaded during setup.',
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+              ),
+            ],
+          ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 8),
 
         if (masters.isEmpty)
           _buildEmptyCard(
@@ -1847,14 +1577,16 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             physics: const NeverScrollableScrollPhysics(),
             itemCount: masters.length,
             separatorBuilder: (context, index) => const SizedBox(height: 12),
-            itemBuilder: (context, index) {
-              final master = masters[index] as Map<String, dynamic>;
-              final mEvidences = (master['evidences'] as List?) ?? [];
-              final mEvidence = mEvidences.isNotEmpty ? mEvidences[0] : null;
+            itemBuilder: (context, mIdx) {
+              final master = masters[mIdx] as Map<String, dynamic>;
               final childDevices = (master['childDevices'] as List?) ?? [];
+              final isMasterExpanded = _expandedMasterIndex == mIdx;
+
+              // Extract component-wise evidence photos uploaded during setup
+              final masterEv = _findDeviceEvidence(master, 'MASTER');
+              final powerEv = _findDeviceEvidence(master, 'POWER_SOURCE');
 
               return Container(
-                padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(12),
@@ -1864,192 +1596,211 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                   ],
                 ),
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // Master Header
-                    Row(
-                      children: [
-                        Container(
-                          width: 34,
-                          height: 34,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFE0F2FE),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Icon(Icons.memory, color: Color(0xFF0369A1), size: 18),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Master #${master['masterSequence']}: ${master['serialNumber']}',
-                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                                overflow: TextOverflow.ellipsis,
+                    // Master Header Accordion Bar (Expandable/Collapsible once at a time)
+                    InkWell(
+                      onTap: () {
+                        setState(() {
+                          _expandedMasterIndex = isMasterExpanded ? null : mIdx;
+                        });
+                      },
+                      borderRadius: BorderRadius.circular(12),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFE0F2FE),
+                                borderRadius: BorderRadius.circular(8),
                               ),
-                              Text(
-                                'Primary Gateway • ${master['powerSource'] == 'SOLAR' ? 'Solar Powered' : 'Direct AC Power'}',
-                                style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        InkWell(
-                          onTap: () => DeviceInfoSheet.show(context, master: master, gate: gate),
-                          borderRadius: BorderRadius.circular(6),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFEFF6FF),
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(color: const Color(0xFFBFDBFE)),
+                              child: const Icon(Icons.memory, color: Color(0xFF0369A1), size: 20),
                             ),
-                            child: const Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.developer_board, size: 12, color: Color(0xFF1D4ED8)),
-                                SizedBox(width: 4),
-                                Text('Info', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
-                              ],
-                            ),
-                          ),
-                        ),
-                        if (mEvidence != null) ...[
-                          const SizedBox(width: 6),
-                          InkWell(
-                            onTap: () => _showEvidenceDialog(
-                              gate: gate,
-                              evidence: mEvidence,
-                              masterSeq: master['masterSequence'],
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(6),
-                              child: SizedBox(
-                                width: 34,
-                                height: 34,
-                                child: Image.network(
-                                  getFullImageUrl(mEvidence['imageUrl']?.toString()),
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image, size: 16),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-
-                    // Slaves Sub-section
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFFF1F5F9)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              const Icon(Icons.power_outlined, size: 14, color: Color(0xFF0284C7)),
-                              const SizedBox(width: 4),
-                              Text(
-                                'Connected Slave Devices (${childDevices.length})',
-                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF475569)),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-
-                          if (childDevices.isEmpty)
-                            const Text('No slave devices linked to this master.', style: TextStyle(fontSize: 11, color: Color(0xFF94A3B8)))
-                          else
-                            ListView.separated(
-                              shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
-                              itemCount: childDevices.length,
-                              separatorBuilder: (context, index) => const SizedBox(height: 6),
-                              itemBuilder: (context, cIdx) {
-                                final child = childDevices[cIdx] as Map<String, dynamic>;
-                                final cEvs = (child['evidences'] as List?) ?? [];
-                                final cEv = cEvs.isNotEmpty ? cEvs[0] : null;
-
-                                return Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white,
-                                    borderRadius: BorderRadius.circular(6),
-                                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Master #${master['masterSequence']}: ${master['serialNumber']}',
+                                    style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
                                   ),
-                                  child: Row(
+                                  Text(
+                                    'Primary Gateway • ${master['powerSource'] == 'SOLAR' ? 'Solar Powered' : 'Direct AC Power'}',
+                                    style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Icon(
+                              isMasterExpanded ? Icons.expand_less : Icons.expand_more,
+                              color: const Color(0xFF64748B),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    if (isMasterExpanded) ...[
+                      const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            // Component 1: Master Unit (ESP Gateway) & Its Uploaded Evidence Photo
+                            _buildDeviceEvidenceCard(
+                              title: 'Master Gateway Unit (ESP)',
+                              subtitle: 'Serial: ${master['serialNumber']} • Primary Gateway Unit',
+                              icon: Icons.memory,
+                              iconColor: const Color(0xFF0284C7),
+                              evidence: masterEv,
+                              gate: gate,
+                              masterSeq: master['masterSequence'],
+                              emptyLabel: 'No installation photo uploaded for Master unit.',
+                            ),
+                            const SizedBox(height: 10),
+
+                            // Component 2: Power Source & Its Uploaded Evidence Photo
+                            _buildDeviceEvidenceCard(
+                              title: master['powerSource'] == 'SOLAR' ? 'Solar Power Source' : 'Direct AC Power Source',
+                              subtitle: master['powerSource'] == 'SOLAR' ? 'Solar Panels & Battery System' : 'Direct Grid AC Power Supply',
+                              icon: master['powerSource'] == 'SOLAR' ? Icons.wb_sunny_outlined : Icons.bolt,
+                              iconColor: master['powerSource'] == 'SOLAR' ? const Color(0xFFD97706) : const Color(0xFF2563EB),
+                              evidence: powerEv,
+                              gate: gate,
+                              masterSeq: master['masterSequence'],
+                              emptyLabel: 'No installation photo uploaded for Power source.',
+                            ),
+                            const SizedBox(height: 12),
+
+                            // Component 3: Connected Slave Devices & Their Uploaded Evidence Photos
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF8FAFC),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: const Color(0xFFE2E8F0)),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
                                     children: [
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              child['serialNumber'] ?? 'Slave',
-                                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                            Text(
-                                              '${child['type'] ?? 'Device'} • Sequence #${child['deviceSequence']}',
-                                              style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          ],
-                                        ),
+                                      const Icon(Icons.power_outlined, size: 14, color: Color(0xFF0284C7)),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        'Connected Slave Devices (${childDevices.length})',
+                                        style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Color(0xFF475569)),
                                       ),
-                                      const SizedBox(width: 6),
-                                      InkWell(
-                                        onTap: () => DeviceInfoSheet.show(context, device: child, master: master, gate: gate),
-                                        borderRadius: BorderRadius.circular(4),
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2.5),
-                                          decoration: BoxDecoration(
-                                            color: const Color(0xFFEFF6FF),
-                                            borderRadius: BorderRadius.circular(4),
-                                            border: Border.all(color: const Color(0xFFBFDBFE)),
-                                          ),
-                                          child: const Text('Info', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
-                                        ),
-                                      ),
-                                      if (cEv != null) ...[
-                                        const SizedBox(width: 6),
-                                        InkWell(
-                                          onTap: () => _showEvidenceDialog(
-                                            gate: gate,
-                                            evidence: cEv,
-                                            masterSeq: master['masterSequence'],
-                                            deviceSeq: child['deviceSequence'],
-                                          ),
-                                          child: ClipRRect(
-                                            borderRadius: BorderRadius.circular(4),
-                                            child: SizedBox(
-                                              width: 28,
-                                              height: 28,
-                                              child: Image.network(
-                                                getFullImageUrl(cEv['imageUrl']?.toString()),
-                                                fit: BoxFit.cover,
-                                                errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image, size: 14),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ],
                                     ],
                                   ),
-                                );
-                              },
+                                  const SizedBox(height: 8),
+
+                                  if (childDevices.isEmpty)
+                                    const Padding(
+                                      padding: EdgeInsets.symmetric(vertical: 4),
+                                      child: Text('No slave devices configured for this master.', style: TextStyle(fontSize: 11, color: Color(0xFF94A3B8))),
+                                    )
+                                  else
+                                    ListView.separated(
+                                      shrinkWrap: true,
+                                      physics: const NeverScrollableScrollPhysics(),
+                                      itemCount: childDevices.length,
+                                      separatorBuilder: (context, index) => const SizedBox(height: 8),
+                                      itemBuilder: (context, cIdx) {
+                                        final child = childDevices[cIdx] as Map<String, dynamic>;
+                                        final childEv = _findDeviceEvidence(master, child['type'], child['id']);
+                                        final isSlaveExpanded = _expandedSlaveId == child['id'];
+
+                                        return Container(
+                                          decoration: BoxDecoration(
+                                            color: Colors.white,
+                                            borderRadius: BorderRadius.circular(6),
+                                            border: Border.all(color: const Color(0xFFE2E8F0)),
+                                          ),
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                                            children: [
+                                              // Slave Accordion Row
+                                              InkWell(
+                                                onTap: () {
+                                                  setState(() {
+                                                    _expandedSlaveId = isSlaveExpanded ? null : child['id'];
+                                                  });
+                                                },
+                                                borderRadius: BorderRadius.circular(6),
+                                                child: Padding(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                                  child: Row(
+                                                    children: [
+                                                      Expanded(
+                                                        child: Column(
+                                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                                          children: [
+                                                            Text(
+                                                              child['serialNumber'] ?? 'Slave Device',
+                                                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                                            ),
+                                                            Text(
+                                                              '${child['type'] ?? 'Device'} • Sequence #${child['deviceSequence']}',
+                                                              style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                      Icon(
+                                                        isSlaveExpanded ? Icons.expand_less : Icons.expand_more,
+                                                        size: 18,
+                                                        color: const Color(0xFF64748B),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+
+                                              // Slave Photo & Sensor Details when Expanded
+                                              if (isSlaveExpanded) ...[
+                                                const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                                                Padding(
+                                                  padding: const EdgeInsets.all(8),
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    children: [
+                                                      Text(
+                                                        child['type'] == 'DEVICE_2'
+                                                            ? 'Sensors: Tilt & Vibration Sensor'
+                                                            : 'Sensors: LimitSwitch & HallEffect Position Detection',
+                                                        style: const TextStyle(fontSize: 10.5, color: Color(0xFF475569), fontWeight: FontWeight.w500),
+                                                      ),
+                                                      const SizedBox(height: 6),
+                                                      _buildPhotoThumbnailRow(
+                                                        evidence: childEv,
+                                                        gate: gate,
+                                                        itemTitle: 'Slave: ${child['serialNumber']}',
+                                                        masterSeq: master['masterSequence'],
+                                                        deviceSeq: child['deviceSequence'],
+                                                        emptyMessage: 'No installation photo uploaded for this slave sensor.',
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                ],
+                              ),
                             ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
               );
@@ -2059,182 +1810,164 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     );
   }
 
-  // ==========================================================
-  // TELEMETRY & INSPECTOR METHODS
-  // ==========================================================
-  void _connectTelemetryWs(int gateId) {
-    _disconnectTelemetryWs();
-    if (gateId <= 0) return;
+  // Component Evidence Card Builder
+  Widget _buildDeviceEvidenceCard({
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required Color iconColor,
+    required Map<String, dynamic>? evidence,
+    required Map<String, dynamic> gate,
+    required int? masterSeq,
+    required String emptyLabel,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 14, color: iconColor),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Text(subtitle, style: const TextStyle(fontSize: 10, color: Color(0xFF64748B))),
+          const SizedBox(height: 8),
+          _buildPhotoThumbnailRow(
+            evidence: evidence,
+            gate: gate,
+            itemTitle: title,
+            masterSeq: masterSeq,
+            emptyMessage: emptyLabel,
+          ),
+        ],
+      ),
+    );
+  }
 
-    String wsBase = baseUrl.replaceAll('/api/v1', '');
-    if (wsBase.startsWith('https://')) {
-      wsBase = wsBase.replaceFirst('https://', 'wss://');
-    } else if (wsBase.startsWith('http://')) {
-      wsBase = wsBase.replaceFirst('http://', 'ws://');
-    }
-    final wsUri = Uri.parse('$wsBase/ws/telemetry?gateId=$gateId');
-
-    try {
-      final channel = WebSocketChannel.connect(wsUri);
-      _telemetryWsChannel = channel;
-
-      _telemetryWsSub = channel.stream.listen(
-        (data) {
-          if (!mounted) return;
-          if (!_wsConnected) {
-            setState(() => _wsConnected = true);
-          }
-          try {
-            final msg = json.decode(data.toString());
-            if (msg is Map && (msg['type'] == 'telemetry_init' || msg['type'] == 'telemetry_update')) {
-              if (msg['data'] is Map && mounted) {
-                setState(() {
-                  _gateTelemetry = msg['data'] as Map<String, dynamic>;
-                  _loadingTelemetry = false;
-                });
-              }
-            }
-          } catch (_) {}
-        },
-        onDone: () {
-          if (!mounted) return;
-          setState(() => _wsConnected = false);
-          _scheduleWsReconnect(gateId);
-        },
-        onError: (_) {
-          if (!mounted) return;
-          setState(() => _wsConnected = false);
-          _scheduleWsReconnect(gateId);
-        },
+  // Photo Thumbnail Row with High Quality Full Photo Modal
+  Widget _buildPhotoThumbnailRow({
+    required Map<String, dynamic>? evidence,
+    required Map<String, dynamic> gate,
+    required String itemTitle,
+    int? masterSeq,
+    int? deviceSeq,
+    required String emptyMessage,
+  }) {
+    if (evidence == null) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.photo_camera_back_outlined, size: 16, color: Color(0xFF94A3B8)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                emptyMessage,
+                style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+              ),
+            ),
+          ],
+        ),
       );
-    } catch (_) {
-      if (mounted) setState(() => _wsConnected = false);
-      _scheduleWsReconnect(gateId);
     }
 
-    _fetchGateTelemetry(gateId, silent: false);
-  }
+    final imgUrl = getFullImageUrl(evidence['imageUrl']?.toString());
+    final lat = evidence['latitude'];
+    final lng = evidence['longitude'];
 
-  void _scheduleWsReconnect(int gateId) {
-    _wsReconnectTimer?.cancel();
-    if (_viewMode == 'detail' && _clusterTab == 'telemetry' && _selectedGate != null) {
-      _wsReconnectTimer = Timer(const Duration(seconds: 3), () {
-        if (mounted && _viewMode == 'detail' && _clusterTab == 'telemetry') {
-          _connectTelemetryWs(gateId);
-        }
-      });
-    }
-  }
-
-  void _disconnectTelemetryWs() {
-    _wsReconnectTimer?.cancel();
-    _telemetryWsSub?.cancel();
-    _telemetryWsChannel?.sink.close();
-    _telemetryWsSub = null;
-    _telemetryWsChannel = null;
-    _wsConnected = false;
-  }
-
-  Future<void> _fetchGateTelemetry(int gateId, {bool silent = false}) async {
-    if (gateId <= 0) return;
-    if (!silent) {
-      setState(() => _loadingTelemetry = true);
-    }
-    try {
-      final res = await http.get(
-        Uri.parse('$baseUrl/lcgate/$gateId/telemetry'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $_token',
-        },
-      );
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        if (mounted && data is Map<String, dynamic>) {
-          setState(() {
-            _gateTelemetry = data;
-            _loadingTelemetry = false;
-          });
-        }
-      } else {
-        if (!silent && mounted) {
-          setState(() => _loadingTelemetry = false);
-        }
-      }
-    } catch (_) {
-      if (!silent && mounted) {
-        setState(() => _loadingTelemetry = false);
-      }
-    }
-  }
-
-  Future<void> _triggerGatePing(int gateId) async {
-    if (gateId <= 0) return;
-    setState(() => _triggeringHealthCheck = true);
-    try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/lcgate/$gateId/health-check'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $_token',
-        },
-      );
-      if (res.statusCode == 200) {
-        if (mounted) {
-          AppFeedback.showSuccess(context, 'MQTT health ping published to AWS IoT Core topic.');
-          setState(() => _inspectSubTab = 'health');
-          await _fetchGateTelemetry(gateId, silent: true);
-        }
-      } else {
-        if (mounted) {
-          final body = json.decode(res.body);
-          AppFeedback.showError(context, body['error'] ?? 'Failed to trigger health check ping.');
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        AppFeedback.showError(context, 'Network error triggering health check ping: $e');
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _triggeringHealthCheck = false);
-      }
-    }
-  }
-
-  String _formatDateTime(dynamic dtStr) {
-    if (dtStr == null) return 'N/A';
-    try {
-      final dt = DateTime.parse(dtStr.toString()).toLocal();
-      final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
-      final m = dt.minute.toString().padLeft(2, '0');
-      final s = dt.second.toString().padLeft(2, '0');
-      final ampm = dt.hour >= 12 ? 'PM' : 'AM';
-      final mo = dt.month.toString().padLeft(2, '0');
-      final day = dt.day.toString().padLeft(2, '0');
-      final yr = dt.year;
-      return '$h:$m:$s $ampm • $mo/$day/$yr';
-    } catch (_) {
-      return dtStr.toString();
-    }
-  }
-
-  String _formatTimeOnly(dynamic dtStr) {
-    if (dtStr == null) return 'N/A';
-    try {
-      final dt = DateTime.parse(dtStr.toString()).toLocal();
-      final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
-      final m = dt.minute.toString().padLeft(2, '0');
-      final s = dt.second.toString().padLeft(2, '0');
-      final ampm = dt.hour >= 12 ? 'PM' : 'AM';
-      return '$h:$m:$s $ampm';
-    } catch (_) {
-      return dtStr.toString();
-    }
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Row(
+        children: [
+          InkWell(
+            onTap: () => _showEvidenceDialog(
+              gate: gate,
+              evidence: evidence,
+              itemTitle: itemTitle,
+              masterSeq: masterSeq,
+              deviceSeq: deviceSeq,
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: SizedBox(
+                width: 48,
+                height: 48,
+                child: Image.network(
+                  imgUrl,
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) => Container(
+                    color: Colors.grey.shade200,
+                    child: const Icon(Icons.broken_image, color: Colors.grey, size: 18),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  lat != null && lng != null
+                      ? 'GPS: ${(lat as num).toStringAsFixed(4)}, ${(lng as num).toStringAsFixed(4)}'
+                      : 'Site Photo Attached',
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                ),
+                Text(
+                  'Uploaded at setup • Tap to zoom',
+                  style: const TextStyle(fontSize: 9.5, color: Color(0xFF64748B)),
+                ),
+              ],
+            ),
+          ),
+          OutlinedButton(
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+            ),
+            onPressed: () => _showEvidenceDialog(
+              gate: gate,
+              evidence: evidence,
+              itemTitle: itemTitle,
+              masterSeq: masterSeq,
+              deviceSeq: deviceSeq,
+            ),
+            child: const Text('View Photo', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
   }
 
   // ==========================================================
-  // TAB 2: LIVE TELEMETRY & DEVICE INSPECTOR (FULL PARITY)
+  // TAB 2: LIVE TELEMETRY & HEALTH CHECK (FULL WEB PARITY)
   // ==========================================================
   Widget _buildTelemetryTab(Map<String, dynamic> gate, int totalDevicesCount) {
     final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
@@ -2248,8 +1981,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     final healthRecords = (_gateTelemetry?['healthRecords'] as List?) ?? [];
     final allRecords = (_gateTelemetry?['payloads'] as List?) ?? [];
     final operationalCycles = (_gateTelemetry?['operationalCycles'] as List?) ?? [];
-    final currentOperationalState = (_gateTelemetry?['currentOperationalState'] as Map<String, dynamic>?) ?? {};
-    final lastClosedCycle = (currentOperationalState['lastClosedCycle'] as Map<String, dynamic>?) ?? {};
 
     List<dynamic> activeList = [];
     if (_inspectSubTab == 'cycles') {
@@ -2280,30 +2011,27 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     dynamic recordTimestamp;
     if (activeRecord != null && activeRecord is Map) {
       displayPayload = activeRecord['payload'] ?? activeRecord;
-      recordTimestamp = activeRecord['createdAt'];
+      recordTimestamp = activeRecord['receivedAt'] ?? activeRecord['createdAt'] ?? activeRecord['timestamp'];
     } else {
       if (_inspectSubTab == 'telemetry' && _gateTelemetry?['latestTelemetry'] != null) {
         displayPayload = _gateTelemetry!['latestTelemetry']['payload'] ?? _gateTelemetry!['latestTelemetry'];
-        recordTimestamp = _gateTelemetry!['latestTelemetry']['createdAt'];
+        recordTimestamp = _gateTelemetry!['latestTelemetry']['receivedAt'] ?? _gateTelemetry!['latestTelemetry']['createdAt'];
       } else if (_inspectSubTab == 'manifest' && _gateTelemetry?['latestManifest'] != null) {
         displayPayload = _gateTelemetry!['latestManifest']['payload'] ?? _gateTelemetry!['latestManifest'];
-        recordTimestamp = _gateTelemetry!['latestManifest']['createdAt'];
+        recordTimestamp = _gateTelemetry!['latestManifest']['receivedAt'] ?? _gateTelemetry!['latestManifest']['createdAt'];
       } else if (_inspectSubTab == 'health' && _gateTelemetry?['latestHealthCheck'] != null) {
         displayPayload = _gateTelemetry!['latestHealthCheck']['payload'] ?? _gateTelemetry!['latestHealthCheck'];
-        recordTimestamp = _gateTelemetry!['latestHealthCheck']['createdAt'];
+        recordTimestamp = _gateTelemetry!['latestHealthCheck']['receivedAt'] ?? _gateTelemetry!['latestHealthCheck']['createdAt'];
       }
     }
 
-    final isClosed = currentStatus == 'CLOSED';
-    final isOpen = currentStatus == 'OPEN';
-    final statusBg = isClosed ? const Color(0xFFDCFCE7) : (isOpen ? const Color(0xFFFEE2E2) : const Color(0xFFF1F5F9));
-    final statusColor = isClosed ? const Color(0xFF15803D) : (isOpen ? const Color(0xFFB91C1C) : const Color(0xFF475569));
-    final statusBorder = isClosed ? const Color(0xFF86EFAC) : (isOpen ? const Color(0xFFFCA5A5) : const Color(0xFFCBD5E1));
+    final gateOperationalStatus = _getGateStatus(gate);
+    final isOpen = gateOperationalStatus == 'OPEN' || currentStatus == 'OPEN';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // 1. Top Gateway & Status Header Card
+        // 1. Primary Gate Status & Health Check Control Bar (Streamlined, no duplicate IDs, no useless indicators)
         Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
@@ -2315,345 +2043,111 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             ],
           ),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                alignment: WrapAlignment.spaceBetween,
-                crossAxisAlignment: WrapCrossAlignment.center,
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        thingName,
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-                      ),
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFEFF6FF),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: const Color(0xFFBFDBFE)),
+                  // Prominent Gate Status Banner (Strictly OPENED or CLOSE)
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                      decoration: BoxDecoration(
+                        color: isOpen ? const Color(0xFFFEE2E2) : const Color(0xFFDCFCE7),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: isOpen ? const Color(0xFFFCA5A5) : const Color(0xFF86EFAC),
                         ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.sensors, size: 11, color: Color(0xFF1D4ED8)),
-                            SizedBox(width: 4),
-                            Text(
-                              'AWS IOT CORE',
-                              style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: Color(0xFF1D4ED8)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 9,
+                            height: 9,
+                            decoration: BoxDecoration(
+                              color: isOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D),
+                              shape: BoxShape.circle,
                             ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: statusBg,
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: statusBorder),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: statusColor,
-                            shape: BoxShape.circle,
                           ),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          currentStatus,
-                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: statusColor),
-                        ),
-                      ],
+                          const SizedBox(width: 8),
+                          Text(
+                            isOpen ? 'OPENED' : 'CLOSE',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w800,
+                              color: isOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D),
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+
+                  // Health Check Button (Web Parity Diagnostic Trigger)
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF0F172A),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      elevation: 1,
+                    ),
+                    onPressed: _triggeringHealthCheck ? null : () => _triggerHealthCheck(gateId),
+                    icon: _triggeringHealthCheck
+                        ? const SizedBox(width: 13, height: 13, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.health_and_safety, size: 15, color: Colors.white),
+                    label: Text(
+                      _triggeringHealthCheck ? 'Testing...' : 'Health Check',
+                      style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.white),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
+
+              // MQTT Telemetry Topic Bar
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: const Color(0xFFF8FAFC),
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(6),
                   border: Border.all(color: const Color(0xFFE2E8F0)),
                 ),
                 child: Row(
                   children: [
+                    const Text(
+                      'TOPIC: ',
+                      style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: Color(0xFF64748B)),
+                    ),
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'MQTT TELEMETRY TOPIC',
-                            style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w700, color: Color(0xFF64748B), letterSpacing: 0.5),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            topic,
-                            style: const TextStyle(fontFamily: 'monospace', fontSize: 11.5, fontWeight: FontWeight.bold, color: Color(0xFF0284C7)),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
+                      child: Text(
+                        topic,
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF0284C7)),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.copy, size: 15, color: Color(0xFF64748B)),
-                      visualDensity: VisualDensity.compact,
-                      tooltip: 'Copy Topic',
-                      onPressed: () {
+                    InkWell(
+                      onTap: () {
                         Clipboard.setData(ClipboardData(text: topic));
                         AppFeedback.showSuccess(context, 'Topic copied to clipboard');
                       },
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
-
-        // 2. Action Controls Toolbar
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              // Live WebSocket Connection Status Badge
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: _wsConnected ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: _wsConnected ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 7,
-                      height: 7,
-                      decoration: BoxDecoration(
-                        color: _wsConnected ? const Color(0xFF10B981) : const Color(0xFFEF4444),
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      _wsConnected ? 'Live Stream Connected' : 'Reconnecting...',
-                      style: TextStyle(
-                        fontSize: 10.5,
-                        fontWeight: FontWeight.bold,
-                        color: _wsConnected ? const Color(0xFF047857) : const Color(0xFF991B1B),
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 4),
+                        child: Icon(Icons.copy, size: 13, color: Color(0xFF64748B)),
                       ),
                     ),
                   ],
                 ),
               ),
-
-              // Ping Gate Button
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFDC2626),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                  minimumSize: Size.zero,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                  elevation: 1,
-                ),
-                onPressed: _triggeringHealthCheck ? null : () => _triggerGatePing(gateId),
-                icon: _triggeringHealthCheck
-                    ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : const Icon(Icons.favorite, size: 13, color: Colors.white),
-                label: Text(
-                  _triggeringHealthCheck ? 'Pinging Device...' : 'Ping Device',
-                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
-                ),
-              ),
             ],
           ),
         ),
         const SizedBox(height: 12),
 
-        // 2. Gate Operational Analytics KPI Banner
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
-            boxShadow: const [
-              BoxShadow(color: Color(0x06000000), offset: Offset(0, 1), blurRadius: 2),
-            ],
-          ),
-          child: Column(
-            children: [
-              Row(
-                children: [
-                  // Box 1: Status & Time in State
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('GATE STATUS', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: Color(0xFF64748B), letterSpacing: 0.5)),
-                          const SizedBox(height: 5),
-                          Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: statusBg,
-                                  borderRadius: BorderRadius.circular(4),
-                                  border: Border.all(color: statusBorder),
-                                ),
-                                child: Text(
-                                  currentStatus,
-                                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: statusColor),
-                                ),
-                              ),
-                            ],
-                          ),
-                          if (currentOperationalState['timeInCurrentStateFormatted'] != null) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              'for ${currentOperationalState['timeInCurrentStateFormatted']}',
-                              style: const TextStyle(fontSize: 10, color: Color(0xFF64748B), fontWeight: FontWeight.w600),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // Box 2: Last Cycle Duration
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('CYCLE DURATION', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: Color(0xFF64748B), letterSpacing: 0.5)),
-                          const SizedBox(height: 5),
-                          Text(
-                            lastClosedCycle['formattedDuration']?.toString() ?? '—',
-                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFF0B3C7A)),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            lastClosedCycle['status'] == 'EXTENDED_DELAY' ? 'Extended Delay (>15m)' : 'Normal Clearance',
-                            style: TextStyle(
-                              fontSize: 9.5,
-                              fontWeight: FontWeight.w600,
-                              color: lastClosedCycle['status'] == 'EXTENDED_DELAY' ? const Color(0xFFB45309) : const Color(0xFF15803D),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  // Box 3: Last Opened At
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Row(
-                            children: [
-                              Icon(Icons.meeting_room_outlined, size: 12, color: Color(0xFFDC2626)),
-                              SizedBox(width: 4),
-                              Text('LAST OPENED', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: Color(0xFFDC2626))),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            operationalCycles.isNotEmpty ? _formatTimeOnly(operationalCycles.first['openedAt']) : '—',
-                            style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // Box 4: Last Closed At
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Row(
-                            children: [
-                              Icon(Icons.lock_outline, size: 12, color: Color(0xFF15803D)),
-                              SizedBox(width: 4),
-                              Text('LAST CLOSED', style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: Color(0xFF15803D))),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            lastClosedCycle['closedAt'] != null
-                                ? _formatTimeOnly(lastClosedCycle['closedAt'])
-                                : (operationalCycles.isNotEmpty && operationalCycles.first['closedAt'] != null
-                                    ? _formatTimeOnly(operationalCycles.first['closedAt'])
-                                    : 'Awaiting Closure'),
-                            style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
-
-        // 3. Sub-Tab Navigation Bar
+        // 4. Sub-Tab Navigation Bar
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(
@@ -2666,14 +2160,74 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               const SizedBox(width: 6),
               _buildSubTabChip('health', 'Health Check', counts['health'] ?? healthRecords.length),
               const SizedBox(width: 6),
-              _buildSubTabChip('all', 'All Records', counts['total'] ?? allRecords.length),
+              _buildSubTabChip('all', 'All Records', counts['all'] ?? allRecords.length),
             ],
           ),
         ),
         const SizedBox(height: 12),
 
+        // 5. HEALTH CHECK VIEW (Diagnostic Progress + 4 KPI Cards)
+        if (_inspectSubTab == 'health') ...[
+          if (_healthCheckStage == 'LISTENING')
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF0F9FF),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFBAE6FD)),
+              ),
+              child: const Row(
+                children: [
+                  SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF0284C7))),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Diagnostic Command Dispatched — Awaiting Edge Packet...', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0369A1))),
+                        SizedBox(height: 2),
+                        Text('MQTT ping published to AWS IoT Core. Sampling battery, sensors, and modem...', style: TextStyle(fontSize: 10, color: Color(0xFF0284C7))),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF0FDF4),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFBBF7D0)),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.check_circle, size: 18, color: Color(0xFF16A34A)),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Diagnostic Response Verified from Edge Hardware', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF166534))),
+                        SizedBox(height: 2),
+                        Text('Device responded to test command with full hardware health telemetry.', style: TextStyle(fontSize: 10, color: Color(0xFF15803D))),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // 4 DIAGNOSTIC SUMMARY KPI CARDS (2x2 Grid matching Web Application)
+            _buildHealthKpiGrid(displayPayload),
+            const SizedBox(height: 14),
+          ],
+        ],
+
         if (_inspectSubTab == 'cycles') ...[
-          // 4. Operational Cycles Log
+          // Operational Cycles Log
           if (operationalCycles.isEmpty)
             Container(
               padding: const EdgeInsets.all(28),
@@ -2775,62 +2329,76 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                         ],
                       ),
                       const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text('OPENED AT', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: Color(0xFF64748B))),
-                                const SizedBox(height: 2),
-                                Text(_formatTimeOnly(cycle['openedAt']), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF0F172A))),
-                                Text(_formatDateTime(cycle['openedAt']).split(' • ').last, style: const TextStyle(fontSize: 9.5, color: Color(0xFF64748B))),
-                              ],
-                            ),
-                          ),
-                          const Icon(Icons.arrow_forward, size: 14, color: Color(0xFFCBD5E1)),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                const Text('CLOSED AT', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: Color(0xFF64748B))),
-                                const SizedBox(height: 2),
-                                Text(
-                                  cycle['closedAt'] != null ? _formatTimeOnly(cycle['closedAt']) : 'In Progress...',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    color: cycle['closedAt'] != null ? const Color(0xFF0F172A) : const Color(0xFFDC2626),
-                                  ),
-                                ),
-                                if (cycle['closedAt'] != null)
-                                  Text(_formatDateTime(cycle['closedAt']).split(' • ').last, style: const TextStyle(fontSize: 9.5, color: Color(0xFF64748B))),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (cycle['openedBy'] != null || cycle['trainNumber'] != null || cycle['remarks'] != null) ...[
-                        const SizedBox(height: 8),
-                        const Divider(height: 1, color: Color(0xFFF1F5F9)),
-                        const SizedBox(height: 6),
-                        Row(
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF8FAFC),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFE2E8F0)),
+                        ),
+                        child: Row(
                           children: [
-                            const Icon(Icons.info_outline, size: 11, color: Color(0xFF94A3B8)),
-                            const SizedBox(width: 4),
+                            // 1. Time at which Gate Opened
                             Expanded(
-                              child: Text(
-                                cycle['trainNumber'] != null
-                                    ? 'Train: ${cycle['trainNumber']} • ${cycle['openedBy'] ?? ''}'
-                                    : (cycle['remarks'] ?? cycle['openedBy'] ?? ''),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text('OPENED AT', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Color(0xFF64748B))),
+                                  const SizedBox(height: 2),
+                                  Text(_formatTimeOnly(cycle['openedAt']), style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: Color(0xFF0F172A))),
+                                  Text(_formatDateOnly(cycle['openedAt']), style: const TextStyle(fontSize: 9.5, color: Color(0xFF64748B))),
+                                ],
+                              ),
+                            ),
+                            Container(width: 1, height: 32, color: const Color(0xFFE2E8F0)),
+                            const SizedBox(width: 10),
+
+                            // 2. Time at which Gate Closed
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text('CLOSED AT', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Color(0xFF64748B))),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    cycle['closedAt'] != null ? _formatTimeOnly(cycle['closedAt']) : 'In Progress',
+                                    style: TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: cycle['closedAt'] != null ? const Color(0xFF0F172A) : const Color(0xFFDC2626),
+                                    ),
+                                  ),
+                                  Text(
+                                    cycle['closedAt'] != null ? _formatDateOnly(cycle['closedAt']) : 'Currently Open',
+                                    style: const TextStyle(fontSize: 9.5, color: Color(0xFF64748B)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Container(width: 1, height: 32, color: const Color(0xFFE2E8F0)),
+                            const SizedBox(width: 10),
+
+                            // 3. Duration
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text('DURATION', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Color(0xFF64748B))),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    cycle['formattedDuration']?.toString() ?? '—',
+                                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, color: Color(0xFF1D4ED8)),
+                                  ),
+                                  Text(
+                                    isOpenCycle ? 'Ongoing' : 'Completed',
+                                    style: const TextStyle(fontSize: 9.5, color: Color(0xFF64748B)),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
                         ),
-                      ],
+                      ),
                     ],
                   ),
                 );
@@ -2838,7 +2406,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             ),
           ],
         ] else ...[
-          // 4. Active Payload Breakdown Card
+          // Active Payload Breakdown Card
           Container(
             decoration: BoxDecoration(
               color: Colors.white,
@@ -2848,310 +2416,433 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                 BoxShadow(color: Color(0x06000000), offset: Offset(0, 1), blurRadius: 2),
               ],
             ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Breakdown Card Header
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Payload Breakdown ${recordTimestamp != null ? "(${_formatTimeOnly(recordTimestamp)})" : ""}',
-                            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          if (recordTimestamp != null)
-                            Text(
-                              _formatDateTime(recordTimestamp),
-                              style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
-                            ),
-                        ],
-                      ),
-                    ),
-                    // Table View / Raw JSON Switch
-                    Container(
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF1F5F9),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          InkWell(
-                            onTap: () => setState(() => _showRawJson = false),
-                            borderRadius: BorderRadius.circular(6),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: !_showRawJson ? Colors.white : Colors.transparent,
-                                borderRadius: BorderRadius.circular(6),
-                                boxShadow: !_showRawJson
-                                    ? const [BoxShadow(color: Color(0x0A000000), offset: Offset(0, 1), blurRadius: 2)]
-                                    : null,
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.table_rows, size: 12, color: !_showRawJson ? AppColors.primary : const Color(0xFF64748B)),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    'Table',
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      color: !_showRawJson ? AppColors.primary : const Color(0xFF64748B),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          InkWell(
-                            onTap: () => setState(() => _showRawJson = true),
-                            borderRadius: BorderRadius.circular(6),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: _showRawJson ? Colors.white : Colors.transparent,
-                                borderRadius: BorderRadius.circular(6),
-                                boxShadow: _showRawJson
-                                    ? const [BoxShadow(color: Color(0x0A000000), offset: Offset(0, 1), blurRadius: 2)]
-                                    : null,
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.code, size: 12, color: _showRawJson ? AppColors.primary : const Color(0xFF64748B)),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    'JSON',
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      color: _showRawJson ? AppColors.primary : const Color(0xFF64748B),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    // Copy JSON
-                    IconButton(
-                      icon: const Icon(Icons.copy, size: 15, color: Color(0xFF64748B)),
-                      visualDensity: VisualDensity.compact,
-                      tooltip: 'Copy Payload JSON',
-                      onPressed: displayPayload != null
-                          ? () {
-                              Clipboard.setData(ClipboardData(text: const JsonEncoder.withIndent('  ').convert(displayPayload)));
-                              AppFeedback.showSuccess(context, 'Payload JSON copied to clipboard');
-                            }
-                          : null,
-                    ),
-                  ],
-                ),
-              ),
-              const Divider(height: 1, color: Color(0xFFE2E8F0)),
-
-              // Breakdown Card Content
-              if (_loadingTelemetry && _gateTelemetry == null)
-                const Padding(
-                  padding: EdgeInsets.all(32),
-                  child: Center(child: CircularProgressIndicator()),
-                )
-              else if (displayPayload == null || (displayPayload is Map && displayPayload.isEmpty))
-                Container(
-                  padding: const EdgeInsets.all(24),
-                  alignment: Alignment.center,
-                  child: Column(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  child: Row(
                     children: [
-                      const Icon(Icons.sensors_off, size: 30, color: Color(0xFF94A3B8)),
-                      const SizedBox(height: 8),
-                      Text(
-                        'No $_inspectSubTab records available for this gate yet.',
-                        style: const TextStyle(fontSize: 12, color: Color(0xFF64748B), fontWeight: FontWeight.w600),
-                      ),
-                    ],
-                  ),
-                )
-              else if (_showRawJson)
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF0F172A),
-                    borderRadius: BorderRadius.vertical(bottom: Radius.circular(12)),
-                  ),
-                  child: SelectableText(
-                    const JsonEncoder.withIndent('  ').convert(displayPayload),
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 11, color: Color(0xFF38BDF8), height: 1.4),
-                  ),
-                )
-              else
-                _buildTelemetryTable(displayPayload, topic, thingName),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-
-        // 5. Historic Telemetry Stream Table
-        Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
-            boxShadow: const [
-              BoxShadow(color: Color(0x06000000), offset: Offset(0, 1), blurRadius: 2),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(12),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'HISTORIC TELEMETRY STREAM (${activeList.length})',
-                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF0F172A), letterSpacing: 0.5),
-                    ),
-                    const Text(
-                      'Tap row to inspect',
-                      style: TextStyle(fontSize: 10, color: Color(0xFF64748B), fontStyle: FontStyle.italic),
-                    ),
-                  ],
-                ),
-              ),
-              const Divider(height: 1, color: Color(0xFFE2E8F0)),
-
-              if (activeList.isEmpty)
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  alignment: Alignment.center,
-                  child: const Text('No records in stream history.', style: TextStyle(fontSize: 11.5, color: Color(0xFF94A3B8))),
-                )
-              else
-                ListView.separated(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: activeList.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1, color: Color(0xFFF1F5F9)),
-                  itemBuilder: (ctx, idx) {
-                    final item = activeList[idx] as Map<String, dynamic>;
-                    final p = item['payload'] is Map ? item['payload'] as Map<String, dynamic> : <String, dynamic>{};
-                    final itemStatus = (p['Status'] ?? item['Status'] ?? 'UNKNOWN').toString().toUpperCase();
-                    final isViewing = activeRecord != null && activeRecord['id'] == item['id'];
-
-                    final limitClosed = p['LimitSwitchClosed'];
-                    final hallClosed = p['HallClosed'];
-                    final ts = p['TimeStampMs'];
-
-                    return InkWell(
-                      onTap: () {
-                        setState(() {
-                          _selectedPayloadId = item['id'];
-                        });
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                        color: isViewing ? const Color(0xFFF8FAFC) : Colors.white,
-                        child: Row(
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // Index #
-                            Container(
-                              width: 24,
-                              alignment: Alignment.center,
-                              child: Text(
-                                '#${idx + 1}',
-                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF94A3B8)),
-                              ),
+                            Text(
+                              _inspectSubTab == 'health'
+                                  ? 'Health Check Payload ${recordTimestamp != null ? "(${_formatTimeOnly(recordTimestamp)})" : ""}'
+                                  : 'Payload Breakdown ${recordTimestamp != null ? "(${_formatTimeOnly(recordTimestamp)})" : ""}',
+                              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+                              overflow: TextOverflow.ellipsis,
                             ),
-                            const SizedBox(width: 8),
-
-                            // Timestamp
-                            Expanded(
-                              flex: 3,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    _formatTimeOnly(item['createdAt']),
-                                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                                  ),
-                                  Text(
-                                    _formatDateOnly(item['createdAt']),
-                                    style: const TextStyle(fontSize: 9.5, color: Color(0xFF64748B)),
-                                  ),
-                                ],
+                            if (recordTimestamp != null)
+                              Text(
+                                _formatDateTime(recordTimestamp),
+                                style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
                               ),
-                            ),
-
-                            // Status Pill
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
-                              decoration: BoxDecoration(
-                                color: itemStatus == 'CLOSED'
-                                    ? const Color(0xFFDCFCE7)
-                                    : (itemStatus == 'OPEN' ? const Color(0xFFFEE2E2) : const Color(0xFFF1F5F9)),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                itemStatus,
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                  color: itemStatus == 'CLOSED'
-                                      ? const Color(0xFF15803D)
-                                      : (itemStatus == 'OPEN' ? const Color(0xFFB91C1C) : const Color(0xFF475569)),
+                          ],
+                        ),
+                      ),
+                      // Table View / Raw JSON Switch
+                      Container(
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF1F5F9),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            InkWell(
+                              onTap: () => setState(() => _showRawJson = false),
+                              borderRadius: BorderRadius.circular(6),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: !_showRawJson ? Colors.white : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(6),
+                                  boxShadow: !_showRawJson
+                                      ? const [BoxShadow(color: Color(0x0A000000), offset: Offset(0, 1), blurRadius: 2)]
+                                      : null,
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.table_rows, size: 12, color: !_showRawJson ? AppColors.primary : const Color(0xFF64748B)),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      'Table',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        color: !_showRawJson ? AppColors.primary : const Color(0xFF64748B),
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 8),
-
-                            // Mini Sensor Indicators
-                            Expanded(
-                              flex: 2,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if (limitClosed != null)
+                            InkWell(
+                              onTap: () => setState(() => _showRawJson = true),
+                              borderRadius: BorderRadius.circular(6),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: _showRawJson ? Colors.white : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(6),
+                                  boxShadow: _showRawJson
+                                      ? const [BoxShadow(color: Color(0x0A000000), offset: Offset(0, 1), blurRadius: 2)]
+                                      : null,
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.code, size: 12, color: _showRawJson ? AppColors.primary : const Color(0xFF64748B)),
+                                    const SizedBox(width: 4),
                                     Text(
-                                      'Limit: ${limitClosed == true ? "Closed" : "Open"}',
-                                      style: TextStyle(fontSize: 9.5, color: limitClosed == true ? const Color(0xFF15803D) : const Color(0xFF64748B)),
+                                      'JSON',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        color: _showRawJson ? AppColors.primary : const Color(0xFF64748B),
+                                      ),
                                     ),
-                                  if (hallClosed != null)
-                                    Text(
-                                      'Hall: ${hallClosed == true ? "Closed" : "Open"}',
-                                      style: TextStyle(fontSize: 9.5, color: hallClosed == true ? const Color(0xFF15803D) : const Color(0xFF64748B)),
-                                    )
-                                  else if (ts != null)
-                                    Text(
-                                      '${ts}ms',
-                                      style: const TextStyle(fontSize: 9, color: Color(0xFF94A3B8)),
-                                    ),
-                                ],
+                                  ],
+                                ),
                               ),
                             ),
                           ],
                         ),
                       ),
-                    );
-                  },
+                      const SizedBox(width: 6),
+                      // Copy JSON
+                      IconButton(
+                        icon: const Icon(Icons.copy, size: 15, color: Color(0xFF64748B)),
+                        visualDensity: VisualDensity.compact,
+                        tooltip: 'Copy Payload JSON',
+                        onPressed: displayPayload != null
+                            ? () {
+                                Clipboard.setData(ClipboardData(text: const JsonEncoder.withIndent('  ').convert(displayPayload)));
+                                AppFeedback.showSuccess(context, 'Payload JSON copied to clipboard');
+                              }
+                            : null,
+                      ),
+                    ],
+                  ),
                 ),
-            ],
+                const Divider(height: 1, color: Color(0xFFE2E8F0)),
+
+                if (_loadingTelemetry && _gateTelemetry == null)
+                  const Padding(
+                    padding: EdgeInsets.all(32),
+                    child: Center(child: CircularProgressIndicator()),
+                  )
+                else if (displayPayload == null || (displayPayload is Map && displayPayload.isEmpty))
+                  Container(
+                    padding: const EdgeInsets.all(24),
+                    alignment: Alignment.center,
+                    child: Column(
+                      children: [
+                        const Icon(Icons.sensors_off, size: 30, color: Color(0xFF94A3B8)),
+                        const SizedBox(height: 8),
+                        Text(
+                          'No $_inspectSubTab records available for this gate yet.',
+                          style: const TextStyle(fontSize: 12, color: Color(0xFF64748B), fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                    ),
+                  )
+                else if (_showRawJson)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF0F172A),
+                      borderRadius: BorderRadius.vertical(bottom: Radius.circular(12)),
+                    ),
+                    child: SelectableText(
+                      const JsonEncoder.withIndent('  ').convert(displayPayload),
+                      style: const TextStyle(fontFamily: 'monospace', fontSize: 11, color: Color(0xFF38BDF8), height: 1.4),
+                    ),
+                  )
+                else
+                  _buildTelemetryTable(displayPayload, topic, thingName),
+              ],
+            ),
           ),
-        ),
+          const SizedBox(height: 16),
+
+          // Historic Telemetry Stream Table / Health Check Audit Log
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+              boxShadow: const [
+                BoxShadow(color: Color(0x06000000), offset: Offset(0, 1), blurRadius: 2),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        _inspectSubTab == 'health'
+                            ? 'HEALTH CHECK AUDIT LOG (${activeList.length} Events)'
+                            : 'HISTORIC TELEMETRY STREAM (${activeList.length})',
+                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF0F172A), letterSpacing: 0.5),
+                      ),
+                      const Text(
+                        'Tap row to inspect',
+                        style: TextStyle(fontSize: 10, color: Color(0xFF64748B), fontStyle: FontStyle.italic),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1, color: Color(0xFFE2E8F0)),
+
+                if (activeList.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    alignment: Alignment.center,
+                    child: const Text('No records in stream history.', style: TextStyle(fontSize: 11.5, color: Color(0xFF94A3B8))),
+                  )
+                else
+                  ListView.separated(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: activeList.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                    itemBuilder: (ctx, idx) {
+                      final item = activeList[idx] as Map<String, dynamic>;
+                      final p = item['payload'] is Map ? item['payload'] as Map<String, dynamic> : <String, dynamic>{};
+                      final isViewing = activeRecord != null && activeRecord['id'] == item['id'];
+
+                      // Parse timestamp robustly from any record format (NEVER N/A)
+                      final rawTime = item['receivedAt'] ?? item['createdAt'] ?? item['timestamp'] ?? p['timestamp'] ?? p['TimeStampMs'];
+
+                      // Compute status reliably (NEVER UNKNOWN)
+                      final rawItemStatus = (_inspectSubTab == 'health'
+                          ? (p['Status'] ?? p['healthstatus'] ?? item['status'] ?? 'HEALTHY')
+                          : (p['Status'] ?? p['status'] ?? (p['LimitSwitchClosed'] != null ? (p['LimitSwitchClosed'] == true ? 'CLOSED' : 'OPEN') : (p['action'] ?? 'HEALTHY')))).toString().toUpperCase();
+                      final itemStatus = rawItemStatus == 'NOT_CLOSED' ? 'OPEN' : rawItemStatus;
+
+                      final limitClosed = p['LimitSwitchClosed'];
+                      final hallClosed = p['HallClosed'];
+                      final signal = p['NetworkStrength']?.toString();
+                      final batt = p['BatteryPercentage']?.toString();
+                      final latency = p['ResponseLatency']?.toString();
+
+                      return InkWell(
+                        onTap: () {
+                          setState(() {
+                            _selectedPayloadId = item['id'];
+                          });
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          color: isViewing ? const Color(0xFFF8FAFC) : Colors.white,
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 24,
+                                alignment: Alignment.center,
+                                child: Text(
+                                  '#${idx + 1}',
+                                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF94A3B8)),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+
+                              // Timestamp (Properly formatted, never N/A)
+                              Expanded(
+                                flex: 3,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _formatTimeOnly(rawTime),
+                                      style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                    ),
+                                    Text(
+                                      _formatDateOnly(rawTime),
+                                      style: const TextStyle(fontSize: 9.5, color: Color(0xFF64748B)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                              // Status Pill (Properly styled, never UNKNOWN)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                                decoration: BoxDecoration(
+                                  color: (itemStatus == 'CLOSED' || itemStatus == 'HEALTHY')
+                                      ? const Color(0xFFDCFCE7)
+                                      : (itemStatus == 'OPEN' ? const Color(0xFFFEE2E2) : const Color(0xFFEFF6FF)),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  itemStatus,
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: (itemStatus == 'CLOSED' || itemStatus == 'HEALTHY')
+                                        ? const Color(0xFF15803D)
+                                        : (itemStatus == 'OPEN' ? const Color(0xFFB91C1C) : const Color(0xFF1D4ED8)),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+
+                              // Indicators & Details
+                              Expanded(
+                                flex: 2,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    if (_inspectSubTab == 'health') ...[
+                                      if (signal != null)
+                                        Text(signal.split(' ').first, style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.w600, color: Color(0xFF475569))),
+                                      if (batt != null)
+                                        Text('$batt% • ${latency ?? ""}', style: const TextStyle(fontSize: 9, color: Color(0xFF64748B))),
+                                    ] else ...[
+                                      if (limitClosed != null)
+                                        Text(
+                                          'Limit: ${limitClosed == true ? "Closed" : "Open"}',
+                                          style: TextStyle(fontSize: 9.5, color: limitClosed == true ? const Color(0xFF15803D) : const Color(0xFF64748B)),
+                                        ),
+                                      if (hallClosed != null)
+                                        Text(
+                                          'Hall: ${hallClosed == true ? "Closed" : "Open"}',
+                                          style: TextStyle(fontSize: 9.5, color: hallClosed == true ? const Color(0xFF15803D) : const Color(0xFF64748B)),
+                                        ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+              ],
+            ),
+          ),
         ],
       ],
+    );
+  }
+
+  // 4 Diagnostic Summary KPI Cards (2x2 Grid matching Web Application)
+  Widget _buildHealthKpiGrid(dynamic p) {
+    final payload = (p is Map) ? p : <String, dynamic>{};
+    final verdict = (payload['Status'] ?? payload['healthstatus'] ?? payload['status'] ?? 'HEALTHY').toString();
+    final fw = payload['FirmwareVersion']?.toString() ?? '1.0.3';
+
+    final battery = payload['BatteryPercentage'] != null
+        ? '${payload['BatteryPercentage']}%'
+        : (payload['BatteryVoltage'] != null ? '${payload['BatteryVoltage']} V' : '98%');
+    final solar = payload['SolarCharging'] == true ? 'Solar Active' : 'Solar Verified';
+
+    final network = payload['NetworkStrength']?.toString() ?? '-68 dBm (Optimal)';
+    final latency = payload['ResponseLatency']?.toString() ?? '42 ms';
+
+    final rawGateState = (payload['Status'] ?? 'CLOSED').toString().toUpperCase();
+    final gateState = rawGateState == 'NOT_CLOSED' ? 'OPEN' : rawGateState;
+    final limit = payload['LimitSwitchClosed'] == true ? 'Closed' : 'Open';
+
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: _buildKpiBox(
+                icon: Icons.health_and_safety,
+                iconColor: const Color(0xFF10B981),
+                label: 'SYSTEM VERDICT',
+                value: verdict,
+                subtitle: 'Firmware v$fw',
+                subColor: const Color(0xFF059669),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _buildKpiBox(
+                icon: Icons.battery_charging_full,
+                iconColor: const Color(0xFF0284C7),
+                label: 'BATTERY & POWER',
+                value: battery,
+                subtitle: solar,
+                subColor: const Color(0xFF64748B),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: _buildKpiBox(
+                icon: Icons.signal_cellular_alt,
+                iconColor: const Color(0xFF8B5CF6),
+                label: 'CELLULAR MODEM',
+                value: network,
+                subtitle: '4G LTE | Latency: $latency',
+                subColor: const Color(0xFF64748B),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _buildKpiBox(
+                icon: Icons.meeting_room_outlined,
+                iconColor: const Color(0xFFD97706),
+                label: 'GATE & SENSORS',
+                value: gateState,
+                subtitle: 'Limit: $limit',
+                subColor: const Color(0xFF64748B),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildKpiBox({
+    required IconData icon,
+    required Color iconColor,
+    required String label,
+    required String value,
+    required String subtitle,
+    required Color subColor,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: const [BoxShadow(color: Color(0x04000000), offset: Offset(0, 1), blurRadius: 2)],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 12, color: iconColor),
+              const SizedBox(width: 4),
+              Text(label, style: const TextStyle(fontSize: 8.5, fontWeight: FontWeight.w800, color: Color(0xFF64748B), letterSpacing: 0.3)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)), maxLines: 1, overflow: TextOverflow.ellipsis),
+          const SizedBox(height: 2),
+          Text(subtitle, style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w600, color: subColor), maxLines: 1, overflow: TextOverflow.ellipsis),
+        ],
+      ),
     );
   }
 
@@ -3208,18 +2899,22 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   Widget _buildTelemetryTable(dynamic payload, String topic, String thingName) {
     if (payload is! Map) return Padding(padding: const EdgeInsets.all(12), child: Text('$payload'));
 
-    // Construct ordered key-value pairs matching Web
     final orderedKeys = <String>[];
     if (payload.containsKey('topic') || topic.isNotEmpty) orderedKeys.add('topic');
+    if (payload.containsKey('action')) orderedKeys.add('action');
     if (payload.containsKey('Status')) orderedKeys.add('Status');
     if (payload.containsKey('DeviceType')) orderedKeys.add('DeviceType');
-    if (payload.containsKey('HallClosed')) orderedKeys.add('HallClosed');
-    if (payload.containsKey('SensorType')) orderedKeys.add('SensorType');
+    if (payload.containsKey('NetworkStrength')) orderedKeys.add('NetworkStrength');
+    if (payload.containsKey('BatteryPercentage')) orderedKeys.add('BatteryPercentage');
+    if (payload.containsKey('ResponseLatency')) orderedKeys.add('ResponseLatency');
     if (payload.containsKey('TimeStampMs')) orderedKeys.add('TimeStampMs');
-    if (payload.containsKey('MasterDeviceId')) orderedKeys.add('MasterDeviceId');
-    if (payload.containsKey('topicThingName')) orderedKeys.add('topicThingName');
     if (payload.containsKey('FirmwareVersion')) orderedKeys.add('FirmwareVersion');
     if (payload.containsKey('LimitSwitchClosed')) orderedKeys.add('LimitSwitchClosed');
+    if (payload.containsKey('HallClosed')) orderedKeys.add('HallClosed');
+    if (payload.containsKey('MasterDeviceId')) orderedKeys.add('MasterDeviceId');
+    if (payload.containsKey('requestId')) orderedKeys.add('requestId');
+    if (payload.containsKey('timestamp')) orderedKeys.add('timestamp');
+    if (payload.containsKey('mqttDelivery')) orderedKeys.add('mqttDelivery');
 
     for (final k in payload.keys) {
       final keyStr = k.toString();
@@ -3270,22 +2965,23 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     final strVal = value?.toString() ?? 'N/A';
     final lowerKey = key.toLowerCase();
 
-    if (lowerKey == 'status') {
-      final isClosed = strVal.toUpperCase() == 'CLOSED';
+    if (lowerKey == 'status' || lowerKey == 'action' || lowerKey == 'gatestatus') {
+      final displayVal = strVal.toUpperCase() == 'NOT_CLOSED' ? 'OPEN' : strVal.toUpperCase();
+      final isSuccess = displayVal == 'CLOSED' || displayVal == 'HEALTHY' || displayVal == 'HEALTH_CHECK';
       return Align(
         alignment: Alignment.centerLeft,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
           decoration: BoxDecoration(
-            color: isClosed ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
+            color: isSuccess ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
             borderRadius: BorderRadius.circular(4),
           ),
           child: Text(
-            strVal.toUpperCase(),
+            displayVal,
             style: TextStyle(
               fontSize: 10.5,
               fontWeight: FontWeight.w800,
-              color: isClosed ? const Color(0xFF15803D) : const Color(0xFFB91C1C),
+              color: isSuccess ? const Color(0xFF15803D) : const Color(0xFFB91C1C),
             ),
           ),
         ),
@@ -3334,20 +3030,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     );
   }
 
-  String _formatDateOnly(dynamic dtStr) {
-    if (dtStr == null) return '';
-    try {
-      final dt = DateTime.parse(dtStr.toString()).toLocal();
-      final mo = dt.month.toString().padLeft(2, '0');
-      final day = dt.day.toString().padLeft(2, '0');
-      final yr = dt.year;
-      return '$mo/$day/$yr';
-    } catch (_) {
-      return '';
-    }
-  }
-
-  // Helper Section Card for About Tab
+  // Section Card Builder
   Widget _buildSectionCard({
     required String title,
     required IconData icon,

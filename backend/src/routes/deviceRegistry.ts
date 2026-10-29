@@ -371,7 +371,8 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
 
     const latestTele = telemetryRecords[0]?.payload as any;
     // Physical Gate Status is always OPEN / CLOSED / NOT_CLOSED (never "HEALTHY")
-    const currentStatus = latestTele?.Status || (latestTele?.LimitSwitchClosed !== undefined ? (latestTele.LimitSwitchClosed ? 'CLOSED' : 'NOT_CLOSED') : (device.status || 'UNKNOWN'));
+    const rawTeleStatus = latestTele?.Status ? String(latestTele.Status).trim().toUpperCase() : null;
+    const currentStatus = (rawTeleStatus === 'NOT_CLOSED' ? 'OPEN' : rawTeleStatus) || (latestTele?.LimitSwitchClosed !== undefined ? (latestTele.LimitSwitchClosed ? 'CLOSED' : 'OPEN') : (device.status === 'NOT_CLOSED' ? 'OPEN' : (device.status || 'UNKNOWN')));
 
     // Construct unified payload list without duplicates
     const seenUids = new Set<string>();
@@ -624,6 +625,14 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
 
     // Determine payload body
     const payload = raw.payload !== undefined ? raw.payload : raw;
+    if (payload && typeof payload === 'object') {
+      if (typeof payload.Status === 'string' && payload.Status.toUpperCase() === 'NOT_CLOSED') {
+        payload.Status = 'OPEN';
+      }
+      if (typeof payload.status === 'string' && payload.status.toUpperCase() === 'NOT_CLOSED') {
+        payload.status = 'OPEN';
+      }
+    }
 
     // Auto-resolve or find device
     let device = await prisma.deviceRegistry.findFirst({
@@ -717,7 +726,7 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
           thingName: device.thingName,
           requestId: payload.requestId || null,
           healthstatus: payload.healthstatus || 'HEALTHY',
-          gateStatus: payload.Status || (payload.LimitSwitchClosed !== undefined ? (payload.LimitSwitchClosed ? 'CLOSED' : 'NOT_CLOSED') : null),
+          gateStatus: (payload.Status === 'NOT_CLOSED' ? 'OPEN' : payload.Status) || (payload.LimitSwitchClosed !== undefined ? (payload.LimitSwitchClosed ? 'CLOSED' : 'OPEN') : null),
           boomAngle: payload.BoomAngle !== undefined && payload.BoomAngle !== null ? parseFloat(payload.BoomAngle) : null,
           mcuTempC: payload.McuTempC !== undefined && payload.McuTempC !== null ? parseFloat(payload.McuTempC) : null,
           signalStrength: payload.SignalStrength !== undefined && payload.SignalStrength !== null ? parseInt(payload.SignalStrength) : null,
