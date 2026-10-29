@@ -276,22 +276,21 @@ export default function Login({ onLogin, onGoToRegister, sessionExpiredMsg }: Pr
         }}
       >
         <div className="text-center mb-6">
-          {(branding.logoUrl || branding.wallpaperUrl) && (
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1.25rem' }}>
-              <img
-                src={branding.logoUrl || branding.wallpaperUrl}
-                alt={branding.appName}
-                style={{
-                  maxHeight: '90px',
-                  maxWidth: '160px',
-                  width: 'auto',
-                  height: 'auto',
-                  objectFit: 'contain',
-                  filter: 'drop-shadow(0 4px 8px rgba(0, 0, 0, 0.12))',
-                }}
-              />
-            </div>
-          )}
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1.25rem' }}>
+            <img
+              src={branding.logoUrl || branding.wallpaperUrl || '/app_icon.png'}
+              alt={branding.appName}
+              style={{
+                maxHeight: '90px',
+                maxWidth: '160px',
+                width: 'auto',
+                height: 'auto',
+                borderRadius: '12px',
+                objectFit: 'contain',
+                filter: 'drop-shadow(0 4px 8px rgba(0, 0, 0, 0.12))',
+              }}
+            />
+          </div>
           <h2 style={{ color: 'var(--primary)', margin: '0 0 0.5rem 0', fontWeight: 800, fontSize: '1.65rem' }}>
             {branding.appName}
           </h2>

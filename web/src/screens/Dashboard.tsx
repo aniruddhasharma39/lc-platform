@@ -316,7 +316,18 @@ export default function Dashboard({ user, onLogout }: Props) {
           >
             <FaBars />
           </button>
-          <h2 style={{ margin: 0, color: 'var(--primary)', fontSize: '1.25rem' }}>
+          <img 
+            src={(branding as any).logoUrl || '/app_icon.png'} 
+            alt="Logo" 
+            style={{ 
+              width: 32, 
+              height: 32, 
+              borderRadius: 6, 
+              objectFit: 'cover',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+            }} 
+          />
+          <h2 style={{ margin: 0, color: 'var(--primary)', fontSize: '1.25rem', fontWeight: 700 }}>
             {branding.appName}
           </h2>
         </div>

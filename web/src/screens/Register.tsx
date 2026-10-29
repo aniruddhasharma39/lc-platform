@@ -147,6 +147,21 @@ export default function Register({ onGoToLogin }: Props) {
   return (
     <div className="bg-light" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', width: '100%', padding: '40px 24px', overflowY: 'auto' }}>
       <div className="card" style={{ width: 500, maxWidth: '100%' }}>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1.25rem' }}>
+          <img
+            src="/app_icon.png"
+            alt="LC Platform"
+            style={{
+              maxHeight: '75px',
+              maxWidth: '120px',
+              width: 'auto',
+              height: 'auto',
+              borderRadius: '12px',
+              objectFit: 'contain',
+              filter: 'drop-shadow(0 4px 8px rgba(0, 0, 0, 0.12))',
+            }}
+          />
+        </div>
         <h2 className="text-center text-primary mb-6">Create an Account</h2>
         
         {error && (
