@@ -277,7 +277,6 @@ export async function sendEmail(options: {
  */
 export async function sendEmailOtp(toEmail: string, otp: string, recipientName?: string): Promise<SendEmailResult> {
   const greeting = recipientName ? `Hello ${recipientName},` : 'Hello Official,';
-  const adminEmail = process.env.DEFAULT_ADMIN_EMAIL || 'admin@lcgate.in';
 
   const htmlContent = `
     <!DOCTYPE html>
@@ -316,7 +315,7 @@ export async function sendEmailOtp(toEmail: string, otp: string, recipientName?:
           </div>
 
           <p style="font-size: 12px; color: #94a3b8; margin: 0; text-align: center;">
-            If you did not initiate this request, please contact your system administrator immediately at <strong style="color: #003580;">${adminEmail}</strong>.
+            If you did not initiate this request, please contact your system administrator.
           </p>
         </div>
 
@@ -334,7 +333,7 @@ export async function sendEmailOtp(toEmail: string, otp: string, recipientName?:
     toEmail,
     toName: recipientName,
     subject: `[${otp}] Indian Railways LC Platform — Verification Code`,
-    textContent: `Your Indian Railways LC Platform verification code is: ${otp}. It is valid for 10 minutes. If you did not initiate this request, please contact your system administrator at ${adminEmail}.`,
+    textContent: `Your Indian Railways LC Platform verification code is: ${otp}. It is valid for 10 minutes. If you did not initiate this request, please contact your system administrator.`,
     htmlContent,
   });
 }
