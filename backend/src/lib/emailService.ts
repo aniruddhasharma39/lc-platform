@@ -9,15 +9,20 @@ export interface SendEmailResult {
   reason?: 'SMTP_NOT_CONFIGURED' | 'DELIVERY_FAILED' | 'INVALID_RECIPIENT';
 }
 
+function cleanEnv(val: string | undefined, defaultVal = ''): string {
+  if (!val) return defaultVal;
+  return val.trim().replace(/^["']|["']$/g, '').trim();
+}
+
 /**
  * Creates nodemailer transport using environment variables (SMTP fallback)
  */
 function getTransporter(portOverride?: number, secureOverride?: boolean) {
-  const host = process.env.SMTP_HOST;
-  const port = portOverride !== undefined ? portOverride : parseInt(process.env.SMTP_PORT || '587', 10);
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
-  const secure = secureOverride !== undefined ? secureOverride : (process.env.SMTP_SECURE === 'true' || port === 465);
+  const host = cleanEnv(process.env.SMTP_HOST);
+  const port = portOverride !== undefined ? portOverride : parseInt(cleanEnv(process.env.SMTP_PORT, '587'), 10);
+  const user = cleanEnv(process.env.SMTP_USER);
+  const pass = cleanEnv(process.env.SMTP_PASS);
+  const secure = secureOverride !== undefined ? secureOverride : (cleanEnv(process.env.SMTP_SECURE) === 'true' || port === 465);
 
   if (!host || !user || !pass) {
     return null;
@@ -73,7 +78,7 @@ async function sendViaBrevoApi(options: {
   htmlContent: string;
   textContent?: string;
 }): Promise<SendEmailResult> {
-  const apiKey = process.env.BREVO_API_KEY;
+  const apiKey = cleanEnv(process.env.BREVO_API_KEY);
   if (!apiKey) {
     return {
       success: false,
@@ -82,8 +87,8 @@ async function sendViaBrevoApi(options: {
     };
   }
 
-  const senderEmail = process.env.BREVO_SENDER_EMAIL || 'mirthatechnology1@12614487.brevosend.com';
-  const senderName = process.env.BREVO_SENDER_NAME || 'Indian Railways Level Crossing Platform';
+  const senderEmail = cleanEnv(process.env.BREVO_SENDER_EMAIL, 'mirthatechnology1@12614487.brevosend.com');
+  const senderName = cleanEnv(process.env.BREVO_SENDER_NAME, 'Indian Railways Level Crossing Platform');
 
   try {
     const payload = {
@@ -177,9 +182,9 @@ export async function sendEmail(options: {
   const transporter = getTransporter();
   if (transporter) {
     let fromAddress =
-      process.env.SMTP_FROM ||
-      (process.env.BREVO_SENDER_EMAIL
-        ? `"${process.env.BREVO_SENDER_NAME || 'Indian Railways Level Crossing Platform'}" <${process.env.BREVO_SENDER_EMAIL}>`
+      cleanEnv(process.env.SMTP_FROM) ||
+      (cleanEnv(process.env.BREVO_SENDER_EMAIL)
+        ? `"${cleanEnv(process.env.BREVO_SENDER_NAME, 'Indian Railways Level Crossing Platform')}" <${cleanEnv(process.env.BREVO_SENDER_EMAIL)}>`
         : null) ||
       `"Indian Railways Level Crossing Platform" <mirthatechnology1@12614487.brevosend.com>`;
 
