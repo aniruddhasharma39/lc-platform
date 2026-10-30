@@ -263,47 +263,18 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
     return position;
   }
 
-  Future<void> _pickPhoto(ImageSource source) async {
-    final XFile? photo = await _picker.pickImage(source: source, imageQuality: 70);
+  Future<void> _captureWithCamera() async {
+    final XFile? photo = await _picker.pickImage(source: ImageSource.camera, imageQuality: 70);
     if (photo != null) {
       setState(() {
         _image = photo;
-        _sourceLabel = source == ImageSource.camera ? 'Camera' : 'Gallery';
+        _sourceLabel = 'Live Camera';
       });
       if (mounted) {
-        AppFeedback.showSuccess(context, 'Photo captured/selected via $_sourceLabel.');
+        AppFeedback.showSuccess(context, 'Photo captured via Live Camera.');
       }
       _refreshLocationStatus();
     }
-  }
-
-  void _showSourceOptions() {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_camera),
-              title: const Text('Take Photo'),
-              onTap: () {
-                Navigator.pop(context);
-                _pickPhoto(ImageSource.camera);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text('Choose from Gallery'),
-              onTap: () {
-                Navigator.pop(context);
-                _pickPhoto(ImageSource.gallery);
-              },
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   Future<void> _upload() async {
@@ -569,12 +540,28 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
                 const SizedBox(height: 24),
               ],
               ElevatedButton.icon(
-                icon: const Icon(Icons.add_a_photo),
-                label: const Text('Choose Photo'),
-                onPressed: _isLoading ? null : _showSourceOptions,
-                style: ElevatedButton.styleFrom(minimumSize: const Size(200, 50)),
+                icon: const Icon(Icons.camera_alt),
+                label: Text(_image == null ? 'Capture Photo (Camera Only)' : 'Retake Photo (Camera)'),
+                onPressed: _isLoading ? null : _captureWithCamera,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF0B3C7A),
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(220, 50),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: const [
+                  Icon(Icons.verified_user_outlined, size: 14, color: Color(0xFF059669)),
+                  SizedBox(width: 5),
+                  Text(
+                    'Live Camera capture enforced for proof integrity',
+                    style: TextStyle(fontSize: 11, color: Color(0xFF059669), fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),              const SizedBox(height: 20),
 
               // Visual Progress Bar when uploading
               if (_isLoading) ...[

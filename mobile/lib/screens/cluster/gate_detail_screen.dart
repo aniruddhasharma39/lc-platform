@@ -331,6 +331,292 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     }
   }
 
+  String _fullImageUrl(String? url) {
+    if (url == null || url.isEmpty) return '';
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    final base = baseUrl;
+    final host = base.endsWith('/api/v1') ? base.substring(0, base.length - '/api/v1'.length) : base;
+    return '$host$url';
+  }
+
+  void _showZoomPhoto(String url, String title, [dynamic lat, dynamic lng, String? timestamp]) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(12),
+        child: Stack(
+          children: [
+            InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 4.0,
+              child: Center(
+                child: Image.network(
+                  url,
+                  fit: BoxFit.contain,
+                  loadingBuilder: (c, child, progress) {
+                    if (progress == null) return child;
+                    return const Center(child: CircularProgressIndicator(color: Colors.white));
+                  },
+                  errorBuilder: (_, __, ___) => const Center(
+                    child: Text('Failed to load image', style: TextStyle(color: Colors.white70)),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white, size: 28),
+                onPressed: () => Navigator.pop(ctx),
+              ),
+            ),
+            Positioned(
+              bottom: 12,
+              left: 12,
+              right: 12,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.black87,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                    if (lat != null && lng != null)
+                      Text('GPS: $lat, $lng', style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                    if (timestamp != null)
+                      Text('Recorded: $timestamp', style: const TextStyle(color: Colors.white60, fontSize: 10)),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showViewEvidenceSheet(Map master) {
+    final evidences = (master['evidences'] as List?) ?? [];
+    final childDevices = (master['childDevices'] as List?) ?? [];
+
+    Map? findEv(String category, [int? childId]) {
+      for (final e in evidences) {
+        if (e is Map) {
+          if (childId != null && e['childDeviceId'] == childId) return e;
+          if (e['category'] == category) {
+            if (childId == null || e['childDeviceId'] == childId) return e;
+          }
+        }
+      }
+      return null;
+    }
+
+    final masterEv = findEv('MASTER');
+    final simEv = findEv('SIM_CARD');
+    final powerEv = findEv('POWER_SOURCE');
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        height: MediaQuery.of(context).size.height * 0.85,
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 10, bottom: 6),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Cluster Evidence Gallery', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
+                      Text('Master #${master['masterSequence']} (${master['serialNumber']})', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                    ],
+                  ),
+                  IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx)),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  _buildEvidenceViewTile(
+                    title: 'Master Gateway Unit (ESP)',
+                    subtitle: 'Serial: ${master['serialNumber']}',
+                    icon: Icons.memory,
+                    evidence: masterEv,
+                  ),
+                  const SizedBox(height: 10),
+                  _buildEvidenceViewTile(
+                    title: 'Installed SIM Card',
+                    subtitle: 'SIM Card & ICCID Hardware Proof',
+                    icon: Icons.sim_card_outlined,
+                    evidence: simEv,
+                  ),
+                  const SizedBox(height: 10),
+                  _buildEvidenceViewTile(
+                    title: master['powerSource'] == 'SOLAR' ? 'Solar Power Source' : 'Direct AC Power Source',
+                    subtitle: master['powerSource'] == 'SOLAR' ? 'Panels & Battery Installation' : 'Grid AC Power Supply',
+                    icon: master['powerSource'] == 'SOLAR' ? Icons.wb_sunny_outlined : Icons.bolt,
+                    evidence: powerEv,
+                  ),
+                  const SizedBox(height: 14),
+                  const Text('CONNECTED SLAVE DEVICES', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B), letterSpacing: 0.5)),
+                  const SizedBox(height: 8),
+                  if (childDevices.isEmpty)
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(color: Colors.grey.shade50, borderRadius: BorderRadius.circular(8)),
+                      child: const Text('No slave devices linked to this master.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    )
+                  else
+                    ...childDevices.map((child) {
+                      final childEv = findEv(child['type']?.toString() ?? '', child['id']);
+                      final isTypeA = child['type'] == 'DEVICE_1';
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: _buildEvidenceViewTile(
+                          title: 'Slave #${child['deviceSequence']}: ${child['serialNumber']}',
+                          subtitle: isTypeA ? 'Limit Switch & Hall Effect' : 'Tilt Sensor',
+                          icon: Icons.sensors,
+                          evidence: childEv,
+                        ),
+                      );
+                    }),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEvidenceViewTile({
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required Map? evidence,
+  }) {
+    final hasPhoto = evidence != null && evidence['imageUrl'] != null;
+    final imgUrl = hasPhoto ? _fullImageUrl(evidence['imageUrl'].toString()) : '';
+    final lat = evidence?['latitude'];
+    final lng = evidence?['longitude'];
+    final date = evidence?['createdAt']?.toString();
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: hasPhoto ? const Color(0xFF10B981) : Colors.grey.shade300, width: hasPhoto ? 1.5 : 1),
+        boxShadow: const [BoxShadow(color: Color(0x06000000), blurRadius: 4, offset: Offset(0, 1))],
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (hasPhoto)
+            InkWell(
+              onTap: () => _showZoomPhoto(imgUrl, title, lat, lng, date),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.network(
+                  imgUrl,
+                  width: 64,
+                  height: 64,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => Container(
+                    width: 64,
+                    height: 64,
+                    color: Colors.grey.shade200,
+                    child: const Icon(Icons.broken_image, size: 24, color: Colors.grey),
+                  ),
+                ),
+              ),
+            )
+          else
+            Container(
+              width: 64,
+              height: 64,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: Icon(icon, color: Colors.grey.shade400, size: 28),
+            ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: hasPhoto ? const Color(0xFFECFDF5) : Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        hasPhoto ? 'UPLOADED' : 'MISSING',
+                        style: TextStyle(
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.bold,
+                          color: hasPhoto ? const Color(0xFF059669) : Colors.grey.shade600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                Text(subtitle, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                const SizedBox(height: 4),
+                if (hasPhoto) ...[
+                  if (lat != null && lng != null)
+                    Text('GPS: $lat, $lng', style: const TextStyle(fontSize: 10, color: Color(0xFF0B3C7A), fontWeight: FontWeight.w500)),
+                  TextButton.icon(
+                    style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(50, 24), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                    icon: const Icon(Icons.fullscreen, size: 14, color: Color(0xFF0B3C7A)),
+                    label: const Text('View Full Photo', style: TextStyle(fontSize: 11, color: Color(0xFF0B3C7A), fontWeight: FontWeight.bold)),
+                    onPressed: () => _showZoomPhoto(imgUrl, title, lat, lng, date),
+                  ),
+                ] else ...[
+                  const Text('No photo uploaded yet.', style: TextStyle(fontSize: 10.5, color: Colors.grey, fontStyle: FontStyle.italic)),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     List masters = gate['masters'] ?? [];
@@ -537,29 +823,50 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                             ),
                             const SizedBox(height: 14),
                             
-                            SizedBox(
-                              width: double.infinity,
-                              child: OutlinedButton.icon(
-                                icon: const Icon(Icons.camera_alt_outlined, size: 18),
-                                label: const Text('Upload Evidence Checklist', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                                style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(vertical: 12),
-                                  side: const BorderSide(color: AppColors.primary),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            Row(
+                              children: [
+                                // 1. VIEW EVIDENCE BUTTON (Shows all devices and slaves)
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    icon: const Icon(Icons.visibility_outlined, size: 16),
+                                    label: const Text('View Evidence', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF0B3C7A),
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                      elevation: 1,
+                                    ),
+                                    onPressed: () => _showViewEvidenceSheet(master),
+                                  ),
                                 ),
-                                onPressed: () async {
-                                  await Navigator.push(context, MaterialPageRoute(
-                                    builder: (_) => EvidenceChecklistScreen(
-                                      token: widget.token,
-                                      master: master,
-                                    )
-                                  ));
-                                  if (!context.mounted) return;
-                                  await _refresh();
-                                  if (!context.mounted) return;
-                                  AppFeedback.showInfo(context, 'Evidence checklist status updated.');
-                                },
-                              ),
+                                const SizedBox(width: 8),
+                                // 2. UPLOAD EVIDENCE BUTTON (Opens checklist / camera capture)
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    icon: const Icon(Icons.camera_alt_outlined, size: 16),
+                                    label: const Text('Upload Evidence', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+                                    style: OutlinedButton.styleFrom(
+                                      side: const BorderSide(color: Color(0xFF0B3C7A), width: 1.5),
+                                      foregroundColor: const Color(0xFF0B3C7A),
+                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                    ),
+                                    onPressed: () async {
+                                      await Navigator.push(context, MaterialPageRoute(
+                                        builder: (_) => EvidenceChecklistScreen(
+                                          token: widget.token,
+                                          master: master,
+                                        )
+                                      ));
+                                      if (!context.mounted) return;
+                                      await _refresh();
+                                      if (!context.mounted) return;
+                                      AppFeedback.showInfo(context, 'Evidence checklist status updated.');
+                                    },
+                                  ),
+                                ),
+                              ],
                             )
                           ],
                         ),

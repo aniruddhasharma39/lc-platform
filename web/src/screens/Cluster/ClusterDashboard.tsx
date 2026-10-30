@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  FaArchway, FaMapMarkerAlt, FaCogs, FaCamera, FaSun, 
+  FaArchway, FaMapMarkerAlt, FaCogs, FaCamera, FaEye, FaSun, 
   FaBolt, FaPlug, FaCheckCircle, FaSearchPlus, FaTimes, FaRedo, FaTrash,
   FaFilter, FaChevronDown, FaChevronUp, FaLayerGroup, FaShieldAlt, FaMicrochip,
   FaSearch, FaPlus
@@ -799,6 +799,8 @@ function GateDetailView({ gate, onBack, onUpdate, onOpenDeviceInfo }: any) {
   const [addingMaster, setAddingMaster] = useState(false);
   const [addingDeviceToMaster, setAddingDeviceToMaster] = useState<number | null>(null);
   const [uploadingEvidenceFor, setUploadingEvidenceFor] = useState<any>(null);
+  const [viewingEvidenceFor, setViewingEvidenceFor] = useState<any>(null);
+  const [lightboxPhoto, setLightboxPhoto] = useState<any>(null);
 
   const [masterToDelete, setMasterToDelete] = useState<any>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
@@ -913,6 +915,13 @@ function GateDetailView({ gate, onBack, onUpdate, onOpenDeviceInfo }: any) {
                         onClick={() => onOpenDeviceInfo?.({ gate, master })}
                       >
                         <FaMicrochip style={{ fontSize: '0.95rem' }} /> Device Info
+                      </button>
+                      <button 
+                        className="btn-small flex items-center gap-2 hover-lift" 
+                        style={{ padding: '8px 12px', fontSize: '0.85rem', cursor: 'pointer', backgroundColor: '#0B3C7A', color: '#ffffff', border: 'none', borderRadius: '6px' }}
+                        onClick={() => setViewingEvidenceFor(master)}
+                      >
+                        <FaEye style={{ fontSize: '0.95rem' }} /> View Evidence
                       </button>
                       <button 
                         className="btn-small btn-outline flex items-center gap-2 hover-lift" 
@@ -1040,6 +1049,212 @@ function GateDetailView({ gate, onBack, onUpdate, onOpenDeviceInfo }: any) {
           onClose={() => { setUploadingEvidenceFor(null); onUpdate(); }} 
         />
       )}
+
+      {/* ── VIEW ALL EVIDENCE MODAL (MASTER, SIM, POWER & SLAVES) ── */}
+      {viewingEvidenceFor && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(15, 23, 42, 0.75)', backdropFilter: 'blur(4px)' }}
+          onClick={() => setViewingEvidenceFor(null)}
+        >
+          <div 
+            className="glass-panel w-full max-w-4xl max-h-[90vh] overflow-y-auto p-6 rounded-2xl relative"
+            style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center pb-4 mb-4 border-b border-gray-200">
+              <div>
+                <h3 className="text-xl font-bold flex items-center gap-2 m-0" style={{ color: '#0B3C7A' }}>
+                  <FaEye /> Cluster Evidence: Master #{viewingEvidenceFor.masterSequence} ({viewingEvidenceFor.serialNumber})
+                </h3>
+                <p className="text-sm text-gray-500 m-0 mt-1">
+                  Complete photographic verification proofs for all gateway units, SIM cards, power sources & connected slaves.
+                </p>
+              </div>
+              <button 
+                className="btn-secondary py-1 px-3"
+                onClick={() => setViewingEvidenceFor(null)}
+              >
+                <FaTimes /> Close
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* 1. Master ESP Evidence */}
+              {(() => {
+                const ev = (viewingEvidenceFor.evidences || []).find((e: any) => e.category === 'MASTER');
+                return (
+                  <EvidenceCardViewer
+                    title="Master Unit (ESP Gateway)"
+                    subtitle={`Serial: ${viewingEvidenceFor.serialNumber}`}
+                    evidence={ev}
+                    onPreview={() => ev?.imageUrl && setLightboxPhoto({ url: getFullImageUrl(ev.imageUrl), title: 'Master Unit (ESP Gateway)', ev })}
+                  />
+                );
+              })()}
+
+              {/* 2. Installed SIM Card Evidence */}
+              {(() => {
+                const ev = (viewingEvidenceFor.evidences || []).find((e: any) => e.category === 'SIM_CARD');
+                return (
+                  <EvidenceCardViewer
+                    title="Installed SIM Card"
+                    subtitle="Cellular SIM & ICCID Proof"
+                    evidence={ev}
+                    onPreview={() => ev?.imageUrl && setLightboxPhoto({ url: getFullImageUrl(ev.imageUrl), title: 'Installed SIM Card', ev })}
+                  />
+                );
+              })()}
+
+              {/* 3. Power Source Evidence */}
+              {(() => {
+                const ev = (viewingEvidenceFor.evidences || []).find((e: any) => e.category === 'POWER_SOURCE');
+                return (
+                  <EvidenceCardViewer
+                    title={viewingEvidenceFor.powerSource === 'SOLAR' ? 'Solar Power System' : 'Direct Grid Power Supply'}
+                    subtitle={viewingEvidenceFor.powerSource === 'SOLAR' ? 'Solar Panels & Battery System' : 'Grid AC Power Supply'}
+                    evidence={ev}
+                    onPreview={() => ev?.imageUrl && setLightboxPhoto({ url: getFullImageUrl(ev.imageUrl), title: 'Power Source Proof', ev })}
+                  />
+                );
+              })()}
+
+              {/* 4. Connected Slaves Evidence */}
+              {(viewingEvidenceFor.childDevices || []).map((child: any) => {
+                const ev = (viewingEvidenceFor.evidences || []).find((e: any) => e.childDeviceId === child.id || (e.category === child.type && e.childDeviceId === child.id))
+                  || (child.evidences && child.evidences[0]);
+                const isTypeA = child.type === 'DEVICE_1';
+                return (
+                  <EvidenceCardViewer
+                    key={child.id}
+                    title={`Slave #${child.deviceSequence}: ${child.serialNumber}`}
+                    subtitle={isTypeA ? 'Limit Switch & Hall Effect Sensors' : 'Tilt & Angle Sensor'}
+                    evidence={ev}
+                    onPreview={() => ev?.imageUrl && setLightboxPhoto({ url: getFullImageUrl(ev.imageUrl), title: `Slave: ${child.serialNumber}`, ev })}
+                  />
+                );
+              })}
+            </div>
+
+            <div className="mt-6 pt-4 border-t border-gray-200 flex justify-end gap-3">
+              <button 
+                className="btn-outline flex items-center gap-2 py-2 px-4 text-sm"
+                onClick={() => {
+                  const m = viewingEvidenceFor;
+                  setViewingEvidenceFor(null);
+                  setUploadingEvidenceFor(m);
+                }}
+              >
+                <FaCamera /> Open Upload / Re-upload Checklist
+              </button>
+              <button 
+                className="btn-primary py-2 px-4 text-sm"
+                style={{ backgroundColor: '#0B3C7A' }}
+                onClick={() => setViewingEvidenceFor(null)}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── LIGHTBOX ZOOM POPUP ── */}
+      {lightboxPhoto && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(0,0,0,0.92)' }}
+          onClick={() => setLightboxPhoto(null)}
+        >
+          <div className="relative max-w-4xl max-h-[90vh] flex flex-col items-center" onClick={(e) => e.stopPropagation()}>
+            <button 
+              className="absolute -top-10 right-0 text-white text-xl p-2 bg-black bg-opacity-50 rounded-full hover:bg-opacity-80"
+              onClick={() => setLightboxPhoto(null)}
+            >
+              <FaTimes />
+            </button>
+            <img 
+              src={lightboxPhoto.url} 
+              alt={lightboxPhoto.title} 
+              className="max-h-[75vh] max-w-full rounded-lg object-contain shadow-2xl" 
+            />
+            <div className="mt-3 text-center text-white">
+              <h4 className="text-base font-bold m-0">{lightboxPhoto.title}</h4>
+              {lightboxPhoto.ev?.latitude && lightboxPhoto.ev?.longitude && (
+                <p className="text-xs text-gray-300 m-0 mt-1">
+                  GPS: {lightboxPhoto.ev.latitude.toFixed(6)}° N, {lightboxPhoto.ev.longitude.toFixed(6)}° E
+                </p>
+              )}
+              {lightboxPhoto.ev?.createdAt && (
+                <p className="text-xs text-gray-400 m-0">
+                  Timestamp: {new Date(lightboxPhoto.ev.createdAt).toLocaleString()}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Standalone Helper Component for Evidence Cards in Viewer Modal ──
+function EvidenceCardViewer({ title, subtitle, evidence, onPreview }: { title: string; subtitle: string; evidence: any; onPreview: () => void }) {
+  const hasPhoto = !!evidence?.imageUrl;
+  return (
+    <div 
+      className="p-3 rounded-xl border flex items-start gap-3 transition-all"
+      style={{
+        backgroundColor: hasPhoto ? '#f0fdf4' : '#f8fafc',
+        borderColor: hasPhoto ? '#86efac' : '#e2e8f0',
+      }}
+    >
+      {hasPhoto ? (
+        <img 
+          src={getFullImageUrl(evidence.imageUrl)} 
+          alt={title}
+          className="w-20 h-20 rounded-lg object-cover cursor-pointer hover:opacity-90 flex-shrink-0 shadow-sm border border-green-300"
+          onClick={onPreview}
+          title="Click to view full photo"
+        />
+      ) : (
+        <div className="w-20 h-20 rounded-lg bg-gray-100 border border-gray-300 flex items-center justify-center text-gray-400 flex-shrink-0">
+          <FaCamera size={24} />
+        </div>
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <h5 className="font-bold text-sm text-gray-900 m-0 truncate">{title}</h5>
+          <span 
+            className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase"
+            style={{
+              backgroundColor: hasPhoto ? '#dcfce7' : '#f1f5f9',
+              color: hasPhoto ? '#15803d' : '#64748b',
+            }}
+          >
+            {hasPhoto ? 'VERIFIED' : 'PENDING'}
+          </span>
+        </div>
+        <p className="text-xs text-gray-500 m-0 mt-0.5">{subtitle}</p>
+        {hasPhoto ? (
+          <div className="mt-2">
+            {evidence.latitude && evidence.longitude && (
+              <span className="text-[11px] text-blue-700 font-mono block">
+                GPS: {Number(evidence.latitude).toFixed(4)}, {Number(evidence.longitude).toFixed(4)}
+              </span>
+            )}
+            <button 
+              type="button"
+              className="text-xs font-bold text-blue-600 hover:underline mt-1 flex items-center gap-1"
+              onClick={onPreview}
+            >
+              <FaEye size={11} /> View Full Photo
+            </button>
+          </div>
+        ) : (
+          <span className="text-[11px] text-gray-400 italic block mt-2">No photo recorded yet</span>
+        )}
+      </div>
     </div>
   );
 }

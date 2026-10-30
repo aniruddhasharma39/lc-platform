@@ -122,6 +122,9 @@ export default function ReportsScreen({ user }: Props) {
   const [rowsPerPage, setRowsPerPage] = useState<number>(25);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [exportProgress, setExportProgress] = useState<number>(0);
+  const [exportStage, setExportStage] = useState<string>('');
+  const [exportFormat, setExportFormat] = useState<string>('');
 
   const gateDropdownRef = useRef<HTMLDivElement>(null);
   const columnPopoverRef = useRef<HTMLDivElement>(null);
@@ -375,6 +378,28 @@ export default function ReportsScreen({ user }: Props) {
     }
 
     setIsExporting(true);
+    setExportFormat(format.toUpperCase());
+    setExportProgress(15);
+    setExportStage('Querying operational records from database...');
+
+    const progressTimer = setInterval(() => {
+      setExportProgress((prev) => {
+        if (prev < 40) {
+          setExportStage('Calculating KPI metrics and column layouts...');
+          return prev + 12;
+        }
+        if (prev < 75) {
+          setExportStage(format === 'pdf' ? 'Compiling PDF document layout & styles...' : 'Building Excel spreadsheet workbook...');
+          return prev + 8;
+        }
+        if (prev < 92) {
+          setExportStage('Finalizing binary file download...');
+          return prev + 3;
+        }
+        return prev;
+      });
+    }, 300);
+
     try {
       const url = new URL(`${API_URL}/api/v1/reports/export`);
       if (selectedClusterIds.length > 0) {
@@ -417,11 +442,18 @@ export default function ReportsScreen({ user }: Props) {
       a.remove();
       window.URL.revokeObjectURL(downloadUrl);
 
+      clearInterval(progressTimer);
+      setExportProgress(100);
+      setExportStage('Download complete!');
+      setTimeout(() => {
+        setIsExporting(false);
+      }, 500);
+
       toastSuccess(`Report downloaded successfully as .${format}!`, 'Export Completed');
     } catch (err: any) {
+      clearInterval(progressTimer);
       console.error('Download error:', err);
       toastError(err.message || 'Failed to download report', 'Export Error');
-    } finally {
       setIsExporting(false);
     }
   };
@@ -928,6 +960,44 @@ export default function ReportsScreen({ user }: Props) {
           )}
         </main>
       </div>
+      {/* ── REPORT GENERATION PROGRESS BAR MODAL ── */}
+      {isExporting && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(15, 23, 42, 0.7)', backdropFilter: 'blur(4px)' }}
+        >
+          <div 
+            className="glass-panel p-6 rounded-2xl shadow-2xl max-w-md w-full text-center"
+            style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
+          >
+            <div className="w-16 h-16 mx-auto mb-4 rounded-full flex items-center justify-center bg-blue-50 text-blue-700 text-2xl">
+              <FaSyncAlt className="spin" />
+            </div>
+            <h3 className="text-lg font-bold m-0 mb-1" style={{ color: '#0B3C7A' }}>
+              Generating {exportFormat} Report
+            </h3>
+            <p className="text-xs text-gray-500 m-0 mb-4">
+              Please wait while the platform compiles your operational logs & metrics.
+            </p>
+
+            {/* Progress Bar Container */}
+            <div className="w-full bg-gray-100 rounded-full h-3 mb-2 overflow-hidden border border-gray-200">
+              <div 
+                className="h-full rounded-full transition-all duration-300 ease-out"
+                style={{ 
+                  width: `${exportProgress}%`, 
+                  background: 'linear-gradient(90deg, #0284c7 0%, #0B3C7A 100%)' 
+                }}
+              />
+            </div>
+
+            <div className="flex justify-between items-center text-xs font-semibold text-gray-600 mb-1">
+              <span>{exportStage}</span>
+              <span className="text-blue-700 font-bold">{exportProgress}%</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

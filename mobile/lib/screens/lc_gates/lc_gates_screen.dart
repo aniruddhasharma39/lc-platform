@@ -1646,6 +1646,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
 
               // Extract component-wise evidence photos uploaded during setup
               final masterEv = _findDeviceEvidence(master, 'MASTER');
+              final simEv = _findDeviceEvidence(master, 'SIM_CARD');
               final powerEv = _findDeviceEvidence(master, 'POWER_SOURCE');
 
               return Container(
@@ -1723,6 +1724,19 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                               gate: gate,
                               masterSeq: master['masterSequence'],
                               emptyLabel: 'No installation photo uploaded for Master unit.',
+                            ),
+                            const SizedBox(height: 10),
+
+                            // Component 1.5: Installed SIM Card Evidence Photo
+                            _buildDeviceEvidenceCard(
+                              title: 'Installed SIM Card',
+                              subtitle: 'Cellular SIM & ICCID Proof',
+                              icon: Icons.sim_card_outlined,
+                              iconColor: const Color(0xFF0D9488),
+                              evidence: simEv,
+                              gate: gate,
+                              masterSeq: master['masterSequence'],
+                              emptyLabel: 'No installation photo uploaded for SIM card.',
                             ),
                             const SizedBox(height: 10),
 

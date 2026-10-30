@@ -417,7 +417,7 @@ export default function HomeDashboard({
             <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#0f172a', lineHeight: 1.2 }}>
               {loading ? '—' : data?.totalDevices ?? 0}
             </div>
-            <div style={{ fontSize: '0.74rem', color: '#94a3b8' }}>Visible to {roleName} role</div>
+            
           </div>
         </div>
 
@@ -458,7 +458,7 @@ export default function HomeDashboard({
             <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#0f172a', lineHeight: 1.2 }}>
               {loading ? '—' : data?.totalCyclesToday ?? 0}
             </div>
-            <div style={{ fontSize: '0.74rem', color: '#94a3b8' }}>Open/Close operations</div>
+            
           </div>
         </div>
 
@@ -499,7 +499,7 @@ export default function HomeDashboard({
             <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#ef4444', lineHeight: 1.2 }}>
               {loading ? '—' : data?.totalOpenGates ?? 0}
             </div>
-            <div style={{ fontSize: '0.74rem', color: '#b91c1c' }}>Road traffic stopped</div>
+            
           </div>
         </div>
 
@@ -540,7 +540,7 @@ export default function HomeDashboard({
             <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#059669', lineHeight: 1.2 }}>
               {loading ? '—' : data?.totalClosedGates ?? 0}
             </div>
-            <div style={{ fontSize: '0.74rem', color: '#047857' }}>Safe for train movement</div>
+            
           </div>
         </div>
       </div>

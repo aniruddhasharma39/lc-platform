@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -383,6 +384,180 @@ class _ReportsScreenState extends State<ReportsScreen> {
     );
   }
 
+  // 3.5. Staged Progress Report Export Dialog
+  void _startExportWithProgress({
+    required BuildContext parentCtx,
+    required String selectedFormat,
+    required Set<String> selectedCols,
+  }) async {
+    Navigator.pop(parentCtx);
+    setState(() => _isExporting = true);
+
+    double progress = 0.15;
+    String stage = 'Querying records from server...';
+    StateSetter? updateDialog;
+    Timer? progressTimer;
+
+    // Show non-dismissible progress dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          updateDialog = setDialogState;
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            content: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      color: selectedFormat == 'pdf' ? const Color(0xFFFFF1F2) : const Color(0xFFF0FDF4),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      selectedFormat == 'pdf' ? Icons.picture_as_pdf_rounded : Icons.table_view_rounded,
+                      color: selectedFormat == 'pdf' ? const Color(0xFFE11D48) : const Color(0xFF107C41),
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    'Generating ${selectedFormat.toUpperCase()} Report',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF0F172A)),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Compiling operational logs & metrics...',
+                    style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
+                  ),
+                  const SizedBox(height: 18),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: LinearProgressIndicator(
+                      value: progress,
+                      minHeight: 8,
+                      backgroundColor: Colors.grey.shade200,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        selectedFormat == 'pdf' ? const Color(0xFFE11D48) : const Color(0xFF107C41),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          stage,
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: Color(0xFF475569)),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      Text(
+                        '${(progress * 100).toInt()}%',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: selectedFormat == 'pdf' ? const Color(0xFFE11D48) : const Color(0xFF107C41),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    // Staged progress ticker
+    progressTimer = Timer.periodic(const Duration(milliseconds: 300), (_) {
+      if (updateDialog != null) {
+        updateDialog!(() {
+          if (progress < 0.40) {
+            progress += 0.10;
+            stage = 'Calculating metrics & layouts...';
+          } else if (progress < 0.75) {
+            progress += 0.07;
+            stage = selectedFormat == 'pdf' ? 'Rendering PDF document pages...' : 'Building Excel spreadsheet...';
+          } else if (progress < 0.92) {
+            progress += 0.03;
+            stage = 'Saving file to device...';
+          }
+        });
+      }
+    });
+
+    try {
+      final queryParams = <String, String>{
+        'startDate': _formatDate(_dateRange.start),
+        'endDate': _formatDate(_dateRange.end),
+        'format': selectedFormat,
+        'columns': selectedCols.join(','),
+        'sortBy': _sortBy,
+        'sortOrder': _sortOrder,
+      };
+      if (_selectedClusterIds.isNotEmpty) queryParams['scopeGroupIds'] = _selectedClusterIds.join(',');
+      if (_selectedGateIds.isNotEmpty) queryParams['gateIds'] = _selectedGateIds.join(',');
+      if (_filterStatus != 'ALL') queryParams['status'] = _filterStatus;
+      if (_filterShift != 'ALL') queryParams['shift'] = _filterShift;
+
+      final uri = Uri.parse('$baseUrl/reports/export').replace(queryParameters: queryParams);
+      final res = await http.get(uri, headers: _headers);
+
+      progressTimer.cancel();
+
+      if (res.statusCode == 200) {
+        if (updateDialog != null) {
+          updateDialog!(() {
+            progress = 1.0;
+            stage = 'Report ready! Opening...';
+          });
+        }
+        await Future.delayed(const Duration(milliseconds: 350));
+        if (mounted && Navigator.canPop(context)) {
+          Navigator.pop(context); // close progress dialog
+        }
+
+        try {
+          final dir = await getApplicationDocumentsDirectory();
+          final ext = selectedFormat == 'pdf' ? 'pdf' : 'xlsx';
+          final timestamp = DateTime.now().millisecondsSinceEpoch;
+          final file = File('${dir.path}/LC_Gate_Report_$timestamp.$ext');
+          await file.writeAsBytes(res.bodyBytes, flush: true);
+
+          if (mounted) {
+            AppFeedback.showSuccess(context, 'Report saved (${(res.bodyBytes.length / 1024).toStringAsFixed(1)} KB)! Opening...');
+            final openResult = await OpenFilex.open(file.path);
+            if (openResult.type != ResultType.done && mounted) {
+              AppFeedback.showInfo(context, 'Saved to ${file.path}');
+            }
+          }
+        } catch (fileErr) {
+          if (mounted) {
+            AppFeedback.showWarning(context, 'Report downloaded, but could not open viewer: $fileErr');
+          }
+        }
+      } else {
+        if (mounted && Navigator.canPop(context)) Navigator.pop(context);
+        if (mounted) AppFeedback.showError(context, 'Export failed: HTTP ${res.statusCode}');
+      }
+    } catch (e) {
+      progressTimer.cancel();
+      if (mounted && Navigator.canPop(context)) Navigator.pop(context);
+      if (mounted) AppFeedback.showError(context, 'Export error: $e');
+    } finally {
+      progressTimer.cancel();
+      if (mounted) setState(() => _isExporting = false);
+    }
+  }
+
   // 4. Generate Report Modal (Excel & PDF)
   void _showGenerateModal() {
     String selectedFormat = 'xlsx';
@@ -554,58 +729,16 @@ class _ReportsScreenState extends State<ReportsScreen> {
                           label: Text(_isExporting ? 'Generating...' : 'Download ${selectedFormat.toUpperCase()} Report', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
                           onPressed: _isExporting
                               ? null
-                              : () async {
+                              : () {
                                   if (_selectedGateIds.isEmpty) {
                                     AppFeedback.showInfo(context, 'Please select at least one gate to export.');
                                     return;
                                   }
-                                  Navigator.pop(ctx);
-                                  setState(() => _isExporting = true);
-                                  try {
-                                    final queryParams = <String, String>{
-                                      'startDate': _formatDate(_dateRange.start),
-                                      'endDate': _formatDate(_dateRange.end),
-                                      'format': selectedFormat,
-                                      'columns': selectedCols.join(','),
-                                      'sortBy': _sortBy,
-                                      'sortOrder': _sortOrder,
-                                    };
-                                    if (_selectedClusterIds.isNotEmpty) queryParams['scopeGroupIds'] = _selectedClusterIds.join(',');
-                                    if (_selectedGateIds.isNotEmpty) queryParams['gateIds'] = _selectedGateIds.join(',');
-                                    if (_filterStatus != 'ALL') queryParams['status'] = _filterStatus;
-                                    if (_filterShift != 'ALL') queryParams['shift'] = _filterShift;
-
-                                    final uri = Uri.parse('$baseUrl/reports/export').replace(queryParameters: queryParams);
-                                    final res = await http.get(uri, headers: _headers);
-
-                                    if (res.statusCode == 200) {
-                                      try {
-                                        final dir = await getApplicationDocumentsDirectory();
-                                        final ext = selectedFormat == 'pdf' ? 'pdf' : 'xlsx';
-                                        final timestamp = DateTime.now().millisecondsSinceEpoch;
-                                        final file = File('${dir.path}/LC_Gate_Report_$timestamp.$ext');
-                                        await file.writeAsBytes(res.bodyBytes, flush: true);
-
-                                        if (mounted) {
-                                          AppFeedback.showSuccess(context, 'Report saved (${(res.bodyBytes.length / 1024).toStringAsFixed(1)} KB)! Opening...');
-                                          final openResult = await OpenFilex.open(file.path);
-                                          if (openResult.type != ResultType.done && mounted) {
-                                            AppFeedback.showInfo(context, 'Saved to ${file.path}');
-                                          }
-                                        }
-                                      } catch (fileErr) {
-                                        if (mounted) {
-                                          AppFeedback.showWarning(context, 'Report downloaded, but could not open viewer: $fileErr');
-                                        }
-                                      }
-                                    } else {
-                                      if (mounted) AppFeedback.showError(context, 'Export failed: HTTP ${res.statusCode}');
-                                    }
-                                  } catch (e) {
-                                    if (mounted) AppFeedback.showError(context, 'Export error: $e');
-                                  } finally {
-                                    if (mounted) setState(() => _isExporting = false);
-                                  }
+                                  _startExportWithProgress(
+                                    parentCtx: ctx,
+                                    selectedFormat: selectedFormat,
+                                    selectedCols: selectedCols,
+                                  );
                                 },
                         ),
                       ),
