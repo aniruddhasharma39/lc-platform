@@ -13,6 +13,8 @@ import 'profile_screen.dart';
 import 'scope_groups/scope_groups_screen.dart';
 import 'device_registry/device_registry_screen.dart';
 import 'lc_gates/lc_gates_screen.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import 'reports/reports_screen.dart';
 import '../utils/app_feedback.dart';
 
@@ -100,6 +102,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _isLoading = false;
   String _currentView = 'home';
   String _appName = 'LC Platform';
+  Map<String, dynamic>? _dashboardSummary;
+  bool _loadingSummary = true;
+  int? _targetGateId;
+  String? _targetGateTab;
+  int? _activeGateId;
+  final MapController _mapController = MapController();
 
   // Manage Users Search & Filter State
   final _userSearchCtrl = TextEditingController();
@@ -626,7 +634,44 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  Future<void> _fetchDashboardSummary() async {
+    setState(() => _loadingSummary = true);
+    try {
+      final token = await _getToken();
+      final res = await http.get(
+        Uri.parse('$baseUrl/lcgate/dashboard-summary'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (mounted && data is Map) {
+          setState(() {
+            _dashboardSummary = Map<String, dynamic>.from(data);
+            final gates = _dashboardSummary!['gates'] as List? ?? [];
+            if (gates.isNotEmpty && _activeGateId == null) {
+              _activeGateId = gates[0]['id'];
+            }
+          });
+        }
+      }
+    } catch (_) {} finally {
+      if (mounted) setState(() => _loadingSummary = false);
+    }
+  }
+
+  void _navigateToGate(int gateId, [String tab = 'about']) {
+    setState(() {
+      _targetGateId = gateId;
+      _targetGateTab = tab;
+      _currentView = 'lc-gates';
+    });
+  }
+
   Future<void> _fetchData() async {
+    _fetchDashboardSummary();
     setState(() => _isLoading = true);
     final token = await _getToken();
     final headers = {'Authorization': 'Bearer $token'};
@@ -1023,7 +1068,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildBody() {
     if (_currentView == 'home') return _buildUserDashboard();
-    if (_currentView == 'lc-gates') return LCGatesScreen(user: widget.user);
+    if (_currentView == 'lc-gates') {
+      return LCGatesScreen(
+        user: widget.user,
+        initialGateId: _targetGateId,
+        initialTab: _targetGateTab,
+      );
+    }
     if (_currentView == 'reports') return ReportsScreen(user: widget.user);
     if (_currentView == 'manage-users') return _buildAdminDashboard();
     if (_currentView == 'roles') return RolesScreen(user: widget.user);
@@ -1037,15 +1088,792 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildUserDashboard() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Text('Welcome to LC Platform', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 16),
-          Text('You are logged in as ${widget.user['role']}', style: const TextStyle(color: Colors.grey)),
+    final summary = _dashboardSummary;
+    final gates = (summary != null && summary['gates'] is List) ? List<dynamic>.from(summary['gates']) : [];
+    final totalDevices = summary?['totalDevices'] ?? gates.length;
+    final totalCyclesToday = summary?['totalCyclesToday'] ?? 0;
+    final totalOpenGates = summary?['totalOpenGates'] ?? 0;
+    final totalClosedGates = summary?['totalClosedGates'] ?? 0;
+    final roleName = widget.user['role']?.toString() ?? 'User';
+
+    return RefreshIndicator(
+      onRefresh: () async {
+        await _fetchDashboardSummary();
+        await _fetchNotifications();
+      },
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Hero Welcome Banner
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.12),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  )
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            'Hello, ${widget.user['fullName'] ?? 'User'}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0284C7).withOpacity(0.25),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.4)),
+                        ),
+                        child: Text(
+                          roleName,
+                          style: const TextStyle(
+                            color: Color(0xFF38BDF8),
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Level Crossing Operations & KPI Dashboard',
+                    style: TextStyle(
+                      color: Colors.grey.shade400,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 18),
+
+            // 4 KPI Metric Cards in 2x2 Grid
+            Row(
+              children: [
+                Expanded(
+                  child: _buildKpiCard(
+                    title: 'Total Clusters',
+                    value: _loadingSummary ? '—' : '$totalDevices',
+                    subtitle: 'Visible to $roleName',
+                    icon: Icons.meeting_room_outlined,
+                    iconColor: const Color(0xFF0284C7),
+                    iconBg: const Color(0xFFE0F2FE),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _buildKpiCard(
+                    title: 'Cycles Today',
+                    value: _loadingSummary ? '—' : '$totalCyclesToday',
+                    subtitle: 'Operations today',
+                    icon: Icons.history,
+                    iconColor: const Color(0xFFD97706),
+                    iconBg: const Color(0xFFFEF3C7),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildKpiCard(
+                    title: 'Currently Opened',
+                    value: _loadingSummary ? '—' : '$totalOpenGates',
+                    subtitle: 'Road traffic stopped',
+                    icon: Icons.lock_open_rounded,
+                    iconColor: const Color(0xFFDC2626),
+                    iconBg: const Color(0xFFFEE2E2),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _buildKpiCard(
+                    title: 'Currently Closed',
+                    value: _loadingSummary ? '—' : '$totalClosedGates',
+                    subtitle: 'Safe for trains',
+                    icon: Icons.lock_rounded,
+                    iconColor: const Color(0xFF059669),
+                    iconBg: const Color(0xFFD1FAE5),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 24),
+
+            // Gate Cycles Transition Slider
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Assigned Gate Cycles',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Daily operations & closure timestamps',
+                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                    ),
+                  ],
+                ),
+                if (gates.isNotEmpty)
+                  Text(
+                    '${gates.length} clusters',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade600),
+                  ),
+              ],
+            ),
+
+            const SizedBox(height: 12),
+
+            if (_loadingSummary && gates.isEmpty)
+              Container(
+                height: 180,
+                alignment: Alignment.center,
+                child: const CircularProgressIndicator(),
+              )
+            else if (gates.isEmpty)
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey.shade200),
+                ),
+                alignment: Alignment.center,
+                child: Column(
+                  children: [
+                    Icon(Icons.meeting_room_outlined, size: 40, color: Colors.grey.shade400),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'No LC Gates assigned yet',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Assigned scope group gates will appear here.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                    ),
+                  ],
+                ),
+              )
+            else
+              SizedBox(
+                height: 225,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: gates.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 14),
+                  itemBuilder: (context, index) {
+                    final gate = gates[index] as Map<String, dynamic>;
+                    final gateId = gate['id'] as int;
+                    final lcNumber = gate['masterSerialNumber'] ?? gate['lcNumber'] ?? 'LC-GATE';
+                    final location = gate['locationName'] ?? '';
+                    final zone = gate['zone'] ?? '';
+                    final division = gate['division'] ?? '';
+                    final isOpen = gate['status'] == 'OPEN';
+                    final todayCycles = gate['todayCycles'] ?? 0;
+                    final totalCycles = gate['totalCycles'] ?? 0;
+                    final lastClosedFormatted = gate['lastClosedFormatted'] ?? 'No recorded closure';
+                    final isSolar = gate['powerSource'] == 'SOLAR';
+                    final isSelected = _activeGateId == gateId;
+
+                    return InkWell(
+                      onTap: () {
+                        setState(() => _activeGateId = gateId);
+                        if (gate['latitude'] != null && gate['longitude'] != null) {
+                          try {
+                            final lat = (gate['latitude'] as num).toDouble();
+                            final lng = (gate['longitude'] as num).toDouble();
+                            _mapController.move(LatLng(lat, lng), 12);
+                          } catch (_) {}
+                        }
+                      },
+                      borderRadius: BorderRadius.circular(14),
+                      child: Container(
+                        width: 295,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: isSelected ? const Color(0xFFF0F9FF) : Colors.white,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: isSelected ? const Color(0xFF0284C7) : Colors.grey.shade200,
+                            width: isSelected ? 2 : 1,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: isSelected
+                                  ? const Color(0xFF0284C7).withOpacity(0.12)
+                                  : Colors.black.withOpacity(0.03),
+                              blurRadius: 8,
+                              offset: const Offset(0, 3),
+                            )
+                          ],
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            // Header Row
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Row(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF0F172A),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Text(
+                                        lcNumber,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
+                                    if (isSolar) ...[
+                                      const SizedBox(width: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Colors.amber.shade50,
+                                          borderRadius: BorderRadius.circular(4),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Icon(Icons.wb_sunny_rounded, size: 10, color: Colors.amber.shade800),
+                                            const SizedBox(width: 2),
+                                            Text(
+                                              'Solar',
+                                              style: TextStyle(
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.amber.shade800,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: isOpen ? const Color(0xFFFEE2E2) : const Color(0xFFD1FAE5),
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                      color: isOpen ? const Color(0xFFFECACA) : const Color(0xFFA7F3D0),
+                                    ),
+                                  ),
+                                  child: Text(
+                                    isOpen ? '● OPEN' : '● CLOSED',
+                                    style: TextStyle(
+                                      color: isOpen ? const Color(0xFFDC2626) : const Color(0xFF059669),
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+
+                            // Location
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  location,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13,
+                                    color: Color(0xFF0F172A),
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                Text(
+                                  '$zone • $division Division',
+                                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
+
+                            // Metric Box
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: isSelected ? Colors.white : Colors.grey.shade50,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.grey.shade200),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.history, color: Color(0xFF0284C7), size: 18),
+                                      const SizedBox(width: 8),
+                                      Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          const Text(
+                                            'CYCLES TODAY',
+                                            style: TextStyle(
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.grey,
+                                            ),
+                                          ),
+                                          Text(
+                                            '$todayCycles times',
+                                            style: const TextStyle(
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.bold,
+                                              color: Color(0xFF0F172A),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                  Text(
+                                    'Total: $totalCycles',
+                                    style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            // Last Closed Time
+                            Row(
+                              children: [
+                                Icon(Icons.schedule, size: 13, color: Colors.grey.shade500),
+                                const SizedBox(width: 4),
+                                Expanded(
+                                  child: Text(
+                                    'Last Closed: $lastClosedFormatted',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.grey.shade700,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+
+                            // Action Buttons
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: ElevatedButton(
+                                    onPressed: () => _navigateToGate(gateId, 'telemetry'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF0284C7),
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(vertical: 6),
+                                      minimumSize: Size.zero,
+                                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                    ),
+                                    child: const Text('Telemetry', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: OutlinedButton(
+                                    onPressed: () => _navigateToGate(gateId, 'about'),
+                                    style: OutlinedButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(vertical: 6),
+                                      minimumSize: Size.zero,
+                                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                      side: BorderSide(color: Colors.grey.shade300),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                    ),
+                                    child: const Text('About', style: TextStyle(fontSize: 11, color: Color(0xFF334155), fontWeight: FontWeight.w600)),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+
+            const SizedBox(height: 24),
+
+            // India Map Section
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'India LC Gate Clusters Map',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'GPS locations of assigned railway clusters',
+                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                    ),
+                  ],
+                ),
+                Row(
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF059669),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    const Text('Closed', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold)),
+                    const SizedBox(width: 10),
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFDC2626),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    const Text('Opened', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 12),
+
+            // Map Container
+            Container(
+              height: 320,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.grey.shade300),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.04),
+                    blurRadius: 10,
+                    offset: const Offset(0, 3),
+                  )
+                ],
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: FlutterMap(
+                mapController: _mapController,
+                options: const MapOptions(
+                  initialCenter: LatLng(22.9734, 78.6569), // Central India
+                  initialZoom: 4.8,
+                  minZoom: 3.5,
+                  maxZoom: 18,
+                ),
+                children: [
+                  TileLayer(
+                    urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    userAgentPackageName: 'com.lcgate.mobile',
+                  ),
+                  MarkerLayer(
+                    markers: gates
+                        .where((g) => g['latitude'] != null && g['longitude'] != null)
+                        .map((g) {
+                      final lat = (g['latitude'] as num).toDouble();
+                      final lng = (g['longitude'] as num).toDouble();
+                      final isOpen = g['status'] == 'OPEN';
+                      final color = isOpen ? const Color(0xFFDC2626) : const Color(0xFF059669);
+                      final lcNumber = g['masterSerialNumber'] ?? g['lcNumber'] ?? 'LC';
+
+                      return Marker(
+                        point: LatLng(lat, lng),
+                        width: 90,
+                        height: 36,
+                        child: GestureDetector(
+                          onTap: () => _showGateMapBottomSheet(g),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: color, width: 2),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.2),
+                                  blurRadius: 6,
+                                  offset: const Offset(0, 2),
+                                )
+                              ],
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: color,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  lcNumber,
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF0F172A),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 24),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildKpiCard({
+    required String title,
+    required String value,
+    required String subtitle,
+    required IconData icon,
+    required Color iconColor,
+    required Color iconBg,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade200),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.02),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          )
         ],
-      )
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                title.toUpperCase(),
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.grey.shade600,
+                  letterSpacing: 0.5,
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: iconBg,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(icon, color: iconColor, size: 16),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF0F172A),
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            subtitle,
+            style: TextStyle(fontSize: 10.5, color: Colors.grey.shade500),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showGateMapBottomSheet(Map<String, dynamic> gate) {
+    final gateId = gate['id'] as int;
+    final lcNumber = gate['masterSerialNumber'] ?? gate['lcNumber'] ?? 'LC-GATE';
+    final location = gate['locationName'] ?? '';
+    final zone = gate['zone'] ?? '';
+    final division = gate['division'] ?? '';
+    final isOpen = gate['status'] == 'OPEN';
+    final todayCycles = gate['todayCycles'] ?? 0;
+    final lastClosedFormatted = gate['lastClosedFormatted'] ?? 'No recorded closure';
+
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    lcNumber,
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isOpen ? const Color(0xFFFEE2E2) : const Color(0xFFD1FAE5),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      isOpen ? '● OPEN' : '● CLOSED',
+                      style: TextStyle(
+                        color: isOpen ? const Color(0xFFDC2626) : const Color(0xFF059669),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '📍 $location • $zone ($division Division)',
+                style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+              ),
+              const Divider(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('CYCLES TODAY', style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
+                      Text('$todayCycles times', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      const Text('LAST CLOSURE', style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
+                      Text(lastClosedFormatted, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _navigateToGate(gateId, 'telemetry');
+                      },
+                      icon: const Icon(Icons.speed, size: 16),
+                      label: const Text('Live Telemetry & Inspect'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0284C7),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  OutlinedButton(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _navigateToGate(gateId, 'about');
+                    },
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    child: const Text('About'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 

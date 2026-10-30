@@ -41,6 +41,195 @@ router.get('/divisions', authenticate, async (req, res) => {
   res.json({ zone, divisions: divisionsForZone(zone) });
 });
 
+// GET /dashboard-summary - Home screen KPIs, gate cycle stats & cluster map coordinates
+router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
+  try {
+    const isDeveloper = req.user?.role === 'Developer';
+
+    // 1. Fetch user's assigned scope groups
+    const userScopes = await prisma.scopeGroupUser.findMany({
+      where: { userId: req.user.id },
+      select: { scopeGroupId: true }
+    });
+    const assignedScopeGroupIds = userScopes.map(s => s.scopeGroupId);
+
+    let whereClause: any = {};
+
+    if (assignedScopeGroupIds.length > 0) {
+      const accessibleScopeGroupIds = await getAllDescendantScopeGroupIds(assignedScopeGroupIds);
+      whereClause.scopeGroups = {
+        some: {
+          scopeGroupId: { in: accessibleScopeGroupIds }
+        }
+      };
+    } else {
+      if (!isDeveloper) {
+        return res.json({
+          totalDevices: 0,
+          totalCyclesToday: 0,
+          totalOpenGates: 0,
+          totalClosedGates: 0,
+          gates: []
+        });
+      }
+    }
+
+    // Start of today (00:00:00)
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const gates = await prisma.lCGate.findMany({
+      where: whereClause,
+      orderBy: { lcNumber: 'asc' },
+      include: {
+        deviceRegistries: true,
+        events: {
+          orderBy: { openedAt: 'desc' },
+          take: 50,
+        },
+        scopeGroups: {
+          include: {
+            scopeGroup: {
+              select: { id: true, name: true, color: true }
+            }
+          }
+        },
+        masters: {
+          orderBy: { masterSequence: 'asc' },
+          include: {
+            childDevices: true
+          }
+        }
+      }
+    });
+
+    // Gather thing identifiers to check latest telemetry status
+    const allThingNames: string[] = [];
+    gates.forEach(g => {
+      if (g.lcNumber) allThingNames.push(g.lcNumber);
+      g.masters.forEach(m => {
+        if (m.serialNumber) allThingNames.push(m.serialNumber);
+      });
+      g.deviceRegistries.forEach(d => {
+        if (d.thingName) allThingNames.push(d.thingName);
+      });
+    });
+
+    const recentTelemetries = await prisma.deviceTelemetry.findMany({
+      where: { thingName: { in: allThingNames } },
+      orderBy: { receivedAt: 'desc' },
+      take: 200,
+    }).catch(() => []);
+
+    // Helper map for latest telemetry per thing
+    const latestTeleMap = new Map<string, any>();
+    recentTelemetries.forEach(t => {
+      if (!latestTeleMap.has(t.thingName)) {
+        latestTeleMap.set(t.thingName, t);
+      }
+    });
+
+    let totalCyclesToday = 0;
+    let totalOpenGates = 0;
+    let totalClosedGates = 0;
+
+    const mappedGates = gates.map(gate => {
+      const isSolar = gate.masters.some(m => m.powerSource === 'SOLAR');
+      const primaryMaster = gate.masters[0]?.serialNumber || gate.lcNumber;
+      const slavesCount = gate.masters.reduce((acc, m) => acc + (m.childDevices?.length || 0), 0);
+
+      // Compute cycles for today
+      const todayEvents = gate.events.filter(e => {
+        const opTime = new Date(e.openedAt).getTime();
+        return opTime >= startOfToday.getTime();
+      });
+
+      const todayCyclesCount = todayEvents.length;
+      totalCyclesToday += todayCyclesCount;
+
+      // Last closed time
+      const lastClosedEvent = gate.events.find(e => e.closedAt !== null);
+      let lastClosedAt: string | null = null;
+      let lastClosedFormatted: string = 'No recorded closure';
+
+      if (lastClosedEvent && lastClosedEvent.closedAt) {
+        lastClosedAt = lastClosedEvent.closedAt.toISOString();
+        const closedDate = new Date(lastClosedEvent.closedAt);
+        const isToday = closedDate.toDateString() === new Date().toDateString();
+        const timeStr = closedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        if (isToday) {
+          lastClosedFormatted = `Today at ${timeStr}`;
+        } else {
+          lastClosedFormatted = `${closedDate.toLocaleDateString([], { month: 'short', day: 'numeric' })} at ${timeStr}`;
+        }
+      }
+
+      // Gate status resolution
+      const latestTele = latestTeleMap.get(primaryMaster) || latestTeleMap.get(gate.lcNumber);
+      const telePayload = latestTele?.payload as any;
+      const rawTeleStatus = telePayload?.Status ? String(telePayload.Status).trim().toUpperCase() : null;
+
+      const activeEvent = gate.events.find(e => e.status === 'OPEN' || !e.closedAt);
+
+      let status: 'OPEN' | 'CLOSED' = 'CLOSED';
+      if (rawTeleStatus === 'OPEN' || rawTeleStatus === 'NOT_CLOSED') {
+        status = 'OPEN';
+      } else if (rawTeleStatus === 'CLOSED') {
+        status = 'CLOSED';
+      } else if (telePayload?.LimitSwitchClosed !== undefined) {
+        status = telePayload.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
+      } else if (activeEvent) {
+        status = 'OPEN';
+      } else if (gate.deviceRegistries[0]?.status) {
+        const devStatus = gate.deviceRegistries[0].status.toUpperCase();
+        status = (devStatus === 'OPEN' || devStatus === 'NOT_CLOSED') ? 'OPEN' : 'CLOSED';
+      }
+
+      if (status === 'OPEN') {
+        totalOpenGates++;
+      } else {
+        totalClosedGates++;
+      }
+
+      const assignedScope = gate.scopeGroups[0]?.scopeGroup;
+
+      return {
+        id: gate.id,
+        lcNumber: gate.lcNumber,
+        name: gate.name || gate.locationName,
+        locationName: gate.locationName,
+        zone: gate.zone || 'Central Railway',
+        division: gate.division || 'Pune',
+        latitude: gate.latitude,
+        longitude: gate.longitude,
+        powerSource: isSolar ? 'SOLAR' : 'DIRECT',
+        status,
+        todayCycles: todayCyclesCount,
+        totalCycles: gate.events.length,
+        lastClosedAt,
+        lastClosedFormatted,
+        masterSerialNumber: primaryMaster,
+        mastersCount: gate.masters.length,
+        slavesCount,
+        scopeGroupId: assignedScope?.id || null,
+        scopeGroupName: assignedScope?.name || null,
+        scopeGroupColor: assignedScope?.color || null,
+      };
+    });
+
+    res.json({
+      totalDevices: gates.length,
+      totalCyclesToday,
+      totalOpenGates,
+      totalClosedGates,
+      gates: mappedGates,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
 // Create a new LC Gate
 router.post('/', authenticate, async (req, res, next) => {
   try {

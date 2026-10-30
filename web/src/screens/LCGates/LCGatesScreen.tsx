@@ -146,6 +146,9 @@ function renderCleanKeyValueTable(data: any): React.ReactNode {
 
 type Props = {
   user: User;
+  initialGateId?: number | null;
+  initialTab?: 'about' | 'deviceInfo' | 'telemetry';
+  
 };
 
 const authHeaders = () => ({
@@ -159,7 +162,9 @@ const getFullImageUrl = (url?: string) => {
   return `${API_URL}${url}`;
 };
 
-export default function LCGatesScreen({ user: _user }: Props) {
+export default function LCGatesScreen({ user, initialGateId, initialTab }: Props) {
+  const isDeveloper = user?.role === 'Developer';
+  void isDeveloper;
   // Scope Group Hierarchy Navigation Stack ([] = Scope Groups Landing Page)
   const [scopeGroupStack, setScopeGroupStack] = useState<ScopeGroupItem[]>([]);
   const currentScopeGroup = scopeGroupStack.length > 0 ? scopeGroupStack[scopeGroupStack.length - 1] : null;
@@ -273,6 +278,34 @@ export default function LCGatesScreen({ user: _user }: Props) {
   useEffect(() => {
     fetchData();
   }, []);
+
+  // Auto-drilldown into cluster if navigated with initialGateId
+  useEffect(() => {
+    if (initialGateId) {
+      const found = gates.find((g: any) => g.id === initialGateId);
+      if (found) {
+        if (initialTab === 'telemetry') {
+          handleOpenClusterTelemetry(found);
+        } else {
+          handleOpenClusterAbout(found);
+        }
+      } else if (!loading) {
+        fetch(`${API_URL}/api/v1/lcgate/${initialGateId}`, { headers: authHeaders() })
+          .then(res => res.json())
+          .then(data => {
+            if (data && (data.cluster || data.id)) {
+              const target = data.cluster || data;
+              if (initialTab === 'telemetry') {
+                handleOpenClusterTelemetry(target);
+              } else {
+                handleOpenClusterAbout(target);
+              }
+            }
+          })
+          .catch(console.error);
+      }
+    }
+  }, [initialGateId, gates, loading, initialTab]);
 
   // Compute total clusters inside a scope group recursively
   const getRecursiveClusterCount = (groupId: number): number => {
