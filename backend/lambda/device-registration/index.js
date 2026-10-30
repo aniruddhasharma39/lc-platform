@@ -95,7 +95,7 @@ function extractDevicePayload(event) {
     thingArn: raw.thingArn || raw.thing_arn || attrs.thingArn || null,
     deviceType: raw.DeviceType || raw.deviceType || raw.device_type || attrs.deviceType || 'MASTER',
     serialNumber: resolvedThing,
-    status: raw.Status || attrs.status || 'ACTIVE',
+    status: 'ONLINE',
     dateOfMfg: mfg.dateOfMfg || raw.dateOfMfg || raw.date_of_mfg || raw.mfgDate || attrs.dateOfMfg,
     manufacturer: mfg.manufacturer || raw.manufacturer || attrs.manufacturer,
     modelNumber: mfg.modelNumber || raw.modelNumber || raw.model_number || attrs.modelNumber,
@@ -330,7 +330,7 @@ exports.handler = async (event, context) => {
         "thingTypeName" = COALESCE(EXCLUDED."thingTypeName", "DeviceRegistry"."thingTypeName"),
         "deviceType" = EXCLUDED."deviceType",
         "serialNumber" = COALESCE(EXCLUDED."serialNumber", "DeviceRegistry"."serialNumber"),
-        "status" = EXCLUDED."status",
+        "status" = 'ONLINE',
         "gateId" = COALESCE(EXCLUDED."gateId", "DeviceRegistry"."gateId"),
         "masterId" = COALESCE(EXCLUDED."masterId", "DeviceRegistry"."masterId"),
         "childDeviceId" = COALESCE(EXCLUDED."childDeviceId", "DeviceRegistry"."childDeviceId"),
@@ -441,7 +441,7 @@ exports.handler = async (event, context) => {
       try {
         await client.query(`
           INSERT INTO "DeviceTelemetry" ("thingName", "topic", "payload", "status", "deviceRegistryId", "receivedAt")
-          VALUES ($1, $2, $3, $4, $5, NOW())
+          VALUES ($1, $2, $3, 'ONLINE', $5, NOW())
         `, [
           thingName,
           telemetryTopic,

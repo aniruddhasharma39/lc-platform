@@ -52,6 +52,20 @@ import {
 /**
  * Universal key-value renderer for real device payloads
  */
+export function formatUptimeHuman(seconds: number): string {
+  if (isNaN(seconds) || seconds < 0) return '—';
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (parts.length === 0 || (days === 0 && hours === 0 && minutes < 2)) parts.push(`${secs}s`);
+  return parts.join(' ');
+}
+
 function renderCleanKeyValueTable(data: any): React.ReactNode {
   if (!data || typeof data !== 'object') {
     return (
@@ -82,6 +96,10 @@ function renderCleanKeyValueTable(data: any): React.ReactNode {
         <tbody>
           {entries.map(([key, val]) => {
             const isStatus = key.toLowerCase() === 'status';
+            const isDeviceStatus = key.toLowerCase() === 'devicestatus';
+            const isTriggerReason = key.toLowerCase() === 'triggerreason';
+            const isUptime = key.toLowerCase() === 'uptimeseconds';
+            const isTimestampMs = key.toLowerCase() === 'timestampms';
             const isBool = typeof val === 'boolean';
             const isObject = typeof val === 'object' && val !== null;
             const strVal = String(val);
@@ -94,7 +112,73 @@ function renderCleanKeyValueTable(data: any): React.ReactNode {
                   </code>
                 </td>
                 <td>
-                  {isStatus ? (
+                  {isDeviceStatus ? (
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '3px 12px',
+                        borderRadius: '6px',
+                        fontWeight: 800,
+                        fontSize: '0.82rem',
+                        background: strVal.toUpperCase() === 'ONLINE' ? '#ecfdf5' : '#fef2f2',
+                        color: strVal.toUpperCase() === 'ONLINE' ? '#047857' : '#b91c1c',
+                        border: `1px solid ${strVal.toUpperCase() === 'ONLINE' ? '#a7f3d0' : '#fecaca'}`,
+                      }}
+                    >
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: strVal.toUpperCase() === 'ONLINE' ? '#10b981' : '#ef4444' }} />
+                      {strVal.toUpperCase()}
+                    </span>
+                  ) : isTriggerReason ? (
+                    (() => {
+                      let bg = '#eff6ff';
+                      let color = '#1d4ed8';
+                      let border = '#bfdbfe';
+                      let label = strVal;
+                      if (strVal === 'HourlyHeartbeat') {
+                        bg = '#eff6ff'; color = '#1d4ed8'; border = '#bfdbfe'; label = '⏱ Hourly Heartbeat (Periodic)';
+                      } else if (strVal === 'GateOpened') {
+                        bg = '#fff7ed'; color = '#c2410c'; border = '#ffedd5'; label = '🚪 Gate Opened (Real-Time)';
+                      } else if (strVal === 'LimitSwitchActive') {
+                        bg = '#faf5ff'; color = '#7e22ce'; border = '#f3e8ff'; label = '⚡ Limit Switch Active';
+                      } else if (strVal === 'InitialState') {
+                        bg = '#ecfeff'; color = '#0e7490'; border = '#cffafe'; label = '🚀 Boot / Initial State';
+                      } else if (strVal === 'ReconnectedState') {
+                        bg = '#f0fdf4'; color = '#15803d'; border = '#bbf7d0'; label = '📶 Reconnected State';
+                      }
+                      return (
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            padding: '3px 10px',
+                            borderRadius: '6px',
+                            fontWeight: 700,
+                            fontSize: '0.8rem',
+                            background: bg,
+                            color,
+                            border: `1px solid ${border}`,
+                          }}
+                        >
+                          {label}
+                        </span>
+                      );
+                    })()
+                  ) : isUptime ? (
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <code style={{ fontSize: '0.86rem', fontWeight: 700, color: '#0f172a' }}>{strVal} s</code>
+                      <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#0284c7', background: '#e0f2fe', padding: '2px 8px', borderRadius: '4px' }}>
+                        {formatUptimeHuman(Number(val))} continuous execution
+                      </span>
+                    </div>
+                  ) : isTimestampMs ? (
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <code style={{ fontSize: '0.86rem', fontWeight: 600, color: '#0f172a' }}>{strVal} ms</code>
+                      <span style={{ fontSize: '0.76rem', color: '#64748b' }}>
+                        ({(Number(val) / 1000).toFixed(1)} s runtime)
+                      </span>
+                    </div>
+                  ) : isStatus ? (
                     <span
                       style={{
                         display: 'inline-block',
@@ -1367,6 +1451,43 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                         {selectedGate.locationName || selectedGate.name}
                       </span>
                     )}
+                    {/* Device Online/Offline Hardware Status Pill */}
+                    {(() => {
+                      const isOnline = gateTelemetry?.isDeviceOnline !== undefined
+                        ? gateTelemetry.isDeviceOnline
+                        : (gateTelemetry?.deviceStatus === 'ONLINE' || selectedGate.deviceStatus === 'ONLINE' || selectedGate.isOnline);
+                      return (
+                        <span
+                          style={{
+                            padding: '3px 10px',
+                            borderRadius: 6,
+                            fontWeight: 800,
+                            fontSize: '0.78rem',
+                            letterSpacing: '0.3px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            background: isOnline ? '#ecfdf5' : '#fef2f2',
+                            color: isOnline ? '#047857' : '#b91c1c',
+                            border: `1px solid ${isOnline ? '#a7f3d0' : '#fecaca'}`
+                          }}
+                          title={isOnline ? 'Edge hardware online and transmitting heartbeats' : 'No hardware packet for > 65 minutes (Offline)'}
+                        >
+                          <span
+                            className={isOnline ? 'pulse-dot' : ''}
+                            style={{
+                              width: 7,
+                              height: 7,
+                              borderRadius: '50%',
+                              backgroundColor: isOnline ? '#10b981' : '#ef4444'
+                            }}
+                          />
+                          {isOnline ? 'ONLINE' : 'OFFLINE'}
+                        </span>
+                      );
+                    })()}
+
+                    {/* Gate Barrier Physical Position */}
                     <span
                       style={{
                         padding: '3px 12px',
@@ -1390,7 +1511,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                           background: (gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#15803d' : '#b91c1c'
                         }}
                       />
-                      {(gateTelemetry?.currentStatus || 'CLOSED').toUpperCase()}
+                      GATE: {(gateTelemetry?.currentStatus || 'CLOSED').toUpperCase()}
                     </span>
                   </div>
                 </div>
@@ -2172,10 +2293,11 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                               <tr style={{ background: '#f8fafc' }}>
                                 <th style={{ width: '35px' }}>#</th>
                                 <th>Received Time</th>
-                                <th>Status</th>
+                                <th>Gate Status</th>
+                                <th>Trigger Reason</th>
+                                <th>Uptime</th>
                                 <th>Limit Switch</th>
                                 <th>Hall Effect</th>
-                                <th>Timestamp</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -2186,8 +2308,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                                 const status = (rawStatus === 'NOT_CLOSED' || rawStatus === 'OPEN') ? 'OPEN' : (rawStatus || '—');
                                 const limitSwitch = p.LimitSwitchClosed !== undefined ? (p.LimitSwitchClosed ? 'Closed' : 'Open') : '—';
                                 const hallEffect = p.HallClosed !== undefined ? (p.HallClosed ? 'Closed' : 'Open') : '—';
-                                const ts = p.TimeStampMs ? `${p.TimeStampMs} ms` : '—';
-
+                                
                                 return (
                                   <tr
                                     key={item.id || idx}
@@ -2217,9 +2338,38 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                                         {status}
                                       </span>
                                     </td>
+                                    <td>
+                                      {p.TriggerReason ? (
+                                        <span
+                                          style={{
+                                            padding: '2px 7px',
+                                            borderRadius: '4px',
+                                            fontSize: '0.74rem',
+                                            fontWeight: 700,
+                                            background: p.TriggerReason === 'HourlyHeartbeat' ? '#eff6ff' : '#fff7ed',
+                                            color: p.TriggerReason === 'HourlyHeartbeat' ? '#1d4ed8' : '#c2410c',
+                                            border: `1px solid ${p.TriggerReason === 'HourlyHeartbeat' ? '#bfdbfe' : '#fed7aa'}`
+                                          }}
+                                        >
+                                          {p.TriggerReason === 'HourlyHeartbeat' ? 'Hourly Heartbeat' : p.TriggerReason}
+                                        </span>
+                                      ) : (
+                                        <span className="text-muted" style={{ fontSize: '0.76rem' }}>—</span>
+                                      )}
+                                    </td>
+                                    <td>
+                                      {p.UptimeSeconds !== undefined ? (
+                                        <span style={{ fontSize: '0.76rem', fontWeight: 600, color: '#0369a1' }}>
+                                          {formatUptimeHuman(p.UptimeSeconds)}
+                                        </span>
+                                      ) : p.TimeStampMs !== undefined ? (
+                                        <span style={{ fontSize: '0.76rem', color: '#64748b' }}>
+                                          {(p.TimeStampMs / 1000).toFixed(0)}s
+                                        </span>
+                                      ) : '—'}
+                                    </td>
                                     <td>{limitSwitch}</td>
                                     <td>{hallEffect}</td>
-                                    <td><code>{ts}</code></td>
                                   </tr>
                                 );
                               })}
@@ -2367,9 +2517,38 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                           <FaArchway /> {gate.lcNumber}
                         </span>
 
-                        <span className={`lcg-power-pill ${isSolar ? 'solar' : 'direct'}`}>
-                          {isSolar ? <FaSun /> : <FaBolt />} {isSolar ? 'Solar' : 'Direct'}
-                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 5,
+                              padding: '3px 8px',
+                              borderRadius: '6px',
+                              fontSize: '0.74rem',
+                              fontWeight: 700,
+                              letterSpacing: '0.3px',
+                              background: gate.deviceStatus === 'ONLINE' || gate.isOnline ? '#ecfdf5' : '#fef2f2',
+                              color: gate.deviceStatus === 'ONLINE' || gate.isOnline ? '#047857' : '#b91c1c',
+                              border: `1px solid ${gate.deviceStatus === 'ONLINE' || gate.isOnline ? '#a7f3d0' : '#fecaca'}`
+                            }}
+                            title={gate.deviceStatus === 'ONLINE' || gate.isOnline ? 'Edge hardware online & active' : 'No telemetry for > 65 minutes (Offline)'}
+                          >
+                            <span
+                              style={{
+                                width: 7,
+                                height: 7,
+                                borderRadius: '50%',
+                                backgroundColor: gate.deviceStatus === 'ONLINE' || gate.isOnline ? '#10b981' : '#ef4444'
+                              }}
+                            />
+                            {gate.deviceStatus === 'ONLINE' || gate.isOnline ? 'ONLINE' : 'OFFLINE'}
+                          </span>
+
+                          <span className={`lcg-power-pill ${isSolar ? 'solar' : 'direct'}`}>
+                            {isSolar ? <FaSun /> : <FaBolt />} {isSolar ? 'Solar' : 'Direct'}
+                          </span>
+                        </div>
                       </div>
 
                       <h4 className="lcg-cluster-name">{gate.name || gate.locationName}</h4>

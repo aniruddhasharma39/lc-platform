@@ -273,10 +273,47 @@ export async function pollTelemetryTransitions() {
 }
 
 /**
- * Starts the continuous telemetry poller
+ * 65-Minute Rule: Periodic Heartbeat is 1 hour (3600s) + 5 min network grace period.
+ * If no message received for > 65 minutes, background worker marks device status = "OFFLINE".
+ */
+export async function checkAndMarkOfflineDevices() {
+  const OFFLINE_CUTOFF_MS = 65 * 60 * 1000; // 65 minutes
+  const cutoffDate = new Date(Date.now() - OFFLINE_CUTOFF_MS);
+
+  try {
+    const result = await prisma.deviceRegistry.updateMany({
+      where: {
+        AND: [
+          { status: { in: ['ONLINE', 'ACTIVE'] } },
+          {
+            OR: [
+              { lastSeenAt: { lt: cutoffDate } },
+              { lastSeenAt: null }
+            ]
+          }
+        ]
+      },
+      data: {
+        status: 'OFFLINE'
+      }
+    });
+
+    if (result.count > 0) {
+      console.log(`📡 [DEVICE STATUS WORKER] Marked ${result.count} devices as OFFLINE (no packet for > 65 minutes).`);
+    }
+  } catch (err: any) {
+    console.error('[DEVICE STATUS WORKER ERROR] Failed to sweep offline devices:', err?.message || err);
+  }
+}
+
+/**
+ * Starts the continuous telemetry poller and 65-minute offline status worker
  */
 export function startTelemetryMonitor(intervalMs = 3000) {
   initTelemetryMonitor().then(() => {
     setInterval(pollTelemetryTransitions, intervalMs);
+    // Immediate sweep upon startup + recurring every 60s
+    checkAndMarkOfflineDevices();
+    setInterval(checkAndMarkOfflineDevices, 60000);
   });
 }

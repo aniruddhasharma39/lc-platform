@@ -14,6 +14,20 @@ import './DeviceRegistryScreen.css';
 /**
  * Universal key-value renderer for real device payloads
  */
+export function formatUptimeHuman(seconds: number): string {
+  if (isNaN(seconds) || seconds < 0) return '—';
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (parts.length === 0 || (days === 0 && hours === 0 && minutes < 2)) parts.push(`${secs}s`);
+  return parts.join(' ');
+}
+
 function renderCleanKeyValueTable(data: any): ReactNode {
   if (!data || typeof data !== 'object') {
     return (
@@ -44,6 +58,10 @@ function renderCleanKeyValueTable(data: any): ReactNode {
         <tbody>
           {entries.map(([key, val]) => {
             const isStatus = key.toLowerCase() === 'status';
+            const isDeviceStatus = key.toLowerCase() === 'devicestatus';
+            const isTriggerReason = key.toLowerCase() === 'triggerreason';
+            const isUptime = key.toLowerCase() === 'uptimeseconds';
+            const isTimestampMs = key.toLowerCase() === 'timestampms';
             const isBool = typeof val === 'boolean';
             const isObject = typeof val === 'object' && val !== null;
             const strVal = String(val);
@@ -56,7 +74,73 @@ function renderCleanKeyValueTable(data: any): ReactNode {
                   </code>
                 </td>
                 <td>
-                  {isStatus ? (
+                  {isDeviceStatus ? (
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '3px 12px',
+                        borderRadius: '6px',
+                        fontWeight: 800,
+                        fontSize: '0.82rem',
+                        background: strVal.toUpperCase() === 'ONLINE' ? '#ecfdf5' : '#fef2f2',
+                        color: strVal.toUpperCase() === 'ONLINE' ? '#047857' : '#b91c1c',
+                        border: `1px solid ${strVal.toUpperCase() === 'ONLINE' ? '#a7f3d0' : '#fecaca'}`,
+                      }}
+                    >
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: strVal.toUpperCase() === 'ONLINE' ? '#10b981' : '#ef4444' }} />
+                      {strVal.toUpperCase()}
+                    </span>
+                  ) : isTriggerReason ? (
+                    (() => {
+                      let bg = '#eff6ff';
+                      let color = '#1d4ed8';
+                      let border = '#bfdbfe';
+                      let label = strVal;
+                      if (strVal === 'HourlyHeartbeat') {
+                        bg = '#eff6ff'; color = '#1d4ed8'; border = '#bfdbfe'; label = '⏱ Hourly Heartbeat (Periodic)';
+                      } else if (strVal === 'GateOpened') {
+                        bg = '#fff7ed'; color = '#c2410c'; border = '#ffedd5'; label = '🚪 Gate Opened (Real-Time)';
+                      } else if (strVal === 'LimitSwitchActive') {
+                        bg = '#faf5ff'; color = '#7e22ce'; border = '#f3e8ff'; label = '⚡ Limit Switch Active';
+                      } else if (strVal === 'InitialState') {
+                        bg = '#ecfeff'; color = '#0e7490'; border = '#cffafe'; label = '🚀 Boot / Initial State';
+                      } else if (strVal === 'ReconnectedState') {
+                        bg = '#f0fdf4'; color = '#15803d'; border = '#bbf7d0'; label = '📶 Reconnected State';
+                      }
+                      return (
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            padding: '3px 10px',
+                            borderRadius: '6px',
+                            fontWeight: 700,
+                            fontSize: '0.8rem',
+                            background: bg,
+                            color,
+                            border: `1px solid ${border}`,
+                          }}
+                        >
+                          {label}
+                        </span>
+                      );
+                    })()
+                  ) : isUptime ? (
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <code style={{ fontSize: '0.86rem', fontWeight: 700, color: '#0f172a' }}>{strVal} s</code>
+                      <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#0284c7', background: '#e0f2fe', padding: '2px 8px', borderRadius: '4px' }}>
+                        {formatUptimeHuman(Number(val))} continuous execution
+                      </span>
+                    </div>
+                  ) : isTimestampMs ? (
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <code style={{ fontSize: '0.86rem', fontWeight: 600, color: '#0f172a' }}>{strVal} ms</code>
+                      <span style={{ fontSize: '0.76rem', color: '#64748b' }}>
+                        ({(Number(val) / 1000).toFixed(1)} s runtime)
+                      </span>
+                    </div>
+                  ) : isStatus ? (
                     <span
                       style={{
                         display: 'inline-block',
@@ -1075,10 +1159,11 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                                 <tr>
                                   <th style={{ width: '35px' }}>#</th>
                                   <th>Received Time</th>
-                                  <th>Status</th>
+                                  <th>Gate Status</th>
+                                  <th>Trigger Reason</th>
+                                  <th>Uptime</th>
                                   <th>Limit Switch</th>
                                   <th>Hall Effect</th>
-                                  <th>Time Stamp</th>
                                   <th style={{ textAlign: 'right' }}>Action</th>
                                 </tr>
                               </thead>
@@ -1118,6 +1203,36 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                                         </span>
                                       </td>
                                       <td>
+                                        {p.TriggerReason ? (
+                                          <span
+                                            style={{
+                                              padding: '2px 7px',
+                                              borderRadius: '4px',
+                                              fontSize: '0.75rem',
+                                              fontWeight: 700,
+                                              background: p.TriggerReason === 'HourlyHeartbeat' ? '#eff6ff' : '#fff7ed',
+                                              color: p.TriggerReason === 'HourlyHeartbeat' ? '#1d4ed8' : '#c2410c',
+                                              border: `1px solid ${p.TriggerReason === 'HourlyHeartbeat' ? '#bfdbfe' : '#fed7aa'}`
+                                            }}
+                                          >
+                                            {p.TriggerReason === 'HourlyHeartbeat' ? 'Hourly Heartbeat' : p.TriggerReason}
+                                          </span>
+                                        ) : (
+                                          <span className="text-muted" style={{ fontSize: '0.78rem' }}>—</span>
+                                        )}
+                                      </td>
+                                      <td>
+                                        {p.UptimeSeconds !== undefined ? (
+                                          <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#0369a1' }}>
+                                            {formatUptimeHuman(p.UptimeSeconds)}
+                                          </span>
+                                        ) : p.TimeStampMs !== undefined ? (
+                                          <span style={{ fontSize: '0.78rem', color: '#64748b' }}>
+                                            {(p.TimeStampMs / 1000).toFixed(0)}s
+                                          </span>
+                                        ) : '—'}
+                                      </td>
+                                      <td>
                                         {p.LimitSwitchClosed !== undefined ? (
                                           <span style={{ fontWeight: 600, color: p.LimitSwitchClosed ? '#15803d' : '#475569' }}>
                                             {p.LimitSwitchClosed ? 'Closed' : 'Open'}
@@ -1130,9 +1245,6 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                                             {p.HallClosed ? 'Closed' : 'Open'}
                                           </span>
                                         ) : '—'}
-                                      </td>
-                                      <td>
-                                        {p.TimeStampMs !== undefined ? `${p.TimeStampMs} ms` : '—'}
                                       </td>
                                       <td style={{ textAlign: 'right' }}>
                                         <button

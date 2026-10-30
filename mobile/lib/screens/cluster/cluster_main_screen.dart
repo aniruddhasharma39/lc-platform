@@ -771,6 +771,42 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                                                             style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8)),
                                                           ),
                                                         ),
+                                                        const SizedBox(width: 6),
+                                                        Builder(
+                                                          builder: (context) {
+                                                            final isOnline = gate['deviceStatus'] == 'ONLINE' || gate['isOnline'] == true;
+                                                            return Container(
+                                                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                              decoration: BoxDecoration(
+                                                                color: isOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
+                                                                borderRadius: BorderRadius.circular(4),
+                                                                border: Border.all(color: isOnline ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA)),
+                                                              ),
+                                                              child: Row(
+                                                                mainAxisSize: MainAxisSize.min,
+                                                                children: [
+                                                                  Container(
+                                                                    width: 5,
+                                                                    height: 5,
+                                                                    decoration: BoxDecoration(
+                                                                      shape: BoxShape.circle,
+                                                                      color: isOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                                                                    ),
+                                                                  ),
+                                                                  const SizedBox(width: 4),
+                                                                  Text(
+                                                                    isOnline ? 'ONLINE' : 'OFFLINE',
+                                                                    style: TextStyle(
+                                                                      fontSize: 9.5,
+                                                                      fontWeight: FontWeight.bold,
+                                                                      color: isOnline ? const Color(0xFF047857) : const Color(0xFFB91C1C),
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                             ),
+                                                            );
+                                                          },
+                                                        ),
                                                         if (zone.isNotEmpty) ...[
                                                           const SizedBox(width: 6),
                                                           Container(

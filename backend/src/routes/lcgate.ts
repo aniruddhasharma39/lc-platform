@@ -424,7 +424,59 @@ router.get('/', authenticate, async (req: any, res, next) => {
         }
       },
     });
-    res.json(gates);
+
+    // 65-Minute Rule: evaluate device online/offline status per gate
+    const nowMs = Date.now();
+    const ONLINE_CUTOFF_MS = 65 * 60 * 1000;
+
+    const allThingNames: string[] = [];
+    gates.forEach(g => {
+      if (g.lcNumber) allThingNames.push(g.lcNumber);
+      g.masters.forEach(m => {
+        if (m.serialNumber) allThingNames.push(m.serialNumber);
+      });
+      g.deviceRegistries.forEach(d => {
+        if (d.thingName) allThingNames.push(d.thingName);
+        if (d.serialNumber) allThingNames.push(d.serialNumber);
+      });
+    });
+
+    const recentTelemetries = await prisma.deviceTelemetry.findMany({
+      where: {
+        thingName: { in: allThingNames },
+        topic: { not: { contains: '/request' } },
+        status: { not: 'REQUESTED' }
+      },
+      orderBy: { receivedAt: 'desc' },
+      take: 200,
+    }).catch(() => []);
+
+    const enrichedGates = gates.map(gate => {
+      const gateThingNames = new Set([
+        gate.lcNumber,
+        ...gate.masters.map(m => m.serialNumber),
+        ...gate.deviceRegistries.map(d => d.thingName),
+        ...gate.deviceRegistries.map(d => d.serialNumber).filter(Boolean) as string[],
+      ]);
+
+      const latestTele = recentTelemetries.find(t => gateThingNames.has(t.thingName));
+      const lastSeenTimes = [
+        latestTele?.receivedAt ? new Date(latestTele.receivedAt).getTime() : 0,
+        ...gate.deviceRegistries.map(d => d.lastSeenAt ? new Date(d.lastSeenAt).getTime() : 0)
+      ];
+      const maxLastSeen = Math.max(...lastSeenTimes);
+      const isOnline = maxLastSeen > 0 && (nowMs - maxLastSeen <= ONLINE_CUTOFF_MS);
+      const deviceStatus: 'ONLINE' | 'OFFLINE' = isOnline ? 'ONLINE' : 'OFFLINE';
+
+      return {
+        ...gate,
+        isOnline,
+        deviceStatus,
+        lastSeenAt: maxLastSeen > 0 ? new Date(maxLastSeen).toISOString() : null,
+      };
+    });
+
+    res.json(enrichedGates);
   } catch (error) {
     next(error);
   }

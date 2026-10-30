@@ -239,8 +239,8 @@ router.get('/', authenticate, async (req, res, next) => {
     ]);
 
     const now = Date.now();
-    // A device is live ONLINE if powered on and transmitting within 30 minutes (heartbeat/telemetry)
-    const ONLINE_TIMEOUT_MS = 30 * 60 * 1000;
+    // 65-Minute Rule: 1 hour periodic heartbeat (3600s) + 5 min network grace period (300s) = 65 minutes (3,900,000 ms)
+    const ONLINE_TIMEOUT_MS = 65 * 60 * 1000;
 
     const enrichedDevices = await Promise.all(devices.map(async (device) => {
       const latestTele = await prisma.deviceTelemetry.findFirst({
@@ -254,24 +254,37 @@ router.get('/', authenticate, async (req, res, next) => {
         orderBy: { receivedAt: 'desc' }
       }).catch(() => null);
 
-      const lastTimestamp = latestTele?.receivedAt || device.lastSeenAt || null;
-      const isRecentlyActive = Boolean(
-        lastTimestamp && (now - new Date(lastTimestamp).getTime() <= ONLINE_TIMEOUT_MS)
-      );
-      // Standby check: healthy device with recent transmission within 2 hours
-      const isStandbyActive = Boolean(
-        !isRecentlyActive &&
-        device.status === 'ACTIVE' &&
+      const latestHealth = await prisma.deviceHealthCheck.findFirst({
+        where: {
+          OR: [
+            { thingName: device.thingName },
+            { deviceRegistryId: device.id }
+          ]
+        },
+        orderBy: { createdAt: 'desc' }
+      }).catch(() => null);
+
+      // Latest transmission timestamp across telemetry, health check, or device registry lastSeenAt
+      const timestamps = [
+        latestTele?.receivedAt ? new Date(latestTele.receivedAt).getTime() : 0,
+        latestHealth?.createdAt ? new Date(latestHealth.createdAt).getTime() : 0,
+        device.lastSeenAt ? new Date(device.lastSeenAt).getTime() : 0,
+      ];
+      const maxTimestamp = Math.max(...timestamps);
+      const lastTimestamp = maxTimestamp > 0 ? new Date(maxTimestamp) : null;
+
+      const isOnline = Boolean(
         lastTimestamp &&
-        (now - new Date(lastTimestamp).getTime() <= 2 * 60 * 60 * 1000)
+        (now - maxTimestamp <= ONLINE_TIMEOUT_MS) &&
+        device.status !== 'DECOMMISSIONED' &&
+        device.status !== 'INACTIVE'
       );
-      const isOnline = (isRecentlyActive || isStandbyActive) && device.status !== 'DECOMMISSIONED' && device.status !== 'INACTIVE';
 
       return {
         ...device,
         computedStatus: isOnline ? 'ONLINE' : 'OFFLINE',
-        latestPayloadSent: lastTimestamp ? new Date(lastTimestamp).toISOString() : null,
-        latestTopic: latestTele?.topic || `safeshunt/devices/${device.thingName}/telemetry`,
+        latestPayloadSent: lastTimestamp ? lastTimestamp.toISOString() : null,
+        latestTopic: latestTele?.topic || `lc-gate/${device.thingName}/telemetry`,
         latestPayload: latestTele?.payload || (device.metadata as any)?.rawPayload || null,
       };
     }));
@@ -376,6 +389,17 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
       (t.payload && typeof t.payload === 'object' && ((t.payload as any).action === 'HEALTH_CHECK' || (t.payload as any).action === 'HEALTH_CHECK_RESPONSE' || (t.payload as any).healthstatus !== undefined))
     );
 
+    const nowMs = Date.now();
+    const ONLINE_CUTOFF_MS = 65 * 60 * 1000; // 65-Minute Rule
+    const latestTimestamp = telemetryRecords[0]?.receivedAt || healthRecords[0]?.receivedAt || device.lastSeenAt || null;
+    const isOnline = Boolean(
+      latestTimestamp &&
+      (nowMs - new Date(latestTimestamp).getTime() <= ONLINE_CUTOFF_MS) &&
+      device.status !== 'DECOMMISSIONED' &&
+      device.status !== 'INACTIVE'
+    );
+    const computedStatus = isOnline ? 'ONLINE' : 'OFFLINE';
+
     const latestTele = telemetryRecords[0]?.payload as any;
     // Physical Gate Status is always OPEN / CLOSED / NOT_CLOSED (never "HEALTHY")
     const rawTeleStatus = latestTele?.Status ? String(latestTele.Status).trim().toUpperCase() : null;
@@ -413,6 +437,9 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
       firmwareVersion: device.firmwareVersion,
       gate: device.gate,
       currentStatus,
+      computedStatus,
+      isOnline,
+      lastSeenAt: latestTimestamp,
       counts: {
         all: deduplicatedPayloads.length,
         telemetry: telemetryRecords.length,
@@ -660,7 +687,7 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
         data: {
           thingName,
           serialNumber: thingName,
-          status: 'ACTIVE',
+          status: 'ONLINE',
           gateId: resolved.gateId,
           masterId: resolved.masterId,
           childDeviceId: resolved.childDeviceId,
@@ -674,7 +701,7 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
         where: { id: device.id },
         data: {
           lastSeenAt: new Date(),
-          status: 'ACTIVE',
+          status: 'ONLINE',
           firmwareVersion: fwVersion || device.firmwareVersion,
         }
       });
@@ -760,13 +787,14 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
     }
 
     // Strictly Gate State Telemetry
+    // Device status is ONLINE on any incoming packet; gate barrier position is in currentState
     const effectiveStatus = currentState || statusVal || 'ONLINE';
     const telemetry = await prisma.deviceTelemetry.create({
       data: {
         thingName: device.thingName,
         topic,
         payload,
-        status: effectiveStatus,
+        status: 'ONLINE',
         deviceRegistryId: device.id,
         receivedAt: raw.timestamp ? new Date(raw.timestamp) : new Date(),
       }

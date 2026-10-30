@@ -1078,31 +1078,73 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: isSolar ? const Color(0xFFFEF3C7) : const Color(0xFFDBEAFE),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            isSolar ? Icons.wb_sunny_outlined : Icons.bolt,
-                            size: 11,
-                            color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Builder(
+                          builder: (context) {
+                            final isOnline = gate['deviceStatus'] == 'ONLINE' || gate['isOnline'] == true;
+                            return Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3.5),
+                              decoration: BoxDecoration(
+                                color: isOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: isOnline ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 6,
+                                    height: 6,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: isOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    isOnline ? 'ONLINE' : 'OFFLINE',
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.3,
+                                      color: isOnline ? const Color(0xFF047857) : const Color(0xFFB91C1C),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: isSolar ? const Color(0xFFFEF3C7) : const Color(0xFFDBEAFE),
+                            borderRadius: BorderRadius.circular(6),
                           ),
-                          const SizedBox(width: 4),
-                          Text(
-                            isSolar ? 'Solar' : 'Direct',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
-                            ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                isSolar ? Icons.wb_sunny_outlined : Icons.bolt,
+                                size: 11,
+                                color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                isSolar ? 'Solar' : 'Direct',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -2092,9 +2134,9 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            isOpen ? 'OPENED' : 'CLOSE',
+                            isOpen ? 'GATE: OPEN' : 'GATE: CLOSED',
                             style: TextStyle(
-                              fontSize: 14,
+                              fontSize: 13,
                               fontWeight: FontWeight.w800,
                               color: isOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D),
                               letterSpacing: 0.5,
@@ -2104,7 +2146,51 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
+
+                  // Edge Hardware Online/Offline Status Pill
+                  Builder(
+                    builder: (context) {
+                      final isDeviceOnline = _gateTelemetry?['isDeviceOnline'] == true ||
+                          _gateTelemetry?['deviceStatus'] == 'ONLINE' ||
+                          gate['deviceStatus'] == 'ONLINE' ||
+                          gate['isOnline'] == true;
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: isDeviceOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: isDeviceOnline ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: isDeviceOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              isDeviceOnline ? 'ONLINE' : 'OFFLINE',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                                color: isDeviceOnline ? const Color(0xFF047857) : const Color(0xFFB91C1C),
+                                letterSpacing: 0.3,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(width: 8),
 
                   // Health Check Button (Web Parity Diagnostic Trigger)
                   ElevatedButton.icon(
