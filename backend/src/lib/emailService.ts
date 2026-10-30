@@ -277,6 +277,7 @@ export async function sendEmail(options: {
  */
 export async function sendEmailOtp(toEmail: string, otp: string, recipientName?: string): Promise<SendEmailResult> {
   const greeting = recipientName ? `Hello ${recipientName},` : 'Hello Official,';
+  const adminEmail = process.env.DEFAULT_ADMIN_EMAIL || 'admin@lcgate.in';
 
   const htmlContent = `
     <!DOCTYPE html>
@@ -315,14 +316,14 @@ export async function sendEmailOtp(toEmail: string, otp: string, recipientName?:
           </div>
 
           <p style="font-size: 12px; color: #94a3b8; margin: 0; text-align: center;">
-            If you did not initiate this request, please contact your system administrator immediately.
+            If you did not initiate this request, please contact your system administrator immediately at <strong style="color: #003580;">${adminEmail}</strong>.
           </p>
         </div>
 
         <!-- Official Footer -->
         <div style="background-color: #f8fafc; padding: 18px 24px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 12px; color: #64748b;">
           <p style="margin: 0 0 4px 0; font-weight: 600; color: #334155;">Ministry of Railways — Government of India</p>
-          <p style="margin: 0; font-size: 11px; color: #94a3b8;">Level Crossing Automated Safety & Monitoring Platform • Confidential & Official Transmission</p>
+          <p style="margin: 0; font-size: 11px; color: #94a3b8;">Level Crossing Automated Safety & Monitoring Platform</p>
         </div>
       </div>
     </body>
@@ -333,7 +334,7 @@ export async function sendEmailOtp(toEmail: string, otp: string, recipientName?:
     toEmail,
     toName: recipientName,
     subject: `[${otp}] Indian Railways LC Platform — Verification Code`,
-    textContent: `Your Indian Railways LC Platform verification code is: ${otp}. It is valid for 10 minutes.`,
+    textContent: `Your Indian Railways LC Platform verification code is: ${otp}. It is valid for 10 minutes. If you did not initiate this request, please contact your system administrator at ${adminEmail}.`,
     htmlContent,
   });
 }
@@ -350,20 +351,21 @@ export async function sendGateStateEmail(params: {
   division?: string | null;
   status: 'OPEN' | 'CLOSED';
   timestampStr: string;
-  scopeGroupName: string;
+  scopeGroupName?: string;
 }): Promise<SendEmailResult> {
   const {
     toEmail,
     toName,
     lcNumber,
     locationName = 'N/A',
-    zone = 'Indian Railways',
-    division = 'Operations',
+    zone,
+    division,
     status,
     timestampStr,
-    scopeGroupName,
   } = params;
 
+  const effectiveZone = zone?.trim() || 'Indian Railways';
+  const effectiveDivision = division?.trim() || 'Operations';
   const isOpen = status === 'OPEN';
   const statusColor = isOpen ? '#DC2626' : '#166534';
   const statusBg = isOpen ? '#FEF2F2' : '#F0FDF4';
@@ -375,7 +377,7 @@ export async function sendGateStateEmail(params: {
       <div style="background-color: #FEF2F2; border-left: 4px solid #DC2626; padding: 14px 18px; border-radius: 6px; margin: 24px 0;">
         <h4 style="margin: 0 0 4px 0; color: #991B1B; font-size: 14px;">⚠️ SAFETY ADVISORY — ROAD TRAFFIC PASSAGE ACTIVE</h4>
         <p style="margin: 0; font-size: 13px; color: #B91C1C; line-height: 1.5;">
-          The boom barrier is raised. Road vehicles are currently crossing the railway alignment. Please verify track clearance prior to initiating subsequent train signals.
+          The boom barrier is raised.
         </p>
       </div>
     `
@@ -383,7 +385,7 @@ export async function sendGateStateEmail(params: {
       <div style="background-color: #F0FDF4; border-left: 4px solid #16A34A; padding: 14px 18px; border-radius: 6px; margin: 24px 0;">
         <h4 style="margin: 0 0 4px 0; color: #166534; font-size: 14px;">✅ SAFETY CONFIRMATION — TRACKS SECURED</h4>
         <p style="margin: 0; font-size: 13px; color: #15803D; line-height: 1.5;">
-          The boom barrier is fully lowered and locked. Road traffic is stopped. Tracks are secure for designated railway transit.
+          The boom barrier is fully lowered and locked.
         </p>
       </div>
     `;
@@ -409,7 +411,7 @@ export async function sendGateStateEmail(params: {
         <div style="padding: 28px 24px; color: #1e293b;">
           <p style="font-size: 15px; margin: 0 0 16px 0;">Dear Official <strong>${toName}</strong>,</p>
           <p style="font-size: 14px; color: #475569; margin: 0 0 20px 0; line-height: 1.5;">
-            An automated state transition has been detected at your assigned Level Crossing:
+            An automated state transition has been detected at your assigned Level Crossing in <strong>${effectiveZone}</strong>:-
           </p>
 
           <!-- Status Highlight Card -->
@@ -432,7 +434,7 @@ export async function sendGateStateEmail(params: {
               </tr>
               <tr style="border-bottom: 1px solid #f1f5f9;">
                 <td style="padding: 10px 12px; font-weight: 600; color: #64748b;">Zone / Division:</td>
-                <td style="padding: 10px 12px; font-weight: 600; color: #1e293b;">${zone || 'WR'} / ${division || 'Operations'}</td>
+                <td style="padding: 10px 12px; font-weight: 600; color: #1e293b;">${effectiveZone} / ${effectiveDivision}</td>
               </tr>
               <tr style="background-color: #f8fafc;">
                 <td style="padding: 10px 12px; font-weight: 600; color: #64748b;">Timestamp (IST):</td>
@@ -444,7 +446,7 @@ export async function sendGateStateEmail(params: {
           ${advisoryBox}
 
           <p style="font-size: 12px; color: #94a3b8; margin: 24px 0 0 0; text-align: center;">
-            You received this automated transmission because your official email is authorized for this Level Crossing.
+            You received this automated transmission because your official email is authorized for <strong>${effectiveZone}</strong> alerts.
           </p>
         </div>
 
@@ -458,9 +460,9 @@ export async function sendGateStateEmail(params: {
     </html>
   `;
 
-  const subjectPrefix = isOpen ? '🔴 [ALERT - GATE OPEN]' : '🟢 [ALERT - GATE CLOSED]';
+  const subjectPrefix = isOpen ? '⚠️ [ALERT - GATE OPEN]' : '🔒 [ALERT - GATE CLOSED]';
   const subject = `${subjectPrefix} Level Crossing ${lcNumber} is now ${status} (${timestampStr})`;
-  const textContent = `Indian Railways Alert: Level Crossing ${lcNumber} (${locationName}) transitioned to ${status} at ${timestampStr} IST.`;
+  const textContent = `Indian Railways Alert: Level Crossing ${lcNumber} (${locationName}) transitioned to ${status} in ${effectiveZone} at ${timestampStr} IST.`;
 
   return sendEmail({
     toEmail,
@@ -599,7 +601,7 @@ export async function checkAndDispatchGateStateEmailAlert(options: GateEmailAler
         toName: info.user.fullName,
         lcNumber: effectiveLcNumber,
         locationName: gate?.locationName || null,
-        zone: gate?.zone || 'WR',
+        zone: gate?.zone || 'Indian Railways',
         division: gate?.division || 'Operations',
         status: newState,
         timestampStr: dateTimeStr,

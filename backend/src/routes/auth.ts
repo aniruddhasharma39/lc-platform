@@ -413,7 +413,7 @@ router.post('/otp/send', async (req, res, next) => {
         });
       }
     } else if (type === 'email') {
-      const emailResult = await sendEmailOtp(targetIdentifier, otp);
+      const emailResult = await sendEmailOtp(targetIdentifier, otp, user?.fullName);
       if (!emailResult.success) {
         return res.status(502).json({
           error: emailResult.error || 'Failed to dispatch email verification OTP.'
