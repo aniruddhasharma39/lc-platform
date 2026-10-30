@@ -1181,7 +1181,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Expanded(
                   child: _buildKpiCard(
                     title: 'Total Clusters',
-                    value: _loadingSummary ? '—' : '$totalDevices',
+                    value: _loadingSummary ? '-' : '$totalDevices',
                     icon: Icons.meeting_room_outlined,
                     iconColor: const Color(0xFF0284C7),
                     iconBg: const Color(0xFFE0F2FE),
@@ -1191,7 +1191,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Expanded(
                   child: _buildKpiCard(
                     title: 'Cycles Today',
-                    value: _loadingSummary ? '—' : '$totalCyclesToday',
+                    value: _loadingSummary ? '-' : '$totalCyclesToday',
                     icon: Icons.history,
                     iconColor: const Color(0xFFD97706),
                     iconBg: const Color(0xFFFEF3C7),
@@ -1205,7 +1205,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Expanded(
                   child: _buildKpiCard(
                     title: 'Currently Opened',
-                    value: _loadingSummary ? '—' : '$totalOpenGates',
+                    value: _loadingSummary ? '-' : '$totalOpenGates',
                     icon: Icons.lock_open_rounded,
                     iconColor: const Color(0xFFDC2626),
                     iconBg: const Color(0xFFFEE2E2),
@@ -1215,7 +1215,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Expanded(
                   child: _buildKpiCard(
                     title: 'Currently Closed',
-                    value: _loadingSummary ? '—' : '$totalClosedGates',
+                    value: _loadingSummary ? '-' : '$totalClosedGates',
                     icon: Icons.lock_rounded,
                     iconColor: const Color(0xFF059669),
                     iconBg: const Color(0xFFD1FAE5),
@@ -1697,7 +1697,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildKpiCard({
     required String title,
     required String value,
-    required String subtitle,
+    String? subtitle,
     required IconData icon,
     required Color iconColor,
     required Color iconBg,
@@ -1750,13 +1750,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
               color: Color(0xFF0F172A),
             ),
           ),
-          const SizedBox(height: 2),
-          Text(
-            subtitle,
-            style: TextStyle(fontSize: 10.5, color: Colors.grey.shade500),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
+          if (subtitle != null && subtitle.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(
+              subtitle,
+              style: TextStyle(fontSize: 10.5, color: Colors.grey.shade500),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
         ],
       ),
     );
