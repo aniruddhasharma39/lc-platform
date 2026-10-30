@@ -12,12 +12,12 @@ export interface SendEmailResult {
 /**
  * Creates nodemailer transport using environment variables (SMTP fallback)
  */
-function getTransporter() {
+function getTransporter(portOverride?: number, secureOverride?: boolean) {
   const host = process.env.SMTP_HOST;
-  const port = parseInt(process.env.SMTP_PORT || '587', 10);
+  const port = portOverride !== undefined ? portOverride : parseInt(process.env.SMTP_PORT || '587', 10);
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
-  const secure = process.env.SMTP_SECURE === 'true' || port === 465;
+  const secure = secureOverride !== undefined ? secureOverride : (process.env.SMTP_SECURE === 'true' || port === 465);
 
   if (!host || !user || !pass) {
     return null;
@@ -28,6 +28,9 @@ function getTransporter() {
     port,
     secure,
     auth: { user, pass },
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 12000,
   });
 }
 
@@ -199,12 +202,52 @@ export async function sendEmail(options: {
         messageId: info.messageId,
       };
     } catch (err: any) {
+      const isBrevoHost = (process.env.SMTP_HOST || '').includes('brevo.com');
+      const isTimeout = err?.message?.toLowerCase().includes('timeout') || err?.code === 'ETIMEDOUT';
+
+      // Automatic fallback for cloud hosts (like Render) that block standard port 587
+      if (isBrevoHost && isTimeout) {
+        console.warn(`⚠️ [SMTP] Port ${process.env.SMTP_PORT || '587'} timed out to Brevo (outbound SMTP is often blocked on cloud hosts like Render). Attempting automatic fallback to Port 2525...`);
+        const fallback2525 = getTransporter(2525, false);
+        if (fallback2525) {
+          try {
+            const info2525 = await fallback2525.sendMail({
+              from: fromAddress,
+              to: cleanEmail,
+              subject: options.subject,
+              text: options.textContent,
+              html: options.htmlContent,
+            });
+            console.log(`✅ [BREVO_SMTP (Port 2525)] Dispatched email to ${cleanEmail}. Message ID: ${info2525.messageId}`);
+            return { success: true, provider: 'BREVO_SMTP', messageId: info2525.messageId };
+          } catch (err2525: any) {
+            console.warn(`⚠️ [SMTP] Port 2525 fallback failed (${err2525.message}). Attempting SSL Port 465...`);
+            const fallback465 = getTransporter(465, true);
+            if (fallback465) {
+              try {
+                const info465 = await fallback465.sendMail({
+                  from: fromAddress,
+                  to: cleanEmail,
+                  subject: options.subject,
+                  text: options.textContent,
+                  html: options.htmlContent,
+                });
+                console.log(`✅ [BREVO_SMTP (Port 465)] Dispatched email to ${cleanEmail}. Message ID: ${info465.messageId}`);
+                return { success: true, provider: 'BREVO_SMTP', messageId: info465.messageId };
+              } catch (err465: any) {
+                console.error(`❌ [SMTP ERROR] All SMTP ports (587, 2525, 465) failed. On Render Free Tier, please set BREVO_API_KEY in Render to send via HTTPS Port 443 with 0% chance of block.`);
+              }
+            }
+          }
+        }
+      }
+
       console.error(`❌ [SMTP ERROR] Failed sending to ${cleanEmail}:`, err?.message || err);
       return {
         success: false,
         provider: 'SMTP',
         reason: 'DELIVERY_FAILED',
-        error: `SMTP delivery failed: ${err?.message || 'Connection refused'}`,
+        error: `SMTP delivery failed: ${err?.message || 'Connection refused'}. Tip: Set BREVO_API_KEY in Render to bypass SMTP port blocking.`,
       };
     }
   }
