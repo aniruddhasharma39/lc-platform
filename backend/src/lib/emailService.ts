@@ -82,7 +82,7 @@ async function sendViaBrevoApi(options: {
     };
   }
 
-  const senderEmail = process.env.BREVO_SENDER_EMAIL || process.env.SMTP_USER || 'mirthatechnology1@gmail.com';
+  const senderEmail = process.env.BREVO_SENDER_EMAIL || 'mirthatechnology1@12614487.brevosend.com';
   const senderName = process.env.BREVO_SENDER_NAME || 'Indian Railways Level Crossing Platform';
 
   try {
@@ -176,12 +176,18 @@ export async function sendEmail(options: {
   // 2. Try Nodemailer transport (Brevo SMTP relay or custom SMTP)
   const transporter = getTransporter();
   if (transporter) {
-    const fromAddress =
+    let fromAddress =
       process.env.SMTP_FROM ||
       (process.env.BREVO_SENDER_EMAIL
         ? `"${process.env.BREVO_SENDER_NAME || 'Indian Railways Level Crossing Platform'}" <${process.env.BREVO_SENDER_EMAIL}>`
         : null) ||
-      `"Indian Railways Level Crossing Platform" <${process.env.SMTP_USER || 'mirthatechnology1@gmail.com'}>`;
+      `"Indian Railways Level Crossing Platform" <mirthatechnology1@12614487.brevosend.com>`;
+
+    // Safeguard: Brevo SMTP strictly prohibits spoofing @gmail.com as the From address (causes DMARC bounce/Error).
+    // Automatically map unverified gmail address to Brevo verified sending domain:
+    if ((process.env.SMTP_HOST || '').includes('brevo.com') && fromAddress.includes('@gmail.com')) {
+      fromAddress = fromAddress.replace(/mirthatechnology1@gmail.com|mirtha.technology@gmail.com/g, 'mirthatechnology1@12614487.brevosend.com');
+    }
 
     try {
       const info = await transporter.sendMail({
