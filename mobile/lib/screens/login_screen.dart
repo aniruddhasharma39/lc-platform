@@ -448,39 +448,29 @@ class _LoginScreenState extends State<LoginScreen> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       // Logo / Emblem inside Login Box
-                      if (logoUrl != null && logoUrl.toString().trim().isNotEmpty) ...[
-                        Center(
-                          child: Container(
-                            constraints: const BoxConstraints(maxHeight: 75, maxWidth: 140),
-                            margin: const EdgeInsets.only(bottom: 16),
-                            child: Image.network(
-                              logoUrl.toString(),
-                              fit: BoxFit.contain,
-                              loadingBuilder: (context, child, loadingProgress) {
-                                if (loadingProgress == null) return child;
-                                return SizedBox(
-                                  height: 50,
-                                  width: 50,
-                                  child: Center(
-                                    child: SizedBox(
-                                      width: 20,
-                                      height: 20,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        value: loadingProgress.expectedTotalBytes != null
-                                            ? loadingProgress.cumulativeBytesLoaded /
-                                                loadingProgress.expectedTotalBytes!
-                                            : null,
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              },
-                              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                            ),
+                      Center(
+                        child: Container(
+                          constraints: const BoxConstraints(maxHeight: 75, maxWidth: 140),
+                          margin: const EdgeInsets.only(bottom: 16),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
                           ),
+                          clipBehavior: Clip.antiAlias,
+                          child: (logoUrl != null && logoUrl.toString().trim().isNotEmpty)
+                              ? Image.network(
+                                  logoUrl.toString(),
+                                  fit: BoxFit.contain,
+                                  errorBuilder: (context, error, stackTrace) => Image.asset(
+                                    'assets/app_icon.png',
+                                    fit: BoxFit.contain,
+                                  ),
+                                )
+                              : Image.asset(
+                                  'assets/app_icon.png',
+                                  fit: BoxFit.contain,
+                                ),
                         ),
-                      ],
+                      ),
 
                       // Header
                       Text(

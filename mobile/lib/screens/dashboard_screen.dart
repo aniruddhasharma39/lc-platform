@@ -793,11 +793,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
       appBar: AppBar(
         centerTitle: false,
         titleSpacing: 0,
-        title: Text(
-          _appName,
-          style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primary, fontSize: 18),
-          overflow: TextOverflow.ellipsis,
-          maxLines: 1,
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(right: 8),
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                image: const DecorationImage(
+                  image: AssetImage('assets/app_icon.png'),
+                  fit: BoxFit.cover,
+                ),
+              ),
+            ),
+            Flexible(
+              child: Text(
+                _appName,
+                style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primary, fontSize: 18),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              ),
+            ),
+          ],
         ),
         backgroundColor: AppColors.surface,
         actions: [
