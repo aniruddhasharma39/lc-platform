@@ -186,8 +186,8 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
       if (g is Map && g.containsKey('id')) {
         final statusItem = statuses[g['id']];
         if (statusItem != null) {
-          _gates[i] = {
-            ...g,
+          _gates[i] = <String, dynamic>{
+            ...Map<String, dynamic>.from(g),
             'isOnline': statusItem.isOnline,
             'deviceStatus': statusItem.deviceStatus,
             'lastSeenAt': statusItem.lastSeenAt,
@@ -328,10 +328,10 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     if (childDeviceId != null) {
       final children = (master['childDevices'] as List?) ?? [];
       for (final c in children) {
-        if (c is Map<String, dynamic> && c['id'] == childDeviceId) {
+        if (c is Map && c['id'] == childDeviceId) {
           final cEvs = (c['evidences'] as List?) ?? [];
-          if (cEvs.isNotEmpty && cEvs.first is Map<String, dynamic>) {
-            return cEvs.first as Map<String, dynamic>;
+          if (cEvs.isNotEmpty && cEvs.first is Map) {
+            return Map<String, dynamic>.from(cEvs.first as Map);
           }
         }
       }
@@ -358,10 +358,13 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   String _getGateStatus(Map<String, dynamic> gate) {
     final events = gate['events'] as List?;
     if (events != null && events.isNotEmpty) {
-      final ev = events.first as Map<String, dynamic>;
-      final st = (ev['status'] ?? '').toString().toUpperCase();
-      if (st == 'OPEN' || ev['closedAt'] == null) return 'OPEN';
-      if (st == 'CLOSED' || ev['closedAt'] != null) return 'CLOSED';
+      final firstEv = events.first;
+      if (firstEv is Map) {
+        final ev = Map<String, dynamic>.from(firstEv);
+        final st = (ev['status'] ?? '').toString().toUpperCase();
+        if (st == 'OPEN' || ev['closedAt'] == null) return 'OPEN';
+        if (st == 'CLOSED' || ev['closedAt'] != null) return 'CLOSED';
+      }
     }
     final devs = gate['deviceRegistries'] as List?;
     if (devs != null && devs.isNotEmpty) {
@@ -985,7 +988,9 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             itemCount: _currentFolders.length,
             separatorBuilder: (context, index) => const SizedBox(height: 8),
             itemBuilder: (context, index) {
-              final folder = _currentFolders[index] as Map<String, dynamic>;
+              final raw = _currentFolders[index];
+              if (raw is! Map) return const SizedBox.shrink();
+              final folder = Map<String, dynamic>.from(raw);
               return _buildScopeGroupCard(folder);
             },
           ),
@@ -1034,7 +1039,9 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               itemCount: _currentClusters.length,
               separatorBuilder: (context, index) => const SizedBox(height: 12),
               itemBuilder: (context, index) {
-                final gate = _currentClusters[index] as Map<String, dynamic>;
+                final raw = _currentClusters[index];
+                if (raw is! Map) return const SizedBox.shrink();
+                final gate = Map<String, dynamic>.from(raw);
                 return _buildClusterCard(gate);
               },
             ),
@@ -1731,7 +1738,9 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             itemCount: masters.length,
             separatorBuilder: (context, index) => const SizedBox(height: 12),
             itemBuilder: (context, mIdx) {
-              final master = masters[mIdx] as Map<String, dynamic>;
+              final rawMaster = masters[mIdx];
+              if (rawMaster is! Map) return const SizedBox.shrink();
+              final master = Map<String, dynamic>.from(rawMaster);
               final childDevices = (master['childDevices'] as List?) ?? [];
               final isMasterExpanded = _expandedMasterIndex == mIdx;
 
@@ -1879,7 +1888,9 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                       itemCount: childDevices.length,
                                       separatorBuilder: (context, index) => const SizedBox(height: 8),
                                       itemBuilder: (context, cIdx) {
-                                        final child = childDevices[cIdx] as Map<String, dynamic>;
+                                        final rawChild = childDevices[cIdx];
+                                        if (rawChild is! Map) return const SizedBox.shrink();
+                                        final child = Map<String, dynamic>.from(rawChild);
                                         final childEv = _findDeviceEvidence(master, child['type'], child['id']);
                                         final isSlaveExpanded = _expandedSlaveId == child['id'];
 
@@ -2155,7 +2166,9 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     final thingName = _gateTelemetry?['thingName']?.toString() ?? gate['lcNumber']?.toString() ?? 'LC-GATE';
     final currentStatus = _gateTelemetry?['currentStatus']?.toString().toUpperCase() ?? 'UNKNOWN';
     final topic = _gateTelemetry?['topic']?.toString() ?? 'lc-gate/$thingName/telemetry';
-    final counts = (_gateTelemetry?['counts'] as Map<String, dynamic>?) ?? {};
+    final counts = _gateTelemetry?['counts'] is Map
+        ? Map<String, dynamic>.from(_gateTelemetry!['counts'] as Map)
+        : <String, dynamic>{};
 
     final telemetryRecords = (_gateTelemetry?['telemetryRecords'] as List?) ?? [];
     final manifestRecords = (_gateTelemetry?['manifestRecords'] as List?) ?? [];
@@ -2492,7 +2505,9 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               itemCount: operationalCycles.length,
               separatorBuilder: (_, _) => const SizedBox(height: 8),
               itemBuilder: (ctx, idx) {
-                final cycle = operationalCycles[idx] as Map<String, dynamic>;
+                final rawCycle = operationalCycles[idx];
+                if (rawCycle is! Map) return const SizedBox.shrink();
+                final cycle = Map<String, dynamic>.from(rawCycle);
                 final status = (cycle['status'] ?? 'CLOSED').toString().toUpperCase();
                 final isOpenCycle = status == 'OPEN' || cycle['closedAt'] == null;
                 final isDelay = status == 'EXTENDED_DELAY';
@@ -2841,8 +2856,10 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                     itemCount: activeList.length,
                     separatorBuilder: (_, _) => const Divider(height: 1, color: Color(0xFFF1F5F9)),
                     itemBuilder: (ctx, idx) {
-                      final item = activeList[idx] as Map<String, dynamic>;
-                      final p = item['payload'] is Map ? item['payload'] as Map<String, dynamic> : <String, dynamic>{};
+                      final rawItem = activeList[idx];
+                      if (rawItem is! Map) return const SizedBox.shrink();
+                      final item = Map<String, dynamic>.from(rawItem);
+                      final p = item['payload'] is Map ? Map<String, dynamic>.from(item['payload'] as Map) : <String, dynamic>{};
                       final isViewing = activeRecord != null && activeRecord['id'] == item['id'];
 
                       // Parse timestamp robustly from any record format (NEVER N/A)

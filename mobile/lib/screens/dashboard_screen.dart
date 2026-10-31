@@ -1426,8 +1426,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   itemCount: gates.length,
                   separatorBuilder: (_, __) => const SizedBox(width: 14),
                   itemBuilder: (context, index) {
-                    final gate = gates[index] as Map<String, dynamic>;
-                    final gateId = gate['id'] as int;
+                    final raw = gates[index];
+                    if (raw is! Map) return const SizedBox.shrink();
+                    final gate = Map<String, dynamic>.from(raw);
+                    final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
                     final lcNumber = (gate['hasMaster'] == true && gate['masterSerialNumber'] != null && gate['masterSerialNumber'] != 'Unassigned')
                         ? gate['masterSerialNumber'].toString()
                         : (gate['lcNumber']?.toString() ?? 'LC-GATE');
@@ -1903,7 +1905,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       itemBuilder: (c, i) {
         final req = pending[i];
         final reqData = json.decode(req['data'] ?? '{}');
-        final form = req['form'] as Map<String, dynamic>?;
+        final form = req['form'] is Map ? Map<String, dynamic>.from(req['form'] as Map) : null;
 
         // Resolve requested role ID and role name from request or form data
         int? reqRoleId = req['requestedRoleId'];
