@@ -860,11 +860,11 @@ function GateDetailView({ gate, onBack, onUpdate, onOpenDeviceInfo }: any) {
           </button>
           <div>
             <h2 className="m-0" style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--text-main)' }}>
-              {gate.name || (gate.locationName ? `${gate.locationName} (${gate.lcNumber})` : gate.lcNumber)}
+              {gate.lcNumber}
             </h2>
             <div className="flex items-center gap-2 mt-2 flex-wrap">
-              {gate.lcNumber && (
-                <div className="badge badge-indigo" style={{ fontSize: '0.9rem', padding: '6px 12px', fontWeight: 600 }}>{gate.lcNumber}</div>
+              {gate.locationName && (
+                <div style={{ fontSize: '1rem', color: 'var(--text-muted)', fontWeight: 500 }}>{gate.locationName}</div>
               )}
               {gate.zone && <div className="badge badge-blue" style={{ fontSize: '0.85rem', padding: '6px 12px', fontWeight: 600 }}>{gate.zone}</div>}
               {gate.division && <div className="badge" style={{ fontSize: '0.85rem', padding: '6px 12px', fontWeight: 600, backgroundColor: 'rgba(14, 154, 167, 0.1)', color: '#0e9aa7' }}>{gate.division}</div>}
@@ -1299,7 +1299,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
       })
       .catch(console.error);
 
-    fetch(`${API_URL}/api/v1/devices?limit=100&deviceType=MASTER`, {
+    fetch(`${API_URL}/api/v1/devices?limit=100&deviceType=MASTER&unassigned=true`, {
       headers: authHeaders()
     })
       .then(r => r.json())
@@ -1322,6 +1322,16 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!selectedDeviceId) {
+      toastError('Please select a provisioned Master device from AWS IoT Registry.', 'Device Required');
+      return;
+    }
+    const chosen = deviceList.find(d => d.id.toString() === selectedDeviceId);
+    if (!chosen) {
+      toastError('Selected AWS IoT device is invalid.', 'Device Error');
+      return;
+    }
+
     setSubmitting(true);
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/${gate.id}/masters`, {
@@ -1333,8 +1343,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
         body: JSON.stringify({ 
           masterSequence: parseInt(masterSequence, 10), 
           powerSource,
-          serialNumber: chosenDevice ? chosenDevice.thingName : undefined,
-          deviceId: chosenDevice ? chosenDevice.id : undefined,
+          deviceId: chosen.id,
         })
       });
       if (res.ok) {
@@ -1394,26 +1403,33 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
         <button className="btn-icon" onClick={onCancel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FaTimes size={16} /></button>
       </div>
       <form onSubmit={handleSubmit} className="flex-col gap-4">
-        {/* Device Registry Dropdown */}
+        {/* Device Registry Dropdown (Mandatory) */}
         <div className="form-group" style={{ background: 'rgba(11, 60, 122, 0.04)', padding: 12, borderRadius: 8, border: '1px solid rgba(11, 60, 122, 0.12)' }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--primary)', fontWeight: 600 }}>
-            <FaMicrochip /> Select Provisioned Master from Registry (Optional)
+            <FaMicrochip /> Select Provisioned Master from Registry *
           </label>
           <select 
             className="glass-input" 
             value={selectedDeviceId}
             onChange={(e) => setSelectedDeviceId(e.target.value)}
+            required
           >
-            <option value="">— Auto-generate sequence ({gate.lcNumber}-{masterSequence.padStart(2, '0')}) —</option>
+            <option value="">{deviceList.length === 0 ? '-- No unassigned Master devices found in registry --' : '-- Select AWS IoT Thing Name * --'}</option>
             {deviceList.map(dev => (
               <option key={dev.id} value={dev.id.toString()}>
-                {dev.thingName} {dev.gate ? `[Assigned to ${dev.gate.lcNumber}]` : '[Unassigned]'} {dev.firmwareVersion ? `(${dev.firmwareVersion})` : ''}
+                {dev.thingName} {dev.firmwareVersion ? `(${dev.firmwareVersion})` : ''}
               </option>
             ))}
           </select>
-          <small className="text-muted mt-1 block">
-            Select a Thing registered via Fleet Provisioning / IoT Core to use its exact identifier.
-          </small>
+          {deviceList.length === 0 ? (
+            <small style={{ color: '#dc2626', marginTop: 6, display: 'block', fontWeight: 500 }}>
+              ⚠️ No unassigned Master devices in registry. Please provision a Master device in AWS IoT Core first.
+            </small>
+          ) : (
+            <small className="text-muted mt-1 block">
+              Mandatory: Select a Master hardware device registered via Fleet Provisioning / AWS IoT Core.
+            </small>
+          )}
         </div>
 
         <div className="form-group">
@@ -1421,14 +1437,15 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
           <div className="flex items-center gap-2">
             <input 
               className="glass-input flex-1 font-bold" 
-              style={{ backgroundColor: 'rgba(0,0,0,0.05)', cursor: 'not-allowed', color: 'var(--primary)' }}
+              style={{ backgroundColor: 'rgba(0,0,0,0.05)', cursor: 'not-allowed', color: chosenDevice ? 'var(--primary)' : '#94a3b8' }} 
               type="text" 
               readOnly
-              value={chosenDevice ? chosenDevice.thingName : `${gate.lcNumber}-${masterSequence.padStart(2, '0')}`} 
+              value={chosenDevice ? chosenDevice.thingName : ''} 
+              placeholder="Select an AWS IoT device above"
             />
           </div>
-          <small className="text-muted mt-1 block">
-            {chosenDevice ? 'Using exact Thing Name from Device Registry.' : 'Auto-generated sequence based on gate LC number.'}
+          <small className="mt-1 block" style={{ color: chosenDevice ? '#059669' : '#dc2626' }}>
+            {chosenDevice ? 'Authoritative identifier strictly from AWS IoT Device Registry.' : 'Mandatory: Select a provisioned Master device above.'}
           </small>
         </div>
         <div className="form-group">
@@ -1460,7 +1477,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
             Attach photo of the installed SIM card & ICCID number. You can also view or update it anytime in the Evidence Checklist.
           </small>
         </div>
-        <button type="submit" className="btn-primary w-full mt-4 py-3" disabled={submitting}>
+        <button type="submit" className="btn-primary w-full mt-4 py-3" disabled={submitting || !selectedDeviceId}>
           {submitting ? 'Saving...' : 'Create Master Unit'}
         </button>
       </form>

@@ -193,7 +193,13 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Evidence Checklist'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Upload Evidence', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            Text(widget.master['serialNumber'] ?? '', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+          ],
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),

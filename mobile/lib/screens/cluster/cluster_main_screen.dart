@@ -21,6 +21,7 @@ class ClusterMainScreen extends StatefulWidget {
 class _ClusterMainScreenState extends State<ClusterMainScreen> {
   List<dynamic> _gates = [];
   bool _isLoading = true;
+  String? _errorMessage;
   String _token = '';
   List<String> _scopeNames = [];
 
@@ -135,7 +136,12 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
   }
 
   Future<void> _fetchGates({bool isManualRefresh = false, String? overrideScopeId}) async {
-    if (!isManualRefresh) setState(() => _isLoading = true);
+    if (!isManualRefresh) {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null;
+      });
+    }
     try {
       final activeScope = overrideScopeId ?? _developerScopeId;
       final query = activeScope.isNotEmpty ? '?scopeGroupId=${Uri.encodeComponent(activeScope)}' : '';
@@ -143,11 +149,24 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
       final res = await http.get(
         Uri.parse('$baseUrl/lcgate$query'),
         headers: {'Authorization': 'Bearer $_token'},
-      );
+      ).timeout(const Duration(seconds: 12));
+
       if (res.statusCode == 200) {
+        final List raw = json.decode(res.body);
+        // Deduplicate gates by ID to prevent duplicate cards in UI
+        final seenIds = <int>{};
+        final uniqueGates = <dynamic>[];
+        for (final g in raw) {
+          final id = g['id'] as int?;
+          if (id != null && seenIds.add(id)) {
+            uniqueGates.add(g);
+          }
+        }
+
         if (mounted) {
           setState(() {
-            _gates = json.decode(res.body);
+            _gates = uniqueGates;
+            _errorMessage = null;
           });
           if (isManualRefresh) {
             AppFeedback.showSuccess(context, 'LC Gates and clusters refreshed.');
@@ -164,13 +183,29 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           (route) => false,
         );
       } else {
+        String msg = 'Failed to load clusters (HTTP ${res.statusCode}).';
+        if (res.statusCode >= 500) {
+          msg = 'Server temporarily unavailable (HTTP ${res.statusCode}). Please retry.';
+        }
         if (mounted) {
-          AppFeedback.showError(context, 'Failed to load clusters (HTTP ${res.statusCode}).');
+          setState(() => _errorMessage = msg);
+          if (_gates.isNotEmpty) AppFeedback.showError(context, msg);
         }
       }
     } catch (e) {
+      final errStr = e.toString().toLowerCase();
+      String friendlyMsg = 'Network error loading clusters: ${e.toString().replaceAll("Exception: ", "")}';
+      if (errStr.contains('connection abort') || errStr.contains('clientexception') || errStr.contains('socketexception')) {
+        friendlyMsg = 'Network connection interrupted. Please check your internet connection and tap Retry.';
+      } else if (errStr.contains('timeoutexception')) {
+        friendlyMsg = 'Connection timed out while contacting server. Please tap Retry.';
+      }
+
       if (mounted) {
-        AppFeedback.showError(context, 'Network error loading clusters: $e');
+        setState(() => _errorMessage = friendlyMsg);
+        if (_gates.isNotEmpty) {
+          AppFeedback.showError(context, friendlyMsg);
+        }
       }
     } finally {
       if (mounted && !isManualRefresh) setState(() => _isLoading = false);
@@ -652,278 +687,355 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
               ),
             ),
 
-          // 4. Gates List View
+          // 4. Gates List View (Network Error Handling, Cache Preservation & Clean Hierarchy)
           Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _gates.isEmpty
+            child: _isLoading && _gates.isEmpty
+                ? const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        CircularProgressIndicator(),
+                        SizedBox(height: 14),
+                        Text('Loading LC Gate Clusters...', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                      ],
+                    ),
+                  )
+                : _errorMessage != null && _gates.isEmpty
                     ? Center(
                         child: Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 32),
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(Icons.shield_outlined, size: 52, color: Colors.grey.shade400),
+                              Icon(Icons.cloud_off_rounded, size: 54, color: Colors.red.shade400),
                               const SizedBox(height: 14),
                               const Text(
-                                'No Gates in Your Assigned Scope',
-                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF1E293B)),
+                                'Unable to Load Clusters',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17, color: Color(0xFF1E293B)),
                                 textAlign: TextAlign.center,
                               ),
-                              const SizedBox(height: 6),
+                              const SizedBox(height: 8),
                               Text(
-                                'You have not been assigned to any Scope Groups containing LC Gates yet. Contact your system administrator.',
-                                style: TextStyle(color: Colors.grey.shade600, fontSize: 12.5, height: 1.4),
+                                _errorMessage!,
+                                style: TextStyle(color: Colors.grey.shade600, fontSize: 13, height: 1.4),
                                 textAlign: TextAlign.center,
+                              ),
+                              const SizedBox(height: 20),
+                              ElevatedButton.icon(
+                                onPressed: () => _fetchGates(),
+                                icon: const Icon(Icons.refresh, size: 18),
+                                label: const Text('Retry Connection'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.primary,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                ),
                               ),
                             ],
                           ),
                         ),
                       )
-                    : filtered.isEmpty
+                    : _gates.isEmpty
                         ? Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                const Icon(Icons.search_off, size: 48, color: Colors.grey),
-                                const SizedBox(height: 12),
-                                const Text('No gates match the current filters.', style: TextStyle(color: Colors.grey, fontSize: 15)),
-                                const SizedBox(height: 12),
-                                OutlinedButton(onPressed: _resetFilters, child: const Text('Clear Filters')),
-                              ],
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 32),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.shield_outlined, size: 52, color: Colors.grey.shade400),
+                                  const SizedBox(height: 14),
+                                  const Text(
+                                    'No Gates in Your Assigned Scope',
+                                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF1E293B)),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    'You have not been assigned to any Scope Groups containing LC Gates yet. Contact your system administrator.',
+                                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12.5, height: 1.4),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                              ),
                             ),
                           )
-                        : RefreshIndicator(
-                            onRefresh: () => _fetchGates(isManualRefresh: true),
-                            child: ListView.builder(
-                              physics: const AlwaysScrollableScrollPhysics(),
-                              padding: const EdgeInsets.fromLTRB(14, 10, 14, 80),
-                              itemCount: filtered.length,
-                              itemBuilder: (context, index) {
-                                final gate = filtered[index];
-                                final masters = gate['masters'] as List? ?? [];
-                                final zone = (gate['zone'] as String?) ?? '';
-                                final division = (gate['division'] as String?) ?? '';
-                                final locName = (gate['locationName'] ?? 'Unnamed Location').toString();
-                                final gateTitle = (gate['name'] != null && (gate['name'] as String).isNotEmpty)
-                                    ? gate['name']
-                                    : locName;
-
-                                return Card(
-                                  elevation: 1,
-                                  margin: const EdgeInsets.only(bottom: 12),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                    side: const BorderSide(color: Color(0xFFE2E8F0)),
-                                  ),
-                                  child: InkWell(
-                                    borderRadius: BorderRadius.circular(12),
-                                    onTap: () async {
-                                      final result = await Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) => GateDetailScreen(token: _token, gate: gate),
+                        : filtered.isEmpty
+                            ? Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(Icons.search_off, size: 48, color: Colors.grey),
+                                    const SizedBox(height: 12),
+                                    const Text('No gates match the current filters.', style: TextStyle(color: Colors.grey, fontSize: 15)),
+                                    const SizedBox(height: 12),
+                                    OutlinedButton(onPressed: _resetFilters, child: const Text('Clear Filters')),
+                                  ],
+                                ),
+                              )
+                            : RefreshIndicator(
+                                onRefresh: () => _fetchGates(isManualRefresh: true),
+                                child: ListView.builder(
+                                  physics: const AlwaysScrollableScrollPhysics(),
+                                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 80),
+                                  itemCount: filtered.length + (_errorMessage != null ? 1 : 0),
+                                  itemBuilder: (context, index) {
+                                    // If there's an error banner while displaying cached data
+                                    if (_errorMessage != null && index == 0) {
+                                      return Container(
+                                        margin: const EdgeInsets.only(bottom: 12),
+                                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFFEF2F2),
+                                          borderRadius: BorderRadius.circular(10),
+                                          border: Border.all(color: const Color(0xFFFCA5A5)),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            const Icon(Icons.wifi_off_rounded, color: Color(0xFFDC2626), size: 20),
+                                            const SizedBox(width: 10),
+                                            Expanded(
+                                              child: Text(
+                                                _errorMessage!,
+                                                style: const TextStyle(fontSize: 12, color: Color(0xFF991B1B)),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            TextButton(
+                                              style: TextButton.styleFrom(
+                                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                                minimumSize: Size.zero,
+                                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                              ),
+                                              onPressed: () => _fetchGates(isManualRefresh: true),
+                                              child: const Text('Retry', style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFFDC2626))),
+                                            ),
+                                          ],
                                         ),
                                       );
-                                      if (!mounted) return;
-                                      if (result == true) {
-                                        _fetchGates();
-                                        if (mounted) {
-                                          AppFeedback.showSuccess(context, 'LC Gate details refreshed.');
-                                        }
-                                      }
-                                    },
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(14),
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          // Header row: Title + LC badge + Zone/Division + Delete button
-                                          Row(
+                                    }
+
+                                    final gateIndex = _errorMessage != null ? index - 1 : index;
+                                    final gate = filtered[gateIndex];
+                                    final masters = gate['masters'] as List? ?? [];
+                                    final zone = (gate['zone'] as String?) ?? '';
+                                    final division = (gate['division'] as String?) ?? '';
+                                    final locName = (gate['locationName'] ?? 'Unnamed Location').toString();
+                                    final lcNumber = (gate['lcNumber'] ?? 'LC-GATE').toString();
+                                    final customName = (gate['name'] != null && (gate['name'] as String).isNotEmpty && gate['name'] != lcNumber)
+                                        ? gate['name'] as String
+                                        : null;
+
+                                    return Card(
+                                      elevation: 1,
+                                      margin: const EdgeInsets.only(bottom: 12),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                        side: const BorderSide(color: Color(0xFFE2E8F0)),
+                                      ),
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(12),
+                                        onTap: () async {
+                                          final result = await Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (_) => GateDetailScreen(token: _token, gate: gate),
+                                            ),
+                                          );
+                                          if (!mounted) return;
+                                          if (result == true) {
+                                            _fetchGates();
+                                            if (mounted) {
+                                              AppFeedback.showSuccess(context, 'LC Gate details refreshed.');
+                                            }
+                                          }
+                                        },
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(14),
+                                          child: Column(
                                             crossAxisAlignment: CrossAxisAlignment.start,
                                             children: [
-                                              Expanded(
-                                                child: Column(
-                                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                                  children: [
-                                                    Text(
-                                                      gateTitle,
-                                                      style: const TextStyle(
-                                                        fontSize: 16,
-                                                        fontWeight: FontWeight.bold,
-                                                        color: Color(0xFF0F172A),
-                                                      ),
-                                                      maxLines: 1,
-                                                      overflow: TextOverflow.ellipsis,
-                                                    ),
-                                                    const SizedBox(height: 4),
-                                                    Row(
+                                              // Header row: Unique LC Number heading (no repeated badge) + Status + Zone + Delete
+                                              Row(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Expanded(
+                                                    child: Column(
+                                                      crossAxisAlignment: CrossAxisAlignment.start,
                                                       children: [
-                                                        Container(
-                                                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                                                          decoration: BoxDecoration(
-                                                            color: const Color(0xFFEFF6FF),
-                                                            borderRadius: BorderRadius.circular(4),
-                                                            border: Border.all(color: const Color(0xFFBFDBFE)),
-                                                          ),
-                                                          child: Text(
-                                                            gate['lcNumber'] ?? 'NO LC#',
-                                                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8)),
+                                                        Text(
+                                                          lcNumber,
+                                                          style: const TextStyle(
+                                                            fontSize: 16,
+                                                            fontWeight: FontWeight.bold,
+                                                            color: Color(0xFF0F172A),
                                                           ),
                                                         ),
-                                                        const SizedBox(width: 6),
-                                                        Builder(
-                                                          builder: (context) {
-                                                            final isOnline = gate['deviceStatus'] == 'ONLINE' || gate['isOnline'] == true;
-                                                            return Container(
-                                                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                              decoration: BoxDecoration(
-                                                                color: isOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
-                                                                borderRadius: BorderRadius.circular(4),
-                                                                border: Border.all(color: isOnline ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA)),
+                                                        if (customName != null) ...[
+                                                          const SizedBox(height: 2),
+                                                          Text(
+                                                            customName,
+                                                            style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                                                            maxLines: 1,
+                                                            overflow: TextOverflow.ellipsis,
+                                                          ),
+                                                        ],
+                                                        const SizedBox(height: 6),
+                                                        Row(
+                                                          children: [
+                                                            Builder(
+                                                              builder: (context) {
+                                                                final isOnline = gate['deviceStatus'] == 'ONLINE' || gate['isOnline'] == true;
+                                                                return Container(
+                                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                                  decoration: BoxDecoration(
+                                                                    color: isOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
+                                                                    borderRadius: BorderRadius.circular(4),
+                                                                    border: Border.all(color: isOnline ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA)),
+                                                                  ),
+                                                                  child: Row(
+                                                                    mainAxisSize: MainAxisSize.min,
+                                                                    children: [
+                                                                      Container(
+                                                                        width: 5,
+                                                                        height: 5,
+                                                                        decoration: BoxDecoration(
+                                                                          shape: BoxShape.circle,
+                                                                          color: isOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                                                                        ),
+                                                                      ),
+                                                                      const SizedBox(width: 4),
+                                                                      Text(
+                                                                        isOnline ? 'ONLINE' : 'OFFLINE',
+                                                                        style: TextStyle(
+                                                                          fontSize: 9.5,
+                                                                          fontWeight: FontWeight.bold,
+                                                                          color: isOnline ? const Color(0xFF047857) : const Color(0xFFB91C1C),
+                                                                        ),
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                                );
+                                                              },
+                                                            ),
+                                                            if (zone.isNotEmpty) ...[
+                                                              const SizedBox(width: 6),
+                                                              Container(
+                                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                                decoration: BoxDecoration(
+                                                                  color: const Color(0xFFEEF2FF),
+                                                                  borderRadius: BorderRadius.circular(4),
+                                                                ),
+                                                                child: Text(
+                                                                  zone,
+                                                                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF4338CA)),
+                                                                ),
                                                               ),
-                                                              child: Row(
-                                                                mainAxisSize: MainAxisSize.min,
-                                                                children: [
-                                                                  Container(
-                                                                    width: 5,
-                                                                    height: 5,
-                                                                    decoration: BoxDecoration(
-                                                                      shape: BoxShape.circle,
-                                                                      color: isOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
-                                                                    ),
-                                                                  ),
-                                                                  const SizedBox(width: 4),
-                                                                  Text(
-                                                                    isOnline ? 'ONLINE' : 'OFFLINE',
-                                                                    style: TextStyle(
-                                                                      fontSize: 9.5,
-                                                                      fontWeight: FontWeight.bold,
-                                                                      color: isOnline ? const Color(0xFF047857) : const Color(0xFFB91C1C),
-                                                                    ),
-                                                                  ),
-                                                                ],
-                                                             ),
-                                                            );
-                                                          },
+                                                            ],
+                                                            if (division.isNotEmpty) ...[
+                                                              const SizedBox(width: 6),
+                                                              Container(
+                                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                                decoration: BoxDecoration(
+                                                                  color: const Color(0xFFECFEFF),
+                                                                  borderRadius: BorderRadius.circular(4),
+                                                                ),
+                                                                child: Text(
+                                                                  division,
+                                                                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF0E9AA7)),
+                                                                ),
+                                                              ),
+                                                            ],
+                                                          ],
                                                         ),
-                                                        if (zone.isNotEmpty) ...[
-                                                          const SizedBox(width: 6),
-                                                          Container(
-                                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                            decoration: BoxDecoration(
-                                                              color: const Color(0xFFEEF2FF),
-                                                              borderRadius: BorderRadius.circular(4),
-                                                            ),
-                                                            child: Text(
-                                                              zone,
-                                                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF4338CA)),
-                                                            ),
-                                                          ),
-                                                        ],
-                                                        if (division.isNotEmpty) ...[
-                                                          const SizedBox(width: 6),
-                                                          Container(
-                                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                            decoration: BoxDecoration(
-                                                              color: const Color(0xFFECFEFF),
-                                                              borderRadius: BorderRadius.circular(4),
-                                                            ),
-                                                            child: Text(
-                                                              division,
-                                                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF0E9AA7)),
-                                                            ),
-                                                          ),
-                                                        ],
                                                       ],
                                                     ),
-                                                  ],
-                                                ),
+                                                  ),
+                                                  IconButton(
+                                                    visualDensity: VisualDensity.compact,
+                                                    icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                                                    tooltip: 'Delete Gate',
+                                                    onPressed: () => _deleteGate(gate),
+                                                  ),
+                                                ],
                                               ),
-                                              IconButton(
-                                                visualDensity: VisualDensity.compact,
-                                                icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
-                                                tooltip: 'Delete Gate',
-                                                onPressed: () => _deleteGate(gate),
-                                              ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 12),
+                                              const SizedBox(height: 12),
 
-                                          // Location & Master Units Rows (Parity with Web gate card)
-                                          Row(
-                                            children: [
-                                              Container(
-                                                padding: const EdgeInsets.all(6),
-                                                decoration: BoxDecoration(
-                                                  color: const Color(0xFF0E9AA7).withValues(alpha: 0.1),
-                                                  borderRadius: BorderRadius.circular(8),
-                                                ),
-                                                child: const Icon(Icons.location_on_outlined, size: 16, color: Color(0xFF0E9AA7)),
+                                              // Location Description Row
+                                              Row(
+                                                children: [
+                                                  Container(
+                                                    padding: const EdgeInsets.all(6),
+                                                    decoration: BoxDecoration(
+                                                      color: const Color(0xFF0E9AA7).withValues(alpha: 0.1),
+                                                      borderRadius: BorderRadius.circular(8),
+                                                    ),
+                                                    child: const Icon(Icons.location_on_outlined, size: 16, color: Color(0xFF0E9AA7)),
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Expanded(
+                                                    child: Text(
+                                                      locName,
+                                                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Color(0xFF334155)),
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                  ),
+                                                ],
                                               ),
-                                              const SizedBox(width: 8),
-                                              Expanded(
-                                                child: Text(
-                                                  locName,
-                                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Color(0xFF334155)),
-                                                  overflow: TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 6),
-                                          Row(
-                                            children: [
-                                              Container(
-                                                padding: const EdgeInsets.all(6),
-                                                decoration: BoxDecoration(
-                                                  color: AppColors.primary.withValues(alpha: 0.08),
-                                                  borderRadius: BorderRadius.circular(8),
-                                                ),
-                                                child: const Icon(Icons.computer_outlined, size: 16, color: AppColors.primary),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Text(
-                                                '${masters.length} Master Unit${masters.length == 1 ? "" : "s"} Registered',
-                                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Color(0xFF334155)),
-                                              ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 10),
-                                          const Divider(height: 1, color: Color(0xFFF1F5F9)),
-                                          const SizedBox(height: 8),
+                                              const SizedBox(height: 6),
 
-                                          // Bottom Row: Gate ID and "Device Info" Action Button
-                                          Row(
-                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                            children: [
-                                              Text(
-                                                'ID: ${gate['lcNumber'] ?? "N/A"}',
-                                                style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
+                                              // Master Units Count Row
+                                              Row(
+                                                children: [
+                                                  Container(
+                                                    padding: const EdgeInsets.all(6),
+                                                    decoration: BoxDecoration(
+                                                      color: AppColors.primary.withValues(alpha: 0.08),
+                                                      borderRadius: BorderRadius.circular(8),
+                                                    ),
+                                                    child: const Icon(Icons.computer_outlined, size: 16, color: AppColors.primary),
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Text(
+                                                    '${masters.length} Master Unit${masters.length == 1 ? "" : "s"} Registered',
+                                                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Color(0xFF334155)),
+                                                  ),
+                                                ],
                                               ),
-                                              OutlinedButton.icon(
-                                                style: OutlinedButton.styleFrom(
-                                                  visualDensity: VisualDensity.compact,
-                                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                                  side: const BorderSide(color: Color(0xFFCBD5E1)),
-                                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                                                ),
-                                                icon: const Icon(Icons.developer_board, size: 14, color: AppColors.primary),
-                                                label: const Text('Device Info', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary)),
-                                                onPressed: () => DeviceInfoSheet.show(context, gate: Map<String, dynamic>.from(gate)),
+                                              const SizedBox(height: 10),
+                                              const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                                              const SizedBox(height: 8),
+
+                                              // Bottom Row: Asset status & Device Info Action (Removed redundant duplicate ID)
+                                              Row(
+                                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                children: [
+                                                  Text(
+                                                    masters.isEmpty ? 'No Master Hardware' : (masters.first['powerSource'] == 'SOLAR' ? 'Solar Powered' : 'Direct Powered'),
+                                                    style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                                                  ),
+                                                  OutlinedButton.icon(
+                                                    style: OutlinedButton.styleFrom(
+                                                      visualDensity: VisualDensity.compact,
+                                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                                      side: const BorderSide(color: Color(0xFFCBD5E1)),
+                                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                                    ),
+                                                    icon: const Icon(Icons.developer_board, size: 14, color: AppColors.primary),
+                                                    label: const Text('Device Info', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                                                    onPressed: () => DeviceInfoSheet.show(context, gate: Map<String, dynamic>.from(gate)),
+                                                  ),
+                                                ],
                                               ),
                                             ],
                                           ),
-                                        ],
+                                        ),
                                       ),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-          ),
-        ],
+                                    );
+                                  },
+                                ),
+                              ),
+          )        ],
       ),
     );
   }

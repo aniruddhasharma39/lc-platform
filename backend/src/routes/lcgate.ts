@@ -230,94 +230,66 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
 });
 
 
-// Create a new LC Gate
-router.post('/', authenticate, async (req, res, next) => {
+// Create a new LC Gate (Clean railway asset creation decoupled from AWS IoT provisioning)
+router.post('/', authenticate, async (req: any, res, next) => {
   try {
     const data = createGateSchema.parse(req.body);
 
-    let lcNumber = data.lcNumber ? data.lcNumber.trim() : '';
-    if (!lcNumber && data.lcNumberDigits) {
-      lcNumber = `LC-${data.lcNumberDigits.trim()}`;
+    const rawLc = (data.lcNumber || data.lcNumberDigits || '').trim();
+    if (!rawLc) {
+      return res.status(400).json({ error: 'LC Number is mandatory' });
     }
-    if (!lcNumber) {
-      return res.status(400).json({ error: 'LC Number or 4-digit number is required' });
-    }
-    
-    // Check for existing gate
-    const existing = await prisma.lCGate.findUnique({ where: { lcNumber } });
+    const cleanLcNumber = rawLc.toUpperCase().startsWith('LC-')
+      ? rawLc.toUpperCase()
+      : `LC-${rawLc.toUpperCase()}`;
+
+    // Case-insensitive check for existing gate
+    const existing = await prisma.lCGate.findFirst({
+      where: {
+        lcNumber: { equals: cleanLcNumber, mode: 'insensitive' }
+      }
+    });
     if (existing) {
-      return res.status(400).json({ error: `Gate with LC Number "${lcNumber}" already exists` });
+      return res.status(400).json({ error: `Gate with LC Number "${cleanLcNumber}" already exists` });
     }
 
     const gateName = (data.name && data.name.trim()) 
       ? data.name.trim() 
-      : (data.locationName ? `${data.locationName.trim()} (${lcNumber})` : lcNumber);
+      : (data.locationName ? data.locationName.trim() : cleanLcNumber);
 
     const gate = await prisma.lCGate.create({
       data: {
         name: gateName,
-        lcNumber,
-        locationName: data.locationName,
-        zone: data.zone,
-        division: data.division,
+        lcNumber: cleanLcNumber,
+        locationName: data.locationName.trim(),
+        zone: data.zone || 'Central Railway',
+        division: data.division || 'Pune',
         latitude: data.latitude,
         longitude: data.longitude,
       },
     });
 
-    // Auto-create initial Master Unit for this gate with the same serialNumber/ID
-    let master = await prisma.masterUnit.findFirst({ where: { gateId: gate.id } });
-    if (!master) {
-      master = await prisma.masterUnit.create({
-        data: {
-          serialNumber: lcNumber,
-          masterSequence: 1,
-          powerSource: 'SOLAR',
-          gateId: gate.id,
-        },
+    // Auto-link to creator's assigned scope group so it immediately appears in their scope
+    if (req.user?.id) {
+      const userScopes = await prisma.scopeGroupUser.findMany({
+        where: { userId: req.user.id },
+        select: { scopeGroupId: true }
       });
-    }
-
-    // Automatically link Master device from DeviceRegistry if deviceId or matching thingName/serial
-    if (data.deviceId) {
-      await prisma.deviceRegistry.updateMany({
-        where: { id: data.deviceId },
-        data: { gateId: gate.id, masterId: master.id }
-      }).catch(console.warn);
-    } else {
-      await prisma.deviceRegistry.updateMany({
-        where: {
-          OR: [
-            { thingName: lcNumber },
-            { serialNumber: lcNumber }
-          ],
-        },
-        data: { gateId: gate.id, masterId: master.id }
-      }).catch(console.warn);
-    }
-
-    // Initialize the two physical wired slave units (Barrier A & Barrier B) for this master
-    const defaultWiredSlaves = [
-      { serial: `${lcNumber}-A`, type: 'DEVICE_1', seq: 1 },
-      { serial: `${lcNumber}-B`, type: 'DEVICE_2', seq: 2 },
-    ];
-
-    for (const slave of defaultWiredSlaves) {
-      let child = await prisma.childDevice.findUnique({ where: { serialNumber: slave.serial } });
-      if (!child) {
-        await prisma.childDevice.create({
+      for (const s of userScopes) {
+        await prisma.scopeGroupGate.create({
           data: {
-            serialNumber: slave.serial,
-            type: slave.type,
-            deviceSequence: slave.seq,
-            masterId: master.id,
+            gateId: gate.id,
+            scopeGroupId: s.scopeGroupId,
           }
-        }).catch(console.warn);
+        }).catch(() => {});
       }
     }
 
     res.status(201).json(gate);
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.code === 'P2002') {
+      return res.status(400).json({ error: 'An LC Gate with this number already exists in the system.' });
+    }
     next(error);
   }
 });
@@ -476,7 +448,9 @@ router.get('/', authenticate, async (req: any, res, next) => {
       };
     });
 
-    res.json(enrichedGates);
+    // Ensure gate list is strictly unique by ID
+    const uniqueGates = Array.from(new Map(enrichedGates.map(g => [g.id, g])).values());
+    res.json(uniqueGates);
   } catch (error) {
     next(error);
   }
@@ -487,37 +461,72 @@ router.get('/:gateId/next-master-sequence', authenticate, async (req, res, next)
   try {
     const gateId = parseInt(req.params.gateId);
     if (isNaN(gateId)) return res.status(400).json({ error: 'Invalid gate ID' });
-    
-    const lastMaster = await prisma.masterUnit.findFirst({
+
+    const gate = await prisma.lCGate.findUnique({ where: { id: gateId } });
+    if (!gate) return res.status(404).json({ error: 'LC Gate not found' });
+
+    const existingMasters = await prisma.masterUnit.findMany({
       where: { gateId },
-      orderBy: { masterSequence: 'desc' }
+      orderBy: { masterSequence: 'asc' }
     });
-    
-    const nextSeq = lastMaster ? lastMaster.masterSequence + 1 : 1;
-    res.json({ nextSequence: nextSeq });
+
+    const takenSequences = new Set(existingMasters.map(m => m.masterSequence));
+    let nextSeq = 1;
+    while (takenSequences.has(nextSeq)) {
+      nextSeq++;
+    }
+
+    const seqStr = nextSeq.toString().padStart(2, '0');
+    const nextSerialNumber = `${gate.lcNumber}-${seqStr}`;
+
+    res.json({
+      nextSequence: nextSeq,
+      formattedSequence: seqStr,
+      nextSerialNumber,
+      gateLcNumber: gate.lcNumber,
+    });
   } catch (error) {
     next(error);
   }
 });
 
+
 const createMasterSchema = z.object({
   masterSequence: z.number().int().min(1).max(99).optional(),
   powerSource: z.enum(['SOLAR', 'DIRECT']),
   serialNumber: z.string().optional(),
-  deviceId: z.number().int().optional().nullable(),
+  deviceId: z.number().int(),
 });
 
-// Add a Master to an LC Gate
+// Add a Master to an LC Gate with mandatory AWS IoT registry association & standard slave creation
 router.post('/:gateId/masters', authenticate, async (req, res, next) => {
   try {
     const gateId = parseInt(req.params.gateId);
     if (isNaN(gateId)) return res.status(400).json({ error: 'Invalid gate ID' });
-    
+
     const data = createMasterSchema.parse(req.body);
-    
+
     const gate = await prisma.lCGate.findUnique({ where: { id: gateId } });
     if (!gate) {
       return res.status(404).json({ error: 'LC Gate not found' });
+    }
+
+    if (!data.deviceId) {
+      return res.status(400).json({ error: 'Please select a provisioned AWS IoT Master device from the registry.' });
+    }
+
+    const dev = await prisma.deviceRegistry.findUnique({ where: { id: data.deviceId } });
+    if (!dev) {
+      return res.status(400).json({ error: 'Selected device does not exist in AWS IoT registry.' });
+    }
+    if (dev.masterId && dev.masterId !== 0) {
+      return res.status(400).json({ error: `Device "${dev.thingName}" is already assigned to another Master Unit.` });
+    }
+
+    // Authoritative serial number strictly comes from AWS IoT Device Registry
+    const serialNumber = dev.thingName || dev.serialNumber;
+    if (!serialNumber) {
+      return res.status(400).json({ error: 'Selected device does not have a valid Thing Name / Serial Number in AWS IoT.' });
     }
 
     const existingMasters = await prisma.masterUnit.findMany({
@@ -535,17 +544,9 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
       targetSequence = nextSeq;
     }
 
-    let serialNumber = data.serialNumber ? data.serialNumber.trim() : `${gate.lcNumber}-${targetSequence.toString().padStart(2, '0')}`;
-    if (!data.serialNumber) {
-      while (await prisma.masterUnit.findUnique({ where: { serialNumber } })) {
-        targetSequence++;
-        serialNumber = `${gate.lcNumber}-${targetSequence.toString().padStart(2, '0')}`;
-      }
-    } else {
-      const existing = await prisma.masterUnit.findUnique({ where: { serialNumber } });
-      if (existing) {
-        return res.status(400).json({ error: `Master Unit with serial number "${serialNumber}" already exists` });
-      }
+    const existing = await prisma.masterUnit.findUnique({ where: { serialNumber } });
+    if (existing) {
+      return res.status(400).json({ error: `Master Unit with serial number "${serialNumber}" already exists in the system.` });
     }
 
     const master = await prisma.masterUnit.create({
@@ -560,23 +561,37 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
       },
     });
 
-    // Auto-link DeviceRegistry
-    if (data.deviceId) {
-      await prisma.deviceRegistry.updateMany({
-        where: { id: data.deviceId },
-        data: { masterId: master.id, gateId: master.gateId }
-      }).catch(console.warn);
-    } else {
-      await prisma.deviceRegistry.updateMany({
-        where: {
-          OR: [{ thingName: serialNumber }, { serialNumber: serialNumber }]
-        },
-        data: { masterId: master.id, gateId: master.gateId }
-      }).catch(console.warn);
+    // Link device in registry
+    await prisma.deviceRegistry.update({
+      where: { id: data.deviceId },
+      data: { masterId: master.id, gateId: master.gateId }
+    }).catch(console.warn);
+
+    // Initialize physical wired slave units (Barrier A & Barrier B) for this master
+    const defaultWiredSlaves = [
+      { serial: `${serialNumber}-A`, type: 'DEVICE_1', seq: 1 },
+      { serial: `${serialNumber}-B`, type: 'DEVICE_2', seq: 2 },
+    ];
+
+    for (const slave of defaultWiredSlaves) {
+      let child = await prisma.childDevice.findUnique({ where: { serialNumber: slave.serial } });
+      if (!child) {
+        await prisma.childDevice.create({
+          data: {
+            serialNumber: slave.serial,
+            type: slave.type,
+            deviceSequence: slave.seq,
+            masterId: master.id,
+          }
+        }).catch(console.warn);
+      }
     }
 
     res.status(201).json(master);
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.code === 'P2002') {
+      return res.status(400).json({ error: 'Master Unit serial number must be unique.' });
+    }
     next(error);
   }
 });

@@ -447,7 +447,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Cluster Evidence Gallery', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
+                      const Text('View Evidence Gallery', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
                       Text('Master #${master['masterSequence']} (${master['serialNumber']})', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
                     ],
                   ),
@@ -626,8 +626,8 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(gate['name'] ?? (gate['locationName'] ?? 'Gate Details'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            Text(gate['lcNumber'] ?? '', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+            Text(gate['lcNumber'] ?? 'Gate Details', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            Text('${gate['locationName'] ?? ''}${gate['zone'] != null ? " • ${gate['zone']}" : ""}', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
           ],
         ),
         actions: [
@@ -694,32 +694,28 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
                                 Expanded(
-                                  child: Text(
-                                    master['serialNumber'] ?? 'Master Unit',
-                                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                                    overflow: TextOverflow.ellipsis,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Master #${master['masterSequence'] ?? (index + 1)}',
+                                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary, letterSpacing: 0.5),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        master['serialNumber'] ?? 'Master Unit',
+                                        style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
                                   ),
                                 ),
-                                Row(
-                                  children: [
-                                    IconButton(
-                                      visualDensity: VisualDensity.compact,
-                                      icon: const Icon(Icons.developer_board, size: 20, color: AppColors.primary),
-                                      tooltip: 'Device Info',
-                                      onPressed: () => DeviceInfoSheet.show(
-                                        context,
-                                        master: Map<String, dynamic>.from(master),
-                                        gate: Map<String, dynamic>.from(gate),
-                                      ),
-                                    ),
-                                    IconButton(
-                                      visualDensity: VisualDensity.compact,
-                                      icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
-                                      tooltip: 'Delete Master Unit',
-                                      onPressed: () => _deleteMaster(master),
-                                    ),
-                                  ],
-                                )
+                                IconButton(
+                                  visualDensity: VisualDensity.compact,
+                                  icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                                  tooltip: 'Delete Master Unit',
+                                  onPressed: () => _deleteMaster(master),
+                                ),
                               ],
                             ),
                             const SizedBox(height: 6),

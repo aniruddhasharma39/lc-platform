@@ -162,7 +162,7 @@ router.get('/stats/summary', authenticate, async (_req, res, next) => {
  */
 router.get('/', authenticate, async (req, res, next) => {
   try {
-    const { search, deviceType, status, gateId, page = '1', limit = '50' } = req.query;
+    const { search, deviceType, status, gateId, unassigned, page = '1', limit = '50' } = req.query;
 
     const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
     const take = Math.min(100, Math.max(1, parseInt(limit as string, 10) || 50));
@@ -183,6 +183,11 @@ router.get('/', authenticate, async (req, res, next) => {
       }
     }
 
+
+    if (unassigned === 'true') {
+      where.masterId = null;
+      where.gateId = null;
+    }
 
     if (gateId && typeof gateId === 'string') {
       const gid = parseInt(gateId, 10);
