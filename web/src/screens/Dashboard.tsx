@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { 
   FaBell, FaBars, FaTimes, FaUser, FaUserCircle, 
   FaUserPlus, FaNetworkWired, FaMicrochip, FaCheckCircle, 
@@ -120,6 +120,21 @@ export default function Dashboard({ user, onLogout }: Props) {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState<number>(0);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
+  const notificationsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+      if (notificationsRef.current && !notificationsRef.current.contains(e.target as Node)) {
+        setIsNotificationsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Profile Modal State
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -342,7 +357,7 @@ export default function Dashboard({ user, onLogout }: Props) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           {/* Notification Bell */}
-          <div style={{ position: 'relative' }}>
+          <div ref={notificationsRef} style={{ position: 'relative' }}>
             <button 
               type="button" 
               style={{ 
@@ -364,7 +379,7 @@ export default function Dashboard({ user, onLogout }: Props) {
                 transition: 'all 0.2s ease',
                 boxShadow: isNotificationsOpen ? '0 0 0 3px rgba(2, 132, 199, 0.15)' : '0 1px 3px rgba(0,0,0,0.06)',
               }}
-              onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
+              onClick={() => { setIsNotificationsOpen(prev => !prev); setIsDropdownOpen(false); }}
               title="Notifications"
             >
               <FaBell size={19} style={{ color: isNotificationsOpen ? '#0284c7' : '#475569', display: 'block' }} />
@@ -552,21 +567,51 @@ export default function Dashboard({ user, onLogout }: Props) {
             )}
           </div>
 
-          {/* User Avatar with Hover Dropdown */}
-          <div 
-            style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
-            onMouseEnter={() => setIsDropdownOpen(true)}
-            onMouseLeave={() => setIsDropdownOpen(false)}
-          >
-            <div className="avatar" style={{ margin: 0 }}>
-              {user.fullName.substring(0, 2).toUpperCase()}
-            </div>
+          {/* User Avatar Toggle Button */}
+          <div ref={profileRef} style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+            <button
+              type="button"
+              className="profile-toggle-btn"
+              onClick={() => {
+                setIsDropdownOpen(prev => !prev);
+                setIsNotificationsOpen(false);
+              }}
+              aria-expanded={isDropdownOpen}
+              aria-label="Toggle user profile menu"
+              title="User Profile"
+              style={{
+                background: isDropdownOpen ? 'var(--primary-subtle, #e0f2fe)' : 'transparent',
+                border: isDropdownOpen ? '2px solid var(--primary, #0B3C7A)' : '2px solid transparent',
+                borderRadius: '50%',
+                padding: '2px',
+                margin: 0,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                boxShadow: isDropdownOpen ? '0 0 0 3px rgba(11, 60, 122, 0.2)' : 'none',
+                outline: 'none',
+              }}
+            >
+              <div 
+                className="avatar" 
+                style={{ 
+                  margin: 0,
+                  transform: isDropdownOpen ? 'scale(0.96)' : 'scale(1)',
+                  transition: 'transform 0.15s ease'
+                }}
+              >
+                {user.fullName.substring(0, 2).toUpperCase()}
+              </div>
+            </button>
             
             {isDropdownOpen && (
               <div className="card" style={{ 
-                position: 'absolute', top: '100%', right: 0, marginTop: '0.5rem',
+                position: 'absolute', top: 'calc(100% + 8px)', right: 0,
                 minWidth: 230, padding: 14, zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 10,
-                boxShadow: '0 10px 25px rgba(0,0,0,0.12)', borderRadius: 10,
+                boxShadow: '0 12px 30px rgba(0,0,0,0.14)', borderRadius: 12,
+                border: '1px solid var(--border)',
               }}>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   <div style={{ fontWeight: 'bold', fontSize: '1.05rem', lineHeight: 1.2 }}>{user.fullName}</div>
