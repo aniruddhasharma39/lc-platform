@@ -17,17 +17,27 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
     return res.status(401).json({ error: 'Authentication required' });
   }
 
-  let decoded: { userId: number };
+  let decoded: any;
   try {
     const secret = process.env.JWT_SECRET || 'super-secret-jwt-key';
-    decoded = jwt.verify(token, secret) as { userId: number };
+    decoded = jwt.verify(token, secret);
   } catch (error) {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 
+  const userId = decoded?.userId ?? decoded?.id;
+  if (!userId || (typeof userId !== 'number' && typeof userId !== 'string')) {
+    return res.status(401).json({ error: 'Invalid token payload' });
+  }
+
+  const parsedUserId = typeof userId === 'string' ? parseInt(userId, 10) : userId;
+  if (isNaN(parsedUserId)) {
+    return res.status(401).json({ error: 'Invalid user ID in token' });
+  }
+
   try {
     const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
+      where: { id: parsedUserId },
       include: { 
         role: {
           include: {

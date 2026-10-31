@@ -158,6 +158,121 @@ export async function recordGateTelemetryTransition(params: {
 }
 
 /**
+ * Backfills / synchronizes historical telemetry events into LCGateEvent
+ * so all past OPEN/CLOSED operations are available in the Reports section.
+ */
+export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
+  try {
+    const existingEventsCount = await prisma.lCGateEvent.count(
+      specificGateId ? { where: { gateId: specificGateId } } : undefined
+    );
+
+    // If events already exist and specific gate not forced, skip
+    if (existingEventsCount > 0 && !specificGateId) {
+      return { synced: 0, existing: existingEventsCount };
+    }
+
+    // 1. Fetch devices with their linked gate
+    const devices = await prisma.deviceRegistry.findMany({
+      where: specificGateId ? { gateId: specificGateId } : { gateId: { not: null } },
+      select: { id: true, thingName: true, gateId: true }
+    });
+
+    if (devices.length === 0) {
+      return { synced: 0, existing: existingEventsCount };
+    }
+
+    let totalSynced = 0;
+
+    for (const dev of devices) {
+      if (!dev.gateId) continue;
+
+      const records = await prisma.deviceTelemetry.findMany({
+        where: {
+          OR: [
+            { thingName: dev.thingName },
+            { deviceRegistryId: dev.id },
+            { topic: { contains: dev.thingName } }
+          ]
+        },
+        orderBy: { receivedAt: 'asc' }
+      });
+
+      if (records.length === 0) continue;
+
+      let prevState: 'OPEN' | 'CLOSED' | null = null;
+      let currentOpenEventId: number | null = null;
+      let openTimestamp: Date | null = null;
+
+      for (const r of records) {
+        const state = parseGateStateFromPayload(r.payload);
+        if (!state) continue;
+
+        if (state !== prevState) {
+          const timestamp = new Date(r.receivedAt);
+
+          if (state === 'OPEN') {
+            const ev = await prisma.lCGateEvent.create({
+              data: {
+                gateId: dev.gateId,
+                openedAt: timestamp,
+                status: 'OPEN',
+                openedBy: `AWS IoT / ${dev.thingName}`,
+                remarks: `State transition: OPEN detected by IoT Telemetry`
+              }
+            });
+            currentOpenEventId = ev.id;
+            openTimestamp = timestamp;
+            totalSynced++;
+          } else if (state === 'CLOSED') {
+            if (currentOpenEventId && openTimestamp) {
+              const durationSeconds = Math.max(0, Math.round((timestamp.getTime() - openTimestamp.getTime()) / 1000));
+              const finalStatus = durationSeconds > 900 ? 'EXTENDED_DELAY' : 'CLOSED';
+
+              await prisma.lCGateEvent.update({
+                where: { id: currentOpenEventId },
+                data: {
+                  closedAt: timestamp,
+                  durationSeconds,
+                  status: finalStatus,
+                  closedBy: `AWS IoT / ${dev.thingName}`,
+                  remarks: `State transition: CLOSED detected by IoT Telemetry`
+                }
+              });
+              currentOpenEventId = null;
+              openTimestamp = null;
+            } else {
+              // Started in closed state or cold start
+              const estOpen = new Date(timestamp.getTime() - 180000);
+              await prisma.lCGateEvent.create({
+                data: {
+                  gateId: dev.gateId,
+                  openedAt: estOpen,
+                  closedAt: timestamp,
+                  durationSeconds: 180,
+                  status: 'CLOSED',
+                  openedBy: `AWS IoT / ${dev.thingName}`,
+                  closedBy: `AWS IoT / ${dev.thingName}`,
+                  remarks: `Direct CLOSED state detected via IoT Telemetry`
+                }
+              });
+              totalSynced++;
+            }
+          }
+          prevState = state;
+        }
+      }
+    }
+
+    console.log(`📊 [REPORTS SYNC] Successfully synced ${totalSynced} operational events from historical telemetry stream.`);
+    return { synced: totalSynced, existing: existingEventsCount };
+  } catch (err: any) {
+    console.error('Error syncing historical telemetry events:', err?.message || err);
+    return { synced: 0, error: err?.message };
+  }
+}
+
+/**
  * Initializes the monitor by capturing current state so past history doesn't trigger alerts
  */
 export async function initTelemetryMonitor() {
@@ -196,6 +311,9 @@ export async function initTelemetryMonitor() {
     }
 
     console.log(`📡 [TELEMETRY MONITOR] Initialized at telemetry ID ${lastProcessedId}. Tracking ${lastKnownState.size} device states.`);
+
+    // Backfill historical telemetry transitions into LCGateEvent if empty
+    await syncHistoricalTelemetryEvents();
   } catch (err: any) {
     console.error('Failed to initialize telemetry monitor:', err?.message || err);
   }

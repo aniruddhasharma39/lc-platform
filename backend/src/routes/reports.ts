@@ -7,6 +7,7 @@ import fs from 'fs';
 import { prisma } from '../lib/prisma';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { getAllDescendantScopeGroupIds } from '../lib/scopeHierarchy';
+import { syncHistoricalTelemetryEvents } from '../lib/telemetryMonitor';
 
 const router = Router();
 router.use(authenticate);
@@ -320,6 +321,14 @@ async function fetchFilteredOperationalEvents(req: AuthRequest) {
 
   if (statusFilter !== 'ALL') {
     whereClause.status = statusFilter;
+  }
+
+  // Auto-sync historical telemetry transitions if no operational events exist yet for target gates
+  const existingCount = await prisma.lCGateEvent.count({
+    where: { gateId: { in: targetGateIds } }
+  });
+  if (existingCount === 0) {
+    await syncHistoricalTelemetryEvents();
   }
 
   // Fetch raw events with Gate and Scope Group associations
@@ -960,6 +969,19 @@ router.post('/events', async (req: AuthRequest, res, next) => {
     });
 
     res.status(201).json(event);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * 5. POST /api/v1/reports/sync-telemetry
+ * Explicitly triggers synchronizing historical telemetry transitions into LCGateEvent
+ */
+router.post('/sync-telemetry', async (req: AuthRequest, res, next) => {
+  try {
+    const result = await syncHistoricalTelemetryEvents();
+    res.json({ message: 'Telemetry events synced successfully', ...result });
   } catch (error) {
     next(error);
   }
