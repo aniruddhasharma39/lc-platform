@@ -7,6 +7,7 @@ import { RAILWAY_DATA, RAILWAY_ZONES, divisionsForZone } from '../lib/railwayDat
 import { getAllDescendantScopeGroupIds } from '../lib/scopeHierarchy';
 import { publishMqttMessage } from '../lib/iotClient';
 import { broadcastGateTelemetry, getGateTelemetryPayload } from '../lib/telemetryWs';
+import { bumpDirectoryRevision, getDirectoryRevisionToken } from '../lib/revisionManager';
 
 const router = Router();
 
@@ -320,39 +321,151 @@ router.post('/', authenticate, async (req: any, res, next) => {
       ? data.name.trim() 
       : (data.locationName ? data.locationName.trim() : cleanLcNumber);
 
-    const gate = await prisma.lCGate.create({
-      data: {
-        name: gateName,
-        lcNumber: cleanLcNumber,
-        locationName: data.locationName.trim(),
-        zone: data.zone || 'Central Railway',
-        division: data.division || 'Pune',
-        latitude: data.latitude,
-        longitude: data.longitude,
-      },
-    });
-
-    // Auto-link to creator's assigned scope group so it immediately appears in their scope
-    if (req.user?.id) {
-      const userScopes = await prisma.scopeGroupUser.findMany({
-        where: { userId: req.user.id },
-        select: { scopeGroupId: true }
+    const gate = await prisma.$transaction(async (tx) => {
+      const created = await tx.lCGate.create({
+        data: {
+          name: gateName,
+          lcNumber: cleanLcNumber,
+          locationName: data.locationName.trim(),
+          zone: data.zone || 'Central Railway',
+          division: data.division || 'Pune',
+          latitude: data.latitude,
+          longitude: data.longitude,
+        },
       });
-      for (const s of userScopes) {
-        await prisma.scopeGroupGate.create({
-          data: {
-            gateId: gate.id,
-            scopeGroupId: s.scopeGroupId,
-          }
-        }).catch(() => {});
+
+      // Auto-link to creator's assigned scope group so it immediately appears in their scope
+      if (req.user?.id) {
+        const userScopes = await tx.scopeGroupUser.findMany({
+          where: { userId: req.user.id },
+          select: { scopeGroupId: true }
+        });
+        for (const s of userScopes) {
+          await tx.scopeGroupGate.create({
+            data: {
+              gateId: created.id,
+              scopeGroupId: s.scopeGroupId,
+            }
+          }).catch(() => {});
+        }
+        await bumpDirectoryRevision(userScopes.map(s => s.scopeGroupId), false, tx);
+      } else {
+        await bumpDirectoryRevision([], true, tx);
       }
-    }
+
+      return created;
+    });
 
     res.status(201).json(gate);
   } catch (error: any) {
     if (error?.code === 'P2002') {
       return res.status(400).json({ error: 'An LC Gate with this number already exists in the system.' });
     }
+    next(error);
+  }
+});
+
+// GET /status-summary - Dedicated, lightweight real-time connectivity status for accessible gates
+router.get('/status-summary', authenticate, async (req: any, res, next) => {
+  try {
+    const isDeveloper = req.user?.role === 'Developer';
+
+    // 1. Fetch user's assigned scope groups
+    const userScopes = await prisma.scopeGroupUser.findMany({
+      where: { userId: req.user.id },
+      select: { scopeGroupId: true }
+    });
+    const assignedScopeGroupIds = userScopes.map(s => s.scopeGroupId);
+
+    let whereClause: any = {};
+    if (assignedScopeGroupIds.length > 0) {
+      const accessibleScopeGroupIds = await getAllDescendantScopeGroupIds(assignedScopeGroupIds);
+      whereClause.scopeGroups = {
+        some: { scopeGroupId: { in: accessibleScopeGroupIds } }
+      };
+    } else if (!isDeveloper) {
+      return res.json({ verifiedAt: new Date().toISOString(), statuses: [] });
+    }
+
+    // 2. Query accessible gates and their identifiers without full joins
+    const gates = await prisma.lCGate.findMany({
+      where: whereClause,
+      select: {
+        id: true,
+        lcNumber: true,
+        masters: {
+          select: { id: true, serialNumber: true }
+        },
+        deviceRegistries: {
+          select: { id: true, thingName: true, serialNumber: true, lastSeenAt: true, status: true }
+        }
+      }
+    });
+
+    const nowMs = Date.now();
+    const ONLINE_CUTOFF_MS = 65 * 60 * 1000;
+
+    const allThingNames: string[] = [];
+    gates.forEach(g => {
+      if (g.lcNumber) allThingNames.push(g.lcNumber);
+      g.masters.forEach(m => {
+        if (m.serialNumber) allThingNames.push(m.serialNumber);
+      });
+      g.deviceRegistries.forEach(d => {
+        if (d.thingName) allThingNames.push(d.thingName);
+        if (d.serialNumber) allThingNames.push(d.serialNumber);
+      });
+    });
+
+    const cutoffDate = new Date(nowMs - ONLINE_CUTOFF_MS);
+
+    const recentTelemetries = allThingNames.length > 0
+      ? await prisma.deviceTelemetry.findMany({
+          where: {
+            thingName: { in: allThingNames },
+            receivedAt: { gte: cutoffDate },
+            topic: { not: { contains: '/request' } },
+            status: { not: 'REQUESTED' }
+          },
+          distinct: ['thingName'],
+          orderBy: { receivedAt: 'desc' },
+          select: { thingName: true, receivedAt: true, status: true }
+        }).catch(() => [])
+      : [];
+
+    const statuses = gates.map(gate => {
+      const gateThingNames = new Set([
+        gate.lcNumber,
+        ...gate.masters.map(m => m.serialNumber),
+        ...gate.deviceRegistries.map(d => d.thingName),
+        ...gate.deviceRegistries.map(d => d.serialNumber).filter(Boolean) as string[],
+      ]);
+
+      const latestTele = recentTelemetries.find(t => gateThingNames.has(t.thingName));
+      const lastSeenTimes = [
+        latestTele?.receivedAt ? new Date(latestTele.receivedAt).getTime() : 0,
+        ...gate.deviceRegistries.map(d => d.lastSeenAt ? new Date(d.lastSeenAt).getTime() : 0)
+      ];
+      const maxLastSeen = Math.max(...lastSeenTimes);
+      const isOnline = maxLastSeen > 0 && (nowMs - maxLastSeen <= ONLINE_CUTOFF_MS);
+      const deviceStatus: 'ONLINE' | 'OFFLINE' = isOnline ? 'ONLINE' : 'OFFLINE';
+
+      return {
+        gateId: gate.id,
+        lcNumber: gate.lcNumber,
+        isOnline,
+        deviceStatus,
+        lastSeenAt: maxLastSeen > 0 ? new Date(maxLastSeen).toISOString() : null,
+        hasMaster: gate.masters.length > 0,
+        mastersCount: gate.masters.length,
+      };
+    });
+
+    res.json({
+      verifiedAt: new Date().toISOString(),
+      statuses,
+    });
+  } catch (error) {
     next(error);
   }
 });
@@ -425,6 +538,16 @@ router.get('/', authenticate, async (req: any, res, next) => {
       }
     }
 
+    // Fast-path Conditional HTTP Revision Check (ETag / 304 Not Modified)
+    const revisionToken = await getDirectoryRevisionToken(req.user.id, assignedScopeGroupIds);
+    res.setHeader('ETag', revisionToken);
+    res.setHeader('Cache-Control', 'private, no-cache');
+
+    const clientIfNoneMatch = req.headers['if-none-match'];
+    if (clientIfNoneMatch && clientIfNoneMatch === revisionToken) {
+      return res.status(304).end();
+    }
+
     const gates = await prisma.lCGate.findMany({
       where: whereClause,
       orderBy: { createdAt: 'desc' },
@@ -476,15 +599,21 @@ router.get('/', authenticate, async (req: any, res, next) => {
       });
     });
 
-    const recentTelemetries = await prisma.deviceTelemetry.findMany({
-      where: {
-        thingName: { in: allThingNames },
-        topic: { not: { contains: '/request' } },
-        status: { not: 'REQUESTED' }
-      },
-      orderBy: { receivedAt: 'desc' },
-      take: 200,
-    }).catch(() => []);
+    const cutoffDate = new Date(nowMs - ONLINE_CUTOFF_MS);
+
+    const recentTelemetries = allThingNames.length > 0
+      ? await prisma.deviceTelemetry.findMany({
+          where: {
+            thingName: { in: allThingNames },
+            receivedAt: { gte: cutoffDate },
+            topic: { not: { contains: '/request' } },
+            status: { not: 'REQUESTED' }
+          },
+          distinct: ['thingName'],
+          orderBy: { receivedAt: 'desc' },
+          select: { thingName: true, receivedAt: true, status: true }
+        }).catch(() => [])
+      : [];
 
     const enrichedGates = gates.map(gate => {
       const gateThingNames = new Set([
@@ -612,23 +741,36 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
       return res.status(400).json({ error: `Master Unit with serial number "${serialNumber}" already exists in the system.` });
     }
 
-    const master = await prisma.masterUnit.create({
-      data: {
-        serialNumber,
-        masterSequence: targetSequence,
-        powerSource: data.powerSource,
-        gateId,
-      },
-      include: {
-        childDevices: true,
-      },
-    });
+    const master = await prisma.$transaction(async (tx) => {
+      const created = await tx.masterUnit.create({
+        data: {
+          serialNumber,
+          masterSequence: targetSequence,
+          powerSource: data.powerSource,
+          gateId,
+        },
+        include: {
+          childDevices: true,
+        },
+      });
 
-    // Link device in registry
-    await prisma.deviceRegistry.update({
-      where: { id: data.deviceId },
-      data: { masterId: master.id, gateId: master.gateId }
-    }).catch(console.warn);
+      // Link device in registry
+      if (data.deviceId) {
+        await tx.deviceRegistry.update({
+          where: { id: data.deviceId },
+          data: { masterId: created.id, gateId: created.gateId }
+        }).catch(console.warn);
+      }
+
+      // Bump revision for gate's assigned scope groups
+      const gateScopes = await tx.scopeGroupGate.findMany({
+        where: { gateId },
+        select: { scopeGroupId: true },
+      });
+      await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+
+      return created;
+    });
 
     // Master Unit is created without auto-generating slaves.
     // Slave devices (Barrier A, Barrier B, etc.) are explicitly added by the user as needed.
@@ -755,29 +897,40 @@ router.post('/masters/:masterId/devices', authenticate, async (req, res, next) =
       existingSerial = await prisma.childDevice.findUnique({ where: { serialNumber } });
     }
 
-    const device = await prisma.childDevice.create({
-      data: {
-        type: data.type,
-        serialNumber,
-        deviceSequence: targetSequence,
-        masterId,
-      },
-    });
-
-    // Auto-link DeviceRegistry
-    if (data.deviceId) {
-      await prisma.deviceRegistry.updateMany({
-        where: { id: data.deviceId },
-        data: { childDeviceId: device.id, masterId: master.id, gateId: master.gateId }
-      }).catch(console.warn);
-    } else {
-      await prisma.deviceRegistry.updateMany({
-        where: {
-          OR: [{ thingName: serialNumber }, { serialNumber: serialNumber }]
+    const device = await prisma.$transaction(async (tx) => {
+      const created = await tx.childDevice.create({
+        data: {
+          type: data.type,
+          serialNumber,
+          deviceSequence: targetSequence,
+          masterId,
         },
-        data: { childDeviceId: device.id, masterId: master.id, gateId: master.gateId }
-      }).catch(console.warn);
-    }
+      });
+
+      // Auto-link DeviceRegistry
+      if (data.deviceId) {
+        await tx.deviceRegistry.updateMany({
+          where: { id: data.deviceId },
+          data: { childDeviceId: created.id, masterId: master.id, gateId: master.gateId }
+        }).catch(console.warn);
+      } else {
+        await tx.deviceRegistry.updateMany({
+          where: {
+            OR: [{ thingName: serialNumber }, { serialNumber: serialNumber }]
+          },
+          data: { childDeviceId: created.id, masterId: master.id, gateId: master.gateId }
+        }).catch(console.warn);
+      }
+
+      // Bump revision for gate's assigned scope groups
+      const gateScopes = await tx.scopeGroupGate.findMany({
+        where: { gateId: master.gateId },
+        select: { scopeGroupId: true },
+      });
+      await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+
+      return created;
+    });
 
     res.status(201).json(device);
   } catch (error) {
@@ -792,7 +945,19 @@ router.delete('/masters/:id', authenticate, async (req, res, next) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid master ID' });
     
-    await prisma.masterUnit.delete({ where: { id } });
+    await prisma.$transaction(async (tx) => {
+      const targetMaster = await tx.masterUnit.findUnique({ where: { id }, select: { gateId: true } });
+      await tx.masterUnit.delete({ where: { id } });
+      if (targetMaster) {
+        const gateScopes = await tx.scopeGroupGate.findMany({
+          where: { gateId: targetMaster.gateId },
+          select: { scopeGroupId: true },
+        });
+        await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+      } else {
+        await bumpDirectoryRevision([], true, tx);
+      }
+    });
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -805,7 +970,22 @@ router.delete('/devices/:id', authenticate, async (req, res, next) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid device ID' });
     
-    await prisma.childDevice.delete({ where: { id } });
+    await prisma.$transaction(async (tx) => {
+      const targetDevice = await tx.childDevice.findUnique({
+        where: { id },
+        include: { master: { select: { gateId: true } } },
+      });
+      await tx.childDevice.delete({ where: { id } });
+      if (targetDevice?.master) {
+        const gateScopes = await tx.scopeGroupGate.findMany({
+          where: { gateId: targetDevice.master.gateId },
+          select: { scopeGroupId: true },
+        });
+        await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+      } else {
+        await bumpDirectoryRevision([], true, tx);
+      }
+    });
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -1072,7 +1252,18 @@ router.delete('/:id', authenticate, async (req, res, next) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid gate ID' });
     
-    await prisma.lCGate.delete({ where: { id } });
+    await prisma.$transaction(async (tx) => {
+      const targetGateScopes = await tx.scopeGroupGate.findMany({
+        where: { gateId: id },
+        select: { scopeGroupId: true },
+      });
+      await tx.lCGate.delete({ where: { id } });
+      await bumpDirectoryRevision(
+        targetGateScopes.map(s => s.scopeGroupId),
+        targetGateScopes.length === 0,
+        tx
+      );
+    });
     res.status(204).send();
   } catch (error) {
     next(error);

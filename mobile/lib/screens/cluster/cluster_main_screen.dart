@@ -9,6 +9,7 @@ import '../../main.dart';
 import '../../utils/app_feedback.dart';
 import '../../components/device_info_sheet.dart';
 import 'railway_data.dart';
+import '../../services/lc_gates_cache_service.dart';
 
 class ClusterMainScreen extends StatefulWidget {
   final Map<String, dynamic>? user;
@@ -23,6 +24,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
   bool _isLoading = true;
   String? _errorMessage;
   String _token = '';
+  String _userId = 'user';
   List<String> _scopeNames = [];
 
   // Developer Scope Groups View State (Parity with Web ClusterDashboard)
@@ -63,8 +65,12 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
   Future<void> _init() async {
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString('token') ?? '';
+    final userId = (widget.user?['id'] ?? prefs.getString('userId') ?? prefs.getString('employeeId') ?? 'user').toString();
     if (!mounted) return;
-    setState(() => _token = token);
+    setState(() {
+      _token = token;
+      _userId = userId;
+    });
     await _fetchGates();
     await _fetchReferenceData();
     await _fetchMyScope();
@@ -485,6 +491,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
         headers: {'Authorization': 'Bearer $_token'},
       );
       if (res.statusCode == 204 || res.statusCode == 200) {
+        LCGatesCacheService.instance.removeGate(_userId, gate['id']);
         await _fetchGates();
         if (mounted) {
           AppFeedback.showSuccess(context, 'LC Gate "$targetName" permanently deleted.');
@@ -549,6 +556,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           );
           if (!mounted) return;
           if (result == true) {
+            LCGatesCacheService.instance.markStale(_userId);
             _fetchGates();
             if (mounted) {
               AppFeedback.showSuccess(context, 'New LC Gate created and added to cluster list.');

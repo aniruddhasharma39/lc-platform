@@ -29,6 +29,7 @@ import {
 import type { User, ScopeGroupItem } from '../../types';
 import { API_URL } from '../../config';
 import DeviceInfoModal from '../../components/DeviceInfoModal';
+import { lcGatesCacheService } from '../../services/lcGatesCacheService';
 import './LCGatesScreen.css';
 import { useToast } from '../../context/ToastContext';
 import {
@@ -291,6 +292,8 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
   const [scopeGroups, setScopeGroups] = useState<ScopeGroupItem[]>([]);
   const [gates, setGates] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isOutdated, setIsOutdated] = useState(false);
 
   // Search, Filter & Sort State
   const [searchQuery, setSearchQuery] = useState('');
@@ -321,47 +324,100 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
     setSortBy('lcNumber_asc');
   };
 
-  // Fetch Scope Groups and Gates
-  const fetchData = async () => {
-    setLoading(true);
+  // Dedicated silent status synchronizer for periodic polling without reloading UI
+  const syncStatusSilently = useCallback(async () => {
+    const token = localStorage.getItem('token') || '';
+    if (!token) return;
     try {
-      // 1. Fetch user scope hierarchy
-      const scopeRes = await fetch(`${API_URL}/api/v1/scope-groups/my-scope`, { headers: authHeaders() });
-      let myGroups: ScopeGroupItem[] = [];
-      if (scopeRes.ok) {
-        const scopeData = await scopeRes.json();
-        myGroups = scopeData.allScopeGroups || scopeData.scopeGroups || [];
+      const statusMap = await lcGatesCacheService.syncStatusSummary(token, true);
+      if (statusMap.size > 0) {
+        setGates(prevGates =>
+          prevGates.map(g => {
+            const statusItem = statusMap.get(g.id);
+            if (statusItem) {
+              return {
+                ...g,
+                isOnline: statusItem.isOnline,
+                deviceStatus: statusItem.deviceStatus,
+                lastSeenAt: statusItem.lastSeenAt,
+              };
+            }
+            return g;
+          })
+        );
+      }
+    } catch (e) {
+      console.warn('[LCGatesScreen] Periodic status sync error:', e);
+    }
+  }, []);
+
+  // Fetch Scope Groups and Gates with Three-Layer Caching (SWR + 304 Handling + TTL + Independent Status)
+  const fetchData = async (isManual = false) => {
+    if (isManual) {
+      setIsRefreshing(true);
+    } else if (gates.length === 0) {
+      setLoading(true);
+    }
+
+    try {
+      const currentUserId = user?.id ? String(user.id) : (localStorage.getItem('userId') || 'user');
+      const token = localStorage.getItem('token') || '';
+
+      // 1. Synchronized Directory Fetching (SWR + ETag 304 + TTL)
+      const cachedResult = await lcGatesCacheService.syncDirectory(currentUserId, token, isManual);
+      if (cachedResult) {
+        setGates(cachedResult.gates);
+        setScopeGroups(cachedResult.scopeGroups);
+        setIsOutdated(!!cachedResult.isOutdated);
       }
 
-      // 2. Fetch all groups list
-      const groupsListRes = await fetch(`${API_URL}/api/v1/scope-groups`, { headers: authHeaders() });
-      if (groupsListRes.ok) {
-        const allGroups = await groupsListRes.json();
-        if (Array.isArray(allGroups) && allGroups.length > 0) {
-          setScopeGroups(allGroups);
-        } else {
-          setScopeGroups(myGroups);
-        }
-      } else {
-        setScopeGroups(myGroups);
-      }
-
-      // 3. Fetch Gates scoped to user
-      const gatesRes = await fetch(`${API_URL}/api/v1/lcgate`, { headers: authHeaders() });
-      if (gatesRes.ok) {
-        const gatesData = await gatesRes.json();
-        setGates(Array.isArray(gatesData) ? gatesData : []);
+      // 2. Concurrently fetch dynamic device status summary
+      const statusMap = await lcGatesCacheService.syncStatusSummary(token, isManual);
+      if (statusMap.size > 0) {
+        setGates(prevGates =>
+          prevGates.map(g => {
+            const statusItem = statusMap.get(g.id);
+            if (statusItem) {
+              return {
+                ...g,
+                isOnline: statusItem.isOnline,
+                deviceStatus: statusItem.deviceStatus,
+                lastSeenAt: statusItem.lastSeenAt,
+              };
+            }
+            return g;
+          })
+        );
       }
     } catch (err) {
       console.error('Failed to load LC Gates directory data:', err);
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
     }
   };
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    const currentUserId = user?.id ? String(user.id) : (localStorage.getItem('userId') || 'user');
+    // Instant cache read for synchronous < 20ms render
+    const cached = lcGatesCacheService.getMemoryCache(currentUserId) || lcGatesCacheService.getCachedDirectory(currentUserId);
+    if (cached && cached.gates.length > 0) {
+      setGates(cached.gates);
+      setScopeGroups(cached.scopeGroups);
+      setIsOutdated(!!cached.isOutdated);
+      setLoading(false);
+    }
+    fetchData(false);
+
+    // 45-second periodic device status synchronization timer while directory is active
+    const timer = setInterval(() => {
+      syncStatusSilently();
+    }, 45000);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [syncStatusSilently]);
 
   // Auto-drilldown into cluster if navigated with initialGateId
   useEffect(() => {
@@ -845,6 +901,43 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
 
   return (
     <div className="lcg-container">
+      {/* Offline / Outdated Cache Indicator */}
+      {isOutdated && (
+        <div style={{
+          background: '#fffbeb',
+          border: '1px solid #fde68a',
+          color: '#92400e',
+          padding: '8px 14px',
+          borderRadius: 8,
+          marginBottom: 12,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          fontSize: '0.85rem',
+          fontWeight: 600
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <FaExclamationTriangle color="#d97706" />
+            <span>Showing cached directory (offline or reconnecting to server...)</span>
+          </div>
+          <button
+            onClick={() => fetchData(true)}
+            style={{
+              background: '#b45309',
+              color: '#ffffff',
+              border: 'none',
+              borderRadius: 4,
+              padding: '4px 10px',
+              fontSize: '0.78rem',
+              fontWeight: 700,
+              cursor: 'pointer'
+            }}
+          >
+            Retry Sync
+          </button>
+        </div>
+      )}
+
       {/* 2. NAVIGATION & TOOLBAR (SINGLE ROW ALIGNED) */}
       <div className="lcg-nav-toolbar">
         {viewMode === 'detail' && selectedGate ? (
@@ -980,11 +1073,11 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
               type="button"
               className="btn btn-secondary btn-sm lcg-refresh-btn"
               style={{ height: 38, padding: '0 14px', borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 6 }}
-              onClick={fetchData}
-              disabled={loading}
+              onClick={() => fetchData(true)}
+              disabled={loading || isRefreshing}
               title="Refresh directory data"
             >
-              <FaSyncAlt className={loading ? 'fa-spin' : ''} size={12} />
+              <FaSyncAlt className={isRefreshing ? 'fa-spin' : ''} size={12} />
               <span>Refresh</span>
             </button>
           </div>
@@ -992,7 +1085,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
       </div>
 
       {/* 3. MAIN CONTENT VIEWS */}
-      {loading ? (
+      {(loading && gates.length === 0) ? (
         <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--muted)' }}>
           <FaSyncAlt className="spin" size={30} style={{ marginBottom: 12, color: '#0B3C7A' }} />
           <div style={{ fontWeight: 700, fontSize: '1rem', color: '#1e293b' }}>Loading LC Gates directory...</div>

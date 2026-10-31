@@ -5,6 +5,7 @@ import Dashboard from './screens/Dashboard';
 import type { User } from './types';
 import { API_URL } from './config';
 import { useToast } from './context/ToastContext';
+import { lcGatesCacheService } from './services/lcGatesCacheService';
 
 function App() {
   const [currentScreen, setCurrentScreen] = useState<'login' | 'register' | 'dashboard'>('login');
@@ -14,6 +15,7 @@ function App() {
 
   const purgeHomeDashboardCache = () => {
     try {
+      lcGatesCacheService.clearAllUserCaches();
       Object.keys(localStorage).forEach((key) => {
         if (key.startsWith('home_dashboard_cache_')) {
           localStorage.removeItem(key);

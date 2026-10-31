@@ -9,6 +9,7 @@ import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
 import '../../components/device_info_sheet.dart';
+import '../../services/lc_gates_cache_service.dart';
 
 class LCGatesScreen extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -28,7 +29,9 @@ class LCGatesScreen extends StatefulWidget {
 
 class _LCGatesScreenState extends State<LCGatesScreen> {
   bool _isLoading = true;
+  bool _isRefreshing = false;
   String _token = '';
+  String _userId = 'user';
 
   // Breadcrumbs: List of {id: int?, name: String, color: String?}
   final List<Map<String, dynamic>> _breadcrumbs = [
@@ -92,106 +95,163 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   // Data
   List<dynamic> _scopeGroups = [];
   List<dynamic> _gates = [];
+  bool _isOutdated = false;
+  Timer? _statusSyncTimer;
 
   @override
   void initState() {
     super.initState();
     _loadTokenAndFetch();
+    _startPeriodicStatusSync();
   }
 
   @override
   void dispose() {
+    _statusSyncTimer?.cancel();
+    _statusSyncTimer = null;
     _disconnectTelemetryWs();
     _searchCtrl.dispose();
     super.dispose();
   }
 
+  void _startPeriodicStatusSync() {
+    _statusSyncTimer?.cancel();
+    // 45-second periodic device status synchronization timer while directory is active
+    _statusSyncTimer = Timer.periodic(const Duration(seconds: 45), (_) {
+      _syncStatusSilently();
+    });
+  }
+
+  Future<void> _syncStatusSilently() async {
+    if (!mounted || _token.isEmpty) return;
+    try {
+      final statuses = await LCGatesCacheService.instance.syncStatusSummary(token: _token, forceReload: true);
+      if (mounted && statuses.isNotEmpty) {
+        setState(() {
+          _applyDynamicStatuses(statuses);
+        });
+      }
+    } catch (e) {
+      debugPrint('[LCGates] Silent status sync error: $e');
+    }
+  }
+
   Future<void> _loadTokenAndFetch() async {
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString('token') ?? '';
+    final userId = (widget.user['id'] ?? prefs.getString('userId') ?? prefs.getString('employeeId') ?? 'user').toString();
     if (!mounted) return;
-    setState(() => _token = token);
-    await _fetchData();
+    setState(() {
+      _token = token;
+      _userId = userId;
+    });
+
+    // 1. Instant Cache-First Synchronous / Disk Read: ZERO SPINNER on revisit!
+    final cached = LCGatesCacheService.instance.getMemoryCachedDirectory(userId) ??
+        await LCGatesCacheService.instance.getCachedDirectory(userId);
+
+    if (cached != null && cached.gates.isNotEmpty) {
+      if (mounted) {
+        setState(() {
+          _gates = List.from(cached.gates);
+          _scopeGroups = List.from(cached.scopeGroups);
+          _isOutdated = cached.isOutdated;
+          _isLoading = false;
+          _checkInitialGateSelection();
+        });
+      }
+    }
+
+    // 2. Silent Background Revalidation (SWR) with safe HTTP 304 handling and TTL
+    await _fetchData(isManual: false);
+  }
+
+  void _checkInitialGateSelection() {
+    if (widget.initialGateId != null && _selectedGate == null) {
+      final found = _gates.firstWhere(
+        (g) => g is Map && g['id'] == widget.initialGateId,
+        orElse: () => null,
+      );
+      if (found != null) {
+        _selectedGate = Map<String, dynamic>.from(found);
+        _viewMode = 'detail';
+        _clusterTab = widget.initialTab ?? 'about';
+      }
+    }
+  }
+
+  void _applyDynamicStatuses(Map<int, GateStatusItem> statuses) {
+    for (int i = 0; i < _gates.length; i++) {
+      final g = _gates[i];
+      if (g is Map && g.containsKey('id')) {
+        final statusItem = statuses[g['id']];
+        if (statusItem != null) {
+          _gates[i] = {
+            ...g,
+            'isOnline': statusItem.isOnline,
+            'deviceStatus': statusItem.deviceStatus,
+            'lastSeenAt': statusItem.lastSeenAt,
+          };
+        }
+      }
+    }
   }
 
   Future<void> _fetchData({bool isManual = false}) async {
-    if (!isManual) setState(() => _isLoading = true);
+    if (isManual) {
+      setState(() => _isRefreshing = true);
+    } else if (_gates.isEmpty) {
+      setState(() => _isLoading = true);
+    }
+
     try {
-      final headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_token',
-      };
-
-      // 1. Fetch user scope hierarchy
-      List<dynamic> myGroups = [];
-      try {
-        final scopeRes = await http.get(
-          Uri.parse('$baseUrl/scope-groups/my-scope'),
-          headers: headers,
-        );
-        if (scopeRes.statusCode == 200) {
-          final scopeData = json.decode(scopeRes.body);
-          if (scopeData is Map) {
-            myGroups = List.from(scopeData['allScopeGroups'] ?? scopeData['scopeGroups'] ?? []);
-          }
-        }
-      } catch (_) {}
-
-      // 2. Fetch all scope groups
-      try {
-        final groupsRes = await http.get(
-          Uri.parse('$baseUrl/scope-groups'),
-          headers: headers,
-        );
-        if (groupsRes.statusCode == 200) {
-          final allGroups = json.decode(groupsRes.body);
-          if (allGroups is List && allGroups.isNotEmpty) {
-            _scopeGroups = allGroups;
-          } else {
-            _scopeGroups = myGroups;
-          }
-        } else {
-          _scopeGroups = myGroups;
-        }
-      } catch (_) {
-        _scopeGroups = myGroups;
-      }
-
-      // 3. Fetch Gates scoped to user
-      final gatesRes = await http.get(
-        Uri.parse('$baseUrl/lcgate'),
-        headers: headers,
+      // 1. Parallel Directory SWR Sync (ETag / 304 handled)
+      final syncResult = await LCGatesCacheService.instance.syncDirectory(
+        userId: _userId,
+        token: _token,
+        forceReload: isManual,
       );
-      if (gatesRes.statusCode == 200) {
-        final gatesData = json.decode(gatesRes.body);
-        _gates = gatesData is List ? gatesData : [];
-      } else {
-        _gates = [];
+
+      if (mounted && syncResult.data != null) {
+        setState(() {
+          _gates = List.from(syncResult.data!.gates);
+          _scopeGroups = List.from(syncResult.data!.scopeGroups);
+          _isOutdated = syncResult.isOutdated;
+          _isLoading = false;
+          _isRefreshing = false;
+          _checkInitialGateSelection();
+        });
+      } else if (mounted) {
+        setState(() {
+          _isOutdated = syncResult.isOutdated;
+        });
       }
 
+      // 2. Independent Dynamic Device Status Synchronization
+      final statuses = await LCGatesCacheService.instance.syncStatusSummary(
+        token: _token,
+        forceReload: isManual,
+      );
+      if (mounted && statuses.isNotEmpty) {
+        setState(() {
+          _applyDynamicStatuses(statuses);
+        });
+      }
+
+      if (mounted && isManual) {
+        AppFeedback.showSuccess(context, 'LC Gates directory refreshed.');
+      }
+    } catch (e) {
+      debugPrint('[LCGates] Data fetch error: $e');
+      if (mounted && isManual) {
+        AppFeedback.showError(context, 'Failed to refresh directory: $e');
+      }
+    } finally {
       if (mounted) {
         setState(() {
           _isLoading = false;
-          if (widget.initialGateId != null && _selectedGate == null) {
-            final found = _gates.firstWhere(
-              (g) => g['id'] == widget.initialGateId,
-              orElse: () => null,
-            );
-            if (found != null) {
-              _selectedGate = Map<String, dynamic>.from(found);
-              _viewMode = 'detail';
-              _clusterTab = widget.initialTab ?? 'about';
-            }
-          }
+          _isRefreshing = false;
         });
-        if (isManual) {
-          AppFeedback.showSuccess(context, 'LC Gates directory refreshed.');
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        AppFeedback.showError(context, 'Failed to load LC Gates data: $e');
       }
     }
   }
@@ -705,7 +765,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
-      body: _isLoading
+      body: (_isLoading && _gates.isEmpty)
           ? const Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -725,6 +785,33 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    if (_isOutdated)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFFBEB),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFFDE68A)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.cloud_off, size: 16, color: Color(0xFFD97706)),
+                            const SizedBox(width: 8),
+                            const Expanded(
+                              child: Text(
+                                'Showing cached directory (offline or reconnecting...)',
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF92400E)),
+                              ),
+                            ),
+                            GestureDetector(
+                              onTap: () => _fetchData(isManual: true),
+                              child: const Text('Retry', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFFB45309))),
+                            ),
+                          ],
+                        ),
+                      ),
+
                     // 1. Navigation Toolbar (Breadcrumb + Search + Refresh)
                     _buildNavigationToolbar(),
                     const SizedBox(height: 14),
@@ -870,9 +957,11 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   padding: const EdgeInsets.all(9),
                 ),
-                icon: const Icon(Icons.refresh, size: 18, color: Color(0xFF475569)),
+                icon: _isRefreshing
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
+                    : const Icon(Icons.refresh, size: 18, color: Color(0xFF475569)),
                 tooltip: 'Refresh directory',
-                onPressed: () => _fetchData(isManual: true),
+                onPressed: _isRefreshing ? null : () => _fetchData(isManual: true),
               ),
             ],
           ),

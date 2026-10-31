@@ -16,6 +16,7 @@ import 'lc_gates/lc_gates_screen.dart';
 import 'reports/reports_screen.dart';
 import 'cluster/full_screen_map_screen.dart';
 import '../services/home_cache_service.dart';
+import '../services/lc_gates_cache_service.dart';
 import '../utils/app_feedback.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -201,6 +202,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       } else if (res.statusCode == 401) {
         _notifsTimer?.cancel();
         HomeCacheService.instance.clearUserCache(_userId);
+        LCGatesCacheService.instance.hardClear(_userId);
         widget.onLogout();
       }
     } catch (_) {}
@@ -749,6 +751,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (resRoles.statusCode == 401 || resMods.statusCode == 401 || resUsers.statusCode == 401) {
         _notifsTimer?.cancel();
         HomeCacheService.instance.clearUserCache(_userId);
+        LCGatesCacheService.instance.hardClear(_userId);
         widget.onLogout();
         return;
       }
@@ -1115,6 +1118,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               leading: const Icon(Icons.logout, color: AppColors.danger),
               onTap: () {
                 HomeCacheService.instance.clearUserCache(_userId);
+                LCGatesCacheService.instance.hardClear(_userId);
                 widget.onLogout();
               },
             ),

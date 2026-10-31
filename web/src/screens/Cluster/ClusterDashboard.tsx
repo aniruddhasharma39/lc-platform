@@ -11,12 +11,14 @@ import { API_URL } from '../../config';
 import { RAILWAY_ZONES, RAILWAY_DATA } from './railwayData';
 import { useToast } from '../../context/ToastContext';
 import DeviceInfoModal from '../../components/DeviceInfoModal';
+import { lcGatesCacheService } from '../../services/lcGatesCacheService';
 
 type Props = {
   user: User;
 };
 
 const authHeaders = () => ({ 'Authorization': `Bearer ${localStorage.getItem('token')}` });
+const getCacheUserId = (user?: User) => (user?.id ? String(user.id) : (localStorage.getItem('userId') || 'user'));
 
 const getFullImageUrl = (url?: string) => {
   if (!url) return '';
@@ -208,6 +210,7 @@ export default function ClusterDashboard(_props: Props) {
         headers: authHeaders()
       });
       if (res.ok) {
+        lcGatesCacheService.removeGate(getCacheUserId(_props.user), selectedGate.id);
         setShowDeleteModal(false);
         setDeleteConfirmText('');
         setSelectedGate(null);
@@ -655,6 +658,7 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
         })
       });
       if (res.ok) {
+        lcGatesCacheService.markStale(getCacheUserId());
         toastSuccess(`LC Gate "${cleanLc}" created successfully.`, 'Gate Created');
         onSuccess();
       } else {
@@ -756,6 +760,7 @@ function GateDetailView({ gate, onBack, onUpdate, onOpenDeviceInfo }: any) {
         headers: authHeaders()
       });
       if (res.ok) {
+        lcGatesCacheService.markStale(getCacheUserId());
         setMasterToDelete(null);
         setDeleteConfirmText('');
         toastSuccess('Master unit deleted successfully.', 'Hardware Updated');
@@ -778,6 +783,7 @@ function GateDetailView({ gate, onBack, onUpdate, onOpenDeviceInfo }: any) {
         headers: authHeaders()
       });
       if (res.ok) {
+        lcGatesCacheService.markStale(getCacheUserId());
         toastSuccess('Slave device removed successfully.', 'Hardware Updated');
         onUpdate();
       } else {
@@ -1329,6 +1335,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
           }
         }
 
+        lcGatesCacheService.markStale(getCacheUserId());
         toastSuccess(`Master Unit ${chosenDevice ? chosenDevice.thingName : `${gate.lcNumber}-${masterSequence.padStart(2, '0')}`} added successfully${simPhotoBase64 ? ' with SIM photo' : ''}.`, 'Master Unit Added');
         onSuccess();
       } else {
@@ -1491,6 +1498,7 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
         })
       });
       if (res.ok) {
+        lcGatesCacheService.markStale(getCacheUserId());
         toastSuccess(`Wired Slave Unit ${derivedSerial} (${type === 'DEVICE_1' ? 'Barrier A' : 'Barrier B'}) added successfully.`, 'Wired Hardware Linked');
         onSuccess();
       } else {

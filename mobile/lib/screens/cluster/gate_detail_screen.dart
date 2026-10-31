@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'create_master_screen.dart';
 import 'evidence_checklist_screen.dart';
@@ -7,6 +8,7 @@ import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
 import '../../components/device_info_sheet.dart';
+import '../../services/lc_gates_cache_service.dart';
 
 class GateDetailScreen extends StatefulWidget {
   final String token;
@@ -42,6 +44,14 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
           if (isManual) {
             AppFeedback.showSuccess(context, 'Gate and device details refreshed.');
           }
+          // Patch cache immediately
+          try {
+            final prefs = await SharedPreferences.getInstance();
+            final userId = prefs.getString('userId') ?? prefs.getString('employeeId') ?? 'user';
+            if (updated is Map) {
+              LCGatesCacheService.instance.patchGate(userId, Map<String, dynamic>.from(updated));
+            }
+          } catch (_) {}
         }
       } else {
         if (mounted && isManual) {
@@ -53,6 +63,14 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
         AppFeedback.showError(context, 'Network error refreshing gate details: $e');
       }
     }
+  }
+
+  Future<void> _markCacheStale() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userId = prefs.getString('userId') ?? prefs.getString('employeeId') ?? 'user';
+      LCGatesCacheService.instance.markStale(userId);
+    } catch (_) {}
   }
 
   Future<void> _deleteMaster(Map master) async {
@@ -99,6 +117,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
       );
       if (res.statusCode == 204 || res.statusCode == 200) {
         await _refresh();
+        await _markCacheStale();
         if (mounted) {
           AppFeedback.showSuccess(context, 'Master Unit "$serial" permanently deleted.');
         }
@@ -149,6 +168,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
       );
       if (res.statusCode == 204 || res.statusCode == 200) {
         await _refresh();
+        await _markCacheStale();
         if (mounted) {
           AppFeedback.showSuccess(context, 'Slave Device "$serial" deleted successfully.');
         }
@@ -304,6 +324,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
         );
         if (res.statusCode == 201) {
           await _refresh();
+          await _markCacheStale();
           if (mounted) {
             final typeLabel = selectedType == 'DEVICE_1' ? 'Device 1 (Hall Effect)' : 'Device 2 (Tilt Sensor)';
             AppFeedback.showSuccess(
@@ -654,6 +675,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
           if (!context.mounted) return;
           if (result == true) {
             await _refresh();
+            await _markCacheStale();
             if (!context.mounted) return;
             AppFeedback.showSuccess(context, 'New Master Unit created and linked to this gate.');
           }

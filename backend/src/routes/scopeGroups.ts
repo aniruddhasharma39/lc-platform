@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { authenticate, requireModule, AuthRequest } from '../middleware/auth';
 import { getAllDescendantScopeGroupIds, wouldCreateCycle, getScopeGroupBreadcrumbs } from '../lib/scopeHierarchy';
+import { bumpDirectoryRevision } from '../lib/revisionManager';
 
 const router = Router();
 
@@ -404,6 +405,7 @@ router.post('/', requireScopeAdmin, async (req: AuthRequest, res, next) => {
         }
       }
 
+      await bumpDirectoryRevision(created.id ? [created.id] : [], false, tx);
       return tx.scopeGroup.findUnique({
         where: { id: created.id },
         include: {
@@ -447,6 +449,8 @@ router.post('/', requireScopeAdmin, async (req: AuthRequest, res, next) => {
       }
     });
 
+    // Revision bumped inside transaction
+    // await bumpDirectoryRevision(group?.id ? [group.id] : []);
     res.status(201).json(group);
   } catch (error) {
     next(error);
@@ -544,6 +548,7 @@ router.put('/:id', requireScopeAdmin, async (req: AuthRequest, res, next) => {
         }
       }
 
+      await bumpDirectoryRevision([id], false, tx);
       return tx.scopeGroup.findUnique({
         where: { id },
         include: {
@@ -587,6 +592,7 @@ router.put('/:id', requireScopeAdmin, async (req: AuthRequest, res, next) => {
       }
     });
 
+    await bumpDirectoryRevision([id]);
     res.json(updated);
   } catch (error) {
     next(error);
@@ -603,6 +609,7 @@ router.delete('/:id', requireScopeAdmin, async (req: AuthRequest, res, next) => 
     if (!existing) return res.status(404).json({ error: 'Scope Group not found' });
 
     await prisma.scopeGroup.delete({ where: { id } });
+    await bumpDirectoryRevision([id]);
 
     await prisma.auditLog.create({
       data: {
@@ -642,6 +649,7 @@ router.put('/:id/gates', requireScopeAdmin, async (req: AuthRequest, res, next) 
         });
       }
 
+      await bumpDirectoryRevision([id], false, tx);
       return tx.scopeGroup.findUnique({
         where: { id },
         include: {
@@ -702,6 +710,7 @@ router.put('/:id/gates', requireScopeAdmin, async (req: AuthRequest, res, next) 
       }
     });
 
+    await bumpDirectoryRevision([id]);
     res.json(updated);
   } catch (error) {
     next(error);
@@ -746,6 +755,7 @@ router.put('/user/:userId', requireScopeAdmin, async (req: AuthRequest, res, nex
       }
     });
 
+    await bumpDirectoryRevision(cleanScopeIds);
     res.json({
       userId,
       scopeGroups: updatedUserScopes.map(s => s.scopeGroup)
@@ -756,3 +766,4 @@ router.put('/user/:userId', requireScopeAdmin, async (req: AuthRequest, res, nex
 });
 
 export default router;
+
