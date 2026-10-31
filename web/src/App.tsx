@@ -12,10 +12,23 @@ function App() {
   const [sessionExpiredMsg, setSessionExpiredMsg] = useState<string | null>(null);
   const { success, info } = useToast();
 
+  const purgeHomeDashboardCache = () => {
+    try {
+      Object.keys(localStorage).forEach((key) => {
+        if (key.startsWith('home_dashboard_cache_')) {
+          localStorage.removeItem(key);
+        }
+      });
+    } catch (_) {}
+  };
+
   useEffect(() => {
     const onAuthExpired = (e: any) => {
       const msg = e.detail?.message || 'Your session has expired. Please log in again.';
       setSessionExpiredMsg(msg);
+      purgeHomeDashboardCache();
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
       setUser(null);
       setCurrentScreen('login');
     };
@@ -37,6 +50,7 @@ function App() {
           headers: { 'Authorization': `Bearer ${token}` }
         }).then(async (res) => {
           if (res.status === 401) {
+            purgeHomeDashboardCache();
             localStorage.removeItem('token');
             localStorage.removeItem('user');
             setUser(null);
@@ -51,6 +65,7 @@ function App() {
           // In case of network hiccup, allow cached user to remain loaded
         });
       } catch (e) {
+        purgeHomeDashboardCache();
         localStorage.removeItem('token');
         localStorage.removeItem('user');
         setUser(null);
@@ -70,6 +85,7 @@ function App() {
   };
 
   const handleLogout = () => {
+    purgeHomeDashboardCache();
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     setSessionExpiredMsg(null);
@@ -103,4 +119,3 @@ function App() {
 }
 
 export default App;
-

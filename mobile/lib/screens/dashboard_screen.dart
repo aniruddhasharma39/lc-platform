@@ -13,9 +13,9 @@ import 'profile_screen.dart';
 import 'scope_groups/scope_groups_screen.dart';
 import 'device_registry/device_registry_screen.dart';
 import 'lc_gates/lc_gates_screen.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
 import 'reports/reports_screen.dart';
+import 'cluster/full_screen_map_screen.dart';
+import '../services/home_cache_service.dart';
 import '../utils/app_feedback.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -104,10 +104,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _appName = 'LC Platform';
   Map<String, dynamic>? _dashboardSummary;
   bool _loadingSummary = true;
+  DateTime? _lastSyncedAt;
+  bool _isSyncing = false;
   int? _targetGateId;
   String? _targetGateTab;
   int? _activeGateId;
-  final MapController _mapController = MapController();
+
+  String get _userId => (widget.user['id'] ?? widget.user['username'] ?? 'user').toString();
 
   // Manage Users Search & Filter State
   final _userSearchCtrl = TextEditingController();
@@ -128,9 +131,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void initState() {
     super.initState();
     _loadCachedModules();
-    _fetchData();
+    _loadInitialHomeCache().then((_) {
+      _syncDashboardSummary(forceFullReload: false);
+    });
+    _fetchAuxiliaryData();
     _fetchNotifications();
     _notifsTimer = Timer.periodic(const Duration(seconds: 30), (_) => _fetchNotifications());
+  }
+
+  Future<void> _loadInitialHomeCache() async {
+    final cached = await HomeCacheService.instance.getCachedDashboard(_userId);
+    if (cached != null && mounted) {
+      setState(() {
+        _dashboardSummary = Map<String, dynamic>.from(cached.data);
+        _lastSyncedAt = cached.lastSyncedAt;
+        _loadingSummary = false;
+        final gates = _dashboardSummary!['gates'] as List? ?? [];
+        if (gates.isNotEmpty && _activeGateId == null) {
+          _activeGateId = gates[0]['id'];
+        }
+      });
+    }
   }
 
   Future<void> _loadCachedModules() async {
@@ -179,6 +200,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       } else if (res.statusCode == 401) {
         _notifsTimer?.cancel();
+        HomeCacheService.instance.clearUserCache(_userId);
         widget.onLogout();
       }
     } catch (_) {}
@@ -634,32 +656,65 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Future<void> _fetchDashboardSummary() async {
-    setState(() => _loadingSummary = true);
+  Future<void> _syncDashboardSummary({bool forceFullReload = false}) async {
+    if (_isSyncing) return;
+    setState(() => _isSyncing = true);
+
     try {
       final token = await _getToken();
-      final res = await http.get(
-        Uri.parse('$baseUrl/lcgate/dashboard-summary'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
+      if (token.isEmpty) {
+        if (mounted) setState(() => _isSyncing = false);
+        return;
+      }
+
+      final result = await HomeCacheService.instance.syncDashboard(
+        userId: _userId,
+        token: token,
+        forceFullReload: forceFullReload,
       );
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        if (mounted && data is Map) {
+
+      if (mounted) {
+        if (result.cacheData != null) {
           setState(() {
-            _dashboardSummary = Map<String, dynamic>.from(data);
+            _dashboardSummary = Map<String, dynamic>.from(result.cacheData!.data);
+            _lastSyncedAt = result.cacheData!.lastSyncedAt;
+            _loadingSummary = false;
             final gates = _dashboardSummary!['gates'] as List? ?? [];
             if (gates.isNotEmpty && _activeGateId == null) {
               _activeGateId = gates[0]['id'];
             }
           });
+
+          if (forceFullReload && result.status != HomeSyncStatus.offline) {
+            AppFeedback.showSuccess(context, 'Dashboard synchronized successfully.');
+          }
+        } else {
+          setState(() {
+            _loadingSummary = false;
+          });
+          if (forceFullReload) {
+            AppFeedback.showError(context, 'Unable to synchronize dashboard. Check network.');
+          }
         }
       }
-    } catch (_) {} finally {
-      if (mounted) setState(() => _loadingSummary = false);
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _loadingSummary = false;
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _isSyncing = false);
     }
+  }
+
+  String _formatSyncTime(DateTime? time) {
+    if (time == null) return 'Never';
+    final diff = DateTime.now().difference(time);
+    if (diff.inSeconds < 45) return 'just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${time.day}/${time.month} ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
   }
 
   void _navigateToGate(int gateId, [String tab = 'about']) {
@@ -670,8 +725,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  Future<void> _fetchData() async {
-    _fetchDashboardSummary();
+  Future<void> _fetchAuxiliaryData({bool force = false}) async {
+    if (!force && _roles.isNotEmpty && _users.isNotEmpty) return;
     setState(() => _isLoading = true);
     final token = await _getToken();
     final headers = {'Authorization': 'Bearer $token'};
@@ -693,6 +748,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       if (resRoles.statusCode == 401 || resMods.statusCode == 401 || resUsers.statusCode == 401) {
         _notifsTimer?.cancel();
+        HomeCacheService.instance.clearUserCache(_userId);
         widget.onLogout();
         return;
       }
@@ -775,7 +831,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         body: body != null ? json.encode(body) : null
       );
       if (res.statusCode >= 200 && res.statusCode < 300) {
-        _fetchData();
+        _fetchAuxiliaryData(force: true);
         if (mounted) {
           final name = targetName != null && targetName.trim().isNotEmpty ? targetName.trim() : 'User';
           if (action == 'approve') {
@@ -869,7 +925,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             IconButton(
               icon: const Icon(Icons.refresh, size: 20),
               tooltip: 'Refresh',
-              onPressed: _fetchData,
+              onPressed: () => _fetchAuxiliaryData(force: true),
               padding: const EdgeInsets.all(8),
               constraints: const BoxConstraints(),
             ),
@@ -1057,7 +1113,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ListTile(
               title: const Text('Logout', style: TextStyle(color: AppColors.danger)),
               leading: const Icon(Icons.logout, color: AppColors.danger),
-              onTap: widget.onLogout,
+              onTap: () {
+                HomeCacheService.instance.clearUserCache(_userId);
+                widget.onLogout();
+              },
             ),
           ],
         ),
@@ -1090,7 +1149,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildUserDashboard() {
     final summary = _dashboardSummary;
     final gates = (summary != null && summary['gates'] is List) ? List<dynamic>.from(summary['gates']) : [];
-    final totalDevices = summary?['totalDevices'] ?? gates.length;
+    final totalDevices = summary?['totalDevices'] ?? summary?['totalConfiguredClusters'] ?? gates.where((g) => g['hasMaster'] == true).length;
+    final totalUnconfiguredGates = summary?['totalUnconfiguredGates'] ?? gates.where((g) => g['hasMaster'] != true).length;
     final totalCyclesToday = summary?['totalCyclesToday'] ?? 0;
     final totalOpenGates = summary?['totalOpenGates'] ?? 0;
     final totalClosedGates = summary?['totalClosedGates'] ?? 0;
@@ -1098,7 +1158,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     return RefreshIndicator(
       onRefresh: () async {
-        await _fetchDashboardSummary();
+        await _syncDashboardSummary(forceFullReload: true);
         await _fetchNotifications();
       },
       child: SingleChildScrollView(
@@ -1180,8 +1240,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               children: [
                 Expanded(
                   child: _buildKpiCard(
-                    title: 'Total Clusters',
+                    title: 'Active Clusters',
                     value: _loadingSummary ? '-' : '$totalDevices',
+                    subtitle: (totalUnconfiguredGates is int && totalUnconfiguredGates > 0)
+                        ? '$totalUnconfiguredGates unconfigured'
+                        : null,
                     icon: Icons.meeting_room_outlined,
                     iconColor: const Color(0xFF0284C7),
                     iconBg: const Color(0xFFE0F2FE),
@@ -1224,7 +1287,69 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ],
             ),
 
-            const SizedBox(height: 24),
+            // Live Synchronization & Freshness Status Bar
+            Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: const Color(0xFFE2E8F0),
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        _isSyncing ? Icons.sync_rounded : Icons.check_circle_outline_rounded,
+                        size: 14,
+                        color: _isSyncing ? const Color(0xFF0284C7) : const Color(0xFF059669),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        _isSyncing
+                            ? 'Synchronizing live gate telemetry...'
+                            : 'Verified • Synced ${_formatSyncTime(_lastSyncedAt)}',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                          color: Color(0xFF475569),
+                        ),
+                      ),
+                    ],
+                  ),
+                  InkWell(
+                    onTap: _isSyncing ? null : () => _syncDashboardSummary(forceFullReload: true),
+                    borderRadius: BorderRadius.circular(4),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      child: Row(
+                        children: [
+                          if (_isSyncing)
+                            const SizedBox(
+                              width: 10,
+                              height: 10,
+                              child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xFF0284C7)),
+                            )
+                          else
+                            const Icon(Icons.refresh, size: 14, color: Color(0xFF0284C7)),
+                          const SizedBox(width: 3),
+                          const Text(
+                            'Sync',
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF0284C7)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 20),
 
             // Gate Cycles Transition Slider
             Row(
@@ -1299,11 +1424,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   itemBuilder: (context, index) {
                     final gate = gates[index] as Map<String, dynamic>;
                     final gateId = gate['id'] as int;
-                    final lcNumber = gate['masterSerialNumber'] ?? gate['lcNumber'] ?? 'LC-GATE';
+                    final lcNumber = (gate['hasMaster'] == true && gate['masterSerialNumber'] != null && gate['masterSerialNumber'] != 'Unassigned')
+                        ? gate['masterSerialNumber'].toString()
+                        : (gate['lcNumber']?.toString() ?? 'LC-GATE');
                     final location = gate['locationName'] ?? '';
                     final zone = gate['zone'] ?? '';
                     final division = gate['division'] ?? '';
-                    final isOpen = gate['status'] == 'OPEN';
+                    final isUnconfigured = gate['status'] == 'UNCONFIGURED' || gate['hasMaster'] == false;
+                    final isOpen = !isUnconfigured && gate['status'] == 'OPEN';
                     final todayCycles = gate['todayCycles'] ?? 0;
                     final totalCycles = gate['totalCycles'] ?? 0;
                     final lastClosedFormatted = gate['lastClosedFormatted'] ?? 'No recorded closure';
@@ -1313,13 +1441,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     return InkWell(
                       onTap: () {
                         setState(() => _activeGateId = gateId);
-                        if (gate['latitude'] != null && gate['longitude'] != null) {
-                          try {
-                            final lat = (gate['latitude'] as num).toDouble();
-                            final lng = (gate['longitude'] as num).toDouble();
-                            _mapController.move(LatLng(lat, lng), 12);
-                          } catch (_) {}
-                        }
                       },
                       borderRadius: BorderRadius.circular(14),
                       child: Container(
@@ -1396,16 +1517,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                                   decoration: BoxDecoration(
-                                    color: isOpen ? const Color(0xFFFEE2E2) : const Color(0xFFD1FAE5),
+                                    color: isUnconfigured
+                                        ? const Color(0xFFFEF3C7)
+                                        : (isOpen ? const Color(0xFFFEE2E2) : const Color(0xFFD1FAE5)),
                                     borderRadius: BorderRadius.circular(12),
                                     border: Border.all(
-                                      color: isOpen ? const Color(0xFFFECACA) : const Color(0xFFA7F3D0),
+                                      color: isUnconfigured
+                                          ? const Color(0xFFFDE68A)
+                                          : (isOpen ? const Color(0xFFFECACA) : const Color(0xFFA7F3D0)),
                                     ),
                                   ),
                                   child: Text(
-                                    isOpen ? '● OPEN' : '● CLOSED',
+                                    isUnconfigured ? '● UNCONFIGURED' : (isOpen ? '● OPEN' : '● CLOSED'),
                                     style: TextStyle(
-                                      color: isOpen ? const Color(0xFFDC2626) : const Color(0xFF059669),
+                                      color: isUnconfigured
+                                          ? const Color(0xFFD97706)
+                                          : (isOpen ? const Color(0xFFDC2626) : const Color(0xFF059669)),
                                       fontSize: 10,
                                       fontWeight: FontWeight.bold,
                                     ),
@@ -1546,142 +1673,115 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
             const SizedBox(height: 24),
 
-            // India Map Section
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'India LC Gate Clusters Map',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF0F172A),
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      'GPS locations of assigned railway clusters',
-                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                    ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFF059669),
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    const Text('Closed', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold)),
-                    const SizedBox(width: 10),
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFFDC2626),
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    const Text('Opened', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold)),
-                  ],
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 12),
-
-            // Map Container
+            // India LC Gate Clusters Map Card (Dedicated Entry Point)
             Container(
-              height: 320,
+              padding: const EdgeInsets.all(18),
               decoration: BoxDecoration(
+                color: Colors.white,
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.grey.shade300),
+                border: Border.all(color: Colors.grey.shade200),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.04),
+                    color: Colors.black.withOpacity(0.03),
                     blurRadius: 10,
                     offset: const Offset(0, 3),
-                  )
+                  ),
                 ],
               ),
-              clipBehavior: Clip.antiAlias,
-              child: FlutterMap(
-                mapController: _mapController,
-                options: const MapOptions(
-                  initialCenter: LatLng(22.9734, 78.6569), // Central India
-                  initialZoom: 4.8,
-                  minZoom: 3.5,
-                  maxZoom: 18,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  TileLayer(
-                    urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                    userAgentPackageName: 'com.lcgate.mobile',
-                  ),
-                  MarkerLayer(
-                    markers: gates
-                        .where((g) => g['latitude'] != null && g['longitude'] != null)
-                        .map((g) {
-                      final lat = (g['latitude'] as num).toDouble();
-                      final lng = (g['longitude'] as num).toDouble();
-                      final isOpen = g['status'] == 'OPEN';
-                      final color = isOpen ? const Color(0xFFDC2626) : const Color(0xFF059669);
-                      final lcNumber = g['masterSerialNumber'] ?? g['lcNumber'] ?? 'LC';
-
-                      return Marker(
-                        point: LatLng(lat, lng),
-                        width: 90,
-                        height: 36,
-                        child: GestureDetector(
-                          onTap: () => _showGateMapBottomSheet(g),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
                             decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: color, width: 2),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.2),
-                                  blurRadius: 6,
-                                  offset: const Offset(0, 2),
-                                )
-                              ],
+                              color: const Color(0xFFE0F2FE),
+                              borderRadius: BorderRadius.circular(8),
                             ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Container(
-                                  width: 8,
-                                  height: 8,
-                                  decoration: BoxDecoration(
-                                    color: color,
-                                    shape: BoxShape.circle,
-                                  ),
+                            child: const Icon(Icons.map_rounded, color: Color(0xFF0284C7), size: 20),
+                          ),
+                          const SizedBox(width: 10),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'India LC Gate Clusters Map',
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF0F172A),
                                 ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  lcNumber,
-                                  style: const TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF0F172A),
-                                  ),
-                                ),
-                              ],
+                              ),
+                              Text(
+                                '${gates.length} assigned railway clusters',
+                                style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(
+                              color: Color(0xFF059669),
+                              shape: BoxShape.circle,
                             ),
+                          ),
+                          const SizedBox(width: 4),
+                          Text('$totalClosedGates', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF059669))),
+                          const SizedBox(width: 8),
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(
+                              color: Color(0xFFDC2626),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Text('$totalOpenGates', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFFDC2626))),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Interactive full-screen geospatial visualization showing real-time operational status, GPS coordinates, and barrier telemetry across India.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600, height: 1.4),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    onPressed: () async {
+                      final token = await _getToken();
+                      if (!mounted) return;
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => FullScreenMapScreen(
+                            user: widget.user,
+                            token: token,
+                            initialGates: gates,
+                            onNavigateToGate: _navigateToGate,
                           ),
                         ),
                       );
-                    }).toList(),
+                    },
+                    icon: const Icon(Icons.explore_outlined, size: 18),
+                    label: const Text('View All Gates on Map', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF0F172A),
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size(double.infinity, 44),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      elevation: 0,
+                    ),
                   ),
                 ],
               ),
@@ -1761,117 +1861,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ],
       ),
-    );
-  }
-
-  void _showGateMapBottomSheet(Map<String, dynamic> gate) {
-    final gateId = gate['id'] as int;
-    final lcNumber = gate['masterSerialNumber'] ?? gate['lcNumber'] ?? 'LC-GATE';
-    final location = gate['locationName'] ?? '';
-    final zone = gate['zone'] ?? '';
-    final division = gate['division'] ?? '';
-    final isOpen = gate['status'] == 'OPEN';
-    final todayCycles = gate['todayCycles'] ?? 0;
-    final lastClosedFormatted = gate['lastClosedFormatted'] ?? 'No recorded closure';
-
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) {
-        return Container(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    lcNumber,
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: isOpen ? const Color(0xFFFEE2E2) : const Color(0xFFD1FAE5),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      isOpen ? '● OPEN' : '● CLOSED',
-                      style: TextStyle(
-                        color: isOpen ? const Color(0xFFDC2626) : const Color(0xFF059669),
-                        fontWeight: FontWeight.bold,
-                        fontSize: 11,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '📍 $location • $zone ($division Division)',
-                style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
-              ),
-              const Divider(height: 24),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('CYCLES TODAY', style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
-                      Text('$todayCycles times', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      const Text('LAST CLOSURE', style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
-                      Text(lastClosedFormatted, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        _navigateToGate(gateId, 'telemetry');
-                      },
-                      icon: const Icon(Icons.speed, size: 16),
-                      label: const Text('Live Telemetry & Inspect'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF0284C7),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  OutlinedButton(
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      _navigateToGate(gateId, 'about');
-                    },
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
-                    child: const Text('About'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        );
-      },
     );
   }
 

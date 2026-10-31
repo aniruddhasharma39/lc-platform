@@ -108,6 +108,11 @@ class _AuthWrapperState extends State<AuthWrapper> {
           // Token expired or invalid! Clear storage and show LoginScreen
           await prefs.remove('token');
           await prefs.remove('user');
+          for (final k in prefs.getKeys()) {
+            if (k.startsWith('home_dashboard_cache_')) {
+              await prefs.remove(k);
+            }
+          }
           if (mounted) {
             setState(() {
               isAuthenticated = false;
@@ -150,6 +155,11 @@ class _AuthWrapperState extends State<AuthWrapper> {
         final prefs = await SharedPreferences.getInstance();
         await prefs.remove('token');
         await prefs.remove('user');
+        for (final k in prefs.getKeys()) {
+          if (k.startsWith('home_dashboard_cache_')) {
+            await prefs.remove(k);
+          }
+        }
         if (!mounted) return;
         setState(() {
           isAuthenticated = false;

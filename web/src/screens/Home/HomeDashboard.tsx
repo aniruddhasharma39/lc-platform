@@ -24,8 +24,9 @@ interface GateSummaryItem {
   division: string;
   latitude: number | null;
   longitude: number | null;
-  powerSource: 'SOLAR' | 'DIRECT';
-  status: 'OPEN' | 'CLOSED';
+  powerSource: 'SOLAR' | 'DIRECT' | 'NOT_CONFIGURED';
+  status: 'OPEN' | 'CLOSED' | 'UNCONFIGURED';
+  hasMaster?: boolean;
   todayCycles: number;
   totalCycles: number;
   lastClosedAt: string | null;
@@ -40,6 +41,10 @@ interface GateSummaryItem {
 
 interface DashboardSummaryData {
   totalDevices: number;
+  totalClusters?: number;
+  totalConfiguredClusters?: number;
+  totalUnconfiguredGates?: number;
+  totalAllGates?: number;
   totalCyclesToday: number;
   totalOpenGates: number;
   totalClosedGates: number;
@@ -52,43 +57,132 @@ interface HomeDashboardProps {
   onNavigateToModule?: (slug: string) => void;
 }
 
+interface StoredHomeCache {
+  data: DashboardSummaryData;
+  etag?: string;
+  lastSyncedAt: string;
+}
+
 export default function HomeDashboard({
   user,
   onNavigateToGate,
 }: HomeDashboardProps) {
-  const [data, setData] = useState<DashboardSummaryData | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+  const cacheKey = `home_dashboard_cache_${user.id || 'default'}`;
+
+  const getInitialCache = (): StoredHomeCache | null => {
+    try {
+      const raw = localStorage.getItem(cacheKey);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.data && Array.isArray(parsed.data.gates)) {
+        return parsed;
+      }
+    } catch (e) {
+      console.warn('Failed to parse home dashboard cache', e);
+    }
+    return null;
+  };
+
+  const initialCache = useRef<StoredHomeCache | null>(getInitialCache());
+
+  const [data, setData] = useState<DashboardSummaryData | null>(() => initialCache.current?.data || null);
+  const [etag, setEtag] = useState<string | null>(() => initialCache.current?.etag || null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(() => initialCache.current?.lastSyncedAt || null);
+  const [loading, setLoading] = useState<boolean>(() => initialCache.current === null);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeGateId, setActiveGateId] = useState<number | null>(null);
+  const [activeGateId, setActiveGateId] = useState<number | null>(() => {
+    if (initialCache.current?.data?.gates && initialCache.current.data.gates.length > 0) {
+      return initialCache.current.data.gates[0].id;
+    }
+    return null;
+  });
 
   const sliderRef = useRef<HTMLDivElement | null>(null);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<Map<number, any>>(new Map());
 
-  const fetchSummary = async () => {
-    setLoading(true);
-    setError(null);
+  const isDateRollover = (isoString?: string | null): boolean => {
+    if (!isoString) return true;
     try {
+      return new Date(isoString).toDateString() !== new Date().toDateString();
+    } catch (_) {
+      return true;
+    }
+  };
+
+  const fetchSummary = async (isManual = false) => {
+    if (!data) {
+      setLoading(true);
+    }
+    setIsSyncing(true);
+    setError(null);
+
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('token')}`,
+      };
+
+      const rollover = isDateRollover(lastSyncedAt);
+      if (etag && !rollover && !isManual) {
+        headers['If-None-Match'] = etag;
+      }
+
       const res = await fetch(`${API_URL}/api/v1/lcgates/dashboard-summary`, {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token')}`,
-        },
+        headers,
       });
+
+      if (res.status === 304) {
+        const now = new Date().toISOString();
+        setLastSyncedAt(now);
+        if (data) {
+          localStorage.setItem(
+            cacheKey,
+            JSON.stringify({
+              data,
+              etag,
+              lastSyncedAt: now,
+            })
+          );
+        }
+        return;
+      }
+
       if (!res.ok) {
         throw new Error(`Failed to load dashboard summary (HTTP ${res.status})`);
       }
+
       const json = await res.json();
+      const serverEtag = res.headers.get('etag') || res.headers.get('ETag') || (json.lastSyncedAt ? `W/"${json.lastSyncedAt}"` : null);
+      const now = new Date().toISOString();
+
       setData(json);
+      if (serverEtag) setEtag(serverEtag);
+      setLastSyncedAt(now);
+
+      localStorage.setItem(
+        cacheKey,
+        JSON.stringify({
+          data: json,
+          etag: serverEtag,
+          lastSyncedAt: now,
+        })
+      );
+
       if (json.gates && json.gates.length > 0 && !activeGateId) {
         setActiveGateId(json.gates[0].id);
       }
     } catch (err: any) {
       console.error('Dashboard summary fetch error:', err);
-      setError(err.message || 'Unable to load dashboard data.');
+      // Offline resilience: Preserve previously cached data smoothly without throwing error screens
+      if (!data) {
+        setError(err.message || 'Unable to load dashboard data.');
+      }
     } finally {
       setLoading(false);
+      setIsSyncing(false);
     }
   };
 
@@ -145,9 +239,14 @@ export default function HomeDashboard({
       const lng = gate.longitude!;
       bounds.push([lat, lng]);
 
-      const isOpen = gate.status === 'OPEN';
-      const statusColor = isOpen ? '#ef4444' : '#10b981';
-      const statusBg = isOpen ? '#fef2f2' : '#ecfdf5';
+      const isUnconfigured = gate.status === 'UNCONFIGURED' || !gate.hasMaster;
+      const isOpen = !isUnconfigured && gate.status === 'OPEN';
+      const statusColor = isUnconfigured ? '#d97706' : (isOpen ? '#ef4444' : '#10b981');
+      const statusBg = isUnconfigured ? '#fef3c7' : (isOpen ? '#fef2f2' : '#ecfdf5');
+      const statusLabel = isUnconfigured ? 'UNCONFIGURED' : gate.status;
+      const gateLabel = (gate.hasMaster && gate.masterSerialNumber && gate.masterSerialNumber !== 'Unassigned')
+        ? gate.masterSerialNumber
+        : gate.lcNumber;
 
       // Custom HTML Marker Icon
       const customIcon = L.divIcon({
@@ -175,7 +274,7 @@ export default function HomeDashboard({
               margin-right: 6px;
               display: inline-block;
             "></span>
-            <strong style="font-size: 11px; color: #0f172a; letter-spacing: 0.5px;">${gate.masterSerialNumber}</strong>
+            <strong style="font-size: 11px; color: #0f172a; letter-spacing: 0.5px;">${gateLabel}</strong>
           </div>
         `,
         iconSize: [0, 0],
@@ -188,7 +287,7 @@ export default function HomeDashboard({
       const popupHtml = `
         <div style="font-family: inherit; min-width: 200px; padding: 4px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px;">
-            <strong style="font-size: 14px; color: #0f172a;">${gate.masterSerialNumber}</strong>
+            <strong style="font-size: 14px; color: #0f172a;">${gateLabel}</strong>
             <span style="
               padding: 2px 8px;
               border-radius: 12px;
@@ -197,7 +296,7 @@ export default function HomeDashboard({
               background: ${statusBg};
               color: ${statusColor};
               border: 1px solid ${statusColor}40;
-            ">${gate.status}</span>
+            ">${statusLabel}</span>
           </div>
           <div style="font-size: 12px; color: #475569; margin-bottom: 4px;">
             📍 <strong>${gate.locationName}</strong> (${gate.zone})
@@ -329,28 +428,52 @@ export default function HomeDashboard({
           </p>
         </div>
 
-        <button
-          onClick={fetchSummary}
-          disabled={loading}
-          style={{
-            background: 'rgba(255,255,255,0.1)',
-            border: '1px solid rgba(255,255,255,0.2)',
-            color: '#ffffff',
-            borderRadius: 8,
-            padding: '8px 14px',
-            fontSize: '0.84rem',
-            fontWeight: 600,
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            transition: 'all 0.2s',
-          }}
-          title="Refresh KPIs"
-        >
-          <FaSyncAlt className={loading ? 'fa-spin' : ''} />
-          <span>Refresh</span>
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          {lastSyncedAt && (
+            <div style={{ fontSize: '0.78rem', color: '#94a3b8', textAlign: 'right' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5, justifyContent: 'flex-end' }}>
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    backgroundColor: isSyncing ? '#38bdf8' : '#10b981',
+                    display: 'inline-block',
+                  }}
+                ></span>
+                <span style={{ color: isSyncing ? '#38bdf8' : '#cbd5e1', fontWeight: 600 }}>
+                  {isSyncing ? 'Synchronizing...' : 'Verified Live'}
+                </span>
+              </div>
+              <div style={{ color: '#64748b', fontSize: '0.72rem' }}>
+                Synced at {new Date(lastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={() => fetchSummary(true)}
+            disabled={isSyncing}
+            style={{
+              background: 'rgba(255,255,255,0.1)',
+              border: '1px solid rgba(255,255,255,0.2)',
+              color: '#ffffff',
+              borderRadius: 8,
+              padding: '8px 14px',
+              fontSize: '0.84rem',
+              fontWeight: 600,
+              cursor: isSyncing ? 'default' : 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              transition: 'all 0.2s',
+            }}
+            title="Refresh KPIs"
+          >
+            <FaSyncAlt className={isSyncing ? 'fa-spin' : ''} />
+            <span>{isSyncing ? 'Syncing...' : 'Refresh'}</span>
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -412,11 +535,16 @@ export default function HomeDashboard({
           </div>
           <div>
             <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>
-              Total Assigned Clusters
+              Active Clusters
             </div>
             <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#0f172a', lineHeight: 1.2 }}>
               {loading ? '—' : data?.totalDevices ?? 0}
             </div>
+            {Boolean(data?.totalUnconfiguredGates && data.totalUnconfiguredGates > 0) && (
+              <div style={{ fontSize: '0.72rem', color: '#d97706', marginTop: 3, fontWeight: 600 }}>
+                {data?.totalUnconfiguredGates} unconfigured
+              </div>
+            )}
             
           </div>
         </div>
@@ -635,8 +763,13 @@ export default function HomeDashboard({
             }}
           >
             {data!.gates.map((gate) => {
-              const isOpen = gate.status === 'OPEN';
+              const isUnconfigured = gate.status === 'UNCONFIGURED' || !gate.hasMaster;
+              const isOpen = !isUnconfigured && gate.status === 'OPEN';
               const isSelected = activeGateId === gate.id;
+              const statusBg = isUnconfigured ? '#fef3c7' : (isOpen ? '#fef2f2' : '#ecfdf5');
+              const statusColor = isUnconfigured ? '#d97706' : (isOpen ? '#ef4444' : '#10b981');
+              const statusBorder = isUnconfigured ? '#fde68a' : (isOpen ? '#fecaca' : '#a7f3d0');
+              const statusLabel = isUnconfigured ? 'UNCONFIGURED' : gate.status;
 
               return (
                 <div
@@ -676,7 +809,9 @@ export default function HomeDashboard({
                             letterSpacing: '0.5px',
                           }}
                         >
-                          {gate.masterSerialNumber}
+                          {gate.hasMaster && gate.masterSerialNumber && gate.masterSerialNumber !== 'Unassigned'
+                            ? gate.masterSerialNumber
+                            : gate.lcNumber}
                         </span>
                         {gate.powerSource === 'SOLAR' && (
                           <span
@@ -703,12 +838,12 @@ export default function HomeDashboard({
                           borderRadius: 20,
                           fontSize: '0.75rem',
                           fontWeight: 800,
-                          background: isOpen ? '#fef2f2' : '#ecfdf5',
-                          color: isOpen ? '#ef4444' : '#10b981',
-                          border: `1px solid ${isOpen ? '#fecaca' : '#a7f3d0'}`,
+                          background: statusBg,
+                          color: statusColor,
+                          border: `1px solid ${statusBorder}`,
                         }}
                       >
-                        ● {gate.status}
+                        ● {statusLabel}
                       </span>
                     </div>
 
@@ -870,6 +1005,10 @@ export default function HomeDashboard({
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#ef4444', display: 'inline-block' }} />
               <span style={{ fontWeight: 600, color: '#334155' }}>Opened (Traffic Stopped)</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#d97706', display: 'inline-block' }} />
+              <span style={{ fontWeight: 600, color: '#334155' }}>Unconfigured</span>
             </div>
           </div>
         </div>

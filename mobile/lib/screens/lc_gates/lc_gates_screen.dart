@@ -1302,27 +1302,29 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                InkWell(
-                  onTap: () => DeviceInfoSheet.show(context, gate: gate),
-                  borderRadius: BorderRadius.circular(6),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFEFF6FF),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: const Color(0xFFBFDBFE)),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.developer_board, size: 12, color: Color(0xFF1D4ED8)),
-                        SizedBox(width: 4),
-                        Text('Device Info', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
-                      ],
+                if (masters != null && masters.isNotEmpty) ...[
+                  InkWell(
+                    onTap: () => DeviceInfoSheet.show(context, gate: gate),
+                    borderRadius: BorderRadius.circular(6),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEFF6FF),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: const Color(0xFFBFDBFE)),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.developer_board, size: 12, color: Color(0xFF1D4ED8)),
+                          SizedBox(width: 4),
+                          Text('Device Info', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 6),
+                  const SizedBox(width: 6),
+                ],
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
@@ -1602,7 +1604,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             _buildFieldRow('Primary Power', isSolar ? 'Solar Powered' : 'Direct AC Mains'),
             _buildFieldRow('Configured Masters', '${masters.length} Gateway Unit(s)'),
             _buildFieldRow('Connected Slave Sensors', '$slaveCount Device(s)'),
-            _buildFieldRow('System Status', 'Configured (Active)'),
+            _buildFieldRow('System Status', masters.isNotEmpty ? 'Configured (Active)' : 'Unconfigured (No Master)'),
           ],
         ),
         const SizedBox(height: 18),
@@ -2046,6 +2048,20 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   // TAB 2: LIVE TELEMETRY & HEALTH CHECK (FULL WEB PARITY)
   // ==========================================================
   Widget _buildTelemetryTab(Map<String, dynamic> gate, int totalDevicesCount) {
+    final masters = (gate['masters'] as List?) ?? [];
+    final hasMaster = (_gateTelemetry?['hasMaster'] as bool?) ?? (masters.isNotEmpty);
+
+    if (!hasMaster || masters.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 20),
+        child: _buildEmptyCard(
+          icon: Icons.sensors_off_rounded,
+          title: 'No Master Unit Connected',
+          message: 'This LC Gate does not have any physical Master Units registered. Live telemetry, sensor readings, and operational cycles will activate once a Master Unit is provisioned and linked in Clusters.',
+        ),
+      );
+    }
+
     final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
     final thingName = _gateTelemetry?['thingName']?.toString() ?? gate['lcNumber']?.toString() ?? 'LC-GATE';
     final currentStatus = _gateTelemetry?['currentStatus']?.toString().toUpperCase() ?? 'UNKNOWN';

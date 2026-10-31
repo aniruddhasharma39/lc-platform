@@ -3,7 +3,7 @@ import {
   FaArchway, FaMapMarkerAlt, FaCogs, FaCamera, FaEye, FaSun, 
   FaBolt, FaPlug, FaCheckCircle, FaSearchPlus, FaTimes, FaRedo, FaTrash,
   FaFilter, FaChevronDown, FaChevronUp, FaLayerGroup, FaShieldAlt, FaMicrochip,
-  FaSearch, FaPlus
+  FaSearch, FaPlus, FaExclamationTriangle
 } from 'react-icons/fa';
 import type { User } from '../../types';
 import './ClusterDashboard.css';
@@ -425,6 +425,17 @@ export default function ClusterDashboard(_props: Props) {
 
           {loading ? (
             <div className="spinner-container"><div className="spinner"></div></div>
+          ) : fetchError && gates.length === 0 ? (
+            <div className="empty-state glass-card" style={{ borderColor: '#fca5a5', backgroundColor: '#fff5f5' }}>
+              <div className="empty-icon" style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+                <FaExclamationTriangle size={48} color="#ef4444" />
+              </div>
+              <h3 style={{ color: '#b91c1c' }}>Failed to Load LC Gates</h3>
+              <p style={{ color: '#7f1d1d' }}>{fetchError}</p>
+              <button className="btn-primary mt-3" onClick={() => fetchGates()} style={{ padding: '8px 20px' }}>
+                Retry Connection
+              </button>
+            </div>
           ) : gates.length === 0 ? (
             <div className="empty-state glass-card">
               <div className="empty-icon" style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
@@ -497,16 +508,18 @@ export default function ClusterDashboard(_props: Props) {
                     </div>
                     <div className="flex justify-between items-center pt-3 border-t" style={{ borderColor: 'var(--border)', marginTop: '8px' }}>
                       <span className="text-xs text-muted">ID: <strong>{gate.lcNumber || 'N/A'}</strong></span>
-                      <button 
-                        className="btn-small btn-outline flex items-center gap-1.5 hover-lift"
-                        style={{ fontSize: '0.8rem', padding: '4px 10px', cursor: 'pointer' }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDeviceInfoModalTarget({ gate });
-                        }}
-                      >
-                        <FaMicrochip /> Device Info
-                      </button>
+                      {gate.masters && gate.masters.length > 0 && (
+                        <button 
+                          className="btn-small btn-outline flex items-center gap-1.5 hover-lift"
+                          style={{ fontSize: '0.8rem', padding: '4px 10px', cursor: 'pointer' }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeviceInfoModalTarget({ gate });
+                          }}
+                        >
+                          <FaMicrochip /> Device Info
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -580,7 +593,7 @@ export default function ClusterDashboard(_props: Props) {
 function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
   const { success: toastSuccess, error: toastError, warning: toastWarning } = useToast();
   const [name, setName] = useState('');
-  const [lcNumberDigits, setLcNumberDigits] = useState('');
+  const [lcNumber, setLcNumber] = useState('');
   const [locationName, setLocationName] = useState('');
   const [zone, setZone] = useState('');
   const [division, setDivision] = useState('');
@@ -589,38 +602,8 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
   const [gettingLocation, setGettingLocation] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  // Device Registry Integration
-  const [deviceList, setDeviceList] = useState<any[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
-
-
-  useEffect(() => {
-    fetch(`${API_URL}/api/v1/devices?limit=100`, {
-      headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-    })
-      .then(res => res.json())
-      .then(data => {
-        if (data.devices) {
-          setDeviceList(data.devices);
-        }
-      })
-      .catch(console.error);
-  }, []);
-
-  const handleDeviceSelect = (devId: string) => {
-    setSelectedDeviceId(devId);
-    if (!devId) return;
-    const dev = deviceList.find(d => d.id.toString() === devId);
-    if (dev) {
-      if (!name) {
-        setName(dev.thingName);
-      }
-    }
-  };
-
-  const chosenDev = deviceList.find(d => d.id.toString() === selectedDeviceId);
   const currentDivisions = zone ? (divisionsByZone[zone] || []) : [];
-  const canSubmit = Boolean(locationName.trim() && zone && division && (chosenDev || lcNumberDigits.trim()));
+  const canSubmit = Boolean(lcNumber.trim() && locationName.trim() && zone && division);
 
   const handleGetLocation = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -650,7 +633,11 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
     if (!canSubmit) return;
     setSubmitting(true);
     try {
-      const gateLcNumber = chosenDev ? chosenDev.thingName : `LC-${lcNumberDigits.trim()}`;
+      const raw = lcNumber.trim();
+      const cleanLc = raw.toUpperCase().startsWith('LC-')
+        ? raw.toUpperCase()
+        : `LC-${raw.toUpperCase()}`;
+
       const res = await fetch(`${API_URL}/api/v1/lcgate`, {
         method: 'POST',
         headers: {
@@ -658,10 +645,9 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
         body: JSON.stringify({
-          name: name || undefined,
-          lcNumber: gateLcNumber,
-          deviceId: chosenDev ? chosenDev.id : undefined,
-          locationName,
+          name: name.trim() || undefined,
+          lcNumber: cleanLc,
+          locationName: locationName.trim(),
           zone,
           division,
           latitude: lat ? parseFloat(lat) : undefined,
@@ -669,7 +655,7 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
         })
       });
       if (res.ok) {
-        toastSuccess(`LC Gate "${gateLcNumber}" created successfully.`, 'Gate Created');
+        toastSuccess(`LC Gate "${cleanLc}" created successfully.`, 'Gate Created');
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
@@ -690,65 +676,30 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
       </div>
       
       <form onSubmit={handleSubmit} className="flex-col gap-4">
-        {/* Select from Device Registry */}
-        <div className="form-group" style={{ background: 'rgba(11, 60, 122, 0.05)', padding: '14px', borderRadius: 10, border: '1.5px solid rgba(11, 60, 122, 0.2)' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--primary)', fontWeight: 700, fontSize: '0.95rem' }}>
-            <FaMicrochip /> Select Provisioned Device from Registry
-          </label>
-          <select 
-            className="glass-input" 
-            value={selectedDeviceId}
-            onChange={(e) => handleDeviceSelect(e.target.value)}
-            style={{ marginTop: 6 }}
-          >
-            <option value="">— Select from Device Registry (or enter manual number below) —</option>
-            {deviceList.map(dev => (
-              <option key={dev.id} value={dev.id.toString()}>
-                {dev.thingName} ({dev.deviceType}) {dev.gate ? `[Assigned to ${dev.gate.lcNumber}]` : '★ [Unassigned]'}
-              </option>
-            ))}
-          </select>
-          <small className="text-muted mt-1 block" style={{ fontSize: '0.8rem', lineHeight: 1.4 }}>
-            {chosenDev 
-              ? `Using "${chosenDev.thingName}" as the Gate ID & cluster identifier. Numbering will be identical.` 
-              : 'Provision devices beforehand in AWS IoT Core and pick one here to automatically adopt its ID and map it.'}
+        <div className="form-group">
+          <label>LC Number (e.g. LC-0001, 101/A) *</label>
+          <input 
+            className="glass-input font-bold" 
+            type="text" 
+            required
+            placeholder="e.g. LC-0001 or 101" 
+            value={lcNumber} 
+            onChange={e => setLcNumber(e.target.value)} 
+          />
+          <small className="text-muted mt-1 block">
+            Enter the official railway level crossing identifier.
           </small>
         </div>
 
-        {chosenDev ? (
-          <div className="form-group">
-            <label style={{ fontWeight: 600 }}>Gate / Cluster Identifier (from selected device)</label>
-            <div style={{ 
-              padding: '0.65rem 0.9rem', 
-              background: 'rgba(11, 60, 122, 0.08)', 
-              borderRadius: 8, 
-              fontWeight: 700, 
-              color: 'var(--primary)',
-              fontSize: '1.05rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              border: '1px solid rgba(11, 60, 122, 0.2)'
-            }}>
-              <FaMicrochip /> {chosenDev.thingName}
-            </div>
-          </div>
-        ) : (
-          <div className="form-group">
-            <label>LC Number (Manual entry if no device selected) *</label>
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-lg" style={{ color: 'var(--primary-color)' }}>LC -</span>
-              <input 
-                className="glass-input flex-1" 
-                type="text" 
-                required={!chosenDev}
-                placeholder="0001" 
-                value={lcNumberDigits} 
-                onChange={e => setLcNumberDigits(e.target.value.replace(/\D/g, ''))} 
-              />
-            </div>
-          </div>
-        )}
+        <div className="form-group">
+          <label>Location Description *</label>
+          <input className="glass-input" type="text" required placeholder="e.g. Near Station X / KM 124" value={locationName} onChange={e => setLocationName(e.target.value)} />
+        </div>
+
+        <div className="form-group">
+          <label>Gate Name / Label (Optional)</label>
+          <input className="glass-input" type="text" placeholder="e.g. North Outer Gate" value={name} onChange={e => setName(e.target.value)} />
+        </div>
 
         <div className="form-group">
           <label>Railway Zone *</label>
@@ -757,20 +708,13 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
             {(zones || []).map((z: string) => <option key={z} value={z}>{z}</option>)}
           </select>
         </div>
+
         <div className="form-group">
           <label>Division *</label>
           <select className="glass-input" required disabled={!zone} value={division} onChange={(e) => setDivision(e.target.value)}>
             <option value="">{zone ? 'Select Division…' : 'Select Zone first…'}</option>
             {currentDivisions.map((d: string) => <option key={d} value={d}>{d}</option>)}
           </select>
-        </div>
-        <div className="form-group">
-          <label>Gate Name (Optional)</label>
-          <input className="glass-input" type="text" placeholder="e.g. North Gate" value={name} onChange={e => setName(e.target.value)} />
-        </div>
-        <div className="form-group">
-          <label>Location Description *</label>
-          <input className="glass-input" type="text" required placeholder="e.g. Near Station X" value={locationName} onChange={e => setLocationName(e.target.value)} />
         </div>
         
         <div className="location-box glass-panel p-4 rounded-lg">
@@ -872,13 +816,15 @@ function GateDetailView({ gate, onBack, onUpdate, onOpenDeviceInfo }: any) {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <button 
-            className="btn-small btn-primary flex items-center gap-2 hover-lift"
-            style={{ padding: '9px 16px', fontSize: '0.88rem', cursor: 'pointer' }}
-            onClick={() => onOpenDeviceInfo?.({ gate })}
-          >
-            <FaMicrochip /> Device Info &amp; Manifest
-          </button>
+          {gate.masters && gate.masters.length > 0 && (
+            <button 
+              className="btn-small btn-primary flex items-center gap-2 hover-lift"
+              style={{ padding: '9px 16px', fontSize: '0.88rem', cursor: 'pointer' }}
+              onClick={() => onOpenDeviceInfo?.({ gate })}
+            >
+              <FaMicrochip /> Device Info &amp; Manifest
+            </button>
+          )}
         </div>
       </div>
 

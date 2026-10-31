@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { RAILWAY_DATA, RAILWAY_ZONES, divisionsForZone } from '../lib/railwayData';
@@ -66,6 +67,10 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       if (!isDeveloper) {
         return res.json({
           totalDevices: 0,
+          totalClusters: 0,
+          totalConfiguredClusters: 0,
+          totalUnconfiguredGates: 0,
+          totalAllGates: 0,
           totalCyclesToday: 0,
           totalOpenGates: 0,
           totalClosedGates: 0,
@@ -103,15 +108,14 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       }
     });
 
-    // Gather thing identifiers to check latest telemetry status
+    // Gather thing identifiers ONLY from actually configured masters
     const allThingNames: string[] = [];
     gates.forEach(g => {
-      if (g.lcNumber) allThingNames.push(g.lcNumber);
       g.masters.forEach(m => {
         if (m.serialNumber) allThingNames.push(m.serialNumber);
       });
       g.deviceRegistries.forEach(d => {
-        if (d.thingName) allThingNames.push(d.thingName);
+        if (d.masterId !== null && d.thingName) allThingNames.push(d.thingName);
       });
     });
 
@@ -134,9 +138,39 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
     let totalClosedGates = 0;
 
     const mappedGates = gates.map(gate => {
-      const isSolar = gate.masters.some(m => m.powerSource === 'SOLAR');
-      const primaryMaster = gate.masters[0]?.serialNumber || gate.lcNumber;
+      const hasMasters = gate.masters.length > 0;
+      const isSolar = hasMasters && gate.masters.some(m => m.powerSource === 'SOLAR');
+      const primaryMaster = hasMasters ? gate.masters[0]?.serialNumber : 'Unassigned';
       const slavesCount = gate.masters.reduce((acc, m) => acc + (m.childDevices?.length || 0), 0);
+      const assignedScope = gate.scopeGroups[0]?.scopeGroup;
+
+      if (!hasMasters) {
+        // Gate has NO master hardware attached! Cannot have live telemetry or cycles.
+        // It is UNCONFIGURED, so it must NOT increment totalClosedGates or totalOpenGates.
+        return {
+          id: gate.id,
+          lcNumber: gate.lcNumber,
+          name: gate.name || gate.locationName,
+          locationName: gate.locationName,
+          zone: gate.zone || 'Central Railway',
+          division: gate.division || 'Pune',
+          latitude: gate.latitude,
+          longitude: gate.longitude,
+          powerSource: 'NOT_CONFIGURED',
+          status: 'UNCONFIGURED',
+          hasMaster: false,
+          todayCycles: 0,
+          totalCycles: 0,
+          lastClosedAt: null,
+          lastClosedFormatted: 'No master unit assigned',
+          masterSerialNumber: 'Unassigned',
+          mastersCount: 0,
+          slavesCount: 0,
+          scopeGroupId: assignedScope?.id || null,
+          scopeGroupName: assignedScope?.name || null,
+          scopeGroupColor: assignedScope?.color || null,
+        };
+      }
 
       // Compute cycles for today
       const todayEvents = gate.events.filter(e => {
@@ -164,8 +198,8 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
         }
       }
 
-      // Gate status resolution
-      const latestTele = latestTeleMap.get(primaryMaster) || latestTeleMap.get(gate.lcNumber);
+      // Gate status resolution strictly from configured master hardware
+      const latestTele = latestTeleMap.get(primaryMaster);
       const telePayload = latestTele?.payload as any;
       const rawTeleStatus = telePayload?.Status ? String(telePayload.Status).trim().toUpperCase() : null;
 
@@ -180,7 +214,7 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
         status = telePayload.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
       } else if (activeEvent) {
         status = 'OPEN';
-      } else if (gate.deviceRegistries[0]?.status) {
+      } else if (gate.deviceRegistries[0]?.status && gate.deviceRegistries[0]?.masterId !== null) {
         const devStatus = gate.deviceRegistries[0].status.toUpperCase();
         status = (devStatus === 'OPEN' || devStatus === 'NOT_CLOSED') ? 'OPEN' : 'CLOSED';
       }
@@ -190,8 +224,6 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       } else {
         totalClosedGates++;
       }
-
-      const assignedScope = gate.scopeGroups[0]?.scopeGroup;
 
       return {
         id: gate.id,
@@ -204,6 +236,7 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
         longitude: gate.longitude,
         powerSource: isSolar ? 'SOLAR' : 'DIRECT',
         status,
+        hasMaster: true,
         todayCycles: todayCyclesCount,
         totalCycles: gate.events.length,
         lastClosedAt,
@@ -217,13 +250,43 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       };
     });
 
-    res.json({
-      totalDevices: gates.length,
+    const totalConfiguredClusters = gates.filter(g => g.masters.length > 0).length;
+    const totalUnconfiguredGates = gates.length - totalConfiguredClusters;
+
+    const responsePayload = {
+      totalDevices: totalConfiguredClusters, // Strictly counts gates with configured Master Units
+      totalClusters: totalConfiguredClusters,
+      totalConfiguredClusters,
+      totalUnconfiguredGates,
+      totalAllGates: gates.length,
       totalCyclesToday,
       totalOpenGates,
       totalClosedGates,
       gates: mappedGates,
-    });
+      lastSyncedAt: new Date().toISOString(),
+    };
+
+    // Calculate ETag based on payload contents for conditional HTTP synchronization (304 Not Modified)
+    const contentHash = crypto
+      .createHash('md5')
+      .update(JSON.stringify({
+        totalDevices: responsePayload.totalDevices,
+        totalCyclesToday: responsePayload.totalCyclesToday,
+        totalOpenGates: responsePayload.totalOpenGates,
+        totalClosedGates: responsePayload.totalClosedGates,
+        gateSignatures: mappedGates.map(g => `${g.id}:${g.status}:${g.todayCycles}:${g.totalCycles}:${g.lastClosedAt}`),
+      }))
+      .digest('hex');
+
+    const etag = `W/"${contentHash}"`;
+    res.setHeader('ETag', etag);
+
+    const clientIfNoneMatch = req.headers['if-none-match'];
+    if (clientIfNoneMatch && clientIfNoneMatch === etag) {
+      return res.status(304).end();
+    }
+
+    res.json(responsePayload);
   } catch (error) {
     next(error);
   }
@@ -567,25 +630,8 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
       data: { masterId: master.id, gateId: master.gateId }
     }).catch(console.warn);
 
-    // Initialize physical wired slave units (Barrier A & Barrier B) for this master
-    const defaultWiredSlaves = [
-      { serial: `${serialNumber}-A`, type: 'DEVICE_1', seq: 1 },
-      { serial: `${serialNumber}-B`, type: 'DEVICE_2', seq: 2 },
-    ];
-
-    for (const slave of defaultWiredSlaves) {
-      let child = await prisma.childDevice.findUnique({ where: { serialNumber: slave.serial } });
-      if (!child) {
-        await prisma.childDevice.create({
-          data: {
-            serialNumber: slave.serial,
-            type: slave.type,
-            deviceSequence: slave.seq,
-            masterId: master.id,
-          }
-        }).catch(console.warn);
-      }
-    }
+    // Master Unit is created without auto-generating slaves.
+    // Slave devices (Barrier A, Barrier B, etc.) are explicitly added by the user as needed.
 
     res.status(201).json(master);
   } catch (error: any) {

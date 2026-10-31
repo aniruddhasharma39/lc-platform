@@ -72,11 +72,15 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
       }
     }
     if (target == null && widget.gate != null) {
-      final regs = widget.gate!['deviceRegistries'];
-      if (regs is List && regs.isNotEmpty) {
-        target = Map<String, dynamic>.from(regs.first as Map);
-      } else {
-        target = widget.gate;
+      final masters = widget.gate!['masters'];
+      if (masters is List && masters.isNotEmpty) {
+        final firstMaster = masters.first as Map;
+        final regs = firstMaster['deviceRegistries'];
+        if (regs is List && regs.isNotEmpty) {
+          target = Map<String, dynamic>.from(regs.first as Map);
+        } else {
+          target = Map<String, dynamic>.from(firstMaster);
+        }
       }
     }
 
@@ -91,6 +95,7 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
   }
 
   Future<void> _fetchTelemetry() async {
+    if (_thingName.isEmpty || _thingName == 'Unknown Device') { setState(() => _isLoading = false); return; }
     setState(() => _isLoading = true);
     try {
       final prefs = await SharedPreferences.getInstance();

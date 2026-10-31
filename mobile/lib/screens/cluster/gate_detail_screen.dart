@@ -631,11 +631,12 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
           ],
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.developer_board, color: AppColors.primary),
-            tooltip: 'Device Info & Manifest',
-            onPressed: () => DeviceInfoSheet.show(context, gate: Map<String, dynamic>.from(gate)),
-          ),
+          if (masters.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.developer_board, color: AppColors.primary),
+              tooltip: 'Device Info & Manifest',
+              onPressed: () => DeviceInfoSheet.show(context, gate: Map<String, dynamic>.from(gate)),
+            ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh Gate Details',

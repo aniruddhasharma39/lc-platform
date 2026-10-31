@@ -1014,17 +1014,18 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                                                     masters.isEmpty ? 'No Master Hardware' : (masters.first['powerSource'] == 'SOLAR' ? 'Solar Powered' : 'Direct Powered'),
                                                     style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                                                   ),
-                                                  OutlinedButton.icon(
-                                                    style: OutlinedButton.styleFrom(
-                                                      visualDensity: VisualDensity.compact,
-                                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                                      side: const BorderSide(color: Color(0xFFCBD5E1)),
-                                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                                  if (masters.isNotEmpty)
+                                                    OutlinedButton.icon(
+                                                      style: OutlinedButton.styleFrom(
+                                                        visualDensity: VisualDensity.compact,
+                                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                                        side: const BorderSide(color: Color(0xFFCBD5E1)),
+                                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                                      ),
+                                                      icon: const Icon(Icons.developer_board, size: 14, color: AppColors.primary),
+                                                      label: const Text('Device Info', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                                                      onPressed: () => DeviceInfoSheet.show(context, gate: Map<String, dynamic>.from(gate)),
                                                     ),
-                                                    icon: const Icon(Icons.developer_board, size: 14, color: AppColors.primary),
-                                                    label: const Text('Device Info', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary)),
-                                                    onPressed: () => DeviceInfoSheet.show(context, gate: Map<String, dynamic>.from(gate)),
-                                                  ),
                                                 ],
                                               ),
                                             ],

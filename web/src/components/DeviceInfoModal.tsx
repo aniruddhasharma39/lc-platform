@@ -61,9 +61,8 @@ function RenderParamTable({ data }: { data: Record<string, any> }) {
 export default function DeviceInfoModal({ isOpen, onClose, gate, master, device }: DeviceInfoModalProps) {
   const targetDevice = device || 
     (master?.deviceRegistries && master.deviceRegistries[0]) || 
-    (gate?.deviceRegistries && gate.deviceRegistries[0]) || 
     master || 
-    gate;
+    (gate?.masters && gate.masters.length > 0 ? (gate.masters[0].deviceRegistries?.[0] || gate.masters[0]) : null);
 
   const [loading, setLoading] = useState<boolean>(true);
   const [manifestRecord, setManifestRecord] = useState<any | null>(null);
@@ -74,7 +73,7 @@ export default function DeviceInfoModal({ isOpen, onClose, gate, master, device 
   const thingName = targetDevice?.thingName || targetDevice?.serialNumber || targetDevice?.lcNumber || 'Unknown Device';
 
   const fetchManifestPayload = useCallback(async () => {
-    if (!targetDevice) return;
+    if (!targetDevice) { setLoading(false); return; }
     setLoading(true);
 
     try {

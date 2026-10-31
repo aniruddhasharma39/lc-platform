@@ -1144,74 +1144,94 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                   </div>
                   <div className="lcg-about-field-row">
                     <span className="lcg-about-field-label">System Status</span>
-                    <span className="lcg-about-field-value" style={{ color: '#059669', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                      <FaCheckCircle /> Configured
-                    </span>
+                    {selectedGate.masters && selectedGate.masters.length > 0 ? (
+                      <span className="lcg-about-field-value" style={{ color: '#059669', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                        <FaCheckCircle /> Configured
+                      </span>
+                    ) : (
+                      <span className="lcg-about-field-value" style={{ color: '#d97706', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                        <FaExclamationTriangle /> Unconfigured (No Master)
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
 
               {/* 2. Physical Device Manifest & Gateway Profile */}
-              <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '18px 20px', marginBottom: 20 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ width: 36, height: 36, borderRadius: 8, background: '#e0f2fe', color: '#0369a1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.1rem' }}>
-                      <FaShieldAlt />
+              {selectedGate.masters && selectedGate.masters.length > 0 ? (
+                <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '18px 20px', marginBottom: 20 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 8, background: '#e0f2fe', color: '#0369a1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.1rem' }}>
+                        <FaShieldAlt />
+                      </div>
+                      <div>
+                        <h4 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: '#0f172a' }}>
+                          Physical Device Manifest Profile ({selectedGate.masters[0]?.serialNumber})
+                        </h4>
+                        <span style={{ fontSize: '0.76rem', color: '#64748b' }}>
+                          Dynamic hardware specifications ingested from edge boot payload & AWS IoT registry
+                        </span>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setDeviceInfoItem({ gate: selectedGate, master: selectedGate.masters[0] })}
+                      style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 12px', fontSize: '0.8rem', fontWeight: 700 }}
+                      title="Inspect complete JSON hardware manifest"
+                    >
+                      <FaCode /> View Raw Manifest JSON
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14, background: '#f8fafc', padding: 14, borderRadius: 10, border: '1px solid #f1f5f9' }}>
+                    <div>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Serial Number</span>
+                      <div style={{ fontSize: '0.98rem', fontWeight: 800, color: 'var(--primary)' }}>
+                        {selectedGate.masters[0]?.serialNumber}
+                      </div>
                     </div>
                     <div>
-                      <h4 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: '#0f172a' }}>
-                        Physical Device Manifest Profile ({selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber})
-                      </h4>
-                      <span style={{ fontSize: '0.76rem', color: '#64748b' }}>
-                        Dynamic hardware specifications ingested from edge boot payload & AWS IoT registry
-                      </span>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Device Name</span>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#0f172a' }}>
+                        {selectedGate.deviceRegistries?.[0]?.attributes?.deviceName || 'LC Gate'}
+                      </div>
                     </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => setDeviceInfoItem({ gate: selectedGate, master: selectedGate.masters?.[0] })}
-                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 12px', fontSize: '0.8rem', fontWeight: 700 }}
-                    title="Inspect complete JSON hardware manifest"
-                  >
-                    <FaCode /> View Raw Manifest JSON
-                  </button>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14, background: '#f8fafc', padding: 14, borderRadius: 10, border: '1px solid #f1f5f9' }}>
-                  <div>
-                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Serial Number</span>
-                    <div style={{ fontSize: '0.98rem', fontWeight: 800, color: 'var(--primary)' }}>
-                      {selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}
+                    <div>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Manufacturing Date</span>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#0f172a' }}>
+                        {selectedGate.deviceRegistries?.[0]?.dateOfMfg ? new Date(selectedGate.deviceRegistries[0].dateOfMfg).toLocaleDateString() : (selectedGate.createdAt ? new Date(selectedGate.createdAt).toLocaleDateString() : 'N/A')}
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Device Name</span>
-                    <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#0f172a' }}>
-                      {selectedGate.deviceRegistries?.[0]?.attributes?.deviceName || 'LC Gate'}
+                    <div>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Firmware Version</span>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#0f172a' }}>
+                        v{selectedGate.deviceRegistries?.[0]?.firmwareVersion || selectedGate.masters[0]?.firmwareVersion || '1.0.6'}
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Manufacturing Date</span>
-                    <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#0f172a' }}>
-                      {selectedGate.deviceRegistries?.[0]?.dateOfMfg ? new Date(selectedGate.deviceRegistries[0].dateOfMfg).toLocaleDateString() : (selectedGate.createdAt ? new Date(selectedGate.createdAt).toLocaleDateString() : 'N/A')}
-                    </div>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Firmware Version</span>
-                    <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#0f172a' }}>
-                      v{selectedGate.deviceRegistries?.[0]?.firmwareVersion || selectedGate.masters?.[0]?.firmwareVersion || '1.0.6'}
-                    </div>
-                  </div>
-                  <div style={{ gridColumn: 'span 2' }}>
-                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Description</span>
-                    <div style={{ fontSize: '0.84rem', color: '#334155', marginTop: 2 }}>
-                      {selectedGate.deviceRegistries?.[0]?.attributes?.description || 'Installed on Indian Railways Level Crossings'}
+                    <div style={{ gridColumn: 'span 2' }}>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Description</span>
+                      <div style={{ fontSize: '0.84rem', color: '#334155', marginTop: 2 }}>
+                        {selectedGate.deviceRegistries?.[0]?.attributes?.description || 'Installed on Indian Railways Level Crossings'}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
+              ) : (
+                <div style={{ background: '#f8fafc', border: '1.5px dashed #cbd5e1', borderRadius: 12, padding: '24px 20px', textAlign: 'center', marginBottom: 20 }}>
+                  <div style={{ width: 44, height: 44, borderRadius: 10, background: '#f1f5f9', color: '#64748b', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 10px', fontSize: '1.3rem' }}>
+                    <FaMicrochip />
+                  </div>
+                  <h4 style={{ margin: '0 0 6px', fontSize: '1.05rem', fontWeight: 800, color: '#1e293b' }}>
+                    No Master Unit Configured
+                  </h4>
+                  <p style={{ margin: 0, fontSize: '0.84rem', color: '#64748b', maxWidth: 480, marginInline: 'auto', lineHeight: 1.5 }}>
+                    This LC Gate has 0 registered Master Units. Physical hardware profiles and manifest specifications become active once an AWS IoT Master Unit is created for this gate in the LC Gate Clusters section.
+                  </p>
+                </div>
+              )}
 
               {/* Master Units and Hardware Topology */}
               <div style={{ marginBottom: 20 }}>
@@ -1435,7 +1455,23 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
             </div>
           ) : (
             /* ================= LIVE TELEMETRY & OPERATIONAL INSPECTOR SECTION ================= */
-            <div className="lcg-telemetry-inspector-container">
+            (!selectedGate.masters || selectedGate.masters.length === 0) ? (
+              <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '56px 24px', textAlign: 'center', boxShadow: '0 1px 3px rgba(0,0,0,0.02)' }}>
+                <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#f8fafc', border: '1.5px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', color: '#94a3b8', fontSize: '1.8rem' }}>
+                  <FaMicrochip />
+                </div>
+                <h3 style={{ margin: '0 0 8px', fontSize: '1.3rem', fontWeight: 800, color: '#0f172a' }}>
+                  No Master Unit Configured for {selectedGate.lcNumber}
+                </h3>
+                <p style={{ margin: '0 auto 18px', fontSize: '0.92rem', color: '#64748b', maxWidth: 480, lineHeight: 1.5 }}>
+                  Live barrier state telemetry and MQTT sensor packets are streamed directly from physical Master Units provisioned in AWS IoT Core. Because no Master Unit has been registered for this gate yet, live telemetry is currently inactive.
+                </p>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 16px', background: '#f1f5f9', borderRadius: 20, fontSize: '0.82rem', fontWeight: 600, color: '#334155' }}>
+                  <span>To start receiving telemetry, configure a Master Unit in the LC Gate Clusters module.</span>
+                </div>
+              </div>
+            ) : (
+              <div className="lcg-telemetry-inspector-container">
               {/* Top Inspector Header Card */}
               <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '16px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.02)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 14 }}>
                 <div>
@@ -2382,6 +2418,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                 )}
               </div>
             </div>
+            )
           )}
         </div>
       ) : (

@@ -45,14 +45,56 @@ export async function getGateTelemetryPayload(gateId: number) {
 
   if (!gate) return null;
 
-  const thingIdentifiers = Array.from(new Set([
-    gate.lcNumber,
-    ...gate.masters.map(m => m.serialNumber),
-    ...gate.deviceRegistries.map(d => d.thingName),
-    ...gate.deviceRegistries.map(d => d.serialNumber).filter(Boolean) as string[],
-  ])).filter(Boolean);
+  // If gate has no Master Unit attached, it has NO live hardware telemetry!
+  if (!gate.masters || gate.masters.length === 0) {
+    return {
+      success: true,
+      gateId: gate.id,
+      lcNumber: gate.lcNumber,
+      locationName: gate.locationName,
+      hasMaster: false,
+      mastersCount: 0,
+      thingName: null,
+      deviceStatus: 'UNCONFIGURED',
+      isDeviceOnline: false,
+      lastSeenAt: null,
+      currentStatus: 'UNCONFIGURED',
+      currentOperationalState: {
+        isCurrentlyOpen: false,
+        currentStatus: 'UNCONFIGURED',
+        rawReportedStatus: 'NO_MASTER',
+        currentStateStartedAt: null,
+        timeInCurrentStateSeconds: 0,
+        timeInCurrentStateFormatted: '—',
+        activeCycle: null,
+        lastClosedCycle: null,
+        totalCyclesRecorded: 0,
+      },
+      topic: null,
+      counts: {
+        all: 0,
+        telemetry: 0,
+        manifest: 0,
+        healthCheck: 0,
+        cycles: 0,
+      },
+      payloads: [],
+      telemetryRecords: [],
+      manifestRecords: [],
+      healthRecords: [],
+      operationalCycles: [],
+      latestTelemetry: null,
+      latestManifest: null,
+      latestHealthCheck: null,
+      timestamp: new Date().toISOString()
+    };
+  }
 
-  const deviceRegistryIds = gate.deviceRegistries.map(d => d.id);
+  // Only query telemetry for explicitly registered master hardware
+  const masterSerials = gate.masters.map(m => m.serialNumber).filter(Boolean);
+  const linkedRegistryThings = gate.deviceRegistries.filter(d => d.masterId !== null).map(d => d.thingName).filter(Boolean);
+  const thingIdentifiers = Array.from(new Set([...masterSerials, ...linkedRegistryThings]));
+  const deviceRegistryIds = gate.deviceRegistries.filter(d => d.masterId !== null).map(d => d.id);
 
   // Fetch real device telemetry, health checks, and operational cycles from database
   const [telemetries, healthChecks, rawEvents] = await Promise.all([
@@ -219,7 +261,7 @@ export async function getGateTelemetryPayload(gateId: number) {
     totalCyclesRecorded: operationalCycles.length,
   };
 
-  const primaryThingName = gate.masters[0]?.serialNumber || gate.deviceRegistries[0]?.thingName || gate.lcNumber;
+  const primaryThingName = gate.masters[0]?.serialNumber || 'Unassigned';
 
   // 65-Minute Rule: determine device connectivity (1 hr periodic heartbeat + 5 min grace)
   const ONLINE_CUTOFF_MS = 65 * 60 * 1000;

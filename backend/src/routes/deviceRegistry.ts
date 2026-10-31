@@ -171,7 +171,13 @@ router.get('/', authenticate, async (req, res, next) => {
     const where: any = {};
 
     if (deviceType && typeof deviceType === 'string' && deviceType !== 'ALL') {
-      where.deviceType = deviceType;
+      if (deviceType.toUpperCase() === 'MASTER') {
+        where.deviceType = {
+          in: ['MASTER', 'master', 'LC_GATE_MASTER', 'GATE_MASTER', 'LC-GATE-MASTER', 'MASTER_UNIT', 'LC_MASTER']
+        };
+      } else {
+        where.deviceType = deviceType;
+      }
     } else if (!deviceType || deviceType !== 'ALL') {
       // By default, show Master IoT devices (slaves are wired to masters)
       where.deviceType = { not: 'SLAVE' };
@@ -186,7 +192,6 @@ router.get('/', authenticate, async (req, res, next) => {
 
     if (unassigned === 'true') {
       where.masterId = null;
-      where.gateId = null;
     }
 
     if (gateId && typeof gateId === 'string') {
