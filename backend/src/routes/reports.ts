@@ -8,6 +8,14 @@ import { prisma } from '../lib/prisma';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { getAllDescendantScopeGroupIds } from '../lib/scopeHierarchy';
 import { syncHistoricalTelemetryEvents } from '../lib/telemetryMonitor';
+import { getDirectoryRevisionToken } from '../lib/revisionManager';
+import {
+  bumpReportRevisionInTx,
+  generateReportETag,
+  deleteOperationalEvent,
+  deleteOperationalEvents,
+  calculateAuthoritativeMetrics,
+} from '../lib/reportRevisionManager';
 
 const router = Router();
 router.use(authenticate);
@@ -217,7 +225,18 @@ router.get('/clusters', async (req: AuthRequest, res, next) => {
       }))
     }));
 
-    res.json({
+    const dirToken = await getDirectoryRevisionToken(
+      req.user?.id || 0,
+      access.accessibleScopeIds,
+      access.isDeveloper
+    );
+
+    const ifNoneMatch = req.headers['if-none-match'];
+    if (ifNoneMatch && ifNoneMatch === dirToken) {
+      return res.status(304).set('ETag', dirToken).end();
+    }
+
+    res.set('ETag', dirToken).json({
       clusters: clustersWithDetails,
       isDeveloper: access.isDeveloper
     });
@@ -436,13 +455,92 @@ async function fetchFilteredOperationalEvents(req: AuthRequest) {
 
 /**
  * 2. GET /api/v1/reports/records (and alias /daily-records)
- * Fetches filtered operational records and KPIs for date range, multiple scope groups and gates
+ * Fetches filtered operational records and KPIs for date range, multiple scope groups and gates.
+ * Supports conditional HTTP 304 revalidation via high-efficiency transactional ETags.
  */
 const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
   try {
+    const access = await resolveUserAccess(req);
+
+    if (!access.isDeveloper && access.accessibleScopeIds.length === 0) {
+      return res.json({
+        dateRange: { startDate: '', endDate: '' },
+        filters: { scopeGroupIds: [], gateIds: [], selectedGatesCount: 0, selectedScopeGroupsCount: 0 },
+        metrics: {
+          totalOperations: 0,
+          totalDurationSeconds: 0,
+          totalDurationFormatted: '0s',
+          avgDurationSeconds: 0,
+          avgDurationFormatted: '0s',
+          extendedDelaysCount: 0,
+          currentlyOpenCount: 0,
+          reportingGatesCount: 0,
+        },
+        records: [],
+      });
+    }
+
+    const scopeGroupIdsParam = (req.query.scopeGroupIds || req.query.scopeGroupId) as string | undefined;
+    const gateIdsParam = (req.query.gateIds || req.query.gateId) as string | undefined;
+
+    const { targetGateIds, targetScopeGroupIds } = await resolveFilteredGateIds(
+      access,
+      scopeGroupIdsParam,
+      gateIdsParam
+    );
+
+    // Parse Date Range (Default: Last 7 Days)
+    const today = new Date();
+    const defaultEnd = today.toISOString().split('T')[0];
+    const defaultStartObj = new Date(today);
+    defaultStartObj.setDate(today.getDate() - 7);
+    const defaultStart = defaultStartObj.toISOString().split('T')[0];
+
+    const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate
+      ? req.query.startDate
+      : (typeof req.query.date === 'string' && req.query.date ? req.query.date : defaultStart);
+
+    const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate
+      ? req.query.endDate
+      : (typeof req.query.date === 'string' && req.query.date ? req.query.date : defaultEnd);
+
+    const statusFilter = typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL';
+    const shiftFilter = typeof req.query.shift === 'string' ? req.query.shift.toUpperCase() : 'ALL';
+    const searchQuery = typeof req.query.search === 'string' ? req.query.search.trim().toLowerCase() : '';
+    const sortBy = typeof req.query.sortBy === 'string' ? req.query.sortBy : 'openedAt';
+    const sortOrder = req.query.sortOrder === 'asc' ? 'asc' : 'desc';
+
+    // 1. Construct canonical query string
+    const canonicalParams = [
+      `scopeGroupIds=${targetScopeGroupIds.slice().sort((a, b) => a - b).join(',')}`,
+      `gateIds=${targetGateIds.slice().sort((a, b) => a - b).join(',')}`,
+      `startDate=${startDateStr}`,
+      `endDate=${endDateStr}`,
+      `status=${statusFilter}`,
+      `shift=${shiftFilter}`,
+      `search=${searchQuery}`,
+      `sortBy=${sortBy}`,
+      `sortOrder=${sortOrder}`,
+    ].join('|');
+
+    // 2. Generate ETag via atomic AppSetting key lookups (Zero LCGateEvent row scans)
+    const etag = await generateReportETag(
+      req.user?.id || 0,
+      targetGateIds,
+      access.accessibleScopeIds,
+      canonicalParams
+    );
+
+    // 3. Conditional Cache Validation (HTTP 304)
+    const ifNoneMatch = req.headers['if-none-match'];
+    if (ifNoneMatch && ifNoneMatch === etag) {
+      return res.status(304).set('ETag', etag).end();
+    }
+
+    // 4. Cache Miss: Fetch records and compute metrics
     const data = await fetchFilteredOperationalEvents(req);
 
-    res.json({
+    res.set('ETag', etag).json({
       dateRange: {
         startDate: data.startDateStr,
         endDate: data.endDateStr,
@@ -487,6 +585,197 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
 
 router.get('/records', handleGetRecords);
 router.get('/daily-records', handleGetRecords);
+
+/**
+ * 2b. GET /api/v1/reports/records/changes
+ * Incremental Synchronization Endpoint
+ * Provides dual-stream delta synchronization:
+ *   Stream A: Operational event upserts via composite cursor (eventCursorTime, eventCursorId)
+ *   Stream B: Tombstone deletions via monotonic cursor (tombstoneCursorId)
+ */
+router.get('/records/changes', async (req: AuthRequest, res: Response, next: any) => {
+  try {
+    const access = await resolveUserAccess(req);
+    const gateIdsParam = (req.query.gateIds || req.query.gateId) as string | undefined;
+
+    const { targetGateIds } = await resolveFilteredGateIds(
+      access,
+      req.query.scopeGroupIds as string | undefined,
+      gateIdsParam
+    );
+
+    if (targetGateIds.length === 0) {
+      return res.json({
+        requiresFullSync: true,
+        resyncReason: 'GATE_REVOKED',
+        events: [],
+        deletions: [],
+        hasMoreEvents: false,
+        hasMoreTombstones: false,
+        nextEventCursor: { time: new Date(0).toISOString(), id: 0 },
+        nextTombstoneCursorId: '0',
+        authoritativeMetrics: {
+          totalOperations: 0,
+          totalDurationSeconds: 0,
+          avgDurationSeconds: 0,
+          extendedDelaysCount: 0,
+          currentlyOpenCount: 0,
+        },
+        serverTime: new Date().toISOString(),
+      });
+    }
+
+    // 1. Parse Event Cursor: (time, id)
+    let eventCursorTime = new Date(0);
+    if (typeof req.query.eventCursorTime === 'string' && req.query.eventCursorTime) {
+      const parsed = Date.parse(req.query.eventCursorTime);
+      if (!isNaN(parsed)) eventCursorTime = new Date(parsed);
+    }
+    const eventCursorId = parseInt(req.query.eventCursorId as string, 10) || 0;
+
+    // 2. Parse Tombstone Cursor: BigInt (validate string input)
+    let tombstoneCursorId = 0n;
+    if (typeof req.query.tombstoneCursorId === 'string' && req.query.tombstoneCursorId) {
+      const sanitized = req.query.tombstoneCursorId.trim();
+      if (/^\d+$/.test(sanitized)) {
+        try {
+          tombstoneCursorId = BigInt(sanitized);
+        } catch {
+          tombstoneCursorId = 0n;
+        }
+      }
+    }
+
+    // 3. Limits
+    const limitEvents = Math.min(Math.max(parseInt(req.query.limitEvents as string, 10) || 50, 1), 100);
+    const limitTombstones = Math.min(Math.max(parseInt(req.query.limitTombstones as string, 10) || 100, 1), 200);
+
+    // 4. Tombstone Expiration Watermark Check
+    const oldestTombstone = await prisma.lCGateEventTombstone.findFirst({
+      where: { gateId: { in: targetGateIds } },
+      orderBy: { id: 'asc' },
+      select: { id: true },
+    });
+
+    if (oldestTombstone && tombstoneCursorId > 0n && tombstoneCursorId < oldestTombstone.id) {
+      return res.json({
+        requiresFullSync: true,
+        resyncReason: 'TOMBSTONE_CURSOR_EXPIRED',
+        events: [],
+        deletions: [],
+        hasMoreEvents: false,
+        hasMoreTombstones: false,
+        nextEventCursor: { time: eventCursorTime.toISOString(), id: eventCursorId },
+        nextTombstoneCursorId: oldestTombstone.id.toString(),
+        authoritativeMetrics: await calculateAuthoritativeMetrics(
+          targetGateIds,
+          req.query.startDate as string,
+          req.query.endDate as string,
+          typeof req.query.shift === 'string' ? req.query.shift.toUpperCase() : 'ALL',
+          typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL'
+        ),
+        serverTime: new Date().toISOString(),
+      });
+    }
+
+    // 5. Query Stream A: Events (updatedAt ASC, id ASC)
+    const rawEvents = await prisma.lCGateEvent.findMany({
+      where: {
+        gateId: { in: targetGateIds },
+        OR: [
+          { updatedAt: { gt: eventCursorTime } },
+          { updatedAt: eventCursorTime, id: { gt: eventCursorId } },
+        ],
+      },
+      include: {
+        gate: {
+          select: {
+            id: true,
+            lcNumber: true,
+            locationName: true,
+            name: true,
+            zone: true,
+            division: true,
+            scopeGroups: {
+              include: { scopeGroup: { select: { id: true, name: true, color: true } } },
+            },
+          },
+        },
+      },
+      orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+      take: limitEvents + 1,
+    });
+
+    const hasMoreEvents = rawEvents.length > limitEvents;
+    const eventsBatch = hasMoreEvents ? rawEvents.slice(0, limitEvents) : rawEvents;
+
+    const lastEvent = eventsBatch[eventsBatch.length - 1];
+    const nextEventCursor = lastEvent
+      ? { time: lastEvent.updatedAt.toISOString(), id: lastEvent.id }
+      : { time: eventCursorTime.toISOString(), id: eventCursorId };
+
+    const formattedEvents = eventsBatch.map((ev) => ({
+      id: ev.id,
+      gateId: ev.gateId,
+      lcNumber: ev.gate.lcNumber,
+      gateName: ev.gate.name || ev.gate.locationName,
+      locationName: ev.gate.locationName,
+      zone: ev.gate.zone,
+      division: ev.gate.division,
+      scopeGroupName: ev.gate.scopeGroups[0]?.scopeGroup?.name || 'Unassigned',
+      scopeGroupColor: ev.gate.scopeGroups[0]?.scopeGroup?.color || '#0B3C7A',
+      openedAt: ev.openedAt.toISOString(),
+      closedAt: ev.closedAt ? ev.closedAt.toISOString() : null,
+      durationSeconds: ev.durationSeconds,
+      durationFormatted: ev.durationSeconds ? formatDurationHuman(ev.durationSeconds) : 'Ongoing (Open)',
+      status: ev.status,
+      openedBy: ev.openedBy,
+      closedBy: ev.closedBy,
+      trainNumber: ev.trainNumber,
+      remarks: ev.remarks,
+    }));
+
+    // 6. Query Stream B: Tombstones (id ASC)
+    const rawTombstones = await prisma.lCGateEventTombstone.findMany({
+      where: {
+        gateId: { in: targetGateIds },
+        id: { gt: tombstoneCursorId },
+      },
+      select: { id: true, eventId: true },
+      orderBy: { id: 'asc' },
+      take: limitTombstones + 1,
+    });
+
+    const hasMoreTombstones = rawTombstones.length > limitTombstones;
+    const tombstonesBatch = hasMoreTombstones ? rawTombstones.slice(0, limitTombstones) : rawTombstones;
+
+    const lastTombstone = tombstonesBatch[tombstonesBatch.length - 1];
+    const nextTombstoneCursorId = lastTombstone ? lastTombstone.id.toString() : tombstoneCursorId.toString();
+
+    // 7. Authoritative KPI Metrics Snapshot across full database
+    const authoritativeMetrics = await calculateAuthoritativeMetrics(
+      targetGateIds,
+      req.query.startDate as string,
+      req.query.endDate as string,
+      typeof req.query.shift === 'string' ? req.query.shift.toUpperCase() : 'ALL',
+      typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL'
+    );
+
+    return res.json({
+      requiresFullSync: false,
+      events: formattedEvents,
+      nextEventCursor,
+      hasMoreEvents,
+      deletions: tombstonesBatch.map((t) => t.eventId),
+      nextTombstoneCursorId,
+      hasMoreTombstones,
+      authoritativeMetrics,
+      serverTime: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 /**
  * 3. GET /api/v1/reports/export
@@ -954,21 +1243,104 @@ router.post('/events', async (req: AuthRequest, res, next) => {
       durationSeconds = Math.max(0, Math.round((closedAt.getTime() - openedAt.getTime()) / 1000));
     }
 
-    const event = await prisma.lCGateEvent.create({
-      data: {
-        gateId: data.gateId,
-        openedAt,
-        closedAt,
-        durationSeconds,
-        status: durationSeconds && durationSeconds > 900 ? 'EXTENDED_DELAY' : data.status,
-        openedBy: data.openedBy || (req.user as any)?.fullName || 'Operator',
-        closedBy: data.closedBy || (closedAt ? (req.user as any)?.fullName || 'Operator' : null),
-        trainNumber: data.trainNumber,
-        remarks: data.remarks
-      }
+    const event = await prisma.$transaction(async (tx) => {
+      const created = await tx.lCGateEvent.create({
+        data: {
+          gateId: data.gateId,
+          openedAt,
+          closedAt,
+          durationSeconds,
+          status: durationSeconds && durationSeconds > 900 ? 'EXTENDED_DELAY' : data.status,
+          openedBy: data.openedBy || (req.user as any)?.fullName || 'Operator',
+          closedBy: data.closedBy || (closedAt ? (req.user as any)?.fullName || 'Operator' : null),
+          trainNumber: data.trainNumber,
+          remarks: data.remarks
+        }
+      });
+      await bumpReportRevisionInTx(tx, data.gateId);
+      return created;
     });
 
     res.status(201).json(event);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PUT /api/v1/reports/events/:id
+ * Administrative operational event correction
+ */
+router.put('/events/:id', async (req: AuthRequest, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid event ID' });
+
+    const existing = await prisma.lCGateEvent.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ error: 'Event not found' });
+
+    const { status, closedAt, openedAt, remarks, trainNumber } = req.body;
+
+    const updatedEvent = await prisma.$transaction(async (tx) => {
+      const newOpened = openedAt ? new Date(openedAt) : existing.openedAt;
+      const newClosed = closedAt ? new Date(closedAt) : existing.closedAt;
+      let durationSeconds = existing.durationSeconds;
+      if (newClosed) {
+        durationSeconds = Math.max(0, Math.round((newClosed.getTime() - newOpened.getTime()) / 1000));
+      }
+
+      const updated = await tx.lCGateEvent.update({
+        where: { id },
+        data: {
+          ...(status && { status: durationSeconds && durationSeconds > 900 ? 'EXTENDED_DELAY' : status }),
+          ...(openedAt && { openedAt: newOpened }),
+          ...(closedAt !== undefined && { closedAt: newClosed }),
+          durationSeconds,
+          ...(remarks !== undefined && { remarks }),
+          ...(trainNumber !== undefined && { trainNumber }),
+        },
+      });
+
+      await bumpReportRevisionInTx(tx, existing.gateId);
+      return updated;
+    });
+
+    res.json(updatedEvent);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * DELETE /api/v1/reports/events/:id
+ * Single operational event deletion with tombstone logging & revision bump
+ */
+router.delete('/events/:id', async (req: AuthRequest, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid event ID' });
+
+    await deleteOperationalEvent(id);
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/reports/events/batch-delete
+ * Bulk operational event deletion with tombstone logging & revision bump
+ */
+router.post('/events/batch-delete', async (req: AuthRequest, res, next) => {
+  try {
+    const { eventIds } = req.body;
+    if (!Array.isArray(eventIds) || eventIds.length === 0) {
+      return res.status(400).json({ error: 'eventIds array required' });
+    }
+
+    const ids = eventIds.map((id: any) => parseInt(id, 10)).filter((id: number) => !isNaN(id));
+    const deletedCount = await deleteOperationalEvents(ids);
+    res.json({ message: 'Operational events deleted successfully', count: deletedCount });
   } catch (error) {
     next(error);
   }

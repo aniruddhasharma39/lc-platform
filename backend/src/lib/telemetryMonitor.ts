@@ -1,6 +1,7 @@
 import { prisma } from './prisma';
 import { checkAndDispatchGateStateAlert } from './gateAlertSms';
 import { broadcastGateTelemetry } from './telemetryWs';
+import { bumpReportRevisionInTx } from './reportRevisionManager';
 
 let lastProcessedId = 0;
 const lastKnownState = new Map<string, 'OPEN' | 'CLOSED'>();
@@ -92,17 +93,20 @@ export async function recordGateTelemetryTransition(params: {
       });
 
       if (!existingOpen) {
-        const newEvent = await prisma.lCGateEvent.create({
-          data: {
-            gateId: targetGateId,
-            openedAt: timestamp,
-            status: 'OPEN',
-            openedBy: `AWS IoT / ${thingName}`,
-            remarks: `State transition: OPEN detected by IoT Telemetry`
-          }
+        return await prisma.$transaction(async (tx) => {
+          const newEvent = await tx.lCGateEvent.create({
+            data: {
+              gateId: targetGateId,
+              openedAt: timestamp,
+              status: 'OPEN',
+              openedBy: `AWS IoT / ${thingName}`,
+              remarks: `State transition: OPEN detected by IoT Telemetry`
+            }
+          });
+          await bumpReportRevisionInTx(tx, targetGateId);
+          console.log(`📊 [REPORTS] Logged OPEN event #${newEvent.id} for Gate #${targetGateId} (${thingName})`);
+          return newEvent;
         });
-        console.log(`📊 [REPORTS] Logged OPEN event #${newEvent.id} for Gate #${targetGateId} (${thingName})`);
-        return newEvent;
       }
       return existingOpen;
     } else if (newState === 'CLOSED') {
@@ -120,35 +124,41 @@ export async function recordGateTelemetryTransition(params: {
         const durationSeconds = Math.max(0, Math.round((timestamp.getTime() - openEvent.openedAt.getTime()) / 1000));
         const finalStatus = durationSeconds > 900 ? 'EXTENDED_DELAY' : 'CLOSED';
 
-        const updated = await prisma.lCGateEvent.update({
-          where: { id: openEvent.id },
-          data: {
-            closedAt: timestamp,
-            durationSeconds,
-            status: finalStatus,
-            closedBy: `AWS IoT / ${thingName}`,
-            remarks: openEvent.remarks ? `${openEvent.remarks} | Closed via IoT Telemetry` : `Closed via IoT Telemetry`
-          }
+        return await prisma.$transaction(async (tx) => {
+          const updated = await tx.lCGateEvent.update({
+            where: { id: openEvent.id },
+            data: {
+              closedAt: timestamp,
+              durationSeconds,
+              status: finalStatus,
+              closedBy: `AWS IoT / ${thingName}`,
+              remarks: openEvent.remarks ? `${openEvent.remarks} | Closed via IoT Telemetry` : `Closed via IoT Telemetry`
+            }
+          });
+          await bumpReportRevisionInTx(tx, targetGateId);
+          console.log(`📊 [REPORTS] Updated CLOSED event #${updated.id} for Gate #${targetGateId} (${thingName}), duration: ${durationSeconds}s`);
+          return updated;
         });
-        console.log(`📊 [REPORTS] Updated CLOSED event #${updated.id} for Gate #${targetGateId} (${thingName}), duration: ${durationSeconds}s`);
-        return updated;
       } else {
         // If OPEN event was missed (e.g. cold start), record a completed event with standard duration (e.g. 180s)
         const estimatedOpen = new Date(timestamp.getTime() - 180000);
-        const newEvent = await prisma.lCGateEvent.create({
-          data: {
-            gateId: targetGateId,
-            openedAt: estimatedOpen,
-            closedAt: timestamp,
-            durationSeconds: 180,
-            status: 'CLOSED',
-            openedBy: `AWS IoT / ${thingName}`,
-            closedBy: `AWS IoT / ${thingName}`,
-            remarks: `Direct CLOSED state detected via IoT Telemetry`
-          }
+        return await prisma.$transaction(async (tx) => {
+          const newEvent = await tx.lCGateEvent.create({
+            data: {
+              gateId: targetGateId,
+              openedAt: estimatedOpen,
+              closedAt: timestamp,
+              durationSeconds: 180,
+              status: 'CLOSED',
+              openedBy: `AWS IoT / ${thingName}`,
+              closedBy: `AWS IoT / ${thingName}`,
+              remarks: `Direct CLOSED state detected via IoT Telemetry`
+            }
+          });
+          await bumpReportRevisionInTx(tx, targetGateId);
+          console.log(`📊 [REPORTS] Created completed CLOSED event #${newEvent.id} for Gate #${targetGateId}`);
+          return newEvent;
         });
-        console.log(`📊 [REPORTS] Created completed CLOSED event #${newEvent.id} for Gate #${targetGateId}`);
-        return newEvent;
       }
     }
   } catch (err: any) {
@@ -212,16 +222,19 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
           const timestamp = new Date(r.receivedAt);
 
           if (state === 'OPEN') {
-            const ev = await prisma.lCGateEvent.create({
-              data: {
-                gateId: dev.gateId,
-                openedAt: timestamp,
-                status: 'OPEN',
-                openedBy: `AWS IoT / ${dev.thingName}`,
-                remarks: `State transition: OPEN detected by IoT Telemetry`
-              }
+            await prisma.$transaction(async (tx) => {
+              const ev = await tx.lCGateEvent.create({
+                data: {
+                  gateId: dev.gateId!,
+                  openedAt: timestamp,
+                  status: 'OPEN',
+                  openedBy: `AWS IoT / ${dev.thingName}`,
+                  remarks: `State transition: OPEN detected by IoT Telemetry`
+                }
+              });
+              await bumpReportRevisionInTx(tx, dev.gateId!);
+              currentOpenEventId = ev.id;
             });
-            currentOpenEventId = ev.id;
             openTimestamp = timestamp;
             totalSynced++;
           } else if (state === 'CLOSED') {
@@ -229,32 +242,38 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
               const durationSeconds = Math.max(0, Math.round((timestamp.getTime() - openTimestamp.getTime()) / 1000));
               const finalStatus = durationSeconds > 900 ? 'EXTENDED_DELAY' : 'CLOSED';
 
-              await prisma.lCGateEvent.update({
-                where: { id: currentOpenEventId },
-                data: {
-                  closedAt: timestamp,
-                  durationSeconds,
-                  status: finalStatus,
-                  closedBy: `AWS IoT / ${dev.thingName}`,
-                  remarks: `State transition: CLOSED detected by IoT Telemetry`
-                }
+              await prisma.$transaction(async (tx) => {
+                await tx.lCGateEvent.update({
+                  where: { id: currentOpenEventId! },
+                  data: {
+                    closedAt: timestamp,
+                    durationSeconds,
+                    status: finalStatus,
+                    closedBy: `AWS IoT / ${dev.thingName}`,
+                    remarks: `State transition: CLOSED detected by IoT Telemetry`
+                  }
+                });
+                await bumpReportRevisionInTx(tx, dev.gateId!);
               });
               currentOpenEventId = null;
               openTimestamp = null;
             } else {
               // Started in closed state or cold start
               const estOpen = new Date(timestamp.getTime() - 180000);
-              await prisma.lCGateEvent.create({
-                data: {
-                  gateId: dev.gateId,
-                  openedAt: estOpen,
-                  closedAt: timestamp,
-                  durationSeconds: 180,
-                  status: 'CLOSED',
-                  openedBy: `AWS IoT / ${dev.thingName}`,
-                  closedBy: `AWS IoT / ${dev.thingName}`,
-                  remarks: `Direct CLOSED state detected via IoT Telemetry`
-                }
+              await prisma.$transaction(async (tx) => {
+                await tx.lCGateEvent.create({
+                  data: {
+                    gateId: dev.gateId!,
+                    openedAt: estOpen,
+                    closedAt: timestamp,
+                    durationSeconds: 180,
+                    status: 'CLOSED',
+                    openedBy: `AWS IoT / ${dev.thingName}`,
+                    closedBy: `AWS IoT / ${dev.thingName}`,
+                    remarks: `Direct CLOSED state detected via IoT Telemetry`
+                  }
+                });
+                await bumpReportRevisionInTx(tx, dev.gateId!);
               });
               totalSynced++;
             }

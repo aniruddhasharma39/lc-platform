@@ -8,6 +8,7 @@ import { getAllDescendantScopeGroupIds } from '../lib/scopeHierarchy';
 import { publishMqttMessage } from '../lib/iotClient';
 import { broadcastGateTelemetry, getGateTelemetryPayload } from '../lib/telemetryWs';
 import { bumpDirectoryRevision, getDirectoryRevisionToken } from '../lib/revisionManager';
+import { bumpReportRevisionInTx } from '../lib/reportRevisionManager';
 
 const router = Router();
 
@@ -1257,7 +1258,30 @@ router.delete('/:id', authenticate, async (req, res, next) => {
         where: { gateId: id },
         select: { scopeGroupId: true },
       });
+
+      // 1. Capture and preserve all events belonging to this gate in Tombstones prior to cascade delete
+      const eventsToDelete = await tx.lCGateEvent.findMany({
+        where: { gateId: id },
+        select: { id: true, gateId: true, openedAt: true },
+      });
+
+      if (eventsToDelete.length > 0) {
+        await tx.lCGateEventTombstone.createMany({
+          data: eventsToDelete.map((e) => ({
+            eventId: e.id,
+            gateId: e.gateId,
+            openedAt: e.openedAt,
+          })),
+        });
+      }
+
+      // 2. Bump report revision for this gate
+      await bumpReportRevisionInTx(tx, id);
+
+      // 3. Delete the gate (cascades deletion of LCGateEvent)
       await tx.lCGate.delete({ where: { id } });
+
+      // 4. Bump directory revisions for affected scopes
       await bumpDirectoryRevision(
         targetGateScopes.map(s => s.scopeGroupId),
         targetGateScopes.length === 0,

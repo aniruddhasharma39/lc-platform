@@ -366,3 +366,15 @@ model LCGateEvent {
   @@index([openedAt])
   @@index([status])
 }
+
+
+model LCGateEventTombstone {
+  id        BigInt   @id @default(autoincrement())
+  eventId   Int
+  gateId    Int
+  openedAt  DateTime
+  deletedAt DateTime @default(now())
+
+  @@index([gateId, id])
+  @@index([deletedAt])
+}
