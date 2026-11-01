@@ -10,7 +10,7 @@
     "build": "tsc",
     "db:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "tsx test/reports_cache_regression.test.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

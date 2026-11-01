@@ -12,6 +12,7 @@ import { getDirectoryRevisionToken } from '../lib/revisionManager';
 import {
   bumpReportRevisionInTx,
   generateReportETag,
+  isETagMatch,
   deleteOperationalEvent,
   deleteOperationalEvents,
   calculateAuthoritativeMetrics,
@@ -182,7 +183,7 @@ async function resolveFilteredGateIds(
       .map(s => parseInt(s.trim(), 10))
       .filter(n => !isNaN(n));
 
-    if (access.isDeveloper && poolGateIds.length === 0) {
+    if (access.isDeveloper) {
       targetGateIds = parsedGateIds;
     } else {
       targetGateIds = parsedGateIds.filter(id => poolGateIds.includes(id));
@@ -231,8 +232,7 @@ router.get('/clusters', async (req: AuthRequest, res, next) => {
       access.isDeveloper
     );
 
-    const ifNoneMatch = req.headers['if-none-match'];
-    if (ifNoneMatch && ifNoneMatch === dirToken) {
+    if (isETagMatch(req.headers['if-none-match'], dirToken)) {
       return res.status(304).set('ETag', dirToken).end();
     }
 
@@ -531,14 +531,33 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
       canonicalParams
     );
 
-    // 3. Conditional Cache Validation (HTTP 304)
-    const ifNoneMatch = req.headers['if-none-match'];
-    if (ifNoneMatch && ifNoneMatch === etag) {
+    // 3. Conditional Cache Validation (HTTP 304 via RFC 7232 matcher)
+    if (isETagMatch(req.headers['if-none-match'], etag)) {
       return res.status(304).set('ETag', etag).end();
     }
 
     // 4. Cache Miss: Fetch records and compute metrics
     const data = await fetchFilteredOperationalEvents(req);
+
+    // 5. Establish consistent initial cursor snapshot for incremental continuation
+    const latestEvent = await prisma.lCGateEvent.findFirst({
+      where: { gateId: { in: data.targetGateIds } },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      select: { updatedAt: true, id: true },
+    });
+
+    const latestTombstone = await prisma.lCGateEventTombstone.findFirst({
+      where: { gateId: { in: data.targetGateIds } },
+      orderBy: { id: 'desc' },
+      select: { id: true },
+    });
+
+    const cursor = {
+      eventCursorTime: latestEvent ? latestEvent.updatedAt.toISOString() : new Date(0).toISOString(),
+      eventCursorId: latestEvent ? latestEvent.id : 0,
+      tombstoneCursorId: latestTombstone ? latestTombstone.id.toString() : '0',
+      serverTime: new Date().toISOString(),
+    };
 
     res.set('ETag', etag).json({
       dateRange: {
@@ -551,6 +570,7 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
         selectedGatesCount: data.targetGateIds.length,
         selectedScopeGroupsCount: data.targetScopeGroupIds.length,
       },
+      cursor,
       metrics: data.metrics,
       records: data.events.map(ev => {
         const matchingGroup = ev.gate.scopeGroups.find(sg => data.targetScopeGroupIds.includes(sg.scopeGroup.id))?.scopeGroup

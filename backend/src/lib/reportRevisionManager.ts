@@ -185,7 +185,7 @@ export async function generateReportETag(
   // Sorted scope revisions
   const sortedScopeRevs = [...userScopeGroupIds]
     .sort((a, b) => a - b)
-    .map((id) => `${id}:${settingMap.get(`DIRECTORY_SCOPE_REVISION_${id}`) || '1'}`)
+    .map((id) => `${id}:${settingMap.get(`DIRECTORY_SCOPE_REVISION_${id}`) || '0'}`)
     .join(',');
   const globalRev = settingMap.get('DIRECTORY_GLOBAL_REVISION') || '1';
   const scopeRevHash = crypto
@@ -202,6 +202,26 @@ export async function generateReportETag(
     .slice(0, 12);
 
   return `W/"rep-u${userId}-g${gateRevHash}-s${scopeRevHash}-q${queryHash}"`;
+}
+
+/**
+ * RFC 7232 Compliant ETag Match Evaluator
+ * Supports weak comparison, comma-separated lists of ETags, and wildcard '*'.
+ */
+export function isETagMatch(ifNoneMatchHeader: string | undefined, currentETag: string): boolean {
+  if (!ifNoneMatchHeader) return false;
+  const header = ifNoneMatchHeader.trim();
+  if (header === '*') return true;
+
+  // Clean current ETag (strip W/ and surrounding quotes)
+  const cleanCurrent = currentETag.replace(/^W\//, '').replace(/^"|"$/g, '');
+
+  const clientTags = header.split(',').map((tag) => tag.trim());
+  return clientTags.some((tag) => {
+    if (tag === '*') return true;
+    const cleanClient = tag.replace(/^W\//, '').replace(/^"|"$/g, '');
+    return cleanClient === cleanCurrent;
+  });
 }
 
 /**
