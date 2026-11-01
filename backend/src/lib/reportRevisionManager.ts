@@ -42,6 +42,9 @@ export async function bumpReportRevisionInTx(
 export async function bumpReportRevision(gateId: number): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await bumpReportRevisionInTx(tx, gateId);
+  }, {
+    timeout: 15000,
+    maxWait: 10000,
   });
 }
 
@@ -99,6 +102,9 @@ export async function deleteOperationalEventInTx(
 export async function deleteOperationalEvent(eventId: number): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await deleteOperationalEventInTx(tx, eventId);
+  }, {
+    timeout: 15000,
+    maxWait: 10000,
   });
 }
 
@@ -146,6 +152,9 @@ export async function deleteOperationalEventsInTx(
 export async function deleteOperationalEvents(eventIds: number[]): Promise<number> {
   return await prisma.$transaction(async (tx) => {
     return await deleteOperationalEventsInTx(tx, eventIds);
+  }, {
+    timeout: 15000,
+    maxWait: 10000,
   });
 }
 
@@ -162,18 +171,20 @@ export async function generateReportETag(
   userId: number,
   gateIds: number[],
   userScopeGroupIds: number[] = [],
-  canonicalParamsString: string
+  canonicalParamsString: string,
+  dbClient: any = prisma
 ): Promise<string> {
   const gateKeys = gateIds.map((id) => `REPORT_GATE_REV_${id}`);
   const scopeKeys = userScopeGroupIds.map((id) => `DIRECTORY_SCOPE_REVISION_${id}`);
   const allKeys = Array.from(new Set([...gateKeys, ...scopeKeys, 'DIRECTORY_GLOBAL_REVISION']));
 
-  const settings = await prisma.appSetting.findMany({
+  const client = (dbClient?.appSetting ? dbClient : prisma) as typeof prisma;
+  const settings: Array<{ key: string; value: string }> = await client.appSetting.findMany({
     where: { key: { in: allKeys } },
     select: { key: true, value: true },
   });
 
-  const settingMap = new Map(settings.map((s) => [s.key, s.value]));
+  const settingMap = new Map<string, string>(settings.map((s) => [s.key, s.value]));
 
   // Sorted gate revisions
   const sortedGateRevs = [...gateIds]

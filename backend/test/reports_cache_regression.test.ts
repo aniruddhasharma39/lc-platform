@@ -37,9 +37,12 @@ async function runPermanentRegressionTests() {
     }
   }
 
-  // Find an authorized user for test tokens
+  // Find an authorized user for test tokens (developer with global access)
   const user = await prisma.user.findFirst({
-    where: { status: 'APPROVED', role: { name: 'DEVELOPER' } },
+    where: {
+      status: 'APPROVED',
+      role: { name: { in: ['Developer', 'DEVELOPER', 'Admin', 'ADMIN'] } },
+    },
     include: { role: true },
   }) || await prisma.user.findFirst({
     where: { status: 'APPROVED' },
@@ -50,9 +53,9 @@ async function runPermanentRegressionTests() {
     throw new Error('No approved user found in database to execute regression tests');
   }
 
-  const jwtSecret = process.env.JWT_SECRET || 'fallback-secret';
+  const jwtSecret = process.env.JWT_SECRET || 'super-secret-jwt-key';
   const token = jwt.sign(
-    { userId: user.id, email: user.email, role: user.role?.name || 'DEVELOPER' },
+    { userId: user.id, email: user.email, role: user.role?.name || 'Developer' },
     jwtSecret,
     { expiresIn: '2h' }
   );
@@ -214,6 +217,9 @@ async function runPermanentRegressionTests() {
         });
       }
       await tx.lCGate.delete({ where: { id: freshGate.id } });
+    }, {
+      timeout: 15000,
+      maxWait: 10000,
     });
 
     const preservedTombstone = await prisma.lCGateEventTombstone.findFirst({
@@ -235,6 +241,9 @@ async function runPermanentRegressionTests() {
           data: { gateId: rollbackGate.id, openedAt: new Date(), remarks: 'Should be rolled back' },
         });
         throw new Error('Simulated failure during mutation');
+      }, {
+        timeout: 15000,
+        maxWait: 10000,
       });
     } catch {
       // Expected rollback
@@ -355,6 +364,92 @@ async function runPermanentRegressionTests() {
     await prisma.lCGateEvent.deleteMany({ where: { gateId: rollbackGate.id } });
     await prisma.lCGateEventTombstone.deleteMany({ where: { gateId: rollbackGate.id } });
     await prisma.lCGate.delete({ where: { id: rollbackGate.id } });
+
+    // ─────────────────────────────────────────────────────────────────
+    // TEST 11: Delayed Transaction Commit Incremental Cursor Catch
+    // ─────────────────────────────────────────────────────────────────
+    console.log('\n--- 11. Delayed Transaction Commit & In-Flight Overlap Catch ---');
+    const delayGate = await prisma.lCGate.create({
+      data: { lcNumber: `LC-DLY-${Date.now()}`, locationName: 'Delay Yard', zone: 'CR', division: 'Mumbai' },
+    });
+
+    const evDelay1 = await prisma.lCGateEvent.create({
+      data: { gateId: delayGate.id, openedAt: new Date(), status: 'OPEN' },
+    });
+    const evDelay2 = await prisma.lCGateEvent.create({
+      data: { gateId: delayGate.id, openedAt: new Date(), status: 'OPEN' },
+    });
+
+    // Event 1 committed with an earlier timestamp (simulating a slow/delayed transaction commit)
+    const tEarly = new Date(Date.now() - 6000);
+    await prisma.$executeRawUnsafe(
+      `UPDATE "LCGateEvent" SET "status" = 'CLOSED', "updatedAt" = $1 WHERE "id" = $2`,
+      tEarly,
+      evDelay1.id
+    );
+    await bumpReportRevision(delayGate.id);
+
+    // Event 2 committed with a later timestamp
+    const tLate = new Date();
+    await prisma.$executeRawUnsafe(
+      `UPDATE "LCGateEvent" SET "status" = 'CLOSED', "updatedAt" = $1 WHERE "id" = $2`,
+      tLate,
+      evDelay2.id
+    );
+    await bumpReportRevision(delayGate.id);
+
+    // Standard cursor without overlap: advanced to tLate, misses evDelay1
+    const missedPoll = await makeRequest(
+      'GET',
+      `/api/v1/reports/records/changes?gateIds=${delayGate.id}&eventCursorTime=${encodeURIComponent(tLate.toISOString())}&eventCursorId=${evDelay2.id}&overlapMs=0`
+    );
+    assert(!missedPoll.body.events.some((e: any) => e.id === evDelay1.id), 'Standard cursor without overlap misses earlier committed event');
+
+    // Overlap-enabled cursor: catches evDelay1 via 30s safety lookback buffer
+    const caughtPoll = await makeRequest(
+      'GET',
+      `/api/v1/reports/records/changes?gateIds=${delayGate.id}&eventCursorTime=${encodeURIComponent(tLate.toISOString())}&eventCursorId=${evDelay2.id}&overlapMs=30000`
+    );
+    assert(caughtPoll.body.events.some((e: any) => e.id === evDelay1.id), 'Overlap buffer catches late-committed event');
+    assert(new Date(caughtPoll.body.nextEventCursor.time).getTime() >= tLate.getTime(), 'Next cursor maintains high watermark');
+
+    // ─────────────────────────────────────────────────────────────────
+    // TEST 12: GET /records RepeatableRead Snapshot Consistency
+    // ─────────────────────────────────────────────────────────────────
+    console.log('\n--- 12. GET /records Snapshot Consistency Under Concurrent Mutation ---');
+    const consistGate = await prisma.lCGate.create({
+      data: { lcNumber: `LC-CNS-${Date.now()}`, locationName: 'Snapshot Yard', zone: 'CR', division: 'Mumbai' },
+    });
+    const seedEv = await prisma.lCGateEvent.create({
+      data: { gateId: consistGate.id, openedAt: new Date(), status: 'CLOSED', durationSeconds: 20 },
+    });
+    await bumpReportRevision(consistGate.id);
+
+    const initialRes = await makeRequest('GET', `/api/v1/reports/records?gateIds=${consistGate.id}`);
+    assert(initialRes.body.records.length === 1, 'Initial GET /records returns 1 event');
+    assert(initialRes.body.cursor.eventCursorId === seedEv.id, 'Initial cursor matches seed event');
+
+    // Create concurrent event and bump revision
+    const newConEv = await prisma.lCGateEvent.create({
+      data: { gateId: consistGate.id, openedAt: new Date(), status: 'CLOSED', durationSeconds: 88 },
+    });
+    await bumpReportRevision(consistGate.id);
+
+    // Conditional GET with old ETag must return 200 (not 304) and reflect new snapshot
+    const invalidatedRes = await makeRequest(
+      'GET',
+      `/api/v1/reports/records?gateIds=${consistGate.id}`,
+      { 'if-none-match': initialRes.headers['etag'] as string }
+    );
+    assert(invalidatedRes.status === 200, 'Post-mutation GET returns HTTP 200 cache miss');
+    assert(invalidatedRes.body.records.some((e: any) => e.id === newConEv.id), 'Post-mutation response includes new event');
+    assert(invalidatedRes.body.cursor.eventCursorId === newConEv.id, 'Cursor advanced consistently to new event');
+    assert(invalidatedRes.headers['etag'] !== initialRes.headers['etag'], 'ETag strictly changed after mutation');
+
+    // Cleanup
+    await prisma.lCGateEvent.deleteMany({ where: { gateId: { in: [delayGate.id, consistGate.id] } } });
+    await prisma.lCGateEventTombstone.deleteMany({ where: { gateId: { in: [delayGate.id, consistGate.id] } } });
+    await prisma.lCGate.deleteMany({ where: { id: { in: [delayGate.id, consistGate.id] } } });
 
     console.log('\n========================================================================');
     console.log(`🎉 ALL ${passed}/${passed + failed} REGRESSION TESTS PASSED!`);

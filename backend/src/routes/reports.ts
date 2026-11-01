@@ -248,8 +248,9 @@ router.get('/clusters', async (req: AuthRequest, res, next) => {
 /**
  * Core query helper to fetch operational events with date range, multi-scope, multi-gate, and filters
  */
-async function fetchFilteredOperationalEvents(req: AuthRequest) {
+async function fetchFilteredOperationalEvents(req: AuthRequest, dbClient: any = prisma) {
   const access = await resolveUserAccess(req);
+  const client = (dbClient?.lCGateEvent ? dbClient : prisma) as typeof prisma;
 
   if (!access.isDeveloper && access.accessibleScopeIds.length === 0) {
     return {
@@ -351,7 +352,7 @@ async function fetchFilteredOperationalEvents(req: AuthRequest) {
   }
 
   // Fetch raw events with Gate and Scope Group associations
-  const rawEvents = await prisma.lCGateEvent.findMany({
+  const rawEvents = await client.lCGateEvent.findMany({
     where: whereClause,
     include: {
       gate: {
@@ -536,21 +537,39 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
       return res.status(304).set('ETag', etag).end();
     }
 
-    // 4. Cache Miss: Fetch records and compute metrics
-    const data = await fetchFilteredOperationalEvents(req);
+    // 4. Cache Miss: Fetch records and compute metrics within atomic RepeatableRead snapshot
+    const snapshot = await prisma.$transaction(async (tx) => {
+      const data = await fetchFilteredOperationalEvents(req, tx);
 
-    // 5. Establish consistent initial cursor snapshot for incremental continuation
-    const latestEvent = await prisma.lCGateEvent.findFirst({
-      where: { gateId: { in: data.targetGateIds } },
-      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
-      select: { updatedAt: true, id: true },
+      const latestEvent = await tx.lCGateEvent.findFirst({
+        where: { gateId: { in: data.targetGateIds } },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        select: { updatedAt: true, id: true },
+      });
+
+      const latestTombstone = await tx.lCGateEventTombstone.findFirst({
+        where: { gateId: { in: data.targetGateIds } },
+        orderBy: { id: 'desc' },
+        select: { id: true },
+      });
+
+      // Compute snapshot ETag using the exact point-in-time state of AppSetting
+      const snapshotETag = await generateReportETag(
+        req.user?.id || 0,
+        data.targetGateIds,
+        access.accessibleScopeIds,
+        canonicalParams,
+        tx
+      );
+
+      return { data, latestEvent, latestTombstone, snapshotETag };
+    }, {
+      isolationLevel: 'RepeatableRead',
+      timeout: 15000,
+      maxWait: 10000,
     });
 
-    const latestTombstone = await prisma.lCGateEventTombstone.findFirst({
-      where: { gateId: { in: data.targetGateIds } },
-      orderBy: { id: 'desc' },
-      select: { id: true },
-    });
+    const { data, latestEvent, latestTombstone, snapshotETag } = snapshot;
 
     const cursor = {
       eventCursorTime: latestEvent ? latestEvent.updatedAt.toISOString() : new Date(0).toISOString(),
@@ -559,7 +578,7 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
       serverTime: new Date().toISOString(),
     };
 
-    res.set('ETag', etag).json({
+    res.set('ETag', snapshotETag).json({
       dateRange: {
         startDate: data.startDateStr,
         endDate: data.endDateStr,
@@ -653,6 +672,13 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
     }
     const eventCursorId = parseInt(req.query.eventCursorId as string, 10) || 0;
 
+    // Transaction commit safety buffer: allows clients to look back across concurrent in-flight transactions
+    const overlapMsParam = typeof req.query.overlapMs === 'string' ? parseInt(req.query.overlapMs, 10) : 0;
+    const overlapMs = Math.max(0, Math.min(isNaN(overlapMsParam) ? 0 : overlapMsParam, 300000));
+    const effectiveEventCursorTime = (eventCursorTime.getTime() > 0 && overlapMs > 0)
+      ? new Date(Math.max(0, eventCursorTime.getTime() - overlapMs))
+      : eventCursorTime;
+
     // 2. Parse Tombstone Cursor: BigInt (validate string input)
     let tombstoneCursorId = 0n;
     if (typeof req.query.tombstoneCursorId === 'string' && req.query.tombstoneCursorId) {
@@ -703,8 +729,8 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
       where: {
         gateId: { in: targetGateIds },
         OR: [
-          { updatedAt: { gt: eventCursorTime } },
-          { updatedAt: eventCursorTime, id: { gt: eventCursorId } },
+          { updatedAt: { gt: effectiveEventCursorTime } },
+          { updatedAt: effectiveEventCursorTime, id: { gt: effectiveEventCursorTime.getTime() === eventCursorTime.getTime() ? eventCursorId : 0 } },
         ],
       },
       include: {
@@ -730,9 +756,18 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
     const eventsBatch = hasMoreEvents ? rawEvents.slice(0, limitEvents) : rawEvents;
 
     const lastEvent = eventsBatch[eventsBatch.length - 1];
-    const nextEventCursor = lastEvent
-      ? { time: lastEvent.updatedAt.toISOString(), id: lastEvent.id }
-      : { time: eventCursorTime.toISOString(), id: eventCursorId };
+    let nextEventCursor = { time: eventCursorTime.toISOString(), id: eventCursorId };
+
+    if (lastEvent) {
+      if (lastEvent.updatedAt.getTime() > eventCursorTime.getTime()) {
+        nextEventCursor = { time: lastEvent.updatedAt.toISOString(), id: lastEvent.id };
+      } else if (lastEvent.updatedAt.getTime() === eventCursorTime.getTime()) {
+        nextEventCursor = { time: lastEvent.updatedAt.toISOString(), id: Math.max(lastEvent.id, eventCursorId) };
+      } else {
+        // Event lies in overlap buffer window: preserve current cursor forward watermark
+        nextEventCursor = { time: eventCursorTime.toISOString(), id: eventCursorId };
+      }
+    }
 
     const formattedEvents = eventsBatch.map((ev) => ({
       id: ev.id,
