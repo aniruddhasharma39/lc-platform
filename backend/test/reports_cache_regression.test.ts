@@ -351,6 +351,22 @@ async function runPermanentRegressionTests() {
       assert(expiredRes.body.requiresFullSync === false, 'Fresh tombstone cursor allowed');
     }
 
+    // Purged watermark trigger test (covers purged/empty tombstone table edge case)
+    await prisma.appSetting.upsert({
+      where: { key: 'TOMBSTONE_PURGED_WATERMARK' },
+      create: { key: 'TOMBSTONE_PURGED_WATERMARK', value: '999999' },
+      update: { value: '999999' },
+    });
+    const purgedRes = await makeRequest(
+      'GET',
+      `/api/v1/reports/records/changes?gateIds=${rollbackGate.id}&tombstoneCursorId=50`
+    );
+    assert(
+      purgedRes.body.requiresFullSync === true && purgedRes.body.resyncReason === 'TOMBSTONE_CURSOR_EXPIRED',
+      'Purged watermark reliably triggers requiresFullSync even across table purge'
+    );
+    await prisma.appSetting.deleteMany({ where: { key: 'TOMBSTONE_PURGED_WATERMARK' } });
+
     // ─────────────────────────────────────────────────────────────────
     // TEST 10: Authoritative KPI Metrics Correctness
     // ─────────────────────────────────────────────────────────────────

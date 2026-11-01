@@ -672,7 +672,8 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
     }
     const eventCursorId = parseInt(req.query.eventCursorId as string, 10) || 0;
 
-    // Transaction commit safety buffer: allows clients to look back across concurrent in-flight transactions
+    // Transaction commit safety buffer: caller-configurable lookback window (up to 300s)
+    // When specified via ?overlapMs=..., allows clients to look back across concurrent in-flight transactions.
     const overlapMsParam = typeof req.query.overlapMs === 'string' ? parseInt(req.query.overlapMs, 10) : 0;
     const overlapMs = Math.max(0, Math.min(isNaN(overlapMsParam) ? 0 : overlapMsParam, 300000));
     const effectiveEventCursorTime = (eventCursorTime.getTime() > 0 && overlapMs > 0)
@@ -696,14 +697,24 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
     const limitEvents = Math.min(Math.max(parseInt(req.query.limitEvents as string, 10) || 50, 1), 100);
     const limitTombstones = Math.min(Math.max(parseInt(req.query.limitTombstones as string, 10) || 100, 1), 200);
 
-    // 4. Tombstone Expiration Watermark Check
+    // 4. Tombstone Expiration Watermark Check (including empty tombstone table after purge)
+    const purgedSetting = await prisma.appSetting.findUnique({
+      where: { key: 'TOMBSTONE_PURGED_WATERMARK' },
+      select: { value: true },
+    });
+    const purgedWatermarkId = purgedSetting && /^\d+$/.test(purgedSetting.value) ? BigInt(purgedSetting.value) : 0n;
+
     const oldestTombstone = await prisma.lCGateEventTombstone.findFirst({
       where: { gateId: { in: targetGateIds } },
       orderBy: { id: 'asc' },
       select: { id: true },
     });
 
-    if (oldestTombstone && tombstoneCursorId > 0n && tombstoneCursorId < oldestTombstone.id) {
+    const effectiveOldestWatermark = oldestTombstone
+      ? oldestTombstone.id
+      : (purgedWatermarkId > 0n ? purgedWatermarkId : null);
+
+    if (effectiveOldestWatermark && tombstoneCursorId > 0n && tombstoneCursorId < effectiveOldestWatermark) {
       return res.json({
         requiresFullSync: true,
         resyncReason: 'TOMBSTONE_CURSOR_EXPIRED',
@@ -712,7 +723,7 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
         hasMoreEvents: false,
         hasMoreTombstones: false,
         nextEventCursor: { time: eventCursorTime.toISOString(), id: eventCursorId },
-        nextTombstoneCursorId: oldestTombstone.id.toString(),
+        nextTombstoneCursorId: effectiveOldestWatermark.toString(),
         authoritativeMetrics: await calculateAuthoritativeMetrics(
           targetGateIds,
           req.query.startDate as string,

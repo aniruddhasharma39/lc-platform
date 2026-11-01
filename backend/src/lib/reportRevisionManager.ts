@@ -235,9 +235,19 @@ export function isETagMatch(ifNoneMatchHeader: string | undefined, currentETag: 
   });
 }
 
+interface CachedKPI {
+  metrics: ReportMetrics;
+  gateRevHash: string;
+  cachedAt: number;
+}
+
+const kpiMemoCache = new Map<string, CachedKPI>();
+
 /**
  * Calculates authoritative report KPI metrics across 100% of the dataset
  * for the given gates and criteria.
+ * Uses revision-hash memoization to avoid redundant database scans when
+ * gate operational data is unchanged.
  */
 export async function calculateAuthoritativeMetrics(
   gateIds: number[],
@@ -256,6 +266,25 @@ export async function calculateAuthoritativeMetrics(
     };
   }
 
+  // 1. Check revision hash for selected gates
+  const sortedGateIds = [...gateIds].sort((a, b) => a - b);
+  const gateKeys = sortedGateIds.map((id) => `REPORT_GATE_REV_${id}`);
+  const settings: Array<{ key: string; value: string }> = await prisma.appSetting.findMany({
+    where: { key: { in: gateKeys } },
+    select: { key: true, value: true },
+  });
+  const settingMap = new Map<string, string>(settings.map((s) => [s.key, s.value]));
+  const revString = sortedGateIds.map((id) => `${id}:${settingMap.get(`REPORT_GATE_REV_${id}`) || '0'}`).join(',');
+  const currentGateRevHash = crypto.createHash('md5').update(revString).digest('hex').slice(0, 10);
+
+  const cacheKey = `${sortedGateIds.join(',')}|${startDate || ''}|${endDate || ''}|${shiftFilter}|${statusFilter}`;
+  const existingCached = kpiMemoCache.get(cacheKey);
+
+  if (existingCached && existingCached.gateRevHash === currentGateRevHash && Date.now() - existingCached.cachedAt < 60000) {
+    return existingCached.metrics;
+  }
+
+  // 2. Cache Miss: Compute authoritative metrics
   const whereClause: Prisma.LCGateEventWhereInput = {
     gateId: { in: gateIds },
   };
@@ -314,11 +343,24 @@ export async function calculateAuthoritativeMetrics(
   const totalOperations = currentlyOpenCount + closedCount;
   const avgDurationSeconds = closedCount > 0 ? Math.round(totalDurationSeconds / closedCount) : 0;
 
-  return {
+  const result: ReportMetrics = {
     totalOperations,
     totalDurationSeconds,
     avgDurationSeconds,
     extendedDelaysCount,
     currentlyOpenCount,
   };
+
+  // Cache up to 200 recent query variations
+  if (kpiMemoCache.size > 200) {
+    const oldestKey = kpiMemoCache.keys().next().value;
+    if (oldestKey) kpiMemoCache.delete(oldestKey);
+  }
+  kpiMemoCache.set(cacheKey, {
+    metrics: result,
+    gateRevHash: currentGateRevHash,
+    cachedAt: Date.now(),
+  });
+
+  return result;
 }
