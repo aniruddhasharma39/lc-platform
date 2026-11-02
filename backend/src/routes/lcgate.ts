@@ -8,7 +8,7 @@ import { getAllDescendantScopeGroupIds } from '../lib/scopeHierarchy';
 import { publishMqttMessage } from '../lib/iotClient';
 import { broadcastGateTelemetry, getGateTelemetryPayload } from '../lib/telemetryWs';
 import { bumpDirectoryRevision, getDirectoryRevisionToken } from '../lib/revisionManager';
-import { bumpReportRevisionInTx } from '../lib/reportRevisionManager';
+import { bumpReportRevisionInTx, recordEventChangeInTx } from '../lib/reportRevisionManager';
 
 const router = Router();
 
@@ -540,7 +540,7 @@ router.get('/', authenticate, async (req: any, res, next) => {
     }
 
     // Fast-path Conditional HTTP Revision Check (ETag / 304 Not Modified)
-    const revisionToken = await getDirectoryRevisionToken(req.user.id, assignedScopeGroupIds);
+    const revisionToken = await getDirectoryRevisionToken(req.user.id, assignedScopeGroupIds, isDeveloper);
     res.setHeader('ETag', revisionToken);
     res.setHeader('Cache-Control', 'private, no-cache');
 
@@ -1273,6 +1273,9 @@ router.delete('/:id', authenticate, async (req, res, next) => {
             openedAt: e.openedAt,
           })),
         });
+        for (const e of eventsToDelete) {
+          await recordEventChangeInTx(tx, e, 'DELETE');
+        }
       }
 
       // 2. Bump report revision for this gate

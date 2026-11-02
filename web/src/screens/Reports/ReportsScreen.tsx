@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   FaFileExcel,
   FaFilePdf,
@@ -16,47 +16,20 @@ import {
 import type { User } from '../../types';
 import { API_URL } from '../../config';
 import { useToast } from '../../context/ToastContext';
+import {
+  reportsCacheService,
+  type OperationalRecord,
+  type ClusterItem,
+  type ClusterGate,
+  type AuthoritativeReportMetrics,
+  type ReportsCursor,
+  type ReportFilterParams,
+} from '../../services/reportsCacheService';
 import './ReportsScreen.css';
 
 type Props = {
   user: User;
 };
-
-interface ClusterGate {
-  id: number;
-  lcNumber: string;
-  name?: string | null;
-  locationName: string;
-  zone?: string | null;
-  division?: string | null;
-}
-
-interface ClusterItem {
-  id: number;
-  name: string;
-  color: string;
-  parentId?: number | null;
-  parentName?: string | null;
-  gateCount: number;
-  gates: ClusterGate[];
-}
-
-interface OperationalRecord {
-  id: number;
-  gateId: number;
-  lcNumber: string;
-  gateName: string;
-  locationName: string;
-  zone?: string | null;
-  division?: string | null;
-  scopeGroupName: string;
-  scopeGroupColor: string;
-  openedAt: string;
-  closedAt: string | null;
-  durationSeconds: number | null;
-  durationFormatted: string;
-  status: 'OPEN' | 'CLOSED' | 'EXTENDED_DELAY';
-}
 
 const authHeaders = () => ({
   'Content-Type': 'application/json',
@@ -114,9 +87,13 @@ export default function ReportsScreen({ user }: Props) {
   );
   const [showColumnsPopover, setShowColumnsPopover] = useState<boolean>(false);
 
-  // 5. Operational Records State
+  // 5. Operational Records & Caching State
   const [records, setRecords] = useState<OperationalRecord[]>([]);
+  const [metrics, setMetrics] = useState<AuthoritativeReportMetrics | null>(null);
+  const [cursor, setCursor] = useState<ReportsCursor | null>(null);
   const [loadingRecords, setLoadingRecords] = useState<boolean>(false);
+  const [syncStatus, setSyncStatus] = useState<'synced' | 'updating' | 'outdated'>('synced');
+  const [isScopeVerified, setIsScopeVerified] = useState<boolean>(false);
 
   // Pagination & Export
   const [rowsPerPage, setRowsPerPage] = useState<number>(25);
@@ -128,6 +105,17 @@ export default function ReportsScreen({ user }: Props) {
 
   const gateDropdownRef = useRef<HTMLDivElement>(null);
   const columnPopoverRef = useRef<HTMLDivElement>(null);
+
+  // Synchronization refs to prevent overlapping requests and race conditions
+  const isRevalidatingRef = useRef<boolean>(false);
+  const isPollingRef = useRef<boolean>(false);
+  const currentParamsRef = useRef<ReportFilterParams | null>(null);
+  const currentCursorRef = useRef<ReportsCursor | null>(null);
+  const activeRecordsRef = useRef<OperationalRecord[]>([]);
+
+  // Keep refs in sync with current state
+  currentCursorRef.current = cursor;
+  activeRecordsRef.current = records;
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -183,52 +171,165 @@ export default function ReportsScreen({ user }: Props) {
     }
   };
 
-  // 1. Fetch Clusters on Initial Mount
-  const fetchClusters = async () => {
-    setLoadingClusters(true);
+  // 1. Fetch Clusters (Hierarchy Caching with Online Authorization Scope Verification)
+  const fetchClusters = useCallback(async (forceReload = false) => {
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine !== false : true;
+    const cachedHierarchy = reportsCacheService.getCachedHierarchy(user.id);
+
+    // If offline, gracefully fall back immediately to cached hierarchy with outdated status
+    if (!isOnline && cachedHierarchy) {
+      setClusters(cachedHierarchy.clusters);
+      setLoadingClusters(false);
+      setIsScopeVerified(true);
+      if (selectedClusterIds.length === 0) {
+        const allCIds = cachedHierarchy.clusters.map(c => c.id);
+        const allGIds = Array.from(new Set(cachedHierarchy.clusters.flatMap(c => c.gates.map(g => g.id))));
+        setSelectedClusterIds(allCIds);
+        setSelectedGateIds(allGIds);
+      }
+      setSyncStatus('outdated');
+      return;
+    }
+
+    if (!cachedHierarchy) {
+      setLoadingClusters(true);
+    }
+
+    // When online: validate current authorization / scope revision before displaying cached data
     try {
-      const res = await fetch(`${API_URL}/api/v1/reports/clusters`, { headers: authHeaders() });
+      const headers: Record<string, string> = { ...authHeaders() };
+      if (cachedHierarchy?.etag && !forceReload) {
+        headers['If-None-Match'] = cachedHierarchy.etag;
+      }
+
+      const res = await fetch(`${API_URL}/api/v1/reports/clusters`, { headers });
+
+      // Handle HTTP 304 Not Modified: scope confirmed unchanged!
+      if (res.status === 304 && cachedHierarchy) {
+        reportsCacheService.touchHierarchyVerified(user.id);
+        setClusters(cachedHierarchy.clusters);
+        setIsScopeVerified(true);
+        if (selectedClusterIds.length === 0) {
+          const allCIds = cachedHierarchy.clusters.map(c => c.id);
+          const allGIds = Array.from(new Set(cachedHierarchy.clusters.flatMap(c => c.gates.map(g => g.id))));
+          setSelectedClusterIds(allCIds);
+          setSelectedGateIds(allGIds);
+        }
+        return;
+      }
+
       if (!res.ok) {
         if (res.status === 403) {
           toastError('No clusters are assigned to your user account.');
         }
         return;
       }
+
       const data = await res.json();
       const clusterList: ClusterItem[] = data.clusters || [];
-      setClusters(clusterList);
+      const etag = res.headers.get('ETag') || data.directoryRevisionToken;
 
-      // Select all accessible clusters and gates by default
+      // Permission Revocation Security Check:
+      // If cached hierarchy existed and etag differs or accessible gates shrunk:
+      if (cachedHierarchy) {
+        const prevGateIds = new Set(cachedHierarchy.clusters.flatMap(c => c.gates.map(g => g.id)));
+        const newGateIds = new Set(clusterList.flatMap(c => c.gates.map(g => g.id)));
+        const hasRevocations = Array.from(prevGateIds).some(id => !newGateIds.has(id));
+        if (hasRevocations || etag !== cachedHierarchy.etag) {
+          console.info('[ReportsScreen] Scope changed or gate access revoked. Purging cached report records for user.');
+          reportsCacheService.clearUserCache(user.id);
+        }
+      }
+
+      reportsCacheService.saveHierarchy(user.id, clusterList, !!data.isDeveloper, etag);
+      setClusters(clusterList);
+      setIsScopeVerified(true);
+
       const allClusterIds = clusterList.map(c => c.id);
       const allGateIds = Array.from(new Set(clusterList.flatMap(c => c.gates.map(g => g.id))));
-      setSelectedClusterIds(allClusterIds);
-      setSelectedGateIds(allGateIds);
+
+      setSelectedClusterIds(prev => prev.length === 0 ? allClusterIds : prev.filter(id => allClusterIds.includes(id)));
+      setSelectedGateIds(prev => prev.length === 0 ? allGateIds : prev.filter(id => allGateIds.includes(id)));
     } catch (err) {
-      console.error('Error fetching accessible clusters:', err);
-      toastError('Failed to load assigned clusters');
+      console.warn('[ReportsScreen] Error revalidating clusters hierarchy (offline fallback):', err);
+      if (cachedHierarchy) {
+        setClusters(cachedHierarchy.clusters);
+        setIsScopeVerified(true);
+        setSyncStatus('outdated');
+      }
     } finally {
       setLoadingClusters(false);
     }
-  };
+  }, [user.id, selectedClusterIds.length, toastError]);
 
   useEffect(() => {
     fetchClusters();
-  }, []);
+  }, [fetchClusters]);
 
-  // 2. Core Fetch Records Data
-  const fetchRecordsData = async (
+  // 2. Core Fetch Records Data with SWR & Two-Level LRU Caching
+  const fetchRecordsData = useCallback(async (
     targetClusterIds = selectedClusterIds,
     targetGateIds = selectedGateIds,
     start = startDateStr,
     end = endDateStr,
-    search = debouncedSearch
+    search = debouncedSearch,
+    options: { forceReload?: boolean } = {}
   ) => {
     if ((targetClusterIds.length === 0 && !isDeveloper) || targetGateIds.length === 0) {
       setRecords([]);
+      setMetrics(null);
+      setCursor(null);
+      setSyncStatus('synced');
       return;
     }
 
-    setLoadingRecords(true);
+    const filterParams: ReportFilterParams = {
+      scopeGroupIds: targetClusterIds.length > 0 ? targetClusterIds : (isDeveloper ? 'all' : []),
+      gateIds: targetGateIds.length > 0 ? targetGateIds : (isDeveloper ? 'all' : []),
+      startDate: start,
+      endDate: end,
+      status: filterStatus,
+      shift: filterShift,
+      search: search,
+      sortBy: sortBy,
+      sortOrder: sortOrder,
+    };
+
+    currentParamsRef.current = filterParams;
+
+    // Scope verification barrier: When online, do not render cached records until scope is confirmed
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine !== false : true;
+    if (isOnline && !isScopeVerified) {
+      setLoadingRecords(true);
+      return;
+    }
+
+    // A. Check Two-Level Cache (Memory first, then Persistent localStorage)
+    const cachedResult = reportsCacheService.getCachedReport(user.id, filterParams);
+    const hasCache = !!cachedResult.entry;
+
+    if (hasCache) {
+      const entry = cachedResult.entry!;
+      setRecords(entry.records);
+      setMetrics(entry.authoritativeMetrics);
+      setCursor(entry.cursor);
+      setLoadingRecords(false);
+
+      // If cache is fresh (< 2min) and not manual force-reload, skip network request entirely!
+      if (cachedResult.isFresh && !options.forceReload) {
+        setSyncStatus('synced');
+        return;
+      }
+    } else {
+      // First visit: Show table loading state
+      setLoadingRecords(true);
+    }
+
+    // B. Background Revalidation (Conditional HTTP 304 via ETag)
+    if (isRevalidatingRef.current) return;
+    isRevalidatingRef.current = true;
+    setSyncStatus('updating');
+
     try {
       const url = new URL(`${API_URL}/api/v1/reports/records`);
       if (targetClusterIds.length > 0) {
@@ -251,28 +352,64 @@ export default function ReportsScreen({ user }: Props) {
       url.searchParams.append('sortBy', sortBy);
       url.searchParams.append('sortOrder', sortOrder);
 
-      const res = await fetch(url.toString(), { headers: authHeaders() });
+      const headers: Record<string, string> = { ...authHeaders() };
+      if (hasCache && cachedResult.entry?.etag && !options.forceReload) {
+        headers['If-None-Match'] = cachedResult.entry.etag;
+      }
+
+      const res = await fetch(url.toString(), { headers });
+
+      // Handle HTTP 304 Not Modified: Cache is authoritative!
+      if (res.status === 304) {
+        const serverETag = res.headers.get('ETag') || undefined;
+        reportsCacheService.touchVerified(user.id, filterParams, serverETag);
+        setSyncStatus('synced');
+        return;
+      }
+
+      // Handle HTTP 200 OK: Cache miss or data changed
       if (res.ok) {
         const data = await res.json();
-        setRecords(data.records || []);
+        const serverETag = res.headers.get('ETag');
+        const newRecords: OperationalRecord[] = data.records || [];
+        const newMetrics: AuthoritativeReportMetrics | null = data.metrics || null;
+        const newCursor: ReportsCursor = data.cursor || {
+          eventCursorTime: new Date(0).toISOString(),
+          eventCursorId: 0,
+          tombstoneCursorId: '0',
+          gateRevisions: {},
+          serverTime: new Date().toISOString(),
+        };
+
+        // Store into Two-Level LRU Cache
+        reportsCacheService.saveReport(user.id, filterParams, {
+          records: newRecords,
+          metrics: newMetrics,
+          etag: serverETag,
+          cursor: newCursor,
+        });
+
+        setRecords(newRecords);
+        setMetrics(newMetrics);
+        setCursor(newCursor);
         setCurrentPage(1);
+        setSyncStatus('synced');
       } else {
         const err = await res.json().catch(() => ({}));
-        toastError(err.error || 'Failed to load records');
+        if (!hasCache) {
+          toastError(err.error || 'Failed to load records');
+        }
+        setSyncStatus(hasCache ? 'outdated' : 'synced');
       }
     } catch (err) {
-      console.error('Error fetching records:', err);
-      toastError('Network error loading reports');
+      console.warn('[ReportsScreen] Revalidation network error:', err);
+      if (!hasCache) {
+        toastError('Network error loading reports');
+      }
+      setSyncStatus(hasCache ? 'outdated' : 'synced');
     } finally {
       setLoadingRecords(false);
-    }
-  };
-
-  // ── REAL-TIME REACTIVE SYNC ──────────────────────────────────────────────
-  // Automatically queries and updates the View Log table whenever any filter changes!
-  useEffect(() => {
-    if (clusters.length > 0) {
-      fetchRecordsData(selectedClusterIds, selectedGateIds, startDateStr, endDateStr, debouncedSearch);
+      isRevalidatingRef.current = false;
     }
   }, [
     selectedClusterIds,
@@ -283,8 +420,177 @@ export default function ReportsScreen({ user }: Props) {
     filterShift,
     sortBy,
     sortOrder,
+    debouncedSearch,
+    isDeveloper,
+    user.id,
+    isScopeVerified,
+    toastError
+  ]);
+
+  // ── REACTIVE TRIGGER ON FILTER CHANGES ──────────────────────────────────
+  useEffect(() => {
+    if (clusters.length > 0 && isScopeVerified) {
+      fetchRecordsData(selectedClusterIds, selectedGateIds, startDateStr, endDateStr, debouncedSearch);
+    }
+  }, [
+    fetchRecordsData,
+    clusters.length,
+    isScopeVerified,
+    selectedClusterIds,
+    selectedGateIds,
+    startDateStr,
+    endDateStr,
+    filterStatus,
+    filterShift,
+    sortBy,
+    sortOrder,
     debouncedSearch
   ]);
+
+  // ── TRANSACTIONALLY ORDERED 45-SECOND INCREMENTAL POLLING ───────────────
+  const syncIncrementalChanges = useCallback(async () => {
+    const params = currentParamsRef.current;
+    const activeCursor = currentCursorRef.current;
+    if (!params || !activeCursor || !activeCursor.gateRevisions) return;
+    if (isPollingRef.current || isRevalidatingRef.current) return;
+
+    isPollingRef.current = true;
+    setSyncStatus('updating');
+
+    try {
+      let keepDraining = true;
+      let drainLoops = 0;
+      let currentGateRevisions = { ...activeCursor.gateRevisions };
+      const MAX_DRAIN_LOOPS = 20;
+
+      while (keepDraining && drainLoops < MAX_DRAIN_LOOPS) {
+        drainLoops++;
+        const url = new URL(`${API_URL}/api/v1/reports/records/changes`);
+
+        if (Array.isArray(params.scopeGroupIds) && params.scopeGroupIds.length > 0) {
+          url.searchParams.append('scopeGroupIds', params.scopeGroupIds.join(','));
+        } else if (params.scopeGroupIds === 'all') {
+          url.searchParams.append('scopeGroupIds', 'all');
+        }
+
+        if (Array.isArray(params.gateIds) && params.gateIds.length > 0) {
+          url.searchParams.append('gateIds', params.gateIds.join(','));
+        } else if (params.gateIds === 'all') {
+          url.searchParams.append('gateIds', 'all');
+        }
+
+        url.searchParams.append('gateRevisions', JSON.stringify(currentGateRevisions));
+        url.searchParams.append('startDate', params.startDate);
+        url.searchParams.append('endDate', params.endDate);
+        if (params.status !== 'ALL') url.searchParams.append('status', params.status);
+        if (params.shift !== 'ALL') url.searchParams.append('shift', params.shift);
+        if (params.search) url.searchParams.append('search', params.search);
+
+        const res = await fetch(url.toString(), { headers: authHeaders() });
+        if (!res.ok) {
+          setSyncStatus('outdated');
+          break;
+        }
+
+        const data = await res.json();
+
+        // 1. Full Synchronization Recovery trigger
+        if (data.requiresFullSync) {
+          console.info('[ReportsScreen] Server requested full re-sync:', data.resyncReason);
+          keepDraining = false;
+          if (data.resyncReason === 'GATE_REVOKED') {
+            reportsCacheService.clearUserCache(user.id);
+            await fetchClusters(true);
+          }
+          await fetchRecordsData(selectedClusterIds, selectedGateIds, startDateStr, endDateStr, debouncedSearch, {
+            forceReload: true,
+          });
+          break;
+        }
+
+        // 2. Process Delta Mutations
+        const hasDeltas = (data.events && data.events.length > 0) || (data.deletions && data.deletions.length > 0);
+        if (hasDeltas || data.gateRevisions) {
+          const updatedEntry = reportsCacheService.updateIncrementalChanges(user.id, params, data);
+          if (updatedEntry) {
+            setRecords(updatedEntry.records);
+            setMetrics(updatedEntry.authoritativeMetrics);
+            setCursor(updatedEntry.cursor);
+            currentCursorRef.current = updatedEntry.cursor;
+            currentGateRevisions = { ...updatedEntry.cursor.gateRevisions };
+          }
+        }
+
+        // Check if more batches are queued on the server
+        keepDraining = data.hasMoreEvents === true;
+      }
+
+      if (keepDraining) {
+        // Backlog exceeds max drain loops; refresh with full atomic snapshot to ensure nothing is missed
+        console.info('[ReportsScreen] Excessive pending change batches, triggering full snapshot re-sync');
+        await fetchRecordsData(selectedClusterIds, selectedGateIds, startDateStr, endDateStr, debouncedSearch, {
+          forceReload: true,
+        });
+        return;
+      }
+
+      setSyncStatus('synced');
+    } catch (err) {
+      console.warn('[ReportsScreen] Incremental polling network error:', err);
+      setSyncStatus('outdated');
+    } finally {
+      isPollingRef.current = false;
+    }
+  }, [
+    fetchRecordsData,
+    selectedClusterIds,
+    selectedGateIds,
+    startDateStr,
+    endDateStr,
+    debouncedSearch,
+    user.id
+  ]);
+
+  // Polling Lifecycle Controller (45s Interval + Visibility Change Handling)
+  useEffect(() => {
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    const shouldPoll = () => {
+      if (document.hidden) return false;
+      // Condition 1: Date range includes today (ongoing operational day)
+      const includesToday = endDateStr >= todayStr && startDateStr <= todayStr;
+      
+      // Condition 2: Historical window has unclosed/OPEN barrier events,
+      // even if the active status filter is currently 'CLOSED' or hiding them
+      const hasOpenEvent =
+        currentCursorRef.current?.hasUnclosedEvents === true ||
+        (metrics ? metrics.currentlyOpenCount > 0 : false) ||
+        activeRecordsRef.current.some((r) => r.status === 'OPEN');
+
+      return includesToday || hasOpenEvent;
+    };
+
+    // 45-Second Scheduled Timer
+    const pollInterval = setInterval(() => {
+      if (shouldPoll()) {
+        syncIncrementalChanges();
+      }
+    }, 45000);
+
+    // Visibility Listener: Immediate catch-up sync when returning to active tab
+    const handleVisibilityChange = () => {
+      if (!document.hidden && shouldPoll()) {
+        syncIncrementalChanges();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearInterval(pollInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [startDateStr, endDateStr, metrics, syncIncrementalChanges]);
 
   // Available gates pool based on selected clusters
   const availableGates = useMemo(() => {
@@ -370,7 +676,7 @@ export default function ReportsScreen({ user }: Props) {
     setSelectedExportColumns(['scopeGroup', 'lcNumber', 'locationName', 'openedDate', 'openedTime', 'closedTime', 'durationFormatted', 'status']);
   };
 
-  // Direct Download Trigger (Excel or PDF)
+  // Direct Download Trigger (Server-Side Excel or PDF on Full Filtered Dataset)
   const handleDownloadReport = async (format: 'xlsx' | 'pdf') => {
     if (selectedGateIds.length === 0) {
       toastInfo('Please select at least one gate to generate the report');
@@ -712,7 +1018,7 @@ export default function ReportsScreen({ user }: Props) {
               </select>
             </div>
 
-            {/* 6. Columns Customizer Popover Trigger */}
+            {/* 7. Columns Customizer Popover Trigger */}
             <div className="compact-field relative-anchor" ref={columnPopoverRef}>
               <div className="column-label-head">
                 <label className="mb-0">
@@ -795,9 +1101,17 @@ export default function ReportsScreen({ user }: Props) {
               <div className="log-title-row">
                 <FaArchway className="text-primary mr-2" />
                 <h3 className="log-title">View Log: Operational Records</h3>
-                {loadingRecords ? (
+                {loadingRecords && records.length === 0 ? (
+                  <span className="live-status-pill updating">
+                    <FaSyncAlt className="spin mr-1" /> Loading...
+                  </span>
+                ) : syncStatus === 'updating' ? (
                   <span className="live-status-pill updating">
                     <FaSyncAlt className="spin mr-1" /> Updating...
+                  </span>
+                ) : syncStatus === 'outdated' ? (
+                  <span className="live-status-pill outdated" title="Background refresh failed. Displaying cached data.">
+                    <span className="live-dot" style={{ backgroundColor: '#d97706' }} /> Cached (Offline)
                   </span>
                 ) : (
                   <span className="live-status-pill synced">
@@ -807,6 +1121,11 @@ export default function ReportsScreen({ user }: Props) {
               </div>
               <span className="log-subtitle">
                 Displaying <strong>{records.length}</strong> events for selected criteria ({startDateStr} to {endDateStr})
+                {metrics && metrics.currentlyOpenCount > 0 && (
+                  <span className="ml-2 text-danger font-semibold">
+                    • {metrics.currentlyOpenCount} gate{metrics.currentlyOpenCount === 1 ? '' : 's'} currently open
+                  </span>
+                )}
               </span>
             </div>
 
@@ -830,12 +1149,12 @@ export default function ReportsScreen({ user }: Props) {
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
-                onClick={() => fetchRecordsData()}
-                disabled={loadingRecords}
-                title="Manually refresh data"
+                onClick={() => fetchRecordsData(selectedClusterIds, selectedGateIds, startDateStr, endDateStr, debouncedSearch, { forceReload: true })}
+                disabled={loadingRecords || syncStatus === 'updating'}
+                title="Force refresh data from database"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.35rem 0.75rem', borderRadius: '8px' }}
               >
-                <FaSyncAlt className={loadingRecords ? 'spin' : ''} />
+                <FaSyncAlt className={syncStatus === 'updating' ? 'spin' : ''} />
                 <span>Refresh</span>
               </button>
             </div>
@@ -859,10 +1178,10 @@ export default function ReportsScreen({ user }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {loadingRecords ? (
+                {loadingRecords && records.length === 0 ? (
                   <tr>
                     <td colSpan={selectedExportColumns.length || 1} className="text-center py-5">
-                      <FaSyncAlt className="spin mr-2" /> Updating operational logs in real-time...
+                      <FaSyncAlt className="spin mr-2" /> Loading operational logs from database...
                     </td>
                   </tr>
                 ) : records.length === 0 ? (
@@ -960,6 +1279,7 @@ export default function ReportsScreen({ user }: Props) {
           )}
         </main>
       </div>
+
       {/* ── REPORT GENERATION PROGRESS BAR MODAL ── */}
       {isExporting && (
         <div 

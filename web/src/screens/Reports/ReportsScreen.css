@@ -596,6 +596,11 @@
   color: #0369a1;
 }
 
+.live-status-pill.outdated {
+  background: #fef3c7;
+  color: #b45309;
+}
+
 .pulse-dot {
   width: 6px;
   height: 6px;

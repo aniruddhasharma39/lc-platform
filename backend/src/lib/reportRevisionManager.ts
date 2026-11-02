@@ -18,22 +18,93 @@ export interface ReportMetrics {
   currentlyOpenCount: number;
 }
 
+export interface OperationalEventData {
+  id: number;
+  gateId: number;
+  status?: string | null;
+  openedAt?: Date | null;
+  closedAt?: Date | null;
+  durationSeconds?: number | null;
+  openedBy?: string | null;
+  closedBy?: string | null;
+  trainNumber?: string | null;
+  remarks?: string | null;
+}
+
 /**
  * Worker: Executes atomic revision bump on REPORT_GATE_REV_{gateId}
  * within an existing Prisma transaction.
+ * Acquires a transactionally exclusive PostgreSQL row lock on the revision row
+ * and returns the newly incremented monotonic revision counter.
  */
 export async function bumpReportRevisionInTx(
   tx: Prisma.TransactionClient,
   gateId: number
-): Promise<void> {
-  if (!gateId || isNaN(gateId)) return;
+): Promise<bigint> {
+  if (!gateId || isNaN(gateId)) return 0n;
   const key = `REPORT_GATE_REV_${gateId}`;
-  await tx.$executeRawUnsafe(`
+  const rows: any = await tx.$queryRawUnsafe(`
     INSERT INTO "AppSetting" ("key", "value")
     VALUES ('${key}', '1')
     ON CONFLICT ("key") DO UPDATE
-    SET "value" = (CAST("AppSetting"."value" AS BIGINT) + 1)::TEXT;
+    SET "value" = (CAST("AppSetting"."value" AS BIGINT) + 1)::TEXT
+    RETURNING CAST("value" AS BIGINT) as rev;
   `);
+  return rows && rows[0] && rows[0].rev != null ? BigInt(rows[0].rev) : 1n;
+}
+
+/**
+ * Worker: Records an atomic mutation into LCGateEventChangeLog
+ * inside the same transaction as the event mutation.
+ * Serializes the revision counter via row lock and assigns it to gateRevision.
+ */
+export async function recordEventChangeInTx(
+  tx: Prisma.TransactionClient,
+  event: OperationalEventData,
+  opType: 'INSERT' | 'UPDATE' | 'DELETE'
+): Promise<bigint> {
+  const revision = await bumpReportRevisionInTx(tx, event.gateId);
+
+  await tx.lCGateEventChangeLog.create({
+    data: {
+      eventId: event.id,
+      gateId: event.gateId,
+      opType,
+      gateRevision: revision,
+      status: event.status ?? null,
+      openedAt: event.openedAt ?? null,
+      closedAt: event.closedAt ?? null,
+      durationSeconds: event.durationSeconds ?? null,
+      openedBy: event.openedBy ?? null,
+      closedBy: event.closedBy ?? null,
+      trainNumber: event.trainNumber ?? null,
+      remarks: event.remarks ?? null,
+    },
+  });
+
+  return revision;
+}
+
+/**
+ * Helper: Retrieves the current revision map { [gateId: number]: string }
+ * for a list of gates.
+ */
+export async function getLatestGateRevisions(
+  gateIds: number[],
+  client: any = prisma
+): Promise<Record<string, string>> {
+  if (gateIds.length === 0) return {};
+  const keys = gateIds.map((id) => `REPORT_GATE_REV_${id}`);
+  const settings: Array<{ key: string; value: string }> = await client.appSetting.findMany({
+    where: { key: { in: keys } },
+    select: { key: true, value: true },
+  });
+  const map: Record<string, string> = {};
+  const found = new Map(settings.map((s) => [s.key, s.value]));
+  for (const id of gateIds) {
+    map[String(id)] = found.get(`REPORT_GATE_REV_${id}`) || '0';
+  }
+  return map;
 }
 
 /**
@@ -62,7 +133,7 @@ export async function bumpMultipleReportRevisionsInTx(
 }
 
 /**
- * Worker: Preserves an operational event in LCGateEventTombstone,
+ * Worker: Preserves an operational event in LCGateEventTombstone and LCGateEventChangeLog,
  * bumps the gate report revision, and deletes the event within an existing transaction.
  */
 export async function deleteOperationalEventInTx(
@@ -71,12 +142,23 @@ export async function deleteOperationalEventInTx(
 ): Promise<{ gateId: number; eventId: number } | null> {
   const event = await tx.lCGateEvent.findUnique({
     where: { id: eventId },
-    select: { id: true, gateId: true, openedAt: true },
+    select: {
+      id: true,
+      gateId: true,
+      openedAt: true,
+      closedAt: true,
+      durationSeconds: true,
+      status: true,
+      openedBy: true,
+      closedBy: true,
+      trainNumber: true,
+      remarks: true,
+    },
   });
 
   if (!event) return null;
 
-  // 1. Record Tombstone
+  // 1. Record Tombstone (for backward compatibility)
   await tx.lCGateEventTombstone.create({
     data: {
       eventId: event.id,
@@ -85,8 +167,8 @@ export async function deleteOperationalEventInTx(
     },
   });
 
-  // 2. Increment Gate Report Revision
-  await bumpReportRevisionInTx(tx, event.gateId);
+  // 2. Increment Gate Revision and Record in ChangeLog (atomic & serialized)
+  await recordEventChangeInTx(tx, event, 'DELETE');
 
   // 3. Delete Record from LCGateEvent
   await tx.lCGateEvent.delete({
@@ -109,8 +191,8 @@ export async function deleteOperationalEvent(eventId: number): Promise<void> {
 }
 
 /**
- * Worker: Bulk deletes operational events, recording tombstones and bumping
- * revisions for all affected gates in a single transaction.
+ * Worker: Bulk deletes operational events, recording tombstones and change-log entries
+ * and bumping revisions for all affected gates in a single transaction.
  */
 export async function deleteOperationalEventsInTx(
   tx: Prisma.TransactionClient,
@@ -120,7 +202,6 @@ export async function deleteOperationalEventsInTx(
 
   const events = await tx.lCGateEvent.findMany({
     where: { id: { in: eventIds } },
-    select: { id: true, gateId: true, openedAt: true },
   });
 
   if (events.length === 0) return 0;
@@ -134,9 +215,10 @@ export async function deleteOperationalEventsInTx(
     })),
   });
 
-  // 2. Bump revisions for all affected unique gates
-  const affectedGateIds = Array.from(new Set(events.map((e) => e.gateId)));
-  await bumpMultipleReportRevisionsInTx(tx, affectedGateIds);
+  // 2. Record changes in ChangeLog for each event
+  for (const event of events) {
+    await recordEventChangeInTx(tx, event, 'DELETE');
+  }
 
   // 3. Delete the records
   const result = await tx.lCGateEvent.deleteMany({

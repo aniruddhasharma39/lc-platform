@@ -378,3 +378,23 @@ model LCGateEventTombstone {
   @@index([gateId, id])
   @@index([deletedAt])
 }
+
+model LCGateEventChangeLog {
+  id              BigInt    @id @default(autoincrement())
+  eventId         Int
+  gateId          Int
+  opType          String    // INSERT, UPDATE, DELETE
+  gateRevision    BigInt    // Transactionally serialized per-gate revision counter
+  status          String?   // OPEN, CLOSED, EXTENDED_DELAY
+  openedAt        DateTime?
+  closedAt        DateTime?
+  durationSeconds Int?
+  openedBy        String?
+  closedBy        String?
+  trainNumber     String?
+  remarks         String?
+  createdAt       DateTime  @default(now())
+
+  @@index([gateId, gateRevision])
+  @@index([createdAt])
+}

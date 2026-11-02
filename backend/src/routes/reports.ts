@@ -11,6 +11,8 @@ import { syncHistoricalTelemetryEvents } from '../lib/telemetryMonitor';
 import { getDirectoryRevisionToken } from '../lib/revisionManager';
 import {
   bumpReportRevisionInTx,
+  recordEventChangeInTx,
+  getLatestGateRevisions,
   generateReportETag,
   isETagMatch,
   deleteOperationalEvent,
@@ -238,7 +240,8 @@ router.get('/clusters', async (req: AuthRequest, res, next) => {
 
     res.set('ETag', dirToken).json({
       clusters: clustersWithDetails,
-      isDeveloper: access.isDeveloper
+      isDeveloper: access.isDeveloper,
+      directoryRevisionToken: dirToken,
     });
   } catch (error) {
     next(error);
@@ -562,19 +565,38 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
         tx
       );
 
-      return { data, latestEvent, latestTombstone, snapshotETag };
+      // Fetch point-in-time gate revisions map for serialized change-log sync
+      const gateRevisions = await getLatestGateRevisions(data.targetGateIds, tx);
+
+      // Check whether target gates have unclosed events within the requested date window
+      const [sY, sM, sD] = data.startDateStr.split('-').map(Number);
+      const [eY, eM, eD] = data.endDateStr.split('-').map(Number);
+      const sUtc = new Date(Date.UTC(sY, (sM || 1) - 1, sD || 1, 0, 0, 0, 0));
+      const eUtc = new Date(Date.UTC(eY, (eM || 1) - 1, eD || 1, 23, 59, 59, 999));
+      const unclosedCount = await tx.lCGateEvent.count({
+        where: {
+          gateId: { in: data.targetGateIds },
+          openedAt: { gte: sUtc, lte: eUtc },
+          status: 'OPEN',
+        },
+      });
+      const hasUnclosedEvents = unclosedCount > 0;
+
+      return { data, latestEvent, latestTombstone, snapshotETag, gateRevisions, hasUnclosedEvents };
     }, {
       isolationLevel: 'RepeatableRead',
       timeout: 15000,
       maxWait: 10000,
     });
 
-    const { data, latestEvent, latestTombstone, snapshotETag } = snapshot;
+    const { data, latestEvent, latestTombstone, snapshotETag, gateRevisions, hasUnclosedEvents } = snapshot;
 
     const cursor = {
       eventCursorTime: latestEvent ? latestEvent.updatedAt.toISOString() : new Date(0).toISOString(),
       eventCursorId: latestEvent ? latestEvent.id : 0,
       tombstoneCursorId: latestTombstone ? latestTombstone.id.toString() : '0',
+      gateRevisions,
+      hasUnclosedEvents,
       serverTime: new Date().toISOString(),
     };
 
@@ -653,6 +675,7 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
         hasMoreTombstones: false,
         nextEventCursor: { time: new Date(0).toISOString(), id: 0 },
         nextTombstoneCursorId: '0',
+        gateRevisions: {},
         authoritativeMetrics: {
           totalOperations: 0,
           totalDurationSeconds: 0,
@@ -660,6 +683,197 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
           extendedDelaysCount: 0,
           currentlyOpenCount: 0,
         },
+        serverTime: new Date().toISOString(),
+      });
+    }
+
+    const limitEvents = Math.min(Math.max(parseInt(req.query.limitEvents as string, 10) || 50, 1), 100);
+
+    // 0. Transactionally Serialized ChangeLog Sync Stream (when gateRevisions is passed)
+    const gateRevisionsParam = req.query.gateRevisions;
+    let clientGateRevs: Map<number, bigint> | null = null;
+    if (typeof gateRevisionsParam === 'string' && gateRevisionsParam.trim()) {
+      clientGateRevs = new Map();
+      const trimmed = gateRevisionsParam.trim();
+      if (trimmed.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          for (const [k, v] of Object.entries(parsed)) {
+            const gid = parseInt(k, 10);
+            if (!isNaN(gid)) {
+              clientGateRevs.set(gid, BigInt(String(v)));
+            }
+          }
+        } catch {}
+      } else {
+        const parts = trimmed.split(',');
+        for (const p of parts) {
+          const [k, v] = p.split(':');
+          const gid = parseInt(k, 10);
+          if (!isNaN(gid) && v && /^\d+$/.test(v.trim())) {
+            clientGateRevs.set(gid, BigInt(v.trim()));
+          }
+        }
+      }
+    }
+
+    // Check if explicitly requested gate IDs contain revoked gates
+    if (gateIdsParam && gateIdsParam !== 'all' && !access.isDeveloper) {
+      const parsedIds = gateIdsParam.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+      if (parsedIds.some(id => !access.accessibleGateIds.includes(id))) {
+        return res.json({
+          requiresFullSync: true,
+          resyncReason: 'GATE_REVOKED',
+          events: [],
+          deletions: [],
+          hasMoreEvents: false,
+          hasMoreTombstones: false,
+          gateRevisions: {},
+          authoritativeMetrics: {
+            totalOperations: 0,
+            totalDurationSeconds: 0,
+            avgDurationSeconds: 0,
+            extendedDelaysCount: 0,
+            currentlyOpenCount: 0,
+          },
+          serverTime: new Date().toISOString(),
+        });
+      }
+    }
+
+    if (clientGateRevs && clientGateRevs.size > 0) {
+      // Security Check: If client cursor contains gates no longer authorized for this user
+      if (!access.isDeveloper) {
+        for (const gid of clientGateRevs.keys()) {
+          if (!access.accessibleGateIds.includes(gid)) {
+            return res.json({
+              requiresFullSync: true,
+              resyncReason: 'GATE_REVOKED',
+              events: [],
+              deletions: [],
+              hasMoreEvents: false,
+              hasMoreTombstones: false,
+              gateRevisions: {},
+              authoritativeMetrics: {
+                totalOperations: 0,
+                totalDurationSeconds: 0,
+                avgDurationSeconds: 0,
+                extendedDelaysCount: 0,
+                currentlyOpenCount: 0,
+              },
+              serverTime: new Date().toISOString(),
+            });
+          }
+        }
+      }
+
+      const whereConditions = targetGateIds.map(gid => ({
+        gateId: gid,
+        gateRevision: { gt: clientGateRevs!.get(gid) || 0n },
+      }));
+
+      const changeLogRecords = await prisma.lCGateEventChangeLog.findMany({
+        where: {
+          OR: whereConditions,
+        },
+        orderBy: [
+          { gateRevision: 'asc' },
+          { id: 'asc' },
+        ],
+        take: limitEvents + 1,
+      });
+
+      const hasMore = changeLogRecords.length > limitEvents;
+      const batch = hasMore ? changeLogRecords.slice(0, limitEvents) : changeLogRecords;
+
+      const neededGateIds = Array.from(new Set(batch.map(b => b.gateId)));
+      const gatesData = neededGateIds.length > 0 ? await prisma.lCGate.findMany({
+        where: { id: { in: neededGateIds } },
+        select: {
+          id: true,
+          lcNumber: true,
+          name: true,
+          locationName: true,
+          zone: true,
+          division: true,
+          scopeGroups: {
+            include: { scopeGroup: { select: { id: true, name: true, color: true } } },
+          },
+        },
+      }) : [];
+      const gateMap = new Map(gatesData.map(g => [g.id, g]));
+
+      const events: any[] = [];
+      const deletions: number[] = [];
+      const nextGateRevisions: Record<string, string> = {};
+      for (const gid of targetGateIds) {
+        nextGateRevisions[gid.toString()] = (clientGateRevs.get(gid) || 0n).toString();
+      }
+
+      for (const rec of batch) {
+        const curRev = BigInt(nextGateRevisions[rec.gateId.toString()] || '0');
+        if (rec.gateRevision > curRev) {
+          nextGateRevisions[rec.gateId.toString()] = rec.gateRevision.toString();
+        }
+
+        if (rec.opType === 'DELETE') {
+          deletions.push(rec.eventId);
+        } else {
+          const g = gateMap.get(rec.gateId);
+          events.push({
+            id: rec.eventId,
+            gateId: rec.gateId,
+            lcNumber: g?.lcNumber || 'LC-GATE',
+            gateName: g?.name || g?.locationName || 'Gate',
+            locationName: g?.locationName || 'Location',
+            zone: g?.zone || 'CR',
+            division: g?.division || 'Pune',
+            scopeGroupName: g?.scopeGroups[0]?.scopeGroup?.name || 'Unassigned',
+            scopeGroupColor: g?.scopeGroups[0]?.scopeGroup?.color || '#0B3C7A',
+            openedAt: rec.openedAt ? rec.openedAt.toISOString() : new Date().toISOString(),
+            closedAt: rec.closedAt ? rec.closedAt.toISOString() : null,
+            durationSeconds: rec.durationSeconds,
+            durationFormatted: rec.durationSeconds ? formatDurationHuman(rec.durationSeconds) : 'Ongoing (Open)',
+            status: rec.status,
+            openedBy: rec.openedBy,
+            closedBy: rec.closedBy,
+            trainNumber: rec.trainNumber,
+            remarks: rec.remarks,
+          });
+        }
+      }
+
+      const authoritativeMetrics = await calculateAuthoritativeMetrics(
+        targetGateIds,
+        req.query.startDate as string,
+        req.query.endDate as string,
+        typeof req.query.shift === 'string' ? req.query.shift.toUpperCase() : 'ALL',
+        typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL'
+      );
+
+      // Check whether target gates still have any unclosed events in the date range
+      const [chSY, chSM, chSD] = ((req.query.startDate as string) || '').split('-').map(Number);
+      const [chEY, chEM, chED] = ((req.query.endDate as string) || '').split('-').map(Number);
+      const chSUtc = chSY ? new Date(Date.UTC(chSY, (chSM || 1) - 1, chSD || 1, 0, 0, 0, 0)) : new Date(0);
+      const chEUtc = chEY ? new Date(Date.UTC(chEY, (chEM || 1) - 1, chED || 1, 23, 59, 59, 999)) : new Date();
+      const unclosedInWindow = await prisma.lCGateEvent.count({
+        where: {
+          gateId: { in: targetGateIds },
+          openedAt: { gte: chSUtc, lte: chEUtc },
+          status: 'OPEN',
+        },
+      });
+      const hasUnclosedEvents = unclosedInWindow > 0;
+
+      return res.json({
+        requiresFullSync: false,
+        events,
+        deletions,
+        hasMoreEvents: hasMore,
+        hasMoreTombstones: false,
+        gateRevisions: nextGateRevisions,
+        hasUnclosedEvents,
+        authoritativeMetrics,
         serverTime: new Date().toISOString(),
       });
     }
@@ -694,7 +908,6 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
     }
 
     // 3. Limits
-    const limitEvents = Math.min(Math.max(parseInt(req.query.limitEvents as string, 10) || 50, 1), 100);
     const limitTombstones = Math.min(Math.max(parseInt(req.query.limitTombstones as string, 10) || 100, 1), 200);
 
     // 4. Tombstone Expiration Watermark Check (including empty tombstone table after purge)
@@ -1323,7 +1536,7 @@ router.post('/events', async (req: AuthRequest, res, next) => {
           remarks: data.remarks
         }
       });
-      await bumpReportRevisionInTx(tx, data.gateId);
+      await recordEventChangeInTx(tx, created, 'INSERT');
       return created;
     });
 
@@ -1367,7 +1580,7 @@ router.put('/events/:id', async (req: AuthRequest, res, next) => {
         },
       });
 
-      await bumpReportRevisionInTx(tx, existing.gateId);
+      await recordEventChangeInTx(tx, updated, 'UPDATE');
       return updated;
     });
 

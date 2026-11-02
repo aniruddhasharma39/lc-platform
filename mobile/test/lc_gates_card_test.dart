@@ -1,4 +1,3 @@
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 // Test simulation of the exact gate structure returned for Gate 17 with events

@@ -9,6 +9,7 @@ import 'package:open_filex/open_filex.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
+import '../../services/reports_cache_service.dart';
 
 Color parseHexColor(String? hexString) {
   if (hexString == null || hexString.isEmpty) return const Color(0xFF0B3C7A);
@@ -28,9 +29,10 @@ class ReportsScreen extends StatefulWidget {
   State<ReportsScreen> createState() => _ReportsScreenState();
 }
 
-class _ReportsScreenState extends State<ReportsScreen> {
+class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserver {
   String _token = '';
   bool _isDeveloper = false;
+  String get _userId => widget.user['id']?.toString() ?? '0';
 
   // 1. Clusters & Hierarchy Selection
   List<dynamic> _clusters = [];
@@ -42,7 +44,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   late DateTimeRange _dateRange;
   String _activePreset = '7days';
 
-  // 3. Operational Records & Metrics
+  // 3. Operational Records, Caching & Sync State
   List<dynamic> _records = [];
   Map<String, dynamic> _metrics = {
     'totalOperations': 0,
@@ -52,12 +54,21 @@ class _ReportsScreenState extends State<ReportsScreen> {
     'currentlyOpenCount': 0,
     'reportingGatesCount': 0,
   };
+  ReportsCursor? _cursor;
+  String? _cachedEtag;
   bool _isLoadingRecords = true;
+  String _syncStatus = 'synced'; // 'synced' | 'updating' | 'outdated'
+  bool _isRevalidating = false;
+  bool _isSyncing = false;
+  bool _isScopeVerified = false;
+  Timer? _pollingTimer;
+  DateTime? _lastSyncTime;
+  AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
 
   // 4. Filters & Sorting
   String _filterStatus = 'ALL';
   String _filterShift = 'ALL';
-  String _sortBy = 'openedAt';
+  final String _sortBy = 'openedAt';
   String _sortOrder = 'desc';
   final TextEditingController _searchCtrl = TextEditingController();
   String _searchQuery = '';
@@ -81,6 +92,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _isDeveloper = widget.user['role'] == 'Developer';
     final now = DateTime.now();
     _dateRange = DateTimeRange(
@@ -88,12 +100,72 @@ class _ReportsScreenState extends State<ReportsScreen> {
       end: now,
     );
     _loadTokenAndFetch();
+    _startPollingTimer();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _pollingTimer?.cancel();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appLifecycleState = state;
+    if (state == AppLifecycleState.resumed) {
+      // Catch-up synchronization when returning to app
+      if (_shouldPoll()) {
+        final lastSync = _lastSyncTime;
+        if (lastSync == null || DateTime.now().difference(lastSync).inSeconds >= 45) {
+          _syncIncrementalChanges();
+        }
+      }
+    }
+  }
+
+  ReportFilterParams get _currentFilterParams => ReportFilterParams(
+        scopeGroupIds: _selectedClusterIds.toList(),
+        gateIds: _selectedGateIds.toList(),
+        startDate: _formatDate(_dateRange.start),
+        endDate: _formatDate(_dateRange.end),
+        status: _filterStatus,
+        shift: _filterShift,
+        search: _searchQuery,
+        sortBy: _sortBy,
+        sortOrder: _sortOrder,
+      );
+
+  void _startPollingTimer() {
+    _pollingTimer?.cancel();
+    _pollingTimer = Timer.periodic(const Duration(seconds: 45), (_) {
+      if (_shouldPoll()) {
+        _syncIncrementalChanges();
+      }
+    });
+  }
+
+  bool _shouldPoll() {
+    if (!mounted) return false;
+    if (_appLifecycleState != AppLifecycleState.resumed) return false;
+    final isCurrent = ModalRoute.of(context)?.isCurrent ?? true;
+    if (!isCurrent) return false;
+
+    final now = DateTime.now();
+    final todayStr = _formatDate(now);
+    final startStr = _formatDate(_dateRange.start);
+    final endStr = _formatDate(_dateRange.end);
+
+    // Condition 1: Date range includes today
+    final includesToday = endStr.compareTo(todayStr) >= 0 && startStr.compareTo(todayStr) <= 0;
+
+    // Condition 2: Historical window has unclosed events (even if hidden by CLOSED filter)
+    final hasUnclosed = _cursor?.hasUnclosedEvents == true ||
+        (_metrics['currentlyOpenCount'] is int && (_metrics['currentlyOpenCount'] as int) > 0) ||
+        _records.any((r) => r['status'] == 'OPEN');
+
+    return includesToday || hasUnclosed;
   }
 
   Future<void> _loadTokenAndFetch() async {
@@ -136,46 +208,186 @@ class _ReportsScreenState extends State<ReportsScreen> {
     _fetchRecords();
   }
 
-  // 1. Fetch Clusters Tree
-  Future<void> _fetchClusters() async {
-    setState(() => _isLoadingClusters = true);
+  // 1. Fetch Clusters Tree with Online Authorization Scope Verification
+  Future<void> _fetchClusters({bool forceReload = false}) async {
+    final cachedHier = await ReportsCacheService.instance.getCachedHierarchy(_userId);
+
+    // Online verification: validate current authorization / scope revision before displaying cached data
     try {
-      final res = await http.get(Uri.parse('$baseUrl/reports/clusters'), headers: _headers);
+      final headers = Map<String, String>.from(_headers);
+      if (cachedHier?.etag != null && !forceReload) {
+        headers['If-None-Match'] = cachedHier!.etag!;
+      }
+
+      final res = await http
+          .get(Uri.parse('$baseUrl/reports/clusters'), headers: headers)
+          .timeout(const Duration(seconds: 4));
+
+      // Handle HTTP 304 Not Modified: scope confirmed unchanged!
+      if (res.statusCode == 304 && cachedHier != null) {
+        await ReportsCacheService.instance.touchHierarchyVerified(_userId);
+        if (mounted) {
+          setState(() {
+            _clusters = cachedHier.clusters;
+            _isLoadingClusters = false;
+            _isScopeVerified = true;
+            if (_selectedClusterIds.isEmpty) {
+              _selectedClusterIds.clear();
+              _selectedGateIds.clear();
+              for (final c in cachedHier.clusters) {
+                if (c['id'] != null) _selectedClusterIds.add(c['id'] as int);
+                final gates = (c['gates'] as List?) ?? [];
+                for (final g in gates) {
+                  if (g['id'] != null) _selectedGateIds.add(g['id'] as int);
+                }
+              }
+            }
+          });
+          _fetchRecords();
+        }
+        return;
+      }
+
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         final list = (data['clusters'] as List?) ?? [];
+        final etag = res.headers['etag'] ?? data['directoryRevisionToken'] as String?;
+
+        // Permission Revocation Security Check:
+        // If cached hierarchy existed and etag differs or accessible gates shrunk:
+        if (cachedHier != null) {
+          final prevGateIds = <int>{};
+          for (final c in cachedHier.clusters) {
+            for (final g in (c['gates'] as List? ?? [])) {
+              if (g['id'] != null) prevGateIds.add(g['id'] as int);
+            }
+          }
+          final newGateIds = <int>{};
+          for (final c in list) {
+            for (final g in (c['gates'] as List? ?? [])) {
+              if (g['id'] != null) newGateIds.add(g['id'] as int);
+            }
+          }
+          final hasRevocations = prevGateIds.any((id) => !newGateIds.contains(id));
+          if (hasRevocations || etag != cachedHier.etag) {
+            debugPrint('[ReportsScreen] Scope changed or gate access revoked. Purging cached reports for user.');
+            await ReportsCacheService.instance.clearUserCache(_userId);
+          }
+        }
+
+        await ReportsCacheService.instance.saveHierarchy(_userId, list, data['isDeveloper'] == true, etag);
+
         if (mounted) {
           setState(() {
             _clusters = list;
-            // Select all by default
+            _isLoadingClusters = false;
+            _isScopeVerified = true;
+            final allClusterIds = <int>[];
+            final allGateIds = <int>[];
+            for (final c in list) {
+              if (c['id'] != null) allClusterIds.add(c['id'] as int);
+              final gates = (c['gates'] as List?) ?? [];
+              for (final g in gates) {
+                if (g['id'] != null) allGateIds.add(g['id'] as int);
+              }
+            }
+
+            if (_selectedClusterIds.isEmpty) {
+              _selectedClusterIds.clear();
+              _selectedClusterIds.addAll(allClusterIds);
+              _selectedGateIds.clear();
+              _selectedGateIds.addAll(allGateIds);
+            } else {
+              _selectedClusterIds.retainWhere((id) => allClusterIds.contains(id));
+              _selectedGateIds.retainWhere((id) => allGateIds.contains(id));
+              if (_selectedGateIds.isEmpty) {
+                _selectedClusterIds.addAll(allClusterIds);
+                _selectedGateIds.addAll(allGateIds);
+              }
+            }
+          });
+          _fetchRecords(forceReload: true);
+        }
+        return;
+      } else if (res.statusCode == 403 && mounted) {
+        AppFeedback.showError(context, 'No clusters are assigned to your user account.');
+      }
+    } catch (e) {
+      debugPrint('[ReportsScreen] Scope verification / hierarchy error (offline fallback): $e');
+      // Graceful offline fallback: if device is offline, allow cached hierarchy
+      if (cachedHier != null && mounted) {
+        setState(() {
+          _clusters = cachedHier.clusters;
+          _isLoadingClusters = false;
+          _isScopeVerified = true;
+          _syncStatus = 'outdated';
+          if (_selectedClusterIds.isEmpty) {
             _selectedClusterIds.clear();
             _selectedGateIds.clear();
-            for (final c in list) {
+            for (final c in cachedHier.clusters) {
               if (c['id'] != null) _selectedClusterIds.add(c['id'] as int);
               final gates = (c['gates'] as List?) ?? [];
               for (final g in gates) {
                 if (g['id'] != null) _selectedGateIds.add(g['id'] as int);
               }
             }
-          });
-          _fetchRecords();
-        }
-      } else if (res.statusCode == 403 && mounted) {
-        AppFeedback.showError(context, 'No clusters are assigned to your user account.');
+          }
+        });
+        _fetchRecords();
       }
-    } catch (_) {
     } finally {
       if (mounted) setState(() => _isLoadingClusters = false);
     }
   }
 
-  // 2. Fetch Operational Records
-  Future<void> _fetchRecords() async {
+  // 2. Fetch Operational Records with Two-Level SWR & HTTP 304 Handling
+  Future<void> _fetchRecords({bool forceReload = false}) async {
     if (_selectedGateIds.isEmpty) {
-      if (mounted) setState(() { _records = []; _isLoadingRecords = false; });
+      if (mounted) {
+        setState(() {
+          _records = [];
+          _isLoadingRecords = false;
+          _syncStatus = 'synced';
+        });
+      }
       return;
     }
-    setState(() => _isLoadingRecords = true);
+
+    final params = _currentFilterParams;
+
+    // Security check: When online, do not render cached records until scope is confirmed
+    if (!_isScopeVerified) {
+      if (mounted) setState(() => _isLoadingRecords = true);
+      return;
+    }
+
+    // A. Check Two-Level Cache (Level 1 Memory first, Level 2 Persistent Storage)
+    final cached = await ReportsCacheService.instance.getCachedReport(_userId, params);
+    if (cached != null) {
+      if (mounted) {
+        setState(() {
+          _records = cached.records.map((r) => r.toJson()).toList();
+          _metrics = cached.authoritativeMetrics?.toJson() ?? _metrics;
+          _cursor = cached.cursor;
+          _cachedEtag = cached.etag;
+          _isLoadingRecords = false;
+        });
+      }
+
+      // If cache is fresh and not force-reloading, skip network call entirely!
+      if (cached.isFresh && !forceReload) {
+        if (mounted) setState(() => _syncStatus = 'synced');
+        return;
+      }
+    } else {
+      if (mounted) setState(() => _isLoadingRecords = true);
+    }
+
+    // B. Background Revalidation (Conditional HTTP 304 via ETag)
+    if (_isRevalidating) return;
+    _isRevalidating = true;
+    if (mounted) setState(() => _syncStatus = 'updating');
+
     try {
       final queryParams = <String, String>{
         'startDate': _formatDate(_dateRange.start),
@@ -201,20 +413,155 @@ class _ReportsScreenState extends State<ReportsScreen> {
       if (_searchQuery.trim().isNotEmpty) queryParams['search'] = _searchQuery.trim();
 
       final uri = Uri.parse('$baseUrl/reports/records').replace(queryParameters: queryParams);
-      final res = await http.get(uri, headers: _headers);
+      final headers = Map<String, String>.from(_headers);
+      final etagToSend = cached?.etag ?? _cachedEtag;
+      if (etagToSend != null && !forceReload) {
+        headers['If-None-Match'] = etagToSend;
+      }
 
+      final res = await http.get(uri, headers: headers);
+
+      // Handle HTTP 304 Not Modified: Cache is authoritative!
+      if (res.statusCode == 304 && cached != null) {
+        await ReportsCacheService.instance.touchVerified(_userId, params, newEtag: res.headers['etag']);
+        _lastSyncTime = DateTime.now();
+        if (mounted) setState(() => _syncStatus = 'synced');
+        return;
+      }
+
+      // Handle HTTP 200 OK: Cache Replacement
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
+        final rawRecords = (data['records'] as List?) ?? [];
+        final parsedRecords = rawRecords.map((r) => OperationalRecord.fromJson(r as Map<String, dynamic>)).toList();
+        final rawMetrics = data['metrics'] != null ? AuthoritativeReportMetrics.fromJson(data['metrics'] as Map<String, dynamic>) : null;
+        final rawCursor = data['cursor'] != null
+            ? ReportsCursor.fromJson(data['cursor'] as Map<String, dynamic>)
+            : ReportsCursor(eventCursorTime: '', eventCursorId: 0, tombstoneCursorId: '0', gateRevisions: {}, serverTime: '');
+        final etag = res.headers['etag'];
+
+        await ReportsCacheService.instance.saveReport(
+          _userId,
+          params,
+          records: parsedRecords,
+          metrics: rawMetrics,
+          etag: etag,
+          cursor: rawCursor,
+        );
+
+        _lastSyncTime = DateTime.now();
         if (mounted) {
           setState(() {
-            _records = (data['records'] as List?) ?? [];
-            _metrics = (data['metrics'] as Map<String, dynamic>?) ?? _metrics;
+            _records = rawRecords;
+            _metrics = rawMetrics?.toJson() ?? _metrics;
+            _cursor = rawCursor;
+            _cachedEtag = etag;
+            _syncStatus = 'synced';
           });
         }
+      } else {
+        if (mounted && cached != null) setState(() => _syncStatus = 'outdated');
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[ReportsScreen] Network fetch error: $e');
+      if (mounted) setState(() => _syncStatus = 'outdated');
     } finally {
+      _isRevalidating = false;
       if (mounted) setState(() => _isLoadingRecords = false);
+    }
+  }
+
+  // 2.5. Transactionally Serialized 45-Second Incremental Polling Engine
+  Future<void> _syncIncrementalChanges() async {
+    if (_isSyncing || _isRevalidating) return;
+    if (_cursor == null || _cursor!.gateRevisions.isEmpty) return;
+
+    _isSyncing = true;
+    if (mounted) setState(() => _syncStatus = 'updating');
+
+    try {
+      final params = _currentFilterParams;
+      var currentGateRevisions = Map<String, String>.from(_cursor!.gateRevisions);
+      var keepDraining = true;
+      var drainLoops = 0;
+      const maxDrainLoops = 20;
+
+      while (keepDraining && drainLoops < maxDrainLoops) {
+        drainLoops++;
+        final queryParams = <String, String>{
+          'startDate': _formatDate(_dateRange.start),
+          'endDate': _formatDate(_dateRange.end),
+          'gateRevisions': json.encode(currentGateRevisions),
+        };
+
+        if (_selectedClusterIds.isNotEmpty) {
+          queryParams['scopeGroupIds'] = _selectedClusterIds.join(',');
+        } else if (_isDeveloper) {
+          queryParams['scopeGroupIds'] = 'all';
+        }
+
+        if (_selectedGateIds.isNotEmpty) {
+          queryParams['gateIds'] = _selectedGateIds.join(',');
+        } else if (_isDeveloper) {
+          queryParams['gateIds'] = 'all';
+        }
+
+        if (_filterStatus != 'ALL') queryParams['status'] = _filterStatus;
+        if (_filterShift != 'ALL') queryParams['shift'] = _filterShift;
+        if (_searchQuery.trim().isNotEmpty) queryParams['search'] = _searchQuery.trim();
+
+        final uri = Uri.parse('$baseUrl/reports/records/changes').replace(queryParameters: queryParams);
+        final res = await http.get(uri, headers: _headers);
+
+        if (res.statusCode != 200) {
+          if (mounted) setState(() => _syncStatus = 'outdated');
+          break;
+        }
+
+        final data = json.decode(res.body);
+        final payload = IncrementalChangesPayload.fromJson(data);
+
+        // 1. Full Synchronization Recovery trigger
+        if (payload.requiresFullSync) {
+          debugPrint('[ReportsScreen] Server requested full re-sync: ${payload.resyncReason}');
+          keepDraining = false;
+          if (payload.resyncReason == 'GATE_REVOKED') {
+            await ReportsCacheService.instance.clearUserCache(_userId);
+            await _fetchClusters(forceReload: true);
+          }
+          await _fetchRecords(forceReload: true);
+          break;
+        }
+
+        // 2. Process Delta Mutations
+        final updated = await ReportsCacheService.instance.updateIncrementalChanges(_userId, params, payload);
+        if (updated != null) {
+          if (mounted) {
+            setState(() {
+              _records = updated.records.map((r) => r.toJson()).toList();
+              _metrics = updated.authoritativeMetrics?.toJson() ?? _metrics;
+              _cursor = updated.cursor;
+              currentGateRevisions = Map<String, String>.from(updated.cursor.gateRevisions);
+            });
+          }
+        }
+
+        keepDraining = payload.hasMoreEvents;
+      }
+
+      if (keepDraining) {
+        // Backlog exceeded 20 batches; refresh with full atomic snapshot
+        await _fetchRecords(forceReload: true);
+        return;
+      }
+
+      _lastSyncTime = DateTime.now();
+      if (mounted) setState(() => _syncStatus = 'synced');
+    } catch (e) {
+      debugPrint('[ReportsScreen] Incremental polling error: $e');
+      if (mounted) setState(() => _syncStatus = 'outdated');
+    } finally {
+      _isSyncing = false;
     }
   }
 
@@ -763,10 +1110,11 @@ class _ReportsScreenState extends State<ReportsScreen> {
         foregroundColor: AppColors.primary,
         elevation: 0.5,
         actions: [
+          _buildSyncStatusBadge(),
           IconButton(
             icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh',
-            onPressed: _fetchRecords,
+            tooltip: 'Force Refresh',
+            onPressed: () => _fetchRecords(forceReload: true),
           ),
           IconButton(
             icon: const Icon(Icons.download, color: Color(0xFF10B981)),
@@ -778,10 +1126,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
       body: _isLoadingClusters
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
-              onRefresh: _fetchRecords,
+              onRefresh: () => _fetchRecords(forceReload: true),
               child: ListView(
                 padding: const EdgeInsets.all(12),
                 children: [
+                  _buildKpiSection(),
+
                   // 1. Scope Groups & Gates Tree Trigger Card
                   InkWell(
                     onTap: _showHierarchyTreeSheet,
@@ -881,58 +1231,92 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   ),
                   const SizedBox(height: 10),
 
-                  // 3. Search and Status Filters
+                  // 3. Search Input
+                  Container(
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.grey.shade200),
+                    ),
+                    child: TextField(
+                      controller: _searchCtrl,
+                      decoration: const InputDecoration(
+                        hintText: 'Search LC#, location...',
+                        hintStyle: TextStyle(fontSize: 12.5),
+                        prefixIcon: Icon(Icons.search, size: 18),
+                        border: InputBorder.none,
+                        contentPadding: EdgeInsets.symmetric(vertical: 10),
+                      ),
+                      onSubmitted: (val) {
+                        setState(() => _searchQuery = val);
+                        _fetchRecords();
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+
+                  // 4. Status and Operational Shift Filter Row
                   Row(
                     children: [
+                      // Status Filter Dropdown
                       Expanded(
                         child: Container(
                           height: 42,
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
                           decoration: BoxDecoration(
                             color: Colors.white,
                             borderRadius: BorderRadius.circular(10),
                             border: Border.all(color: Colors.grey.shade200),
                           ),
-                          child: TextField(
-                            controller: _searchCtrl,
-                            decoration: const InputDecoration(
-                              hintText: 'Search LC#, location...',
-                              hintStyle: TextStyle(fontSize: 12.5),
-                              prefixIcon: Icon(Icons.search, size: 18),
-                              border: InputBorder.none,
-                              contentPadding: EdgeInsets.symmetric(vertical: 10),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: _filterStatus,
+                              isExpanded: true,
+                              items: const [
+                                DropdownMenuItem(value: 'ALL', child: Text('All Status', style: TextStyle(fontSize: 12))),
+                                DropdownMenuItem(value: 'CLOSED', child: Text('Closed', style: TextStyle(fontSize: 12))),
+                                DropdownMenuItem(value: 'EXTENDED_DELAY', child: Text('Delays (>15m)', style: TextStyle(fontSize: 12))),
+                                DropdownMenuItem(value: 'OPEN', child: Text('Open', style: TextStyle(fontSize: 12))),
+                              ],
+                              onChanged: (val) {
+                                if (val != null) {
+                                  setState(() => _filterStatus = val);
+                                  _fetchRecords();
+                                }
+                              },
                             ),
-                            onSubmitted: (val) {
-                              setState(() => _searchQuery = val);
-                              _fetchRecords();
-                            },
                           ),
                         ),
                       ),
                       const SizedBox(width: 8),
-                      // Status Filter Dropdown
-                      Container(
-                        height: 42,
-                        padding: const EdgeInsets.symmetric(horizontal: 10),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: Colors.grey.shade200),
-                        ),
-                        child: DropdownButtonHideUnderline(
-                          child: DropdownButton<String>(
-                            value: _filterStatus,
-                            items: const [
-                              DropdownMenuItem(value: 'ALL', child: Text('All Status', style: TextStyle(fontSize: 12))),
-                              DropdownMenuItem(value: 'CLOSED', child: Text('Closed', style: TextStyle(fontSize: 12))),
-                              DropdownMenuItem(value: 'EXTENDED_DELAY', child: Text('Delays (>15m)', style: TextStyle(fontSize: 12))),
-                              DropdownMenuItem(value: 'OPEN', child: Text('Open', style: TextStyle(fontSize: 12))),
-                            ],
-                            onChanged: (val) {
-                              if (val != null) {
-                                setState(() => _filterStatus = val);
-                                _fetchRecords();
-                              }
-                            },
+                      // Shift Filter Dropdown
+                      Expanded(
+                        child: Container(
+                          height: 42,
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: Colors.grey.shade200),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: _filterShift,
+                              isExpanded: true,
+                              items: const [
+                                DropdownMenuItem(value: 'ALL', child: Text('All Shifts', style: TextStyle(fontSize: 12))),
+                                DropdownMenuItem(value: 'MORNING', child: Text('Morning (06-14)', style: TextStyle(fontSize: 12))),
+                                DropdownMenuItem(value: 'EVENING', child: Text('Evening (14-22)', style: TextStyle(fontSize: 12))),
+                                DropdownMenuItem(value: 'NIGHT', child: Text('Night (22-06)', style: TextStyle(fontSize: 12))),
+                              ],
+                              onChanged: (val) {
+                                if (val != null) {
+                                  setState(() => _filterShift = val);
+                                  _fetchRecords();
+                                }
+                              },
+                            ),
                           ),
                         ),
                       ),
@@ -1046,6 +1430,123 @@ class _ReportsScreenState extends State<ReportsScreen> {
               Text('Closed: $closedAtStr', style: const TextStyle(fontSize: 11.5, fontFamily: 'monospace')),
               Text('${rec['durationFormatted'] ?? '-'}', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSyncStatusBadge() {
+    Color bg = const Color(0xFFF1F5F9);
+    Color fg = const Color(0xFF475569);
+    Color dotColor = Colors.grey;
+    String label = 'Offline';
+
+    if (_syncStatus == 'updating' || _isRevalidating || _isSyncing) {
+      bg = const Color(0xFFEFF6FF);
+      fg = const Color(0xFF1D4ED8);
+      dotColor = const Color(0xFF3B82F6);
+      label = 'Syncing...';
+    } else if (_syncStatus == 'synced') {
+      bg = const Color(0xFFECFDF5);
+      fg = const Color(0xFF047857);
+      dotColor = const Color(0xFF10B981);
+      label = 'Live';
+    } else if (_syncStatus == 'outdated') {
+      bg = const Color(0xFFFEF3C7);
+      fg = const Color(0xFFB45309);
+      dotColor = const Color(0xFFF59E0B);
+      label = 'Cached';
+    }
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 14, horizontal: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: dotColor.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 4),
+          Text(label, style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: fg)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildKpiSection() {
+    final totalOps = _metrics['totalOperations'] ?? _records.length;
+    final totalDuration = _metrics['totalDurationFormatted'] ?? '0s';
+    final avgDuration = _metrics['avgDurationFormatted'] ?? '0s';
+    final extendedDelays = _metrics['extendedDelaysCount'] ?? 0;
+    final currentlyOpen = _metrics['currentlyOpenCount'] ?? 0;
+    final reportingGates = _metrics['reportingGatesCount'] ?? 0;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(child: _buildKpiCard('Total Ops', '$totalOps', Icons.alt_route_rounded, const Color(0xFF3B82F6))),
+              const SizedBox(width: 8),
+              Expanded(child: _buildKpiCard('Total Duration', '$totalDuration', Icons.timer_outlined, const Color(0xFF8B5CF6))),
+              const SizedBox(width: 8),
+              Expanded(child: _buildKpiCard('Avg Duration', '$avgDuration', Icons.speed_rounded, const Color(0xFF06B6D4))),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(child: _buildKpiCard('Delays (>15m)', '$extendedDelays', Icons.warning_amber_rounded, const Color(0xFFF59E0B))),
+              const SizedBox(width: 8),
+              Expanded(child: _buildKpiCard('Currently Open', '$currentlyOpen', Icons.lock_open_rounded, const Color(0xFFEF4444))),
+              const SizedBox(width: 8),
+              Expanded(child: _buildKpiCard('Active Gates', '$reportingGates', Icons.grid_view_rounded, const Color(0xFF10B981))),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildKpiCard(String label, String value, IconData icon, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.grey.shade600),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Icon(icon, size: 13, color: color),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: color),
+            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),

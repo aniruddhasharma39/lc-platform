@@ -17,6 +17,7 @@ import 'reports/reports_screen.dart';
 import 'cluster/full_screen_map_screen.dart';
 import '../services/home_cache_service.dart';
 import '../services/lc_gates_cache_service.dart';
+import '../services/reports_cache_service.dart';
 import '../utils/app_feedback.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -203,6 +204,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _notifsTimer?.cancel();
         HomeCacheService.instance.clearUserCache(_userId);
         LCGatesCacheService.instance.hardClear(_userId);
+        ReportsCacheService.instance.clearUserCache(_userId);
         widget.onLogout();
       }
     } catch (_) {}
@@ -752,6 +754,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _notifsTimer?.cancel();
         HomeCacheService.instance.clearUserCache(_userId);
         LCGatesCacheService.instance.hardClear(_userId);
+        ReportsCacheService.instance.clearUserCache(_userId);
         widget.onLogout();
         return;
       }
@@ -1119,6 +1122,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               onTap: () {
                 HomeCacheService.instance.clearUserCache(_userId);
                 LCGatesCacheService.instance.hardClear(_userId);
+                ReportsCacheService.instance.clearUserCache(_userId);
                 widget.onLogout();
               },
             ),

@@ -67,11 +67,12 @@ export async function getDirectoryRevisionToken(
 
     const settingMap = new Map(settings.map((s) => [s.key, s.value]));
     const globalRev = settingMap.get('DIRECTORY_GLOBAL_REVISION') || '1';
-    const scopeRevs = assignedScopeGroupIds
-      .map((id) => settingMap.get(`DIRECTORY_SCOPE_REVISION_${id}`) || '0')
-      .join('-');
+    const sortedScopes = [...assignedScopeGroupIds].sort((a, b) => a - b);
+    const scopeRevs = sortedScopes
+      .map((id) => `${id}:${settingMap.get(`DIRECTORY_SCOPE_REVISION_${id}`) || '0'}`)
+      .join(';');
 
-    return `W/"rev-u${userId}-g${globalRev}-s${scopeRevs}"`;
+    return `W/"rev-u${userId}-dev${isDeveloper ? 1 : 0}-g${globalRev}-s[${scopeRevs}]"`;
   } catch (error) {
     console.error('[RevisionManager] Error reading revision token, fallback generated:', error);
     return `W/"rev-u${userId}-${Date.now()}"`;

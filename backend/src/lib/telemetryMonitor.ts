@@ -1,7 +1,7 @@
 import { prisma } from './prisma';
 import { checkAndDispatchGateStateAlert } from './gateAlertSms';
 import { broadcastGateTelemetry } from './telemetryWs';
-import { bumpReportRevisionInTx } from './reportRevisionManager';
+import { bumpReportRevisionInTx, recordEventChangeInTx } from './reportRevisionManager';
 
 let lastProcessedId = 0;
 const lastKnownState = new Map<string, 'OPEN' | 'CLOSED'>();
@@ -103,7 +103,7 @@ export async function recordGateTelemetryTransition(params: {
               remarks: `State transition: OPEN detected by IoT Telemetry`
             }
           });
-          await bumpReportRevisionInTx(tx, targetGateId);
+          await recordEventChangeInTx(tx, newEvent, 'INSERT');
           console.log(`📊 [REPORTS] Logged OPEN event #${newEvent.id} for Gate #${targetGateId} (${thingName})`);
           return newEvent;
         });
@@ -135,7 +135,7 @@ export async function recordGateTelemetryTransition(params: {
               remarks: openEvent.remarks ? `${openEvent.remarks} | Closed via IoT Telemetry` : `Closed via IoT Telemetry`
             }
           });
-          await bumpReportRevisionInTx(tx, targetGateId);
+          await recordEventChangeInTx(tx, updated, 'UPDATE');
           console.log(`📊 [REPORTS] Updated CLOSED event #${updated.id} for Gate #${targetGateId} (${thingName}), duration: ${durationSeconds}s`);
           return updated;
         });
@@ -155,7 +155,7 @@ export async function recordGateTelemetryTransition(params: {
               remarks: `Direct CLOSED state detected via IoT Telemetry`
             }
           });
-          await bumpReportRevisionInTx(tx, targetGateId);
+          await recordEventChangeInTx(tx, newEvent, 'INSERT');
           console.log(`📊 [REPORTS] Created completed CLOSED event #${newEvent.id} for Gate #${targetGateId}`);
           return newEvent;
         });
@@ -232,7 +232,7 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
                   remarks: `State transition: OPEN detected by IoT Telemetry`
                 }
               });
-              await bumpReportRevisionInTx(tx, dev.gateId!);
+              await recordEventChangeInTx(tx, ev, 'INSERT');
               currentOpenEventId = ev.id;
             });
             openTimestamp = timestamp;
@@ -243,7 +243,7 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
               const finalStatus = durationSeconds > 900 ? 'EXTENDED_DELAY' : 'CLOSED';
 
               await prisma.$transaction(async (tx) => {
-                await tx.lCGateEvent.update({
+                const updated = await tx.lCGateEvent.update({
                   where: { id: currentOpenEventId! },
                   data: {
                     closedAt: timestamp,
@@ -253,7 +253,7 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
                     remarks: `State transition: CLOSED detected by IoT Telemetry`
                   }
                 });
-                await bumpReportRevisionInTx(tx, dev.gateId!);
+                await recordEventChangeInTx(tx, updated, 'UPDATE');
               });
               currentOpenEventId = null;
               openTimestamp = null;
@@ -261,7 +261,7 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
               // Started in closed state or cold start
               const estOpen = new Date(timestamp.getTime() - 180000);
               await prisma.$transaction(async (tx) => {
-                await tx.lCGateEvent.create({
+                const ev = await tx.lCGateEvent.create({
                   data: {
                     gateId: dev.gateId!,
                     openedAt: estOpen,
@@ -273,7 +273,7 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
                     remarks: `Direct CLOSED state detected via IoT Telemetry`
                   }
                 });
-                await bumpReportRevisionInTx(tx, dev.gateId!);
+                await recordEventChangeInTx(tx, ev, 'INSERT');
               });
               totalSynced++;
             }

@@ -12,6 +12,7 @@ import {
   deleteOperationalEvent,
   deleteOperationalEvents,
   calculateAuthoritativeMetrics,
+  recordEventChangeInTx,
 } from '../src/lib/reportRevisionManager';
 
 /**
@@ -466,6 +467,68 @@ async function runPermanentRegressionTests() {
     await prisma.lCGateEvent.deleteMany({ where: { gateId: { in: [delayGate.id, consistGate.id] } } });
     await prisma.lCGateEventTombstone.deleteMany({ where: { gateId: { in: [delayGate.id, consistGate.id] } } });
     await prisma.lCGate.deleteMany({ where: { id: { in: [delayGate.id, consistGate.id] } } });
+
+    console.log('\n--- 13. Transactionally Serialized ChangeLog Stream ---');
+    const nowMs = Date.now();
+    const clGate = await prisma.lCGate.create({
+      data: {
+        name: 'ChangeLog Sync Test Gate',
+        lcNumber: `LC-CL-${nowMs}`,
+        locationName: 'CL Test Location',
+        zone: 'Central Railway',
+        division: 'Mumbai',
+      },
+    });
+
+    const initClRes = await makeRequest('GET', `/api/v1/reports/records?gateIds=${clGate.id}`);
+    assert(initClRes.body.cursor.gateRevisions != null, 'GET /records returns point-in-time gateRevisions');
+    const knownRevs = initClRes.body.cursor.gateRevisions;
+
+    // Mutate gate with atomic ChangeLog recording
+    const clEv1 = await prisma.$transaction(async (tx) => {
+      const created = await tx.lCGateEvent.create({
+        data: { gateId: clGate.id, openedAt: new Date(), status: 'OPEN' },
+      });
+      await recordEventChangeInTx(tx, created, 'INSERT');
+      return created;
+    });
+
+    const clEv2 = await prisma.$transaction(async (tx) => {
+      const created = await tx.lCGateEvent.create({
+        data: { gateId: clGate.id, openedAt: new Date(), status: 'CLOSED', durationSeconds: 45 },
+      });
+      await recordEventChangeInTx(tx, created, 'INSERT');
+      return created;
+    });
+
+    // Query changes using gateRevisions cursor
+    const changesRes = await makeRequest(
+      'GET',
+      `/api/v1/reports/records/changes?gateIds=${clGate.id}&gateRevisions=${encodeURIComponent(JSON.stringify(knownRevs))}`
+    );
+    assert(changesRes.body.events.length === 2, 'ChangeLog stream returns exactly 2 committed events');
+    assert(changesRes.body.events[0].id === clEv1.id, 'Events delivered in strict transaction revision order');
+    assert(changesRes.body.gateRevisions[clGate.id.toString()] !== knownRevs[clGate.id.toString()], 'gateRevisions advanced to newest revision');
+
+    const nextRevs = changesRes.body.gateRevisions;
+
+    // Test Delete operation via ChangeLog
+    await prisma.$transaction(async (tx) => {
+      await recordEventChangeInTx(tx, clEv1, 'DELETE');
+      await tx.lCGateEvent.delete({ where: { id: clEv1.id } });
+    });
+
+    const deleteChangesRes = await makeRequest(
+      'GET',
+      `/api/v1/reports/records/changes?gateIds=${clGate.id}&gateRevisions=${encodeURIComponent(JSON.stringify(nextRevs))}`
+    );
+    assert(deleteChangesRes.body.deletions.includes(clEv1.id), 'Delete operation delivered in change log deletions stream');
+    assert(deleteChangesRes.body.events.length === 0, 'No false new events in deletion sync batch');
+
+    // Clean up ChangeLog and Gate
+    await prisma.lCGateEventChangeLog.deleteMany({ where: { gateId: clGate.id } });
+    await prisma.lCGateEvent.deleteMany({ where: { gateId: clGate.id } });
+    await prisma.lCGate.delete({ where: { id: clGate.id } });
 
     console.log('\n========================================================================');
     console.log(`🎉 ALL ${passed}/${passed + failed} REGRESSION TESTS PASSED!`);
