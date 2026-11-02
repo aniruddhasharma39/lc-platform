@@ -200,6 +200,13 @@ exports.handler = async (event, context) => {
       (event.raw && event.raw.thingName);
 
     if (thingToDelete) {
+      if (!thingToDelete.toUpperCase().startsWith('LC-')) {
+        console.log('[IGNORING FOREIGN THING DELETION] thingName="' + thingToDelete + '" is not an LC Platform device');
+        return {
+          statusCode: 200,
+          body: JSON.stringify({ message: 'Ignored foreign device deletion: ' + thingToDelete }),
+        };
+      }
       console.log(`[DELETING DEVICE FROM RDS VIA AWS IOT LIFECYCLE EVENT] thingName=${thingToDelete}`);
       const dbPool = getDbPool();
       const client = await dbPool.connect();
@@ -261,6 +268,14 @@ exports.handler = async (event, context) => {
     return {
       statusCode: 400,
       body: JSON.stringify({ error: 'Missing thingName in event payload' }),
+    };
+  }
+
+  if (!thingName.toUpperCase().startsWith('LC-')) {
+    console.log('[IGNORING FOREIGN THING REGISTRATION] thingName="' + thingName + '" does not belong to LC Platform (must start with "LC-")');
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ message: 'Ignored foreign device: ' + thingName }),
     };
   }
 
