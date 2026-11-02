@@ -273,7 +273,8 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
 
       if (res.ok) {
         const data = await res.json();
-        setDevices(data.devices || []);
+        const validDevices = (data.devices || []).filter((d: any) => d.thingName?.toUpperCase().startsWith('LC-'));
+        setDevices(validDevices);
       } else {
         const err = await res.json();
         if (!silent) toastError(err.error || 'Failed to load device registry', 'Device Registry');
@@ -481,6 +482,9 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
   // Filter devices in-memory for registry table
   const filteredDevices = useMemo(() => {
     return devices.filter((dev) => {
+      // Defensive client-side check: Only display devices conforming to the LC- naming standard
+      if (!dev.thingName?.toUpperCase().startsWith('LC-')) return false;
+
       const isOnline = dev.computedStatus === 'ONLINE';
       if (statusFilter === 'ONLINE' && !isOnline) return false;
       if (statusFilter === 'OFFLINE' && isOnline) return false;

@@ -11,7 +11,7 @@ const router = Router();
 
 // Validation schema for creating or upserting a registered device
 const registerDeviceSchema = z.object({
-  thingName: z.string().min(1, 'Thing name is required'),
+  thingName: z.string().min(1, 'Thing name is required').regex(/^LC-/i, 'Thing name must follow LC Gate standards and start with "LC-" (e.g. LC-M-001, LC-B-001)'),
   thingArn: z.string().optional().nullable(),
   thingTypeName: z.string().optional().nullable(),
   deviceType: z.string().default('MASTER'),
@@ -131,16 +131,47 @@ async function resolveGateAssociations(serialNumber?: string | null, gateId?: nu
 }
 
 /**
+ * Scopes device queries to LC Gate Platform devices only (starts with "LC-").
+ * If the param is not numeric and does not start with "LC-", returns null (not found).
+ */
+function buildLcDeviceWhere(param: string) {
+  if (!param) return null;
+  const isNumeric = /^\d+$/.test(param);
+  if (isNumeric) {
+    return {
+      id: parseInt(param, 10),
+      thingName: { startsWith: 'LC-', mode: 'insensitive' as const },
+    };
+  }
+  if (!param.toUpperCase().startsWith('LC-')) {
+    return null;
+  }
+  return {
+    thingName: param,
+  };
+}
+
+/**
  * GET /api/v1/devices/stats/summary
  * Device registry metrics and totals
  */
 router.get('/stats/summary', authenticate, async (_req, res, next) => {
   try {
+    const baseWhere: any = {
+      thingName: { startsWith: 'LC-', mode: 'insensitive' },
+      deviceType: { not: 'SLAVE' },
+    };
+
     const [total, active, provisioned, masters] = await Promise.all([
-      prisma.deviceRegistry.count({ where: { deviceType: { not: 'SLAVE' } } }),
-      prisma.deviceRegistry.count({ where: { deviceType: { not: 'SLAVE' }, status: 'ACTIVE' } }),
-      prisma.deviceRegistry.count({ where: { deviceType: { not: 'SLAVE' }, status: 'PROVISIONED' } }),
-      prisma.deviceRegistry.count({ where: { deviceType: 'MASTER' } }),
+      prisma.deviceRegistry.count({ where: baseWhere }),
+      prisma.deviceRegistry.count({ where: { ...baseWhere, status: 'ACTIVE' } }),
+      prisma.deviceRegistry.count({ where: { ...baseWhere, status: 'PROVISIONED' } }),
+      prisma.deviceRegistry.count({
+        where: {
+          thingName: { startsWith: 'LC-', mode: 'insensitive' },
+          deviceType: { in: ['MASTER', 'master', 'LC_GATE_MASTER', 'GATE_MASTER', 'LC-GATE-MASTER', 'MASTER_UNIT', 'LC_MASTER'] },
+        },
+      }),
     ]);
 
     res.json({
@@ -168,7 +199,10 @@ router.get('/', authenticate, async (req, res, next) => {
     const take = Math.min(100, Math.max(1, parseInt(limit as string, 10) || 50));
     const skip = (pageNum - 1) * take;
 
-    const where: any = {};
+    // Strict LC Gate Platform isolation: only query devices starting with 'LC-'
+    const where: any = {
+      thingName: { startsWith: 'LC-', mode: 'insensitive' },
+    };
 
     if (deviceType && typeof deviceType === 'string' && deviceType !== 'ALL') {
       if (deviceType.toUpperCase() === 'MASTER') {
@@ -201,13 +235,19 @@ router.get('/', authenticate, async (req, res, next) => {
 
     if (search && typeof search === 'string' && search.trim() !== '') {
       const s = search.trim();
-      where.OR = [
-        { thingName: { contains: s, mode: 'insensitive' } },
-        { serialNumber: { contains: s, mode: 'insensitive' } },
-        { modelNumber: { contains: s, mode: 'insensitive' } },
-        { manufacturer: { contains: s, mode: 'insensitive' } },
-        { imei: { contains: s, mode: 'insensitive' } },
+      where.AND = [
+        { thingName: { startsWith: 'LC-', mode: 'insensitive' } },
+        {
+          OR: [
+            { thingName: { contains: s, mode: 'insensitive' } },
+            { serialNumber: { contains: s, mode: 'insensitive' } },
+            { modelNumber: { contains: s, mode: 'insensitive' } },
+            { manufacturer: { contains: s, mode: 'insensitive' } },
+            { imei: { contains: s, mode: 'insensitive' } },
+          ],
+        },
       ];
+      delete where.thingName;
     }
 
     const [devices, totalCount] = await Promise.all([
@@ -328,10 +368,13 @@ router.get('/', authenticate, async (req, res, next) => {
 router.get('/:id/telemetry', authenticate, async (req, res, next) => {
   try {
     const param = req.params.id;
-    const isNumeric = /^\d+$/.test(param);
+    const where = buildLcDeviceWhere(param);
+    if (!where) {
+      return res.status(404).json({ error: 'Device not found in registry' });
+    }
 
     const device = await prisma.deviceRegistry.findFirst({
-      where: isNumeric ? { id: parseInt(param, 10) } : { thingName: param },
+      where,
       include: {
         gate: {
           select: { id: true, lcNumber: true, name: true, locationName: true, zone: true, division: true }
@@ -474,10 +517,13 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
 router.get(['/:id/health-checks', '/:thingName/health-checks'], authenticate, async (req, res, next) => {
   try {
     const param = req.params.id || req.params.thingName;
-    const isNumeric = /^\d+$/.test(param);
+    const where = buildLcDeviceWhere(param);
+    if (!where) {
+      return res.status(404).json({ error: 'Device not found in registry' });
+    }
 
     const device = await prisma.deviceRegistry.findFirst({
-      where: isNumeric ? { id: parseInt(param, 10) } : { thingName: param }
+      where,
     });
 
     if (!device) {
@@ -515,10 +561,13 @@ router.get(['/:id/health-checks', '/:thingName/health-checks'], authenticate, as
 router.delete(['/:id', '/:thingName'], authenticate, async (req, res, next) => {
   try {
     const param = req.params.id || req.params.thingName;
-    const isNumeric = /^\d+$/.test(param);
+    const where = buildLcDeviceWhere(param);
+    if (!where) {
+      return res.status(404).json({ error: 'Device not found in registry' });
+    }
 
     const device = await prisma.deviceRegistry.findFirst({
-      where: isNumeric ? { id: parseInt(param, 10) } : { thingName: param },
+      where,
       include: {
         gate: {
           select: { id: true, lcNumber: true, locationName: true }
@@ -579,10 +628,13 @@ router.delete(['/:id', '/:thingName'], authenticate, async (req, res, next) => {
 router.post(['/:id/health-check', '/:thingName/health-check'], authenticate, async (req, res, next) => {
   try {
     const param = req.params.id || req.params.thingName;
-    const isNumeric = /^\d+$/.test(param);
+    const where = buildLcDeviceWhere(param);
+    if (!where) {
+      return res.status(404).json({ error: 'Device not found in registry' });
+    }
 
     const device = await prisma.deviceRegistry.findFirst({
-      where: isNumeric ? { id: parseInt(param, 10) } : { thingName: param }
+      where,
     });
 
     if (!device) {
@@ -692,6 +744,13 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
     const fwVersion = payload.FirmwareVersion || payload.firmwareVersion || undefined;
 
     if (!device) {
+      // Ingestion Guard: Only auto-provision devices matching the LC Gate platform naming convention ('LC-')
+      if (!thingName.toUpperCase().startsWith('LC-')) {
+        return res.status(200).json({
+          message: `Foreign telemetry ignored: thingName "${thingName}" does not belong to LC Platform (must start with "LC-")`
+        });
+      }
+
       const resolved = await resolveGateAssociations(thingName, null);
       device = await prisma.deviceRegistry.create({
         data: {
@@ -862,12 +921,15 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
 router.post('/:id/test-sms-alert', authenticate, async (req, res, next) => {
   try {
     const param = req.params.id;
-    const isNumeric = /^\d+$/.test(param);
+    const where = buildLcDeviceWhere(param);
+    if (!where) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
     const { state = 'OPEN' } = req.body;
     const targetState: 'OPEN' | 'CLOSED' = String(state).toUpperCase() === 'CLOSED' ? 'CLOSED' : 'OPEN';
 
     const device = await prisma.deviceRegistry.findFirst({
-      where: isNumeric ? { id: parseInt(param, 10) } : { thingName: param },
+      where,
       include: { gate: true }
     });
 
@@ -901,12 +963,15 @@ router.post('/:id/test-sms-alert', authenticate, async (req, res, next) => {
 router.post('/:id/test-email-alert', authenticate, async (req, res, next) => {
   try {
     const param = req.params.id;
-    const isNumeric = /^\d+$/.test(param);
+    const where = buildLcDeviceWhere(param);
+    if (!where) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
     const { state = 'OPEN' } = req.body;
     const targetState: 'OPEN' | 'CLOSED' = String(state).toUpperCase() === 'CLOSED' ? 'CLOSED' : 'OPEN';
 
     const device = await prisma.deviceRegistry.findFirst({
-      where: isNumeric ? { id: parseInt(param, 10) } : { thingName: param },
+      where,
       include: { gate: true }
     });
 
@@ -940,12 +1005,15 @@ router.post('/:id/test-email-alert', authenticate, async (req, res, next) => {
 router.post('/:id/test-alert', authenticate, async (req, res, next) => {
   try {
     const param = req.params.id;
-    const isNumeric = /^\d+$/.test(param);
+    const where = buildLcDeviceWhere(param);
+    if (!where) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
     const { state = 'OPEN' } = req.body;
     const targetState: 'OPEN' | 'CLOSED' = String(state).toUpperCase() === 'CLOSED' ? 'CLOSED' : 'OPEN';
 
     const device = await prisma.deviceRegistry.findFirst({
-      where: isNumeric ? { id: parseInt(param, 10) } : { thingName: param },
+      where,
       include: { gate: true }
     });
 
@@ -979,10 +1047,13 @@ router.post('/:id/test-alert', authenticate, async (req, res, next) => {
 router.get('/:id', authenticate, async (req, res, next) => {
   try {
     const param = req.params.id;
-    const isNumeric = /^\d+$/.test(param);
+    const where = buildLcDeviceWhere(param);
+    if (!where) {
+      return res.status(404).json({ error: 'Device not found in registry' });
+    }
 
     const device = await prisma.deviceRegistry.findFirst({
-      where: isNumeric ? { id: parseInt(param, 10) } : { thingName: param },
+      where,
       include: {
         gate: true,
         master: {
@@ -1096,7 +1167,12 @@ router.put('/:id', authenticate, async (req, res, next) => {
 
     const data = updateDeviceSchema.parse(req.body);
 
-    const existing = await prisma.deviceRegistry.findUnique({ where: { id } });
+    const existing = await prisma.deviceRegistry.findFirst({
+      where: {
+        id,
+        thingName: { startsWith: 'LC-', mode: 'insensitive' },
+      },
+    });
     if (!existing) return res.status(404).json({ error: 'Device not found' });
 
     let masterId = data.masterId;
@@ -1150,8 +1226,11 @@ router.delete('/:id', authenticate, async (req, res, next) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid device ID' });
 
-    const device = await prisma.deviceRegistry.findUnique({
-      where: { id },
+    const device = await prisma.deviceRegistry.findFirst({
+      where: {
+        id,
+        thingName: { startsWith: 'LC-', mode: 'insensitive' },
+      },
       select: { id: true, thingName: true, serialNumber: true }
     });
 
@@ -1234,6 +1313,12 @@ router.post('/manifest', async (req, res, next) => {
     
     if (!thingName) {
       return res.status(400).json({ error: 'A device identifier (thingName, serialNumber, or Master.S.No.) is required in the payload' });
+    }
+
+    if (!thingName.toUpperCase().startsWith('LC-')) {
+      return res.status(400).json({
+        error: `Manifest rejected: thingName "${thingName}" must follow LC Gate standards and start with "LC-" (e.g. LC-M-001)`
+      });
     }
 
     const serialNumber = masterObj['S.No.'] || masterObj['S.No'] || masterObj.serialNumber || raw.serialNumber || raw.serial_number || hw.serialNumber || attrs.serialNumber || thingName;
@@ -1348,7 +1433,7 @@ router.post('/manifest', async (req, res, next) => {
       where: { thingName },
       create: {
         thingName,
-        thingArn: raw.thingArn || `arn:aws:iot:ap-south-1:safeshunt:thing/${thingName}`,
+        thingArn: raw.thingArn || `arn:aws:iot:ap-south-1:lcgate:thing/${thingName}`,
         thingTypeName: raw.thingTypeName || 'MasterUnit',
         deviceType,
         serialNumber,
@@ -1410,7 +1495,7 @@ router.post('/manifest', async (req, res, next) => {
     await prisma.deviceTelemetry.create({
       data: {
         thingName,
-        topic: raw.topic || `safeshunt/devices/${thingName}/manifest`,
+        topic: raw.topic || `lc-gate/${thingName}/manifest`,
         payload: raw,
         status: 'ONLINE',
         deviceRegistryId: device.id,
@@ -1441,6 +1526,10 @@ router.post('/simulate-iot-event', authenticate, async (req, res, next) => {
       return res.status(400).json({ error: 'thingName is required in event payload' });
     }
 
+    if (!thingName.toUpperCase().startsWith('LC-')) {
+      return res.status(400).json({ error: `Event rejected: thingName "${thingName}" must follow LC Gate standards and start with "LC-" (e.g. LC-M-001)` });
+    }
+
     const attrs = payload.attributes || {};
     const serialNumber = attrs.serialNumber || payload.serialNumber || thingName;
     const resolved = await resolveGateAssociations(serialNumber, null);
@@ -1449,7 +1538,7 @@ router.post('/simulate-iot-event', authenticate, async (req, res, next) => {
       where: { thingName },
       create: {
         thingName,
-        thingArn: payload.thingArn || `arn:aws:iot:ap-south-1:safeshunt:thing/${thingName}`,
+        thingArn: payload.thingArn || `arn:aws:iot:ap-south-1:lcgate:thing/${thingName}`,
         thingTypeName: payload.thingTypeName || 'MasterUnit',
         deviceType: attrs.deviceType || payload.deviceType || 'MASTER',
         serialNumber,

@@ -72,7 +72,8 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
         final data = json.decode(res.body);
         if (mounted) {
           setState(() {
-            _devices = (data['devices'] as List?) ?? [];
+            final rawList = (data['devices'] as List?) ?? [];
+            _devices = rawList.where((d) => (d['thingName'] ?? '').toString().toUpperCase().startsWith('LC-')).toList();
             if (data['summary'] != null && data['summary'] is Map) {
               _stats = Map<String, dynamic>.from(data['summary']);
             } else {
