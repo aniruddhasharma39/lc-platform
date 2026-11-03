@@ -1300,11 +1300,8 @@ router.delete('/:id', authenticate, async (req, res, next) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid device ID' });
 
-    const device = await prisma.deviceRegistry.findFirst({
-      where: {
-        id,
-        thingName: { startsWith: 'LC-', mode: 'insensitive' },
-      },
+    const device = await prisma.deviceRegistry.findUnique({
+      where: { id },
       select: { id: true, thingName: true, serialNumber: true, gateId: true }
     });
 

@@ -39,11 +39,6 @@ async function seedGatesAndEvents() {
 
   // 2. Gates metadata
   const gatesData = [
-    { id: 17, lcNumber: 'LC-M-001', name: 'Panvel Gate', locationName: 'Panvel', zone: 'Central Railway', division: 'Mumbai' },
-    { id: 36, lcNumber: 'LC-M-002', name: 'Kalyan North', locationName: 'Kalyan', zone: 'Central Railway', division: 'Mumbai' },
-    { id: 42, lcNumber: 'LC-M-003', name: 'Thane West', locationName: 'Thane', zone: 'Central Railway', division: 'Mumbai' },
-    { id: 57, lcNumber: 'LC-M-004', name: 'Dadar Junction', locationName: 'Dadar', zone: 'Central Railway', division: 'Mumbai' },
-    { id: 63, lcNumber: 'LC-M-005', name: 'Kurla Cross', locationName: 'Kurla', zone: 'Central Railway', division: 'Mumbai' },
     { id: 185, lcNumber: 'LC-0030', name: 'Kasu', locationName: 'Kasu', zone: 'Central Railway', division: 'Mumbai CST' },
     { id: 186, lcNumber: 'LC-0040', name: 'Pen', locationName: 'Pen', zone: 'Central Railway', division: 'Mumbai CST' }
   ];
