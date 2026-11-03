@@ -1130,8 +1130,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             ..._systemModules.where((m) {
               if (widget.user['role'] == 'Developer') return true;
-              final hasAssignedScopes = widget.user['scopeGroups'] is List && (widget.user['scopeGroups'] as List).isNotEmpty;
-              if ((m['slug'] == 'lc-gates' || m['slug'] == 'reports') && hasAssignedScopes) return true;
               final allowed = widget.user['allowedModules'];
               return allowed is List && allowed.contains(m['slug']);
             }).map((m) {
@@ -1185,7 +1183,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildUserDashboard() {
     final summary = _dashboardSummary;
     final gates = (summary != null && summary['gates'] is List) ? List<dynamic>.from(summary['gates']) : [];
-    final totalDevices = summary?['totalDevices'] ?? summary?['totalConfiguredClusters'] ?? gates.where((g) => g['hasMaster'] == true).length;
+    final totalLCGates = summary?['totalAllGates'] ?? summary?['totalDevices'] ?? gates.length;
     final totalUnconfiguredGates = summary?['totalUnconfiguredGates'] ?? gates.where((g) => g['hasMaster'] != true).length;
     final totalCyclesToday = summary?['totalCyclesToday'] ?? 0;
     final totalOpenGates = summary?['totalOpenGates'] ?? 0;
@@ -1277,7 +1275,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Expanded(
                   child: _buildKpiCard(
                     title: 'Total LC Gates',
-                    value: _loadingSummary ? '-' : '${summary?["totalAllGates"] ?? summary?["totalDevices"] ?? gates.length}',
+                    value: _loadingSummary ? '-' : '$totalLCGates',
                     subtitle: (totalUnconfiguredGates is int && totalUnconfiguredGates > 0)
                         ? '$totalUnconfiguredGates unconfigured'
                         : null,
