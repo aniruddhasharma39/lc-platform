@@ -321,11 +321,6 @@ export async function getFullCycleAnalytics(params: {
   // 1. Fetch gate details
   const gates = await prisma.lCGate.findMany({
     where: { id: { in: targetGateIds } },
-    include: {
-      scopeGroups: {
-        include: { scopeGroup: { select: { id: true, name: true, color: true } } }
-      }
-    },
     orderBy: { lcNumber: 'asc' }
   });
 

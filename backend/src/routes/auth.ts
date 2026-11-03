@@ -801,11 +801,6 @@ router.get('/me', authenticate, async (req: any, res, next) => {
             }
           }
         },
-        scopeGroups: {
-          include: {
-            scopeGroup: true
-          }
-        }
       }
     });
 
@@ -820,17 +815,7 @@ router.get('/me', authenticate, async (req: any, res, next) => {
       allowedModules = allModules.map((m: any) => m.slug);
     }
 
-    const scopeGroups = user.scopeGroups?.map((sg: any) => ({
-      id: sg.scopeGroup.id,
-      name: sg.scopeGroup.name,
-      color: sg.scopeGroup.color,
-      description: sg.scopeGroup.description
-    })) || [];
 
-    // If user has assigned scope groups, ensure 'lc-gates' is available in allowedModules
-    if (scopeGroups.length > 0 && !allowedModules.includes('lc-gates')) {
-      allowedModules.unshift('lc-gates');
-    }
 
     res.json({
       id: user.id,
@@ -844,7 +829,6 @@ router.get('/me', authenticate, async (req: any, res, next) => {
       createdAt: user.createdAt,
       status: user.status,
       allowedModules,
-      scopeGroups
     });
   } catch (error) {
     next(error);

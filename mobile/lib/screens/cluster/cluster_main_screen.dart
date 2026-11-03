@@ -28,11 +28,6 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
   String? _errorMessage;
   String _token = '';
   String _userId = 'user';
-  List<String> _scopeNames = [];
-
-  // Developer Scope Groups View State (Parity with Web ClusterDashboard)
-  String _developerScopeId = '';
-  List<dynamic> _allScopeGroupsList = [];
 
   // Zone/Division reference data
   List<String> _zones = RailwayData.zones;
@@ -63,10 +58,6 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
     final sec = dt.second.toString().padLeft(2, '0');
     return '$hour:$min:$sec';
   }
-
-  bool get _isDeveloper =>
-      widget.user?['role'] == 'Developer' ||
-      ((widget.user?['allowedModules'] as List?)?.contains('cluster') ?? false);
 
   @override
   void initState() {
@@ -107,12 +98,6 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
 
       }
     } catch (_) {}
-  }
-
-      }
-    } catch (e) {
-      debugPrint('Error fetching scope groups: $e');
-    }
   }
 
   Future<void> _fetchReferenceData() async {
@@ -170,7 +155,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
     }
   }
 
-  Future<void> _fetchGates({bool isManualRefresh = false, String? overrideScopeId}) async {
+  Future<void> _fetchGates({bool isManualRefresh = false}) async {
     const activeScope = '';
 
     // Step 1: Check L1 Memory / L2 Disk cache for instant rendering
@@ -705,7 +690,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
         },
       ),
       body: Column(
-
+        children: [
           // 3. Active Filters Chips Strip (Visible when filters are active)
           if (_hasActiveFilters)
             Container(
@@ -1091,7 +1076,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                                   },
                                 ),
                               ),
-          )        ],
+          ),        ],
       ),
     );
   }

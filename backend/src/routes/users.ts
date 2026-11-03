@@ -34,9 +34,6 @@ router.get('/', requireModule('manage-users'), async (req: any, res, next) => {
               gate: { select: { id: true, lcNumber: true, locationName: true, name: true } }
             }
           },
-          scopeGroups: {
-            include: { scopeGroup: true }
-          }
         },
         orderBy: { createdAt: 'desc' }
       }),
@@ -521,16 +518,7 @@ router.put('/:id/railway-mapping', requireModule('manage-users'), async (req: an
       include: {
         role: true,
         station: true,
-        scopeGroups: { include: { scopeGroup: true } }
-      }
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        userId: req.user.id,
-        action: 'UPDATE_USER_RAILWAY_MAPPING',
-        details: `Updated railway mapping for user ${updated.fullName} (Zone: ${updated.zone || 'N/A'}, Div: ${updated.division || 'N/A'}, Station: ${updated.stationId || 'N/A'})`,
-      },
+       }
     }).catch(console.warn);
 
     res.json(updated);

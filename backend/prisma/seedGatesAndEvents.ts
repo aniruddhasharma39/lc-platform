@@ -6,36 +6,7 @@ import { bumpReportRevision } from '../src/lib/reportRevisionManager';
 async function seedGatesAndEvents() {
   console.log('Seeding LC Gates, Scope Groups, and Historical Telemetry Events...');
 
-  // 1. Ensure Scope Group 14 (Central Railways)
-  let cluster = await prisma.scopeGroup.findFirst({
-    where: { name: 'Central Railways' }
-  });
-  if (!cluster) {
-    cluster = await prisma.scopeGroup.create({
-      data: {
-        name: 'Central Railways',
-        description: 'Central Railway Level Crossing Gate Monitoring Cluster',
-        color: '#0B3C7A',
-        allowSms: true
-      }
-    });
-  }
-  console.log(`Cluster: ${cluster.id} (${cluster.name})`);
-
-  // Ensure users are linked to cluster
-  const users = await prisma.user.findMany({ select: { id: true, email: true } });
-  for (const u of users) {
-    await prisma.scopeGroupUser.upsert({
-      where: {
-        scopeGroupId_userId: { scopeGroupId: cluster.id, userId: u.id }
-      },
-      update: {},
-      create: {
-        scopeGroupId: cluster.id,
-        userId: u.id
-      }
-    }).catch(() => {});
-  }
+  console.log('Role-based access mode: ensuring LC gates metadata...');
 
   // 2. Gates metadata
   const gatesData = [
@@ -70,17 +41,15 @@ async function seedGatesAndEvents() {
     }
     createdGates.push(gate);
 
-    // Link gate to scope group
-    await prisma.scopeGroupGate.upsert({
-      where: {
-        scopeGroupId_gateId: { scopeGroupId: cluster.id, gateId: gate.id }
-      },
-      update: {},
-      create: {
-        scopeGroupId: cluster.id,
-        gateId: gate.id
-      }
-    }).catch(() => {});
+    // Link gate directly to user access
+    const allUsers = await prisma.user.findMany({ select: { id: true } });
+    for (const u of allUsers) {
+      await prisma.userGate.upsert({
+        where: { userId_gateId: { userId: u.id, gateId: gate.id } },
+        update: {},
+        create: { userId: u.id, gateId: gate.id }
+      }).catch(() => {});
+    }
 
     // Ensure MasterUnit and ChildDevice
     let master = await prisma.masterUnit.findFirst({ where: { gateId: gate.id } });
@@ -109,7 +78,7 @@ async function seedGatesAndEvents() {
       data: { gateId: gate.id, masterId: master.id }
     });
   }
-  console.log(`Ensured ${createdGates.length} LC Gates linked to cluster ${cluster.id}`);
+  console.log(`Ensured ${createdGates.length} LC Gates created and mapped.`);
 
   // 3. Seed 35 days of realistic operational events
   const TRAIN_MOVEMENTS = [
@@ -198,7 +167,7 @@ async function seedGatesAndEvents() {
   }
 
   // Bump revisions
-  await bumpDirectoryRevision([cluster.id], true);
+  await bumpDirectoryRevision([], true);
   for (const g of createdGates) {
     await bumpReportRevision(g.id);
   }

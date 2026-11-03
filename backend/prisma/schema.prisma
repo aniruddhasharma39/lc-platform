@@ -38,7 +38,6 @@ model User {
   auditLogs           AuditLog[]
   metadata            String? // JSON string for dynamic registration fields
   evidences           InstallationEvidence[]
-  scopeGroups         ScopeGroupUser[]
 
   // Railway organizational hierarchy & designation
   designation         String?
@@ -148,7 +147,6 @@ model LCGate {
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
   masters          MasterUnit[]
-  scopeGroups      ScopeGroupGate[]
   deviceRegistries DeviceRegistry[]
   events           LCGateEvent[]
   userGates        UserGate[]
@@ -209,67 +207,6 @@ model OtpVerification {
   @@index([identifier, type])
 }
 
-model ScopeGroup {
-  id          Int                @id @default(autoincrement())
-  name        String             @unique
-  description String?
-  color       String?            @default("#0B3C7A")
-  allowSms    Boolean            @default(false)
-  parentId    Int?
-  parent      ScopeGroup?        @relation("ScopeGroupHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
-  children    ScopeGroup[]       @relation("ScopeGroupHierarchy")
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
-
-  gates       ScopeGroupGate[]
-  devices     ScopeGroupDevice[]
-  users       ScopeGroupUser[]
-
-  @@index([parentId])
-}
-
-model ScopeGroupGate {
-  id           Int        @id @default(autoincrement())
-  scopeGroupId Int
-  scopeGroup   ScopeGroup @relation(fields: [scopeGroupId], references: [id], onDelete: Cascade)
-  gateId       Int
-  gate         LCGate     @relation(fields: [gateId], references: [id], onDelete: Cascade)
-
-  assignedAt   DateTime   @default(now())
-
-  @@unique([scopeGroupId, gateId])
-  @@index([scopeGroupId])
-  @@index([gateId])
-}
-
-model ScopeGroupDevice {
-  id           Int            @id @default(autoincrement())
-  scopeGroupId Int
-  scopeGroup   ScopeGroup     @relation(fields: [scopeGroupId], references: [id], onDelete: Cascade)
-  deviceId     Int
-  device       DeviceRegistry @relation(fields: [deviceId], references: [id], onDelete: Cascade)
-
-  assignedAt   DateTime       @default(now())
-
-  @@unique([scopeGroupId, deviceId])
-  @@index([scopeGroupId])
-  @@index([deviceId])
-}
-
-model ScopeGroupUser {
-  id           Int        @id @default(autoincrement())
-  scopeGroupId Int
-  scopeGroup   ScopeGroup @relation(fields: [scopeGroupId], references: [id], onDelete: Cascade)
-  userId       Int
-  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  assignedAt   DateTime   @default(now())
-
-  @@unique([scopeGroupId, userId])
-  @@index([scopeGroupId])
-  @@index([userId])
-}
-
 model DeviceRegistry {
   id              Int          @id @default(autoincrement())
   thingName       String       @unique
@@ -305,7 +242,6 @@ model DeviceRegistry {
 
   telemetries     DeviceTelemetry[]
   healthChecks    DeviceHealthCheck[]
-  scopeGroups     ScopeGroupDevice[]
 
   lastSeenAt      DateTime?
   createdAt       DateTime     @default(now())

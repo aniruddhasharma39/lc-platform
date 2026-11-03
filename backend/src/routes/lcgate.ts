@@ -233,13 +233,6 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
           orderBy: { openedAt: 'desc' },
           take: 50,
         },
-        scopeGroups: {
-          include: {
-            scopeGroup: {
-              select: { id: true, name: true, color: true }
-            }
-          }
-        },
         masters: {
           orderBy: { masterSequence: 'asc' },
           include: {
@@ -644,10 +637,6 @@ router.post('/:id/assign-device', authenticate, async (req: any, res, next) => {
         }
       });
 
-      const gateScopes = await tx.scopeGroupGate.findMany({
-        where: { gateId },
-        select: { scopeGroupId: true },
-      });
       await bumpDirectoryRevision([], true, tx);
 
       return devUpdated;
@@ -681,10 +670,6 @@ router.post('/:id/unassign-device', authenticate, async (req: any, res, next) =>
         }
       });
 
-      const gateScopes = await tx.scopeGroupGate.findMany({
-        where: { gateId },
-        select: { scopeGroupId: true },
-      });
       await bumpDirectoryRevision([], true, tx);
 
       return devUpdated;
@@ -944,19 +929,6 @@ router.get('/', authenticate, async (req: any, res, next) => {
           orderBy: { openedAt: 'desc' },
           take: 1
         },
-        scopeGroups: {
-          include: {
-            scopeGroup: {
-              select: { 
-                id: true, 
-                name: true, 
-                color: true,
-                parentId: true,
-                parent: { select: { id: true, name: true, color: true } }
-              }
-            }
-          }
-        },
         masters: {
           orderBy: { masterSequence: 'asc' },
           include: {
@@ -1085,7 +1057,6 @@ router.get('/:gateId/next-master-sequence', authenticate, async (req, res, next)
     if (!gate) return res.status(404).json({ error: 'LC Gate not found' });
 
     const existingMasters = await prisma.masterUnit.findMany({
-      where: { gateId },
       orderBy: { masterSequence: 'asc' }
     });
 
@@ -1145,7 +1116,6 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
     }
 
     const existingMasters = await prisma.masterUnit.findMany({
-      where: { gateId },
       select: { masterSequence: true }
     });
     const takenSequences = new Set(existingMasters.map(m => m.masterSequence));
@@ -1194,10 +1164,6 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
       }
 
       // Bump revision for gate's assigned scope groups
-      const gateScopes = await tx.scopeGroupGate.findMany({
-        where: { gateId },
-        select: { scopeGroupId: true },
-      });
       await bumpDirectoryRevision([], true, tx);
 
       return created;
@@ -1562,13 +1528,6 @@ router.get('/:id', authenticate, async (req: any, res, next) => {
       include: {
         station: { select: { id: true, code: true, name: true, division: true, zone: true } },
         deviceRegistries: true,
-        scopeGroups: {
-          include: {
-            scopeGroup: {
-              select: { id: true, name: true, color: true }
-            }
-          }
-        },
         masters: {
           orderBy: { masterSequence: 'asc' },
           include: {
@@ -1728,13 +1687,6 @@ router.get('/:id/telemetry', authenticate, async (req: any, res, next) => {
       where: { id },
       include: {
         station: { select: { id: true, code: true, name: true, division: true, zone: true } },
-        scopeGroups: {
-          include: {
-            scopeGroup: {
-              select: { id: true, name: true, color: true }
-            }
-          }
-        },
         deviceRegistries: true,
         masters: {
           orderBy: { masterSequence: 'asc' },
@@ -1845,7 +1797,7 @@ router.put('/:id', authenticate, async (req: any, res, next) => {
 
     const gate = await prisma.lCGate.findUnique({
       where: { id },
-      include: { scopeGroups: true }
+      include: {}
     });
     if (!gate) return res.status(404).json({ error: 'LC Gate not found' });
 
@@ -1873,8 +1825,7 @@ router.put('/:id', authenticate, async (req: any, res, next) => {
         }
       });
 
-      const gateScopes = gate.scopeGroups.map(s => s.scopeGroupId);
-      await bumpDirectoryRevision(gateScopes, gateScopes.length === 0, tx);
+      await bumpDirectoryRevision([], true, tx);
       return g;
     });
 

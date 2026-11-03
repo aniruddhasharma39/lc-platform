@@ -283,9 +283,6 @@ async function fetchFilteredOperationalEvents(req: AuthRequest, dbClient: any = 
           name: true,
           zone: true,
           division: true,
-          scopeGroups: {
-            include: { scopeGroup: { select: { id: true, name: true, color: true } } }
-          }
         }
       }
     },
@@ -540,8 +537,8 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
           locationName: ev.gate.locationName,
           zone: ev.gate.zone,
           division: ev.gate.division,
-          scopeGroupName: matchingGroup ? matchingGroup.name : 'Unassigned',
-          scopeGroupColor: matchingGroup ? matchingGroup.color : '#0B3C7A',
+           scopeGroupName: 'Unassigned',
+           scopeGroupColor: '#0B3C7A',
           openedAt: ev.openedAt.toISOString(),
           closedAt: ev.closedAt ? ev.closedAt.toISOString() : null,
           durationSeconds: ev.durationSeconds,
@@ -711,9 +708,6 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
           locationName: true,
           zone: true,
           division: true,
-          scopeGroups: {
-            include: { scopeGroup: { select: { id: true, name: true, color: true } } },
-          },
         },
       }) : [];
       const gateMap = new Map(gatesData.map(g => [g.id, g]));
@@ -743,8 +737,8 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
             locationName: g?.locationName || 'Location',
             zone: g?.zone || 'CR',
             division: g?.division || 'Pune',
-            scopeGroupName: g?.scopeGroups[0]?.scopeGroup?.name || 'Unassigned',
-            scopeGroupColor: g?.scopeGroups[0]?.scopeGroup?.color || '#0B3C7A',
+            scopeGroupName: 'Unassigned',
+            scopeGroupColor: '#0B3C7A',
             openedAt: rec.openedAt ? rec.openedAt.toISOString() : new Date().toISOString(),
             closedAt: rec.closedAt ? rec.closedAt.toISOString() : null,
             durationSeconds: rec.durationSeconds,
@@ -881,9 +875,6 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
             name: true,
             zone: true,
             division: true,
-            scopeGroups: {
-              include: { scopeGroup: { select: { id: true, name: true, color: true } } },
-            },
           },
         },
       },
@@ -916,8 +907,8 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
       locationName: ev.gate.locationName,
       zone: ev.gate.zone,
       division: ev.gate.division,
-      scopeGroupName: ev.gate.scopeGroups[0]?.scopeGroup?.name || 'Unassigned',
-      scopeGroupColor: ev.gate.scopeGroups[0]?.scopeGroup?.color || '#0B3C7A',
+      scopeGroupName: 'Unassigned',
+      scopeGroupColor: '#0B3C7A',
       openedAt: ev.openedAt.toISOString(),
       closedAt: ev.closedAt ? ev.closedAt.toISOString() : null,
       durationSeconds: ev.durationSeconds,
