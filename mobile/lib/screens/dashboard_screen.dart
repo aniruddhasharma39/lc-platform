@@ -1276,8 +1276,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               children: [
                 Expanded(
                   child: _buildKpiCard(
-                    title: 'Active LC Gates',
-                    value: _loadingSummary ? '-' : '$totalDevices',
+                    title: 'Total LC Gates',
+                    value: _loadingSummary ? '-' : '${summary?["totalAllGates"] ?? summary?["totalDevices"] ?? gates.length}',
                     subtitle: (totalUnconfiguredGates is int && totalUnconfiguredGates > 0)
                         ? '$totalUnconfiguredGates unconfigured'
                         : null,
@@ -1477,9 +1477,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     final isSelected = _activeGateId == gateId;
 
                     return InkWell(
-                      onTap: () {
-                        setState(() => _activeGateId = gateId);
-                      },
+                      onTap: () => _navigateToGate(gateId, 'about'),
                       borderRadius: BorderRadius.circular(14),
                       child: Container(
                         width: 295,
@@ -1668,38 +1666,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               ],
                             ),
 
-                            // Action Buttons
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: ElevatedButton(
-                                    onPressed: () => _navigateToGate(gateId, 'telemetry'),
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: const Color(0xFF0284C7),
-                                      foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(vertical: 6),
-                                      minimumSize: Size.zero,
-                                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                                    ),
-                                    child: const Text('Telemetry', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                                  ),
+                            // Full-width Action Button
+                            SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton.icon(
+                                onPressed: () => _navigateToGate(gateId, 'about'),
+                                icon: const Icon(Icons.info_outline, size: 14),
+                                label: const Text('View Gate Details & Logs', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF0F172A),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 7),
+                                  minimumSize: Size.zero,
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
                                 ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: OutlinedButton(
-                                    onPressed: () => _navigateToGate(gateId, 'about'),
-                                    style: OutlinedButton.styleFrom(
-                                      padding: const EdgeInsets.symmetric(vertical: 6),
-                                      minimumSize: Size.zero,
-                                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                      side: BorderSide(color: Colors.grey.shade300),
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                                    ),
-                                    child: const Text('About', style: TextStyle(fontSize: 11, color: Color(0xFF334155), fontWeight: FontWeight.w600)),
-                                  ),
-                                ),
-                              ],
+                              ),
                             ),
                           ],
                         ),

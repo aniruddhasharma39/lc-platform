@@ -535,10 +535,10 @@ export default function HomeDashboard({
           </div>
           <div>
             <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>
-              Active LC Gates
+              Total LC Gates
             </div>
             <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#0f172a', lineHeight: 1.2 }}>
-              {loading ? '—' : data?.totalDevices ?? 0}
+              {loading ? '—' : data?.totalAllGates ?? data?.totalDevices ?? (data?.gates?.length ?? 0)}
             </div>
             {Boolean(data?.totalUnconfiguredGates && data.totalUnconfiguredGates > 0) && (
               <div style={{ fontSize: '0.72rem', color: '#d97706', marginTop: 3, fontWeight: 600 }}>
@@ -914,8 +914,6 @@ export default function HomeDashboard({
                   {/* Quick Action Navigation Buttons */}
                   <div
                     style={{
-                      display: 'flex',
-                      gap: 8,
                       marginTop: 14,
                       paddingTop: 10,
                       borderTop: '1px solid #f1f5f9',
@@ -924,15 +922,15 @@ export default function HomeDashboard({
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        onNavigateToGate(gate.id, 'telemetry');
+                        onNavigateToGate(gate.id, 'about');
                       }}
                       style={{
-                        flex: 1,
-                        background: '#0284c7',
+                        width: '100%',
+                        background: '#0f172a',
                         color: '#ffffff',
                         border: 'none',
                         borderRadius: 6,
-                        padding: '7px 10px',
+                        padding: '8px 10px',
                         fontSize: '0.78rem',
                         fontWeight: 700,
                         cursor: 'pointer',
@@ -942,31 +940,8 @@ export default function HomeDashboard({
                         gap: 6,
                       }}
                     >
-                      <span>Telemetry</span>
-                      <FaExternalLinkAlt size={10} />
-                    </button>
-
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onNavigateToGate(gate.id, 'about');
-                      }}
-                      style={{
-                        flex: 1,
-                        background: '#f8fafc',
-                        color: '#334155',
-                        border: '1px solid #cbd5e1',
-                        borderRadius: 6,
-                        padding: '7px 10px',
-                        fontSize: '0.78rem',
-                        fontWeight: 700,
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                    >
-                      About LC Gate
+                      <FaInfoCircle size={12} />
+                      <span>View Gate Details & Logs</span>
                     </button>
                   </div>
                 </div>
