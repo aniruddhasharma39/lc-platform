@@ -43,9 +43,9 @@ const List<String> _canonicalModuleOrder = [
 ];
 
 const List<Map<String, String>> _defaultModules = [
-  {'name': 'LC Gates', 'slug': 'lc-gates'},
+  {'name': 'My Gates', 'slug': 'lc-gates'},
   {'name': 'Reports', 'slug': 'reports'},
-  {'name': 'Cluster', 'slug': 'cluster'},
+  {'name': 'Gate Management', 'slug': 'cluster'},
   {'name': 'Device Registry', 'slug': 'devices'},
   {'name': 'Scope Groups', 'slug': 'scope-groups'},
   {'name': 'Manage Users', 'slug': 'manage-users'},
@@ -58,13 +58,13 @@ String _getModuleTitle(dynamic m) {
   final slug = (m['slug'] ?? '').toString();
   switch (slug) {
     case 'lc-gates':
-      return 'LC Gates';
+      return 'My Gates';
     case 'reports':
       return 'Reports';
     case 'branding':
       return 'Branding';
     case 'cluster':
-      return 'Cluster';
+      return 'Gate Management';
     case 'devices':
     case 'device-registry':
       return 'Device Registry';
@@ -1248,7 +1248,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               children: [
                 Expanded(
                   child: _buildKpiCard(
-                    title: 'Active Clusters',
+                    title: 'Active LC Gates',
                     value: _loadingSummary ? '-' : '$totalDevices',
                     subtitle: (totalUnconfiguredGates is int && totalUnconfiguredGates > 0)
                         ? '$totalUnconfiguredGates unconfigured'
@@ -1383,7 +1383,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
                 if (gates.isNotEmpty)
                   Text(
-                    '${gates.length} clusters',
+                    '${gates.length} gates',
                     style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade600),
                   ),
               ],
@@ -1719,7 +1719,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               const Text(
-                                'India LC Gate Clusters Map',
+                                'India LC Gates Map',
                                 style: TextStyle(
                                   fontSize: 15,
                                   fontWeight: FontWeight.bold,
@@ -1727,7 +1727,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 ),
                               ),
                               Text(
-                                '${gates.length} assigned railway clusters',
+                                '${gates.length} assigned railway gates',
                                 style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
                               ),
                             ],

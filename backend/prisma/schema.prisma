@@ -39,6 +39,16 @@ model User {
   metadata            String? // JSON string for dynamic registration fields
   evidences           InstallationEvidence[]
   scopeGroups         ScopeGroupUser[]
+
+  // Railway organizational hierarchy & designation
+  designation         String?
+  zone                String?
+  division            String?
+  stationId           Int?
+  station             Station?               @relation(fields: [stationId], references: [id], onDelete: SetNull)
+  idCardUrl           String?
+  assignedGates       UserGate[]
+  approvedRequests    RegistrationRequest[]  @relation("ApprovedRequests")
 }
 
 model RefreshToken {
@@ -95,15 +105,33 @@ model RegistrationForm {
 }
 
 model RegistrationRequest {
-  id              Int              @id @default(autoincrement())
-  formId          Int
-  form            RegistrationForm @relation(fields: [formId], references: [id], onDelete: Restrict)
-  data            String // JSON representing submitted values
-  status          String           @default("PENDING") // PENDING, APPROVED, REJECTED
-  requestedRoleId Int?
-  rejectionReason String?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  id                    Int              @id @default(autoincrement())
+  formId                Int
+  form                  RegistrationForm @relation(fields: [formId], references: [id], onDelete: Restrict)
+  data                  String // JSON representing submitted values
+  status                String           @default("PENDING") // PENDING, APPROVED, REJECTED
+  requestedRoleId       Int?
+  rejectionReason       String?
+  department            String?
+  designation           String?
+  zone                  String?
+  division              String?
+  stationId             Int?
+  station               Station?         @relation(fields: [stationId], references: [id], onDelete: SetNull)
+  gateIds               Int[]            @default([])
+  idCardUrl             String?
+  declarationConfirmed  Boolean          @default(false)
+  approvedByUserId      Int?
+  approvedByUser        User?            @relation("ApprovedRequests", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  approvedAt            DateTime?
+  isEscalated           Boolean          @default(false)
+  escalationReason      String?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  @@index([status])
+  @@index([zone, division])
+  @@index([designation])
 }
 
 model LCGate {
@@ -113,6 +141,8 @@ model LCGate {
   locationName     String
   zone             String?
   division         String?
+  stationId        Int?
+  station          Station?         @relation(fields: [stationId], references: [id], onDelete: SetNull)
   latitude         Float?
   longitude        Float?
   createdAt        DateTime         @default(now())
@@ -121,6 +151,7 @@ model LCGate {
   scopeGroups      ScopeGroupGate[]
   deviceRegistries DeviceRegistry[]
   events           LCGateEvent[]
+  userGates        UserGate[]
 }
 
 model MasterUnit {
@@ -397,4 +428,36 @@ model LCGateEventChangeLog {
 
   @@index([gateId, gateRevision])
   @@index([createdAt])
+}
+
+model Station {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  name      String
+  division  String
+  zone      String
+  latitude  Float?
+  longitude Float?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  gates                LCGate[]
+  users                User[]
+  registrationRequests RegistrationRequest[]
+
+  @@index([zone, division])
+  @@index([code])
+}
+
+model UserGate {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gateId    Int
+  gate      LCGate   @relation(fields: [gateId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, gateId])
+  @@index([userId])
+  @@index([gateId])
 }

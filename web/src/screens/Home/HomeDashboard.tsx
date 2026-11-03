@@ -535,7 +535,7 @@ export default function HomeDashboard({
           </div>
           <div>
             <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>
-              Active Clusters
+              Active LC Gates
             </div>
             <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#0f172a', lineHeight: 1.2 }}>
               {loading ? '—' : data?.totalDevices ?? 0}
@@ -966,7 +966,7 @@ export default function HomeDashboard({
                         justifyContent: 'center',
                       }}
                     >
-                      About Cluster
+                      About LC Gate
                     </button>
                   </div>
                 </div>
@@ -976,7 +976,7 @@ export default function HomeDashboard({
         )}
       </div>
 
-      {/* Map Section: India LC Gate Clusters Map */}
+      {/* Map Section: India LC Gates Map */}
       <div className="card" style={{ padding: 20, borderRadius: 14, backgroundColor: '#ffffff' }}>
         <div
           style={{
@@ -993,7 +993,7 @@ export default function HomeDashboard({
               India LC Gate Clusters Map
             </h3>
             <p style={{ margin: '4px 0 0', fontSize: '0.82rem', color: '#64748b' }}>
-              Geographic coordinates and live status of clusters layered across the India Railway network
+              Geographic coordinates and live status of Level Crossing Gates across Indian Railways
             </p>
           </div>
 
@@ -1038,7 +1038,7 @@ export default function HomeDashboard({
           }}
         >
           <span>
-            Clicking any cluster pin opens telemetry details and allows direct navigation to its full console.
+            Clicking any gate pin opens telemetry details and allows direct navigation to its full console.
           </span>
           <span>OpenStreetMap &copy; Leaflet</span>
         </div>

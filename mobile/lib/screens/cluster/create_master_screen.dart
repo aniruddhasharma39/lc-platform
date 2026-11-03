@@ -129,20 +129,13 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
   Future<void> _submit() async {
     if (_isLoading) return;
 
-    if (_selectedDeviceId == null || _selectedDeviceId!.isEmpty) {
-      AppFeedback.showWarning(context, 'Please select a provisioned Master device from AWS IoT Registry.');
-      return;
-    }
+    final dynamic chosenDevice = _selectedDeviceId != null && _selectedDeviceId!.isNotEmpty
+        ? _deviceList.firstWhere(
+            (d) => d['id'].toString() == _selectedDeviceId,
+            orElse: () => null,
+          )
+        : null;
 
-    final dynamic chosenDevice = _deviceList.firstWhere(
-      (d) => d['id'].toString() == _selectedDeviceId,
-      orElse: () => null,
-    );
-
-    if (chosenDevice == null) {
-      AppFeedback.showWarning(context, 'Invalid device selection. Please choose an AWS IoT device from the list.');
-      return;
-    }
     setState(() => _isLoading = true);
 
     try {
@@ -151,8 +144,11 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
       final body = <String, dynamic>{
         'masterSequence': seqNum,
         'powerSource': _powerSource,
-        'deviceId': chosenDevice['id'],
       };
+
+      if (chosenDevice != null) {
+        body['deviceId'] = chosenDevice['id'];
+      }
 
       final res = await http.post(
         Uri.parse('$baseUrl/lcgate/${widget.gate['id']}/masters'),
@@ -234,9 +230,10 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
         ? _deviceList.firstWhere((d) => d['id'].toString() == _selectedDeviceId, orElse: () => null)
         : null;
 
+    final fallbackSerial = '${widget.gate['lcNumber']}-${_seqCtrl.text.isEmpty ? '01' : _seqCtrl.text.padLeft(2, '0')}';
     final serialPreview = chosenDevice != null
         ? (chosenDevice['thingName'] ?? 'Selected Device').toString()
-        : '';
+        : '$fallbackSerial (Virtual Master)';
 
     return Scaffold(
       appBar: AppBar(title: const Text('Add Master Unit', style: TextStyle(fontWeight: FontWeight.bold)), elevation: 0),
@@ -280,7 +277,7 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
                               Icon(Icons.developer_board, size: 18, color: AppColors.primary),
                               SizedBox(width: 8),
                               Text(
-                                'Select Provisioned Master from Registry *',
+                                'Link AWS IoT Master Device (Optional)',
                                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.primary),
                               ),
                             ],
@@ -301,10 +298,15 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
                                   ? 'Loading available devices...'
                                   : (_deviceList.isEmpty
                                       ? 'No unassigned Master devices found'
-                                      : 'Select AWS IoT Thing Name *'),
+                                      : 'Virtual Master (Assign Hardware Later)'),
                               style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                             ),
-                            items: _deviceList.map((dev) {
+                            items: [
+                              const DropdownMenuItem<String>(
+                                value: '',
+                                child: Text('Virtual Master (Assign Hardware Later)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF64748B))),
+                              ),
+                              ..._deviceList.map((dev) {
                               final idStr = dev['id'].toString();
                               final tName = (dev['thingName'] ?? 'Device').toString();
                               return DropdownMenuItem<String>(
@@ -316,6 +318,7 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
                                 ),
                               );
                             }).toList(),
+                            ],
                             onChanged: (val) {
                               setState(() {
                                 _selectedDeviceId = val;
@@ -347,7 +350,7 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
                             )
                           else
                             const Text(
-                              'Mandatory: Select an unassigned Master hardware device provisioned in AWS IoT Core.',
+                              'Optional: Select an unassigned Master hardware device or leave virtual to assign later.',
                               style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                             ),
                         ],
@@ -478,9 +481,7 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
 
                     // 5. Submit Button
                     ElevatedButton(
-                      onPressed: (_isLoading || _selectedDeviceId == null || _selectedDeviceId!.isEmpty || chosenDevice == null)
-                          ? null
-                          : _submit,
+                      onPressed: _isLoading ? null : _submit,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.primary,
                         padding: const EdgeInsets.symmetric(vertical: 14),

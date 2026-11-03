@@ -100,6 +100,8 @@ async function main() {
     });
   }
 
+  const { ensureStationsPopulated } = require('./seedStations');
+  await ensureStationsPopulated();
   console.log('Seed completed successfully.');
 }
 

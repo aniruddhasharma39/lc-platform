@@ -1,132 +1,360 @@
 import { useState, useEffect } from 'react';
-import FormRenderer from '../components/FormBuilder/FormRenderer';
 import { API_URL } from '../config';
-import { FaExclamationTriangle } from 'react-icons/fa';
+import {
+  FaTrain,
+  FaShieldAlt,
+  FaIdBadge,
+  FaBuilding,
+  FaUserTie,
+  FaExclamationTriangle,
+  FaSpinner,
+  FaCheckCircle,
+  FaUpload
+} from 'react-icons/fa';
 import { useToast } from '../context/ToastContext';
 
 type Props = {
   onGoToLogin: () => void;
 };
 
-const DEFAULT_FALLBACK_SCHEMA = {
-  fields: [
-    { id: '1', type: 'text', name: 'fullName', label: 'Full Name', required: true, placeholder: 'Enter your full name' },
-    { id: '2', type: 'phone', name: 'mobile', label: 'Mobile Number', required: true, unique: true, placeholder: '10-digit mobile number' },
-    { id: '3', type: 'email', name: 'email', label: 'Email Address', required: true, unique: true, placeholder: 'name@example.com' },
-    { id: '4', type: 'text', name: 'employeeId', label: 'Employee ID', required: true, unique: true, placeholder: 'e.g. EMP-101' },
-    { id: '5', type: 'text', name: 'department', label: 'Department', required: true, placeholder: 'e.g. Engineering' }
-  ],
-  allowRoles: true
-};
+interface GateRef {
+  id: number;
+  lcNumber: string;
+  name?: string;
+  locationName: string;
+}
+
+interface StationRef {
+  id: number | null;
+  code: string;
+  name: string;
+  gates: GateRef[];
+}
+
+interface DivisionRef {
+  name: string;
+  stations: StationRef[];
+}
+
+interface ZoneRef {
+  name: string;
+  divisions: DivisionRef[];
+}
+
+interface DesignationInfo {
+  name: string;
+  seniority: number;
+  level: 'DIVISIONAL' | 'STATION' | 'GATE';
+  maxGates?: number;
+  immediateSuperior: string | null;
+  description: string;
+}
+
+interface DepartmentInfo {
+  name: string;
+  designations: DesignationInfo[];
+}
 
 export default function Register({ onGoToLogin }: Props) {
   const { success: toastSuccess, error: toastError } = useToast();
-  const [schema, setSchema] = useState<any>(null);
-  const [roles, setRoles] = useState<any[]>([]);
-  const [error, setError] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
+
+  // Hierarchy from backend (actual installations only)
+  const [zones, setZones] = useState<ZoneRef[]>([]);
+  const [departments, setDepartments] = useState<DepartmentInfo[]>([]);
+  const [loadingHierarchy, setLoadingHierarchy] = useState(true);
+
+  // Dynamic builder form schema
+  const [customFields, setCustomFields] = useState<any[]>([]);
   const [formId, setFormId] = useState<number | null>(null);
 
+  // Form inputs
+  const [fullName, setFullName] = useState('');
+  const [mobile, setMobile] = useState('');
+  const [email, setEmail] = useState('');
+  const [employeeId, setEmployeeId] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+
+  // ID card file
+  const [idCardFile, setIdCardFile] = useState<File | null>(null);
+  const [idCardPreview, setIdCardPreview] = useState<string | null>(null);
+
+  // Geographical & Organizational selection
+  const [selectedZone, setSelectedZone] = useState('');
+  const [selectedDivision, setSelectedDivision] = useState('');
+  const [selectedDepartment, setSelectedDepartment] = useState<'Operations' | 'Engineering' | ''>('');
+  const [selectedDesignation, setSelectedDesignation] = useState('');
+  const [selectedStationKey, setSelectedStationKey] = useState('');
+  const [selectedGateIds, setSelectedGateIds] = useState<number[]>([]);
+
+  // Additional dynamic builder values
+  const [customData, setCustomData] = useState<Record<string, any>>({});
+
+  // Security declaration
+  const [declarationConfirmed, setDeclarationConfirmed] = useState(false);
+
+  // Submission state
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+
+  // 1. Fetch installed hierarchy & registration form schema
   useEffect(() => {
-    const fetchForm = async () => {
+    const fetchData = async () => {
+      setLoadingHierarchy(true);
       try {
-        const res = await fetch(`${API_URL}/api/v1/auth/registration-form`);
-        if (!res.ok) {
-          throw new Error('Registration form not available');
-        }
-        const data = await res.json();
-        
-        if (data.form) {
-          setFormId(data.form.id);
-          const parsed = JSON.parse(data.form.schema);
-          if (Array.isArray(parsed)) {
-            // Backward compatibility for old array schema
-            setSchema({ fields: parsed, allowRoles: true });
-          } else {
-            setSchema(parsed);
+        const [hierRes, formRes] = await Promise.all([
+          fetch(`${API_URL}/api/v1/auth/installed-hierarchy`),
+          fetch(`${API_URL}/api/v1/auth/registration-form`),
+        ]);
+
+        if (hierRes.ok) {
+          const hierData = await hierRes.json();
+          setZones(hierData.zones || []);
+          setDepartments(hierData.departments || []);
+          if (hierData.zones?.length > 0) {
+            setSelectedZone(hierData.zones[0].name);
+            if (hierData.zones[0].divisions?.length > 0) {
+              setSelectedDivision(hierData.zones[0].divisions[0].name);
+            }
           }
-        } else {
-          setSchema(DEFAULT_FALLBACK_SCHEMA);
+          if (hierData.departments?.length > 0) {
+            setSelectedDepartment(hierData.departments[0].name as any);
+            if (hierData.departments[0].designations?.length > 0) {
+              setSelectedDesignation(hierData.departments[0].designations[0].name);
+            }
+          }
         }
-        if (data.roles) {
-          setRoles(data.roles);
+
+        if (formRes.ok) {
+          const formData = await formRes.json();
+          if (formData.form) {
+            setFormId(formData.form.id);
+            try {
+              const parsed = JSON.parse(formData.form.schema);
+              const fields = Array.isArray(parsed) ? parsed : (parsed.fields || []);
+              // Filter out core standard fields that are rendered first-class
+              const coreStandardNames = new Set([
+                'fullname', 'mobile', 'email', 'employeeid', 'password',
+                'department', 'designation', 'zone', 'division', 'station', 'stationid',
+                'gate', 'gates', 'gateids', 'idcard', 'declaration', 'roleid'
+              ]);
+              const extras = fields.filter((f: any) => !coreStandardNames.has((f.name || '').toLowerCase().replace(/[^a-z0-9]/g, '')));
+              setCustomFields(extras);
+            } catch (_) {}
+          }
         }
       } catch (err) {
-        console.warn('Using default registration schema:', err);
-        setSchema(DEFAULT_FALLBACK_SCHEMA);
-        // Also fetch roles independently if possible
-        fetch(`${API_URL}/api/v1/roles`)
-          .then(r => r.json())
-          .then(data => {
-            if (Array.isArray(data)) setRoles(data.filter((r: any) => r.name !== 'Developer'));
-          })
-          .catch(() => {});
+        console.warn('Failed to load dynamic hierarchy:', err);
+      } finally {
+        setLoadingHierarchy(false);
       }
     };
-    fetchForm();
+    fetchData();
   }, []);
 
-  const handleSubmit = async (formData: any) => {
-    setIsLoading(true);
+  // Cascading computations
+  const currentZone = zones.find(z => z.name === selectedZone);
+  const availableDivisions = currentZone?.divisions || [];
+  const currentDivision = availableDivisions.find(d => d.name === selectedDivision);
+  const availableStations = currentDivision?.stations || [];
+
+  const currentStation = availableStations.find(s => {
+    const key = s.id ? `id-${s.id}` : `code-${s.code}`;
+    return key === selectedStationKey;
+  });
+  const availableGates = currentStation?.gates || [];
+
+  const currentDeptInfo = departments.find(d => d.name === selectedDepartment);
+  const availableDesignations = currentDeptInfo?.designations || [];
+  const currentDesigInfo = availableDesignations.find(d => d.name === selectedDesignation);
+
+  const isStationLevel = currentDesigInfo?.level === 'STATION' || currentDesigInfo?.level === 'GATE';
+  const isGateman = currentDesigInfo?.name === 'Gateman';
+
+  // Handle Zone change: automatically invalidate dependent division, station, gates
+  const handleZoneChange = (zoneName: string) => {
+    setSelectedZone(zoneName);
+    const z = zones.find(item => item.name === zoneName);
+    const firstDiv = z?.divisions[0]?.name || '';
+    setSelectedDivision(firstDiv);
+    setSelectedStationKey('');
+    setSelectedGateIds([]);
+  };
+
+  // Handle Division change: invalidate dependent station, gates
+  const handleDivisionChange = (divName: string) => {
+    setSelectedDivision(divName);
+    setSelectedStationKey('');
+    setSelectedGateIds([]);
+  };
+
+  // Handle Department change: invalidate designation
+  const handleDepartmentChange = (dept: 'Operations' | 'Engineering') => {
+    setSelectedDepartment(dept);
+    const dInfo = departments.find(d => d.name === dept);
+    setSelectedDesignation(dInfo?.designations[0]?.name || '');
+    setSelectedStationKey('');
+    setSelectedGateIds([]);
+  };
+
+  // Handle Designation change: reset gates
+  const handleDesignationChange = (desig: string) => {
+    setSelectedDesignation(desig);
+    setSelectedGateIds([]);
+  };
+
+  // File pick
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      setIdCardFile(file);
+      const reader = new FileReader();
+      reader.onload = () => {
+        setIdCardPreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // Form submit
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     setError('');
 
-    // If schema has image files, we'd need FormData. 
-    // For simplicity, we assume we send JSON if no files, or FormData if files exist.
-    // Let's check if there are any File objects.
-    const hasFiles = Object.values(formData).some(v => v instanceof File);
+    // Validations
+    if (!fullName.trim()) {
+      setError('Full Name is required.');
+      return;
+    }
+    const cleanMobile = mobile.replace(/\D/g, '');
+    if (cleanMobile.length !== 10) {
+      setError('Mobile Number must be a 10-digit Indian mobile number.');
+      return;
+    }
+    if (!email.trim() || !email.includes('@')) {
+      setError('A valid official Email Address is required.');
+      return;
+    }
+    if (!employeeId.trim()) {
+      setError('Indian Railways Employee ID is required.');
+      return;
+    }
+    if (!password) {
+      setError('Password is required.');
+      return;
+    }
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('Passwords do not match. Please re-enter.');
+      return;
+    }
+
+    if (!selectedZone || !selectedDivision) {
+      setError('Please select Railway Zone and Division with active installations.');
+      return;
+    }
+
+    if (!selectedDepartment || !selectedDesignation) {
+      setError('Please select your official Department and Designation.');
+      return;
+    }
+
+    if (isStationLevel) {
+      if (!currentStation || !currentStation.id) {
+        setError(`Station selection is mandatory for ${selectedDesignation}.`);
+        return;
+      }
+      if (isGateman) {
+        if (selectedGateIds.length !== 1) {
+          setError('A Gateman must be assigned to exactly ONE Level Crossing Gate.');
+          return;
+        }
+      } else {
+        if (selectedGateIds.length === 0) {
+          setError(`Please select at least one Level Crossing Gate under ${currentStation.name}.`);
+          return;
+        }
+      }
+    }
+
+    if (!idCardFile && !idCardPreview) {
+      setError('Official Railway Employee Identity Document upload is mandatory.');
+      return;
+    }
+
+    if (!declarationConfirmed) {
+      setError('You must accept the official security declaration confirming the accuracy of your details.');
+      return;
+    }
+
+    setIsLoading(true);
 
     try {
-      let fetchOptions: RequestInit = {};
+      const payload = new FormData();
 
-      if (hasFiles) {
-        const payload = new FormData();
-        const plainData = { ...formData };
-        
-        Object.entries(formData).forEach(([key, val]) => {
-          if (val instanceof File) {
-            payload.append(key, val);
-            delete plainData[key];
-          }
-        });
-        
-        payload.append('data', JSON.stringify(plainData));
-        if (formData.roleId) payload.append('roleId', formData.roleId);
-        if (formId) payload.append('formId', formId.toString());
+      const registrationData: Record<string, any> = {
+        fullName: fullName.trim(),
+        mobile: cleanMobile,
+        email: email.trim(),
+        employeeId: employeeId.trim(),
+        password,
+        department: selectedDepartment,
+        designation: selectedDesignation,
+        zone: selectedZone,
+        division: selectedDivision,
+        stationId: currentStation?.id || null,
+        gateIds: selectedGateIds,
+        declarationConfirmed: true,
+        ...customData
+      };
 
-        fetchOptions = {
-          method: 'POST',
-          body: payload, // no content type, browser sets it to multipart/form-data with boundary
-        };
-      } else {
-        fetchOptions = {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            data: formData, 
-            roleId: formData.roleId ? parseInt(formData.roleId) : undefined,
-            formId: formId
-          })
-        };
+      if (idCardFile) {
+        payload.append('idCard', idCardFile);
       }
 
-      const res = await fetch(`${API_URL}/api/v1/auth/register`, fetchOptions);
+      payload.append('data', JSON.stringify(registrationData));
+      payload.append('department', selectedDepartment);
+      payload.append('designation', selectedDesignation);
+      payload.append('zone', selectedZone);
+      payload.append('division', selectedDivision);
+      if (currentStation?.id) {
+        payload.append('stationId', currentStation.id.toString());
+      }
+      payload.append('declarationConfirmed', 'true');
+      if (formId) {
+        payload.append('formId', formId.toString());
+      } else {
+        payload.append('formId', '1');
+      }
+
+      selectedGateIds.forEach(gid => {
+        payload.append('gateIds', gid.toString());
+      });
+
+      const res = await fetch(`${API_URL}/api/v1/auth/register`, {
+        method: 'POST',
+        body: payload
+      });
+
       const data = await res.json();
 
       if (res.ok) {
         setSuccess(true);
-        toastSuccess('Registration submitted successfully! Your account request is pending administrator verification.', 'Request Submitted');
+        toastSuccess('Registration submitted! Your request will be reviewed by your immediate railway superior.', 'Submitted');
       } else {
-        const errMsg = data.error || 'Registration failed. Please check your submission.';
+        const errMsg = data.error || 'Registration failed. Please verify your details.';
         setError(errMsg);
-        toastError(errMsg, 'Registration Rejected');
+        toastError(errMsg, 'Submission Failed');
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
-    } catch (err) {
-      const netMsg = 'Network error submitting registration. Please check connection and retry.';
-      setError(netMsg);
-      toastError(netMsg, 'Network Error');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err: any) {
+      const msg = err.message || 'Network error submitting registration. Please check connection.';
+      setError(msg);
+      toastError(msg, 'Network Error');
     } finally {
       setIsLoading(false);
     }
@@ -134,103 +362,443 @@ export default function Register({ onGoToLogin }: Props) {
 
   if (success) {
     return (
-      <div className="bg-light" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', width: '100%', padding: '40px 24px', overflowY: 'auto' }}>
-        <div className="card text-center" style={{ width: 400 }}>
-          <h2 className="text-primary mb-4">Registration Submitted!</h2>
-          <p className="text-muted mb-6">Your registration request has been submitted and is pending administrator approval. You will be notified once your account is activated.</p>
-          <button className="primary outline" onClick={onGoToLogin} style={{ width: '100%' }}>Return to Login</button>
+      <div style={{ minHeight: '100vh', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '32px 16px' }}>
+        <div style={{ maxWidth: 480, width: '100%', background: '#ffffff', borderRadius: 16, padding: '36px 28px', textAlign: 'center', boxShadow: '0 10px 25px rgba(0,0,0,0.06)' }}>
+          <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#ecfdf5', color: '#059669', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', fontSize: 32 }}>
+            <FaCheckCircle />
+          </div>
+          <h2 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>
+            Registration Submitted Successfully!
+          </h2>
+          <p style={{ color: '#475569', fontSize: '0.9rem', lineHeight: 1.55, marginBottom: 20 }}>
+            Your registration request for <strong>"{selectedDesignation}"</strong> ({selectedDepartment} Department) in <strong>{selectedDivision} Division</strong> has been submitted.
+          </p>
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 14, textAlign: 'left', marginBottom: 24, fontSize: '0.82rem', color: '#334155', lineHeight: 1.5 }}>
+            <div style={{ fontWeight: 700, color: '#0284c7', marginBottom: 4 }}>
+              Next Step: Hierarchical Railway Verification
+            </div>
+            Your application will be verified and approved by your designated immediate superior ({currentDesigInfo?.immediateSuperior || 'Railway Governance Authority'}). Once approved, you will be able to log in and monitor your authorized level crossings.
+          </div>
+          <button
+            type="button"
+            onClick={onGoToLogin}
+            style={{ width: '100%', padding: '12px 20px', background: 'var(--primary, #0B3C7A)', color: '#ffffff', border: 'none', borderRadius: 8, fontWeight: 700, fontSize: '0.95rem', cursor: 'pointer' }}
+          >
+            Return to Login
+          </button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="bg-light" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', width: '100%', padding: '40px 24px', overflowY: 'auto' }}>
-      <div className="card" style={{ width: 500, maxWidth: '100%' }}>
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1.25rem' }}>
+    <div style={{ minHeight: '100vh', background: '#f8fafc', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div style={{ maxWidth: 640, width: '100%', background: '#ffffff', borderRadius: 16, border: '1px solid #e2e8f0', boxShadow: '0 8px 30px rgba(0,0,0,0.04)', padding: '32px 28px' }}>
+        
+        {/* Header Branding */}
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <img
             src="/app_icon.png"
-            alt="LC Platform"
-            style={{
-              maxHeight: '75px',
-              maxWidth: '120px',
-              width: 'auto',
-              height: 'auto',
-              borderRadius: '12px',
-              objectFit: 'contain',
-              filter: 'drop-shadow(0 4px 8px rgba(0, 0, 0, 0.12))',
-            }}
+            alt="Indian Railways LC Platform"
+            style={{ maxHeight: 68, maxWidth: 120, objectFit: 'contain', marginBottom: 12 }}
           />
+          <h2 style={{ fontSize: '1.45rem', fontWeight: 800, color: '#0f172a', margin: '0 0 4px' }}>
+            Indian Railways Employee Registration
+          </h2>
+          <p style={{ fontSize: '0.86rem', color: '#64748b', margin: 0 }}>
+            Official Level Crossing Monitoring & Safety Portal
+          </p>
         </div>
-        <h2 className="text-center text-primary mb-6">Create an Account</h2>
-        
+
         {error && (
-          <div 
-            className="registration-error-alert mb-5" 
-            style={{ 
-              padding: '14px 16px', 
-              borderRadius: '8px', 
-              background: '#fef2f2', 
-              border: '1px solid #fecaca',
-              color: '#991b1b',
-              display: 'flex',
-              alignItems: 'flex-start',
-              gap: '12px',
-              fontSize: '0.88rem',
-              lineHeight: 1.45,
-              boxShadow: '0 2px 8px rgba(220, 38, 38, 0.08)'
-            }}
-          >
-            <FaExclamationTriangle style={{ color: '#dc2626', fontSize: '1.25rem', flexShrink: 0, marginTop: '2px' }} />
-            <div style={{ flex: 1 }}>
-              <strong style={{ display: 'block', marginBottom: '3px', color: '#7f1d1d', fontSize: '0.92rem' }}>
-                {error.toLowerCase().includes('already exists') || error.toLowerCase().includes('pending')
-                  ? 'User Already Exists / Account Collision'
-                  : 'Registration Issue'}
-              </strong>
-              <span>{error}</span>
-              {(error.toLowerCase().includes('already exists') || error.toLowerCase().includes('log in') || error.toLowerCase().includes('already registered')) && (
-                <div style={{ marginTop: '10px' }}>
-                  <button 
-                    type="button" 
-                    onClick={onGoToLogin} 
-                    style={{ 
-                      padding: '6px 14px', 
-                      fontSize: '0.82rem', 
-                      background: '#dc2626', 
-                      color: '#ffffff', 
-                      border: 'none', 
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontWeight: 600,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '4px'
-                    }}
-                  >
-                    Go to Login
-                  </button>
-                </div>
-              )}
+          <div style={{ padding: '12px 16px', borderRadius: 8, background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', marginBottom: 20, display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: '0.85rem' }}>
+            <FaExclamationTriangle style={{ color: '#dc2626', marginTop: 2, flexShrink: 0 }} />
+            <div>
+              <strong style={{ display: 'block', color: '#7f1d1d', marginBottom: 2 }}>Registration Issue</strong>
+              {error}
             </div>
           </div>
         )}
 
-        {!schema ? (
-          <div className="text-center text-muted">Loading registration form...</div>
+        {loadingHierarchy ? (
+          <div style={{ textAlign: 'center', padding: '40px 0', color: '#64748b' }}>
+            <FaSpinner className="spin" size={24} style={{ marginBottom: 10 }} />
+            <div>Loading verified railway installations & designations...</div>
+          </div>
         ) : (
-          <FormRenderer 
-            schema={schema} 
-            roles={roles} 
-            onSubmit={handleSubmit} 
-            isSubmitting={isLoading} 
-            requirePassword={true}
-          />
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            
+            {/* Section 1: Employee Identity */}
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: 18 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, color: '#0B3C7A', fontWeight: 700, fontSize: '0.95rem' }}>
+                <FaIdBadge />
+                <span>1. Employee Identification</span>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>Full Name *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Ramesh Kumar Sharma"
+                    value={fullName}
+                    onChange={e => setFullName(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>Employee ID / PF Number *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. EMP-10492"
+                    value={employeeId}
+                    onChange={e => setEmployeeId(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>Mobile Number (10 Digits) *</label>
+                  <input
+                    type="tel"
+                    required
+                    maxLength={10}
+                    placeholder="e.g. 9876543210"
+                    value={mobile}
+                    onChange={e => setMobile(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>Official Email Address *</label>
+                  <input
+                    type="email"
+                    required
+                    placeholder="e.g. ramesh.sharma@railnet.gov.in"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>Create Password *</label>
+                  <input
+                    type="password"
+                    required
+                    placeholder="At least 6 characters"
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>Confirm Password *</label>
+                  <input
+                    type="password"
+                    required
+                    placeholder="Re-enter password"
+                    value={confirmPassword}
+                    onChange={e => setConfirmPassword(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
+                  />
+                </div>
+              </div>
+
+              {/* Identity Document Upload */}
+              <div style={{ marginTop: 14 }}>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                  Official Railway Identity Document (Photo / Scan) *
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: '0.82rem', fontWeight: 600, color: '#0B3C7A', cursor: 'pointer' }}>
+                    <FaUpload />
+                    <span>Choose ID Card Photo</span>
+                    <input type="file" accept="image/*,.pdf" onChange={handleFileChange} style={{ display: 'none' }} />
+                  </label>
+                  <span style={{ fontSize: '0.8rem', color: idCardFile ? '#059669' : '#64748b' }}>
+                    {idCardFile ? idCardFile.name : 'No file chosen (Mandatory)'}
+                  </span>
+                </div>
+                {idCardPreview && (
+                  <div style={{ marginTop: 8 }}>
+                    <img src={idCardPreview} alt="ID Preview" style={{ maxHeight: 80, borderRadius: 6, border: '1px solid #cbd5e1' }} />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Section 2: Railway Geographical Installation Mapping */}
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: 18 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, color: '#0B3C7A', fontWeight: 700, fontSize: '0.95rem' }}>
+                <FaTrain />
+                <span>2. Railway Geographical Jurisdiction (Active Installations Only)</span>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>Railway Zone *</label>
+                  <select
+                    value={selectedZone}
+                    onChange={e => handleZoneChange(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
+                  >
+                    {zones.map(z => (
+                      <option key={z.name} value={z.name}>{z.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>Railway Division *</label>
+                  <select
+                    value={selectedDivision}
+                    onChange={e => handleDivisionChange(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
+                  >
+                    {availableDivisions.map(d => (
+                      <option key={d.name} value={d.name}>{d.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Section 3: Department & Official Designation */}
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: 18 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, color: '#0B3C7A', fontWeight: 700, fontSize: '0.95rem' }}>
+                <FaUserTie />
+                <span>3. Department & Official Railway Designation</span>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>Department *</label>
+                  <select
+                    value={selectedDepartment}
+                    onChange={e => handleDepartmentChange(e.target.value as any)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
+                  >
+                    <option value="Operations">Operations Department</option>
+                    <option value="Engineering">Engineering Department</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>Official Designation *</label>
+                  <select
+                    value={selectedDesignation}
+                    onChange={e => handleDesignationChange(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
+                  >
+                    {availableDesignations.map(d => (
+                      <option key={d.name} value={d.name}>
+                        {d.name} {d.immediateSuperior ? `(Reports to ${d.immediateSuperior})` : '(Divisional Head)'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {currentDesigInfo && (
+                <div style={{ marginTop: 10, padding: 10, background: '#e0f2fe', borderRadius: 8, fontSize: '0.8rem', color: '#0369a1', lineHeight: 1.45 }}>
+                  <strong>Scope & Responsibility: </strong>{currentDesigInfo.description}.
+                  {currentDesigInfo.level === 'DIVISIONAL' && ' Division-level jurisdiction (covers all level crossings in the assigned division).'}
+                </div>
+              )}
+            </div>
+
+            {/* Section 4: Conditional Station & Level Crossing Gate Selection */}
+            {isStationLevel && (
+              <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: 18 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, color: '#0B3C7A', fontWeight: 700, fontSize: '0.95rem' }}>
+                  <FaBuilding />
+                  <span>4. Station & Assigned Level Crossing(s)</span>
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                    Railway Station (with configured LC Gates) *
+                  </label>
+                  <select
+                    value={selectedStationKey}
+                    onChange={e => {
+                      setSelectedStationKey(e.target.value);
+                      setSelectedGateIds([]);
+                    }}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
+                  >
+                    <option value="">-- Select Installed Station --</option>
+                    {availableStations.map(st => {
+                      const key = st.id ? `id-${st.id}` : `code-${st.code}`;
+                      return (
+                        <option key={key} value={key}>
+                          {st.name} ({st.code}) - {st.gates.length} LC Gate{st.gates.length === 1 ? '' : 's'}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                {/* LC Gate Selection */}
+                {selectedStationKey && (
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 6 }}>
+                      {isGateman ? 'Assigned Level Crossing Gate (Select Exactly ONE Gate) *' : 'Assigned Level Crossing Gate(s) under this Station *'}
+                    </label>
+
+                    {availableGates.length === 0 ? (
+                      <div style={{ fontSize: '0.82rem', color: '#64748b', fontStyle: 'italic' }}>
+                        No configured LC Gates under this station yet.
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {availableGates.map(gate => {
+                          const isChecked = selectedGateIds.includes(gate.id);
+                          return (
+                            <label
+                              key={gate.id}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 10,
+                                padding: '10px 14px',
+                                background: isChecked ? '#eff6ff' : '#ffffff',
+                                border: `1px solid ${isChecked ? '#3b82f6' : '#cbd5e1'}`,
+                                borderRadius: 8,
+                                cursor: 'pointer',
+                                fontSize: '0.85rem'
+                              }}
+                            >
+                              <input
+                                type={isGateman ? 'radio' : 'checkbox'}
+                                name="selectedGate"
+                                checked={isChecked}
+                                onChange={() => {
+                                  if (isGateman) {
+                                    setSelectedGateIds([gate.id]);
+                                  } else {
+                                    if (isChecked) {
+                                      setSelectedGateIds(selectedGateIds.filter(id => id !== gate.id));
+                                    } else {
+                                      setSelectedGateIds([...selectedGateIds, gate.id]);
+                                    }
+                                  }
+                                }}
+                              />
+                              <div style={{ flex: 1 }}>
+                                <strong style={{ color: '#0f172a' }}>{gate.lcNumber}</strong>
+                                {gate.name && gate.name !== gate.lcNumber && <span style={{ color: '#475569', marginLeft: 8 }}>({gate.name})</span>}
+                                <span style={{ color: '#64748b', marginLeft: 8 }}>• {gate.locationName}</span>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Custom Builder Fields (Compatibility with Registration Builder) */}
+            {customFields.length > 0 && (
+              <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: 18 }}>
+                <div style={{ fontWeight: 700, color: '#0B3C7A', fontSize: '0.95rem', marginBottom: 12 }}>
+                  Additional Information
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+                  {customFields.map((field: any) => (
+                    <div key={field.id || field.name}>
+                      <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                        {field.label} {field.required ? '*' : ''}
+                      </label>
+                      <input
+                        type={field.type === 'number' ? 'number' : 'text'}
+                        required={field.required}
+                        placeholder={field.placeholder || ''}
+                        value={customData[field.name] || ''}
+                        onChange={e => setCustomData({ ...customData, [field.name]: e.target.value })}
+                        style={{ width: '100%', padding: '9px 12px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Section 5: Official Verification Warning & Declaration (Section 6) */}
+            <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 12, padding: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, color: '#b45309', marginBottom: 12 }}>
+                <FaShieldAlt size={20} style={{ flexShrink: 0, marginTop: 2 }} />
+                <div style={{ fontSize: '0.8rem', lineHeight: 1.5, color: '#92400e' }}>
+                  <strong>IMPORTANT SECURITY NOTICE: </strong>
+                  This application is intended exclusively for authorized Indian Railways personnel associated with the listed level crossings. All submitted employee information, official designations, identity documents and geographical assignments are subject to verification by the designated railway authority.
+                  <br /><br />
+                  Please ensure that you select your actual department, official designation, division, station and assigned level crossing(s). Submission of incorrect information, misrepresentation of official designation or unauthorized registration attempts may result in rejection of your application and further action as per applicable organizational policies.
+                </div>
+              </div>
+
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', fontSize: '0.82rem', color: '#1e293b', fontWeight: 600, lineHeight: 1.45 }}>
+                <input
+                  type="checkbox"
+                  required
+                  checked={declarationConfirmed}
+                  onChange={e => setDeclarationConfirmed(e.target.checked)}
+                  style={{ marginTop: 2 }}
+                />
+                <span>
+                  I hereby declare that all the information, designation, and geographical assignments provided above are accurate and strictly pertain to my official posting in Indian Railways.
+                </span>
+              </label>
+            </div>
+
+            {/* Submit Button */}
+            <button
+              type="submit"
+              disabled={isLoading}
+              style={{
+                padding: '13px 24px',
+                background: 'var(--primary, #0B3C7A)',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: 8,
+                fontSize: '0.95rem',
+                fontWeight: 700,
+                cursor: isLoading ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                boxShadow: '0 4px 12px rgba(11, 60, 122, 0.2)'
+              }}
+            >
+              {isLoading ? (
+                <>
+                  <FaSpinner className="spin" />
+                  <span>Submitting Application...</span>
+                </>
+              ) : (
+                <span>Submit Official Registration Request</span>
+              )}
+            </button>
+          </form>
         )}
 
-        <div className="text-center mt-6">
-          <span className="text-muted">Already have an account? </span>
-          <button className="icon-btn text-primary fw-bold" onClick={onGoToLogin}>Login</button>
+        <div style={{ textAlign: 'center', marginTop: 24, fontSize: '0.85rem' }}>
+          <span style={{ color: '#64748b' }}>Already have an approved account? </span>
+          <button
+            type="button"
+            onClick={onGoToLogin}
+            style={{ background: 'none', border: 'none', color: '#0B3C7A', fontWeight: 700, cursor: 'pointer', padding: 0 }}
+          >
+            Sign In Here
+          </button>
         </div>
       </div>
     </div>

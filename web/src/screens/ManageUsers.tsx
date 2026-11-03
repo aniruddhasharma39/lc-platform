@@ -32,6 +32,7 @@ import type { User } from '../types';
 import { API_URL } from '../config';
 import { useToast } from '../context/ToastContext';
 import './ManageUsers.css';
+import { RAILWAY_DATA, stationsForDivision } from './Cluster/railwayData';
 
 type Props = {
   user: User;
@@ -53,6 +54,16 @@ interface RegistrationRequestItem {
   conflictReasons?: string[];
   status: string;
   createdAt?: string;
+  department?: string;
+  designation?: string;
+  zone?: string;
+  division?: string;
+  station?: any;
+  requestedGates?: any[];
+  idCardUrl?: string;
+  immediateSuperior?: string | null;
+  immediateSuperiorAvailable?: boolean;
+  isGovernanceIntervention?: boolean;
   form?: {
     id: number;
     name: string;
@@ -84,6 +95,13 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
   const [rejectionReason, setRejectionReason] = useState('');
   const [actionLoading, setActionLoading] = useState<{ id: number; action: string } | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [railwayModal, setRailwayModal] = useState<{
+    user: any;
+    zone: string;
+    division: string;
+    stationCode: string;
+  } | null>(null);
+  const [savingRailway, setSavingRailway] = useState(false);
 
   // Centralized Toast Hook
   const { success: toastSuccess, error: toastError, warning: toastWarning, info: toastInfo } = useToast();
@@ -310,6 +328,44 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
       toastError(err.message || 'Error occurred while approving request', 'Approval Failed');
     } finally {
       setActionLoading(null);
+    }
+  };
+
+    const handleSaveRailwayMapping = async () => {
+    if (!railwayModal) return;
+    setSavingRailway(true);
+    try {
+      const token = localStorage.getItem('token');
+      const stList = stationsForDivision(railwayModal.division);
+      const stObj = stList.find(s => s.code === railwayModal.stationCode);
+
+      const res = await fetch(`${API_URL}/api/v1/users/${railwayModal.user.id}/railway-mapping`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          zone: railwayModal.zone || null,
+          division: railwayModal.division || null,
+          stationCode: railwayModal.stationCode || null,
+          stationName: stObj?.name || null,
+        }),
+      });
+
+      if (res.ok) {
+        toastSuccess(`Railway mapping updated for "${railwayModal.user.fullName}".`, 'Mapping Saved');
+        setRailwayModal(null);
+        await fetchAllData();
+        if (onUserUpdate) onUserUpdate();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toastError(err.error || 'Failed to update railway mapping', 'Update Failed');
+      }
+    } catch (e: any) {
+      toastError(e.message || 'Error updating railway mapping', 'Update Failed');
+    } finally {
+      setSavingRailway(false);
     }
   };
 
@@ -902,6 +958,11 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
                                 <div className="user-identity-names">
                                   <div className="user-full-name-row">
                                     <span className="user-full-name">{u.fullName || 'Unnamed User'}</span>
+                                    {u.designation && (
+                                      <span className="badge" style={{ backgroundColor: '#0B3C7A', color: '#ffffff', fontSize: '0.72rem', padding: '2px 8px', borderRadius: 4, fontWeight: 700 }}>
+                                        {u.designation}
+                                      </span>
+                                    )}
                                     <span className={`status-pill ${u.status.toLowerCase()}`}>
                                       <span className="status-dot" />
                                       {u.status}
@@ -1193,6 +1254,33 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
                     </div>
                   </div>
 
+                  {req.idCardUrl && (
+                    <div style={{ margin: '12px 0', padding: '12px 14px', background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <img
+                          src={req.idCardUrl}
+                          alt="Employee ID Card"
+                          style={{ width: 56, height: 40, objectFit: 'cover', borderRadius: 4, border: '1px solid #cbd5e1', cursor: 'pointer' }}
+                          onClick={() => setImagePreviewUrl(req.idCardUrl || null)}
+                        />
+                        <div>
+                          <span style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, color: '#0f172a' }}>
+                            Official Railway Identity Document
+                          </span>
+                          <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                            Submitted for employee verification
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setImagePreviewUrl(req.idCardUrl || null)}
+                        style={{ padding: '6px 12px', background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: '0.78rem', fontWeight: 600, color: '#0B3C7A', cursor: 'pointer' }}
+                      >
+                        <FaSearchPlus style={{ marginRight: 4 }} /> View ID Card
+                      </button>
+                    </div>
+                  )}
                   {/* Applicant Submitted Data Grid */}
                   {textDetails.length > 0 && (
                     <div className="user-details-grid">
@@ -1392,6 +1480,121 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
               <FaTimes />
             </button>
             <img src={imagePreviewUrl} alt="Document Preview" className="image-lightbox-img" />
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================================
+          MODAL: EDIT RAILWAY ORGANIZATIONAL SCOPE
+          ==================================================================== */}
+      {railwayModal && (
+        <div className="users-modal-backdrop" onClick={() => setRailwayModal(null)}>
+          <div className="users-modal-dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 500 }}>
+            <div className="users-modal-header">
+              <div className="users-modal-icon-badge" style={{ backgroundColor: '#e0f2fe', color: '#0284c7' }}>
+                <FaTrain />
+              </div>
+              <div>
+                <h3 style={{ margin: 0 }}>Configure Railway Scope</h3>
+                <p style={{ margin: '4px 0 0', fontSize: '0.8rem', color: '#64748b' }}>
+                  Assign Railway Zone, Division, and Station access for <strong>{railwayModal.user.fullName}</strong>
+                </p>
+              </div>
+            </div>
+            <div className="users-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                  Railway Zone
+                </label>
+                <select
+                  className="filter-select"
+                  style={{ width: '100%' }}
+                  value={railwayModal.zone}
+                  onChange={(e) => {
+                    const nextZone = e.target.value;
+                    const nextDivs = RAILWAY_DATA[nextZone] || [];
+                    setRailwayModal({
+                      ...railwayModal,
+                      zone: nextZone,
+                      division: nextDivs[0] || '',
+                      stationCode: '',
+                    });
+                  }}
+                >
+                  {Object.keys(RAILWAY_DATA).map(z => (
+                    <option key={z} value={z}>{z}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                  Railway Division
+                </label>
+                <select
+                  className="filter-select"
+                  style={{ width: '100%' }}
+                  value={railwayModal.division}
+                  onChange={(e) => {
+                    const nextDiv = e.target.value;
+                    setRailwayModal({
+                      ...railwayModal,
+                      division: nextDiv,
+                      stationCode: '',
+                    });
+                  }}
+                >
+                  {(RAILWAY_DATA[railwayModal.zone] || []).map(d => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>
+                  Railway Station (Optional)
+                </label>
+                <select
+                  className="filter-select"
+                  style={{ width: '100%' }}
+                  value={railwayModal.stationCode}
+                  onChange={(e) => {
+                    setRailwayModal({
+                      ...railwayModal,
+                      stationCode: e.target.value,
+                    });
+                  }}
+                >
+                  <option value="">All Stations in Division (Division-wide access)</option>
+                  {stationsForDivision(railwayModal.division).map(st => (
+                    <option key={st.code} value={st.code}>{st.name} ({st.code})</option>
+                  ))}
+                </select>
+                <p style={{ margin: '4px 0 0', fontSize: '0.75rem', color: '#64748b' }}>
+                  If a station is selected, the user will be restricted to LC Gates associated with that station.
+                </p>
+              </div>
+            </div>
+            <div className="users-modal-footer">
+              <button
+                type="button"
+                className="btn-modal-cancel"
+                onClick={() => setRailwayModal(null)}
+                disabled={savingRailway}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-user-action activate"
+                onClick={handleSaveRailwayMapping}
+                disabled={savingRailway}
+                style={{ padding: '0.6rem 1.2rem', fontSize: '0.875rem' }}
+              >
+                {savingRailway ? <FaSpinner className="spin" /> : <FaCheck />}
+                <span>Save Railway Scope</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

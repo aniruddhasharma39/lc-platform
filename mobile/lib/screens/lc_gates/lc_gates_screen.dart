@@ -1253,16 +1253,26 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                 ],
                 const SizedBox(height: 3),
 
-                // Zone & Division (Clean, NO GPS Coordinates)
-                Row(
-                  children: [
-                    const Icon(Icons.train_outlined, size: 12, color: Color(0xFF64748B)),
-                    const SizedBox(width: 4),
-                    Text(
-                      '${gate['zone'] ?? 'CR'} • ${gate['division'] ?? 'Mumbai'}',
-                      style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-                    ),
-                  ],
+                // Zone, Division & Station (Clean, NO GPS Coordinates)
+                Builder(
+                  builder: (context) {
+                    final stName = gate['station'] != null
+                        ? (gate['station']['name'] ?? gate['station']['code'])
+                        : gate['stationName'];
+                    return Row(
+                      children: [
+                        const Icon(Icons.train_outlined, size: 12, color: Color(0xFF64748B)),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            '${gate['zone'] ?? 'CR'} • ${gate['division'] ?? 'Mumbai'}${stName != null ? " • $stName" : ""}',
+                            style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    );
+                  },
                 ),
                 const SizedBox(height: 8),
 
@@ -1485,15 +1495,25 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               ),
               const SizedBox(height: 8),
 
-              Row(
-                children: [
-                  const Icon(Icons.train_outlined, size: 13, color: Color(0xFF64748B)),
-                  const SizedBox(width: 4),
-                  Text(
-                    'Zone: ${gate['zone'] ?? 'CR'} • Division: ${gate['division'] ?? 'Mumbai'}',
-                    style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-                  ),
-                ],
+              Builder(
+                builder: (context) {
+                  final stName = gate['station'] != null
+                      ? '${gate['station']['name']} (${gate['station']['code']})'
+                      : gate['stationName'];
+                  return Row(
+                    children: [
+                      const Icon(Icons.train_outlined, size: 13, color: Color(0xFF64748B)),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          'Zone: ${gate['zone'] ?? 'CR'} • Division: ${gate['division'] ?? 'Mumbai'}${stName != null ? " • Station: $stName" : ""}',
+                          style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
               if (lat != null && lng != null) ...[
                 const SizedBox(height: 4),
@@ -1584,7 +1604,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                         const SizedBox(width: 5),
                         Flexible(
                           child: Text(
-                            'About Cluster',
+                            'About LC Gate',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
@@ -1729,7 +1749,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
           _buildEmptyCard(
             icon: Icons.memory,
             title: 'No Master Devices Configured',
-            message: 'This cluster currently does not have master hardware units configured.',
+            message: 'This LC Gate currently does not have master hardware units configured.',
           )
         else
           ListView.separated(
@@ -2157,7 +2177,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         child: _buildEmptyCard(
           icon: Icons.sensors_off_rounded,
           title: 'No Master Unit Connected',
-          message: 'This LC Gate does not have any physical Master Units registered. Live telemetry, sensor readings, and operational cycles will activate once a Master Unit is provisioned and linked in Clusters.',
+          message: 'This LC Gate does not have any physical Master Units registered. Live telemetry, sensor readings, and operational cycles will activate once a Master Unit is provisioned and linked in LC Gate Management.',
         ),
       );
     }
