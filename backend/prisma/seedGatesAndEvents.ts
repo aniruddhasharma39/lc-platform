@@ -9,10 +9,7 @@ async function seedGatesAndEvents() {
   console.log('Role-based access mode: ensuring LC gates metadata...');
 
   // 2. Gates metadata
-  const gatesData = [
-    { id: 185, lcNumber: 'LC-0030', name: 'Kasu', locationName: 'Kasu', zone: 'Central Railway', division: 'Mumbai CST' },
-    { id: 186, lcNumber: 'LC-0040', name: 'Pen', locationName: 'Pen', zone: 'Central Railway', division: 'Mumbai CST' }
-  ];
+  const gatesData: any[] = [];
 
   const createdGates: any[] = [];
   for (const g of gatesData) {
