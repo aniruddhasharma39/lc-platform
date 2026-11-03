@@ -11,7 +11,13 @@ import {
   FaFilter,
   FaColumns,
   FaChevronDown,
-  FaChevronUp
+  FaChevronUp,
+  FaListAlt,
+  FaRetweet,
+  FaClock,
+  FaHourglassHalf,
+  FaRoad,
+  FaChartLine
 } from 'react-icons/fa';
 import type { User } from '../../types';
 import { API_URL } from '../../config';
@@ -26,6 +32,62 @@ import {
   type ReportFilterParams,
 } from '../../services/reportsCacheService';
 import './ReportsScreen.css';
+
+export interface DailyCycleMetric {
+  dateStr: string;
+  dateFormatted: string;
+  completedCycles: number;
+  avgClosingSeconds: number;
+  avgClosingFormatted: string;
+  avgOpeningSeconds: number;
+  avgOpeningFormatted: string;
+  totalClosedSeconds: number;
+  totalClosedFormatted: string;
+  totalOpenSeconds: number;
+  totalOpenFormatted: string;
+}
+
+export interface GateCycleReport {
+  gate: {
+    id: number;
+    lcNumber: string;
+    name: string | null;
+    locationName: string;
+    zone: string | null;
+    division: string | null;
+    scopeGroupName?: string | null;
+  };
+  kpis: {
+    totalCycles: number;
+    avgClosingSeconds: number;
+    avgClosingFormatted: string;
+    avgOpeningSeconds: number;
+    avgOpeningFormatted: string;
+    totalClosedSeconds: number;
+    totalClosedFormatted: string;
+    totalOpenSeconds: number;
+    totalOpenFormatted: string;
+  };
+  dailyBreakdown: DailyCycleMetric[];
+}
+
+export interface FullCycleAnalyticsResponse {
+  startDate: string;
+  endDate: string;
+  overall: {
+    totalCycles: number;
+    avgClosingSeconds: number;
+    avgClosingFormatted: string;
+    avgOpeningSeconds: number;
+    avgOpeningFormatted: string;
+    totalClosedSeconds: number;
+    totalClosedFormatted: string;
+    totalOpenSeconds: number;
+    totalOpenFormatted: string;
+    reportingGatesCount: number;
+  };
+  gateReports: GateCycleReport[];
+}
 
 type Props = {
   user: User;
@@ -88,6 +150,11 @@ export default function ReportsScreen({ user }: Props) {
   const [showColumnsPopover, setShowColumnsPopover] = useState<boolean>(false);
 
   // 5. Operational Records & Caching State
+  const [reportType, setReportType] = useState<'complete_log' | 'cycle'>('complete_log');
+  const [cycleData, setCycleData] = useState<FullCycleAnalyticsResponse | null>(null);
+  const [loadingCycleData, setLoadingCycleData] = useState<boolean>(false);
+  const [selectedCycleGateId, setSelectedCycleGateId] = useState<number | 'ALL'>('ALL');
+
   const [records, setRecords] = useState<OperationalRecord[]>([]);
   const [metrics, setMetrics] = useState<AuthoritativeReportMetrics | null>(null);
   const [cursor, setCursor] = useState<ReportsCursor | null>(null);
@@ -447,6 +514,51 @@ export default function ReportsScreen({ user }: Props) {
     debouncedSearch
   ]);
 
+  // ── CYCLE REPORT DATA FETCHING ──────────────────────────────────────────
+  const fetchCycleData = useCallback(async (
+    targetClusterIds: number[],
+    targetGateIds: number[],
+    start: string,
+    end: string
+  ) => {
+    if (targetGateIds.length === 0) {
+      setCycleData(null);
+      return;
+    }
+    setLoadingCycleData(true);
+    try {
+      const url = new URL(`${API_URL}/api/v1/reports/cycle-analytics`);
+      if (targetClusterIds.length > 0) {
+        url.searchParams.append('scopeGroupIds', targetClusterIds.join(','));
+      } else if (isDeveloper) {
+        url.searchParams.append('scopeGroupIds', 'all');
+      }
+      if (targetGateIds.length > 0) {
+        url.searchParams.append('gateIds', targetGateIds.join(','));
+      } else if (isDeveloper) {
+        url.searchParams.append('gateIds', 'all');
+      }
+      url.searchParams.append('startDate', start);
+      url.searchParams.append('endDate', end);
+
+      const res = await fetch(url.toString(), { headers: authHeaders() });
+      if (res.ok) {
+        const json: FullCycleAnalyticsResponse = await res.json();
+        setCycleData(json);
+      }
+    } catch (err) {
+      console.error('Failed to fetch cycle analytics:', err);
+    } finally {
+      setLoadingCycleData(false);
+    }
+  }, [isDeveloper]);
+
+  useEffect(() => {
+    if (reportType === 'cycle' && selectedGateIds.length > 0) {
+      fetchCycleData(selectedClusterIds, selectedGateIds, startDateStr, endDateStr);
+    }
+  }, [reportType, selectedClusterIds, selectedGateIds, startDateStr, endDateStr, fetchCycleData]);
+
   // ── TRANSACTIONALLY ORDERED 45-SECOND INCREMENTAL POLLING ───────────────
   const syncIncrementalChanges = useCallback(async () => {
     const params = currentParamsRef.current;
@@ -686,16 +798,22 @@ export default function ReportsScreen({ user }: Props) {
     setIsExporting(true);
     setExportFormat(format.toUpperCase());
     setExportProgress(15);
-    setExportStage('Querying operational records from database...');
+    setExportStage(reportType === 'cycle'
+      ? 'Calculating analytical gate cycles & duration metrics from database...'
+      : 'Querying operational records from database...');
 
     const progressTimer = setInterval(() => {
       setExportProgress((prev) => {
         if (prev < 40) {
-          setExportStage('Calculating KPI metrics and column layouts...');
+          setExportStage(reportType === 'cycle'
+            ? 'Aggregating daily cycle counts and opening/closing intervals...'
+            : 'Calculating KPI metrics and column layouts...');
           return prev + 12;
         }
         if (prev < 75) {
-          setExportStage(format === 'pdf' ? 'Compiling PDF document layout & styles...' : 'Building Excel spreadsheet workbook...');
+          setExportStage(format === 'pdf'
+            ? (reportType === 'cycle' ? 'Compiling Cycle Summary PDF document...' : 'Compiling PDF document layout & styles...')
+            : (reportType === 'cycle' ? 'Building Cycle Analytics Excel workbook...' : 'Building Excel spreadsheet workbook...'));
           return prev + 8;
         }
         if (prev < 92) {
@@ -723,6 +841,7 @@ export default function ReportsScreen({ user }: Props) {
       url.searchParams.append('startDate', startDateStr);
       url.searchParams.append('endDate', endDateStr);
       url.searchParams.append('format', format);
+      url.searchParams.append('reportType', reportType);
       if (filterStatus !== 'ALL') url.searchParams.append('status', filterStatus);
       if (filterShift !== 'ALL') url.searchParams.append('shift', filterShift);
       if (debouncedSearch.trim()) url.searchParams.append('search', debouncedSearch.trim());
@@ -737,7 +856,9 @@ export default function ReportsScreen({ user }: Props) {
       }
 
       const blob = await res.blob();
-      const downloadFilename = `LC_Report_${startDateStr}_to_${endDateStr}.${format}`;
+      const downloadFilename = reportType === 'cycle'
+        ? `LC_Gate_Cycle_Report_${startDateStr}_to_${endDateStr}.${format}`
+        : `LC_Gate_Complete_Log_${startDateStr}_to_${endDateStr}.${format}`;
 
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -792,6 +913,29 @@ export default function ReportsScreen({ user }: Props) {
 
           <div className="sidebar-compact-body">
             
+            {/* 0. Report Type Selection: Complete Log Report vs Cycle Report */}
+            <div className="report-type-selector-card">
+              <label className="report-type-label">Report Type</label>
+              <div className="report-type-btn-group">
+                <button
+                  type="button"
+                  className={`report-type-tab-btn ${reportType === 'complete_log' ? 'active' : ''}`}
+                  onClick={() => setReportType('complete_log')}
+                  title="Detailed operational history partitioned date-wise"
+                >
+                  <FaListAlt /> Complete Log
+                </button>
+                <button
+                  type="button"
+                  className={`report-type-tab-btn ${reportType === 'cycle' ? 'active' : ''}`}
+                  onClick={() => setReportType('cycle')}
+                  title="Analytical operational cycles, daily counts & opening/closing intervals"
+                >
+                  <FaRetweet /> Cycle Report
+                </button>
+              </div>
+            </div>
+
             {/* 1. Scope Group Dropdown */}
             <div className="compact-field">
               <label>
@@ -949,130 +1093,144 @@ export default function ReportsScreen({ user }: Props) {
               </div>
             </div>
 
-            {/* 4. Barrier Status & Operational Shift */}
-            <div className="compact-row-split">
-              <div className="compact-field">
-                <label>Barrier Status</label>
-                <select
-                  value={filterStatus}
-                  onChange={(e) => setFilterStatus(e.target.value)}
-                >
-                  <option value="ALL">All Statuses</option>
-                  <option value="CLOSED">Closed Only</option>
-                  <option value="EXTENDED_DELAY">Delays (&gt;15m)</option>
-                  <option value="OPEN">Open Now</option>
-                </select>
-              </div>
-
-              <div className="compact-field">
-                <label>Operational Shift</label>
-                <select
-                  value={filterShift}
-                  onChange={(e) => setFilterShift(e.target.value)}
-                >
-                  <option value="ALL">All 24 Hours</option>
-                  <option value="MORNING">Morning (06-14)</option>
-                  <option value="EVENING">Evening (14-22)</option>
-                  <option value="NIGHT">Night (22-06)</option>
-                </select>
-              </div>
-            </div>
-
-            {/* 5. Keyword Search (Full Width, Zero Overlap) */}
-            <div className="compact-field">
-              <label>Filter by Keyword</label>
-              <div className="search-wrap-compact">
-                <FaSearch className="search-icon-left" />
-                <input
-                  type="text"
-                  placeholder="Filter by LC number or location..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-                {searchQuery && (
-                  <button type="button" className="clear-search-btn" onClick={() => setSearchQuery('')} title="Clear search">
-                    <FaTimes size={11} />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* 6. Unified Sort Selector (Full Width, Descriptive) */}
-            <div className="compact-field">
-              <label>Sort Records By</label>
-              <select
-                value={`${sortBy}_${sortOrder}`}
-                onChange={(e) => {
-                  const [field, order] = e.target.value.split('_');
-                  setSortBy(field);
-                  setSortOrder(order as 'asc' | 'desc');
-                }}
-              >
-                <option value="openedAt_desc">Date & Time: Newest to Oldest</option>
-                <option value="openedAt_asc">Date & Time: Oldest to Newest</option>
-                <option value="durationSeconds_desc">Duration: Longest to Shortest</option>
-                <option value="durationSeconds_asc">Duration: Shortest to Longest</option>
-                <option value="lcNumber_asc">LC Number: A to Z</option>
-                <option value="lcNumber_desc">LC Number: Z to A</option>
-                <option value="status_asc">Barrier Status (A to Z)</option>
-              </select>
-            </div>
-
-            {/* 7. Columns Customizer Popover Trigger */}
-            <div className="compact-field relative-anchor" ref={columnPopoverRef}>
-              <div className="column-label-head">
-                <label className="mb-0">
-                  <FaColumns className="field-icon-label text-primary" /> Active Columns ({selectedExportColumns.length})
-                </label>
-                <button
-                  type="button"
-                  className="popover-toggle-link"
-                  onClick={() => setShowColumnsPopover(prev => !prev)}
-                >
-                  {showColumnsPopover ? 'Close' : 'Customize ▾'}
-                </button>
-              </div>
-
-              {showColumnsPopover && (
-                <div className="columns-popover-menu">
-                  <div className="popover-quick-bar">
-                    <button type="button" onClick={handleSelectAllColumns}>Select All</button>
-                    <span className="sep">•</span>
-                    <button type="button" onClick={handleResetDefaultColumns}>Reset Default</button>
+            {/* Controls for Complete Log Report only */}
+            {reportType === 'complete_log' ? (
+              <>
+                {/* 4. Barrier Status & Operational Shift */}
+                <div className="compact-row-split">
+                  <div className="compact-field">
+                    <label>Barrier Status</label>
+                    <select
+                      value={filterStatus}
+                      onChange={(e) => setFilterStatus(e.target.value)}
+                    >
+                      <option value="ALL">All Statuses</option>
+                      <option value="CLOSED">Closed Only</option>
+                      <option value="EXTENDED_DELAY">Delays (&gt;15m)</option>
+                      <option value="OPEN">Open Now</option>
+                    </select>
                   </div>
-                  <div className="columns-grid-popover">
-                    {REPORT_COLUMNS.map(col => {
-                      const isChecked = selectedExportColumns.includes(col.key);
-                      return (
-                        <label key={col.key} className="col-check-item">
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={() => handleToggleColumn(col.key)}
-                          />
-                          <span>{col.label}</span>
-                        </label>
-                      );
-                    })}
+
+                  <div className="compact-field">
+                    <label>Operational Shift</label>
+                    <select
+                      value={filterShift}
+                      onChange={(e) => setFilterShift(e.target.value)}
+                    >
+                      <option value="ALL">All 24 Hours</option>
+                      <option value="MORNING">Morning (06-14)</option>
+                      <option value="EVENING">Evening (14-22)</option>
+                      <option value="NIGHT">Night (22-06)</option>
+                    </select>
                   </div>
                 </div>
-              )}
-            </div>
+
+                {/* 5. Keyword Search */}
+                <div className="compact-field">
+                  <label>Filter by Keyword</label>
+                  <div className="search-wrap-compact">
+                    <FaSearch className="search-icon-left" />
+                    <input
+                      type="text"
+                      placeholder="Filter by LC number or location..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                    {searchQuery && (
+                      <button type="button" className="clear-search-btn" onClick={() => setSearchQuery('')} title="Clear search">
+                        <FaTimes size={11} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* 6. Unified Sort Selector */}
+                <div className="compact-field">
+                  <label>Sort Records By</label>
+                  <select
+                    value={`${sortBy}_${sortOrder}`}
+                    onChange={(e) => {
+                      const [field, order] = e.target.value.split('_');
+                      setSortBy(field);
+                      setSortOrder(order as 'asc' | 'desc');
+                    }}
+                  >
+                    <option value="openedAt_desc">Date & Time: Newest to Oldest</option>
+                    <option value="openedAt_asc">Date & Time: Oldest to Newest</option>
+                    <option value="durationSeconds_desc">Duration: Longest to Shortest</option>
+                    <option value="durationSeconds_asc">Duration: Shortest to Longest</option>
+                    <option value="lcNumber_asc">LC Number: A to Z</option>
+                    <option value="lcNumber_desc">LC Number: Z to A</option>
+                    <option value="status_asc">Barrier Status (A to Z)</option>
+                  </select>
+                </div>
+
+                {/* 7. Columns Customizer Popover Trigger */}
+                <div className="compact-field relative-anchor" ref={columnPopoverRef}>
+                  <div className="column-label-head">
+                    <label className="mb-0">
+                      <FaColumns className="field-icon-label text-primary" /> Active Columns ({selectedExportColumns.length})
+                    </label>
+                    <button
+                      type="button"
+                      className="popover-toggle-link"
+                      onClick={() => setShowColumnsPopover(prev => !prev)}
+                    >
+                      {showColumnsPopover ? 'Close' : 'Customize ▾'}
+                    </button>
+                  </div>
+
+                  {showColumnsPopover && (
+                    <div className="columns-popover-menu">
+                      <div className="popover-quick-bar">
+                        <button type="button" onClick={handleSelectAllColumns}>Select All</button>
+                        <span className="sep">•</span>
+                        <button type="button" onClick={handleResetDefaultColumns}>Reset Default</button>
+                      </div>
+                      <div className="columns-grid-popover">
+                        {REPORT_COLUMNS.map(col => {
+                          const isChecked = selectedExportColumns.includes(col.key);
+                          return (
+                            <label key={col.key} className="col-check-item">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => handleToggleColumn(col.key)}
+                              />
+                              <span>{col.label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '0.75rem', fontSize: '0.75rem', color: '#475569', marginTop: '0.5rem' }}>
+                <strong style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#003580', marginBottom: '0.25rem' }}>
+                  <FaChartLine /> Cycle Analytical Parameters
+                </strong>
+                Calculates complete operational cycles (OPEN → CLOSED → OPEN), mean closure durations, and road clearance intervals over 24-hour daily windows.
+              </div>
+            )}
 
           </div>
 
           {/* SIDEBAR FOOTER: DIRECT 1-CLICK EXPORTS */}
           <div className="sidebar-action-footer">
             <div className="export-label-row">
-              <span className="export-tag-title">Direct Report Generation</span>
+              <span className="export-tag-title">
+                {reportType === 'cycle' ? 'Export Cycle Report' : 'Export Complete Log'}
+              </span>
             </div>
             <div className="export-buttons-pair">
               <button
                 type="button"
                 className="btn btn-success btn-sm export-action-btn"
                 onClick={() => handleDownloadReport('xlsx')}
-                disabled={isExporting || selectedExportColumns.length === 0}
-                title="Download Excel spreadsheet"
+                disabled={isExporting || (reportType === 'complete_log' && selectedExportColumns.length === 0)}
+                title={reportType === 'cycle' ? 'Download analytical Cycle Report (.xlsx)' : 'Download operational Complete Log (.xlsx)'}
               >
                 <FaFileExcel />
                 <span>{isExporting ? 'Exporting...' : 'Excel (.xlsx)'}</span>
@@ -1082,8 +1240,8 @@ export default function ReportsScreen({ user }: Props) {
                 type="button"
                 className="btn btn-danger btn-sm export-action-btn"
                 onClick={() => handleDownloadReport('pdf')}
-                disabled={isExporting || selectedExportColumns.length === 0}
-                title="Download printable PDF report"
+                disabled={isExporting || (reportType === 'complete_log' && selectedExportColumns.length === 0)}
+                title={reportType === 'cycle' ? 'Download analytical Cycle Report (.pdf)' : 'Download operational Complete Log (.pdf)'}
               >
                 <FaFilePdf />
                 <span>{isExporting ? 'Exporting...' : 'PDF (.pdf)'}</span>
@@ -1093,10 +1251,204 @@ export default function ReportsScreen({ user }: Props) {
         </aside>
 
         {/* ═══════════════════════════════════════════════════════════
-            RIGHT COLUMN: VIEW LOG MAIN WORKSPACE (Real-Time Reactive)
+            RIGHT COLUMN: MAIN WORKSPACE (Real-Time Reactive)
            ═══════════════════════════════════════════════════════════ */}
-        <main className="view-log-main-card">
-          <div className="view-log-header">
+        {reportType === 'cycle' ? (
+          <main className="view-log-main-card">
+            {/* Header */}
+            <div className="view-log-header">
+              <div>
+                <div className="log-title-row">
+                  <FaRetweet className="text-primary mr-2" />
+                  <h3 className="log-title">Cycle Report: Analytical Summary & Gate Utilization</h3>
+                  {loadingCycleData ? (
+                    <span className="live-status-pill updating">
+                      <FaSyncAlt className="spin mr-1" /> Calculating cycles...
+                    </span>
+                  ) : (
+                    <span className="live-status-pill synced">
+                      <span className="pulse-dot" /> Live Synced
+                    </span>
+                  )}
+                </div>
+                <span className="log-subtitle">
+                  Analytical operational cycles, closing durations, and opening intervals from <strong>{startDateStr}</strong> to <strong>{endDateStr}</strong>
+                </span>
+              </div>
+
+              <div className="view-log-header-right">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => fetchCycleData(selectedClusterIds, selectedGateIds, startDateStr, endDateStr)}
+                  disabled={loadingCycleData}
+                  title="Recalculate cycle metrics from database"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.35rem 0.75rem', borderRadius: '8px' }}
+                >
+                  <FaSyncAlt className={loadingCycleData ? 'spin' : ''} />
+                  <span>Refresh</span>
+                </button>
+              </div>
+            </div>
+
+            {/* KPI Cards Grid */}
+            <div className="cycle-kpi-grid">
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Completed Cycles</span>
+                  <FaRetweet className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value">
+                  {cycleData?.overall.totalCycles.toLocaleString('en-IN') ?? '0'}
+                </div>
+                <span className="cycle-kpi-sub">OPEN → CLOSED → OPEN operations</span>
+              </div>
+
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Avg Closing Time</span>
+                  <FaHourglassHalf className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value">
+                  {cycleData?.overall.avgClosingFormatted || '—'}
+                </div>
+                <span className="cycle-kpi-sub">Mean closure duration per cycle</span>
+              </div>
+
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Avg Opening Interval</span>
+                  <FaClock className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value">
+                  {cycleData?.overall.avgOpeningFormatted || '—'}
+                </div>
+                <span className="cycle-kpi-sub">Road clearance interval between closures</span>
+              </div>
+
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Total Closed Duration</span>
+                  <FaRoad className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value">
+                  {cycleData?.overall.totalClosedFormatted || '0s'}
+                </div>
+                <span className="cycle-kpi-sub">Cumulative road restriction</span>
+              </div>
+
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Total Open Duration</span>
+                  <FaChartLine className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value">
+                  {cycleData?.overall.totalOpenFormatted || '0s'}
+                </div>
+                <span className="cycle-kpi-sub">Cumulative road clearance time</span>
+              </div>
+            </div>
+
+            {/* Multi-Gate Filter Selector Bar */}
+            {cycleData && cycleData.gateReports.length > 1 && (
+              <div className="cycle-gate-selector-bar">
+                <span className="cycle-gate-selector-label">Filter View:</span>
+                <button
+                  type="button"
+                  className={`cycle-gate-tab-pill ${selectedCycleGateId === 'ALL' ? 'active' : ''}`}
+                  onClick={() => setSelectedCycleGateId('ALL')}
+                >
+                  All {cycleData.gateReports.length} Gates
+                </button>
+                {cycleData.gateReports.map(gr => (
+                  <button
+                    key={gr.gate.id}
+                    type="button"
+                    className={`cycle-gate-tab-pill ${selectedCycleGateId === gr.gate.id ? 'active' : ''}`}
+                    onClick={() => setSelectedCycleGateId(gr.gate.id)}
+                  >
+                    {gr.gate.lcNumber} ({gr.kpis.totalCycles} cycles)
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Daily Cycle Summary Table */}
+            <div className="table-responsive">
+              <table className="reports-table">
+                <thead>
+                  <tr>
+                    <th>Gate</th>
+                    <th>Operational Date</th>
+                    <th className="text-center">Completed Cycles</th>
+                    <th className="text-center">Avg Closing Time</th>
+                    <th className="text-center">Avg Opening Time</th>
+                    <th className="text-center">Total Closed</th>
+                    <th className="text-center">Total Open</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loadingCycleData && !cycleData ? (
+                    <tr>
+                      <td colSpan={7} className="text-center py-5">
+                        <FaSyncAlt className="spin mr-2" /> Calculating operational cycle metrics...
+                      </td>
+                    </tr>
+                  ) : !cycleData || cycleData.gateReports.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="text-center py-5 empty-cell">
+                        <FaArchway size={34} className="mb-2 text-muted" />
+                        <p style={{ margin: 0, fontWeight: 700, fontSize: '0.95rem', color: '#334155' }}>
+                          No operational cycle records found.
+                        </p>
+                        <small className="text-muted">
+                          Adjust scope groups, gates, or date range in the left builder panel.
+                        </small>
+                      </td>
+                    </tr>
+                  ) : (
+                    cycleData.gateReports
+                      .filter(gr => selectedCycleGateId === 'ALL' || selectedCycleGateId === gr.gate.id)
+                      .flatMap(gr =>
+                        gr.dailyBreakdown.map((day, idx) => (
+                          <tr key={`${gr.gate.id}_${day.dateStr}_${idx}`}>
+                            <td>
+                              <strong className="lc-tag">{gr.gate.lcNumber}</strong>
+                              <span className="text-muted small ml-1">{gr.gate.locationName}</span>
+                            </td>
+                            <td>{day.dateFormatted}</td>
+                            <td className="text-center">
+                              {day.completedCycles > 0 ? (
+                                <span className="cycle-count-badge">
+                                  {day.completedCycles}
+                                </span>
+                              ) : (
+                                <span className="cycle-zero-badge">0</span>
+                              )}
+                            </td>
+                            <td className="text-center text-mono">
+                              {day.avgClosingFormatted}
+                            </td>
+                            <td className="text-center text-mono">
+                              {day.avgOpeningFormatted}
+                            </td>
+                            <td className="text-center text-mono">
+                              {day.totalClosedFormatted}
+                            </td>
+                            <td className="text-center text-mono">
+                              {day.totalOpenFormatted}
+                            </td>
+                          </tr>
+                        ))
+                      )
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </main>
+        ) : (
+          <main className="view-log-main-card">
+            <div className="view-log-header">
             <div>
               <div className="log-title-row">
                 <FaArchway className="text-primary mr-2" />
@@ -1278,6 +1630,7 @@ export default function ReportsScreen({ user }: Props) {
             </div>
           )}
         </main>
+        )}
       </div>
 
       {/* ── REPORT GENERATION PROGRESS BAR MODAL ── */}
