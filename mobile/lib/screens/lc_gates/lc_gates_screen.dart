@@ -569,6 +569,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
 
       final uri = Uri.parse(wsUrlStr);
       _telemetryWsChannel = WebSocketChannel.connect(uri);
+      _telemetryWsChannel?.ready.catchError((_) {});
 
       _telemetryWsSub = _telemetryWsChannel!.stream.listen(
         (message) {
