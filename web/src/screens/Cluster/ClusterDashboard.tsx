@@ -279,31 +279,40 @@ export default function ClusterDashboard(_props: Props) {
       return;
     }
     const gateLabel = selectedGate.name || selectedGate.lcNumber;
-     setDeletingGate(true);
+    const gateId = selectedGate.id;
+
+    // Optimistic UI: remove gate instantly
+    setGates(prev => prev.filter(g => g.id !== gateId));
+    setShowDeleteModal(false);
+    setDeleteConfirmText('');
+    setSelectedGate(null);
+    setView('list');
+    toastSuccess(`Gate "${gateLabel}" is being deleted...`, "Gate Deleted");
+
+    // Backend deletion runs in the background
+    setDeletingGate(true);
     try {
-      const res = await fetch(`${API_URL}/api/v1/lcgate/${selectedGate.id}`, {
+      const res = await fetch(`${API_URL}/api/v1/lcgate/${gateId}`, {
         method: 'DELETE',
         headers: authHeaders()
       });
       if (res.ok) {
         clusterCacheService.invalidate(getCacheUserId(_props.user));
-        lcGatesCacheService.removeGate(getCacheUserId(_props.user), selectedGate.id);
-        setShowDeleteModal(false);
-        setDeleteConfirmText('');
-        setSelectedGate(null);
-        setView('list');
+        lcGatesCacheService.removeGate(getCacheUserId(_props.user), gateId);
         fetchGates(undefined, true);
-        toastSuccess(`Gate "${gateLabel}" deleted successfully.`, "Gate Deleted");
+        toastSuccess(`Gate "${gateLabel}" permanently deleted.`, "Gate Deleted");
       } else {
         const err = await res.json().catch(() => ({}));
         toastError(err.error || 'Failed to delete gate from server.', 'Delete Error');
+        fetchGates(undefined, true);
       }
     } catch (e: any) {
       console.error(e);
       toastError(e.message || 'Network error while deleting gate.', 'Network Error');
-     } finally {
-       setDeletingGate(false);
-     }
+      fetchGates(undefined, true);
+    } finally {
+      setDeletingGate(false);
+    }
   };
 
   return (

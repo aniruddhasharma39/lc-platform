@@ -617,7 +617,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
               } else {
                 AppFeedback.showWarning(context, 'Entered name does not match "$targetName". Deletion aborted.');
               }
-            }, 
+            },
             child: const Text('Delete this gate', style: TextStyle(color: Colors.white))
           ),
         ],
@@ -626,38 +626,21 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
 
     if (!confirm) return;
 
-    // Show a responsive progress indicator while the (potentially heavy) delete runs
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const Center(
-        child: Card(
-          child: Padding(
-            padding: EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(height: 16),
-                Text('Deleting gate, please wait...'),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
+    // Optimistic UI: remove the gate instantly from the list
+    final gateId = gate['id'];
+    setState(() {
+      _gates.removeWhere((g) => g['id'] == gateId);
+    });
+    AppFeedback.showSuccess(context, 'LC Gate "$targetName" is being deleted...');
 
-    try {
-      final res = await http.delete(
-        Uri.parse('$baseUrl/lcgate/${gate['id']}'),
-        headers: {'Authorization': 'Bearer $_token'},
-      );
+    // Backend deletion runs in the background; UI is already updated
+    http.delete(
+      Uri.parse('$baseUrl/lcgate/$gateId'),
+      headers: {'Authorization': 'Bearer $_token'},
+    ).then((res) async {
       if (res.statusCode == 204 || res.statusCode == 200) {
-        await LCGatesCacheService.instance.removeGateAcrossAllScopes(_userId, gate['id']);
-        await _fetchGates();
-        if (mounted) {
-          AppFeedback.showSuccess(context, 'LC Gate "$targetName" permanently deleted.');
-        }
+        await LCGatesCacheService.instance.removeGateAcrossAllScopes(_userId, gateId);
+        if (mounted) AppFeedback.showSuccess(context, 'LC Gate "$targetName" permanently deleted.');
       } else {
         String errMsg = 'Failed to delete LC Gate';
         try {
@@ -666,16 +649,17 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
         } catch (_) {}
         if (mounted) {
           AppFeedback.showError(context, errMsg);
+          await _fetchGates();
         }
       }
-    } catch (e) {
+    }).catchError((e) {
       if (mounted) {
         AppFeedback.showError(context, 'Network error deleting LC Gate: $e');
+        _fetchGates();
       }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
+    });
   }
+
 
   @override
   Widget build(BuildContext context) {
