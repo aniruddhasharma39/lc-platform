@@ -965,7 +965,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                   className="btn-small btn-outline"
                   style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', padding: '5px 12px', borderRadius: 7 }}
                   onClick={() => fetchGateTelemetry(selectedGate.id)}
-                  title="Refresh live cluster telemetry"
+                  title="Refresh live gate telemetry"
                 >
                   <FaSyncAlt className={loadingTelemetry ? 'fa-spin' : ''} size={11} />
                   <span>Refresh</span>
@@ -1109,6 +1109,12 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                   <span><FaTrain style={{ marginRight: 4 }} /> Zone: <strong>{selectedGate.zone || 'CR'}</strong></span>
                   <span>•</span>
                   <span>Division: <strong>{selectedGate.division || 'Mumbai'}</strong></span>
+                  {(selectedGate.station || selectedGate.stationName) && (
+                    <>
+                      <span>•</span>
+                      <span>Station: <strong>{selectedGate.station?.name || selectedGate.stationName} {selectedGate.station?.code ? `(${selectedGate.station.code})` : ''}</strong></span>
+                    </>
+                  )}
                   {selectedGate.latitude && selectedGate.longitude && (
                     <>
                       <span>•</span>
@@ -2624,7 +2630,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                   </h4>
                   <p style={{ margin: 0, fontSize: '0.85rem' }}>
                     {searchQuery
-                      ? 'No clusters match your search query.'
+                      ? 'No gates match your search query.'
                       : 'No gates have been directly mapped to this Scope Group yet.'}
                   </p>
                 </div>
@@ -2685,6 +2691,12 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                       
                       <div className="lcg-cluster-zone-div">
                         <span><FaTrain size={10} style={{ marginRight: 3 }} /> {gate.zone || 'CR'} / {gate.division || 'Mumbai'}</span>
+                        {(gate.station || gate.stationName) && (
+                          <>
+                            <span>•</span>
+                            <span style={{ color: '#4f46e5', fontWeight: 600 }}>{gate.station?.name || gate.stationName}</span>
+                          </>
+                        )}
                         {gate.latitude && gate.longitude && (
                           <>
                             <span>•</span>

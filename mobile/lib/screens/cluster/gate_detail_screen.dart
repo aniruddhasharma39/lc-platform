@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'create_master_screen.dart';
+import 'railway_data.dart';
 import 'evidence_checklist_screen.dart';
 import '../../config.dart';
 import '../../main.dart';
@@ -71,6 +72,404 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
       final userId = prefs.getString('userId') ?? prefs.getString('employeeId') ?? 'user';
       LCGatesCacheService.instance.markStale(userId);
     } catch (_) {}
+  }
+
+  Future<void> _showEditGateDialog() async {
+    final lcCtrl = TextEditingController(text: (gate['lcNumber'] ?? '').toString());
+    final nameCtrl = TextEditingController(text: (gate['name'] ?? '').toString());
+    final locCtrl = TextEditingController(text: (gate['locationName'] ?? '').toString());
+    final latCtrl = TextEditingController(text: (gate['latitude'] ?? '').toString());
+    final lngCtrl = TextEditingController(text: (gate['longitude'] ?? '').toString());
+
+    String selectedZone = (gate['zone'] ?? '').toString();
+    if (!RailwayData.data.containsKey(selectedZone)) {
+      selectedZone = RailwayData.data.keys.first;
+    }
+    List<String> divisions = RailwayData.data[selectedZone] ?? [];
+    String selectedDivision = (gate['division'] ?? '').toString();
+    if (!divisions.contains(selectedDivision)) {
+      selectedDivision = divisions.isNotEmpty ? divisions.first : '';
+    }
+
+    List<StationReference> stations = RailwayData.stationsForDivision(selectedDivision);
+    String? selectedStationCode = gate['station']?['code'] ?? gate['stationCode'];
+    if (selectedStationCode != null && !stations.any((s) => s.code == selectedStationCode)) {
+      selectedStationCode = null;
+    }
+
+    bool isSubmitting = false;
+
+    await showDialog(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (context, setModalState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(
+            children: const [
+              Icon(Icons.edit_road, color: AppColors.primary),
+              SizedBox(width: 8),
+              Text('Edit LC Gate', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: SizedBox(
+              width: 440,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: lcCtrl,
+                    decoration: const InputDecoration(labelText: 'LC Gate Number *', isDense: true, border: OutlineInputBorder()),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: nameCtrl,
+                    decoration: const InputDecoration(labelText: 'Display Name', isDense: true, border: OutlineInputBorder()),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: locCtrl,
+                    decoration: const InputDecoration(labelText: 'Location Description', isDense: true, border: OutlineInputBorder()),
+                  ),
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                    value: selectedZone,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Railway Zone *', isDense: true, border: OutlineInputBorder()),
+                    items: RailwayData.data.keys.map((z) => DropdownMenuItem(value: z, child: Text(z, style: const TextStyle(fontSize: 12)))).toList(),
+                    onChanged: (val) {
+                      if (val != null) {
+                        setModalState(() {
+                          selectedZone = val;
+                          divisions = RailwayData.data[selectedZone] ?? [];
+                          selectedDivision = divisions.isNotEmpty ? divisions.first : '';
+                          stations = RailwayData.stationsForDivision(selectedDivision);
+                          selectedStationCode = null;
+                        });
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                    value: divisions.contains(selectedDivision) ? selectedDivision : null,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Railway Division *', isDense: true, border: OutlineInputBorder()),
+                    items: divisions.map((d) => DropdownMenuItem(value: d, child: Text(d, style: const TextStyle(fontSize: 12)))).toList(),
+                    onChanged: (val) {
+                      if (val != null) {
+                        setModalState(() {
+                          selectedDivision = val;
+                          stations = RailwayData.stationsForDivision(selectedDivision);
+                          selectedStationCode = null;
+                        });
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                    value: selectedStationCode,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Railway Station (Optional)', isDense: true, border: OutlineInputBorder()),
+                    items: [
+                      const DropdownMenuItem<String>(value: null, child: Text('No Station Specified', style: TextStyle(fontSize: 12, color: Colors.grey))),
+                      ...stations.map((st) => DropdownMenuItem<String>(
+                        value: st.code,
+                        child: Text('${st.name} (${st.code})', style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis),
+                      )),
+                    ],
+                    onChanged: (val) {
+                      setModalState(() => selectedStationCode = val);
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: latCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'Latitude', isDense: true, border: OutlineInputBorder()),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: lngCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(labelText: 'Longitude', isDense: true, border: OutlineInputBorder()),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: isSubmitting ? null : () => Navigator.pop(dialogCtx),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
+              onPressed: isSubmitting ? null : () async {
+                final lcNum = lcCtrl.text.trim();
+                if (lcNum.isEmpty) {
+                  AppFeedback.showWarning(context, 'LC Gate Number is required.');
+                  return;
+                }
+                setModalState(() => isSubmitting = true);
+                try {
+                  final stObj = stations.cast<StationReference?>().firstWhere(
+                    (s) => s?.code == selectedStationCode,
+                    orElse: () => null,
+                  );
+
+                  final body = <String, dynamic>{
+                    'lcNumber': lcNum,
+                    'name': nameCtrl.text.trim().isEmpty ? lcNum : nameCtrl.text.trim(),
+                    'locationName': locCtrl.text.trim().isEmpty ? lcNum : locCtrl.text.trim(),
+                    'zone': selectedZone,
+                    'division': selectedDivision,
+                    'stationCode': selectedStationCode,
+                    'stationName': stObj?.name,
+                    'latitude': double.tryParse(latCtrl.text.trim()) ?? 0.0,
+                    'longitude': double.tryParse(lngCtrl.text.trim()) ?? 0.0,
+                  };
+
+                  final res = await http.put(
+                    Uri.parse('$baseUrl/lcgate/${gate['id']}'),
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': 'Bearer ${widget.token}',
+                    },
+                    body: json.encode(body),
+                  );
+
+                  if (res.statusCode == 200) {
+                    final updated = json.decode(res.body);
+                    if (mounted) {
+                      setState(() => gate = updated);
+                      Navigator.pop(dialogCtx);
+                      AppFeedback.showSuccess(context, 'LC Gate updated successfully.');
+                      await _refresh();
+                      await _markCacheStale();
+                    }
+                  } else {
+                    String err = 'Failed to update LC Gate';
+                    try {
+                      final b = json.decode(res.body);
+                      if (b['error'] != null) err = b['error'];
+                    } catch (_) {}
+                    if (mounted) AppFeedback.showError(context, err);
+                    setModalState(() => isSubmitting = false);
+                  }
+                } catch (e) {
+                  if (mounted) AppFeedback.showError(context, 'Network error updating gate: $e');
+                  setModalState(() => isSubmitting = false);
+                }
+              },
+              child: isSubmitting
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Save Changes', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showDeviceAssignmentDialog() async {
+    setState(() => _isLoading = true);
+    List<dynamic> allDevices = [];
+    try {
+      final res = await http.get(
+        Uri.parse('$baseUrl/devices?limit=100'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data is Map && data['devices'] is List) {
+          allDevices = data['devices'];
+        }
+      }
+    } catch (_) {}
+    if (mounted) setState(() => _isLoading = false);
+
+    final assignedDevices = allDevices.where((d) => d['gateId'] == gate['id']).toList();
+    final unassignedDevices = allDevices.where((d) => d['gateId'] == null).toList();
+
+    String? selectedUnassignedId;
+
+    if (!mounted) return;
+
+    await showDialog(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (context, setModalState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(
+            children: const [
+              Icon(Icons.developer_board, color: AppColors.primary),
+              SizedBox(width: 8),
+              Text('AWS IoT Device Assignment', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ],
+          ),
+          content: SizedBox(
+            width: 460,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Assign or unassign AWS IoT registered hardware devices for Gate ${gate['lcNumber']}.',
+                    style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text('CURRENTLY ASSIGNED DEVICES', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF475569))),
+                  const SizedBox(height: 6),
+                  if (assignedDevices.isEmpty)
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(color: const Color(0xFFF8FAFC), borderRadius: BorderRadius.circular(8), border: Border.all(color: const Color(0xFFE2E8F0))),
+                      child: const Text('No physical AWS IoT devices assigned to this gate. It operates as a virtual LC gate.', style: TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                    )
+                  else
+                    ...assignedDevices.map((dev) => Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFCBD5E1)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.memory, size: 18, color: AppColors.primary),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(dev['thingName'] ?? 'Device', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+                                Text('Type: ${dev['deviceType'] ?? 'MASTER'} • Serial: ${dev['serialNumber'] ?? '-'}', style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                              ],
+                            ),
+                          ),
+                          TextButton(
+                            style: TextButton.styleFrom(foregroundColor: Colors.red, visualDensity: VisualDensity.compact),
+                            onPressed: () async {
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (c) => AlertDialog(
+                                  title: const Text('Unassign Hardware Device?'),
+                                  content: Text('Unassign ${dev['thingName']} from this LC Gate? The physical device will return to the unassigned registry pool.'),
+                                  actions: [
+                                    TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')),
+                                    ElevatedButton(
+                                      style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                                      onPressed: () => Navigator.pop(c, true),
+                                      child: const Text('Unassign', style: TextStyle(color: Colors.white)),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (confirm == true) {
+                                try {
+                                  final res = await http.post(
+                                    Uri.parse('$baseUrl/lcgate/${gate['id']}/unassign-device'),
+                                    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${widget.token}'},
+                                    body: json.encode({'deviceId': dev['id']}),
+                                  );
+                                  if (res.statusCode == 200) {
+                                    setModalState(() {
+                                      assignedDevices.removeWhere((d) => d['id'] == dev['id']);
+                                      unassignedDevices.add(dev);
+                                    });
+                                    await _refresh();
+                                    await _markCacheStale();
+                                    if (mounted) AppFeedback.showSuccess(context, 'Device unassigned from gate.');
+                                  } else {
+                                    if (mounted) AppFeedback.showError(context, 'Failed to unassign device');
+                                  }
+                                } catch (e) {
+                                  if (mounted) AppFeedback.showError(context, 'Error unassigning: $e');
+                                }
+                              }
+                            },
+                            child: const Text('Unassign', style: TextStyle(fontSize: 12)),
+                          ),
+                        ],
+                      ),
+                    )),
+                  const SizedBox(height: 16),
+                  const Text('LINK NEW HARDWARE DEVICE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF475569))),
+                  const SizedBox(height: 6),
+                  if (unassignedDevices.isEmpty)
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(color: const Color(0xFFFFFBEB), borderRadius: BorderRadius.circular(8), border: Border.all(color: const Color(0xFFFDE68A))),
+                      child: const Text('No unassigned devices currently available in AWS IoT Registry.', style: TextStyle(fontSize: 11.5, color: Color(0xFF92400E))),
+                    )
+                  else
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DropdownButtonFormField<String>(
+                            value: selectedUnassignedId,
+                            isExpanded: true,
+                            hint: const Text('Select AWS IoT Device', style: TextStyle(fontSize: 12)),
+                            decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
+                            items: unassignedDevices.map((d) => DropdownMenuItem<String>(
+                              value: d['id'].toString(),
+                              child: Text('${d['thingName']} (${d['deviceType']})', style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis),
+                            )).toList(),
+                            onChanged: (val) => setModalState(() => selectedUnassignedId = val),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, visualDensity: VisualDensity.compact),
+                          onPressed: selectedUnassignedId == null ? null : () async {
+                            final chosenDev = unassignedDevices.firstWhere((d) => d['id'].toString() == selectedUnassignedId);
+                            try {
+                              final res = await http.post(
+                                Uri.parse('$baseUrl/lcgate/${gate['id']}/assign-device'),
+                                headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${widget.token}'},
+                                body: json.encode({'deviceId': chosenDev['id']}),
+                              );
+                              if (res.statusCode == 200) {
+                                setModalState(() {
+                                  unassignedDevices.removeWhere((d) => d['id'] == chosenDev['id']);
+                                  assignedDevices.add(chosenDev);
+                                  selectedUnassignedId = null;
+                                });
+                                await _refresh();
+                                await _markCacheStale();
+                                if (mounted) AppFeedback.showSuccess(context, 'Device assigned to LC Gate successfully.');
+                              } else {
+                                if (mounted) AppFeedback.showError(context, 'Failed to assign device.');
+                              }
+                            } catch (e) {
+                              if (mounted) AppFeedback.showError(context, 'Error assigning: $e');
+                            }
+                          },
+                          child: const Text('Assign', style: TextStyle(color: Colors.white, fontSize: 12)),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogCtx), child: const Text('Close')),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _deleteMaster(Map master) async {
@@ -648,10 +1047,31 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(gate['lcNumber'] ?? 'Gate Details', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            Text('${gate['locationName'] ?? ''}${gate['zone'] != null ? " • ${gate['zone']}" : ""}', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+            Builder(
+              builder: (context) {
+                final stName = gate['station'] != null
+                    ? '${gate['station']['name']} (${gate['station']['code']})'
+                    : gate['stationName'];
+                return Text(
+                  '${gate['locationName'] ?? ''}${stName != null ? " • $stName" : ""}${gate['zone'] != null ? " • ${gate['zone']}" : ""}',
+                  style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                  overflow: TextOverflow.ellipsis,
+                );
+              },
+            ),
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.edit_outlined),
+            tooltip: 'Edit LC Gate',
+            onPressed: _showEditGateDialog,
+          ),
+          IconButton(
+            icon: const Icon(Icons.link_outlined),
+            tooltip: 'Assign / Unassign Devices',
+            onPressed: _showDeviceAssignmentDialog,
+          ),
           if (masters.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.developer_board, color: AppColors.primary),

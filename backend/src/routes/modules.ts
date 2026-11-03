@@ -19,9 +19,9 @@ const CANONICAL_ORDER = [
 ];
 
 const REQUIRED_MODULES = [
-  { name: 'LC Gates', slug: 'lc-gates' },
+  { name: 'My Gates', slug: 'lc-gates' },
   { name: 'Reports', slug: 'reports' },
-  { name: 'Cluster', slug: 'cluster' },
+  { name: 'Gate Management', slug: 'cluster' },
   { name: 'Device Registry', slug: 'devices' },
   { name: 'Scope Groups', slug: 'scope-groups' },
   { name: 'Manage Users', slug: 'manage-users' },
@@ -36,7 +36,7 @@ router.get('/', async (req, res, next) => {
     for (const mod of REQUIRED_MODULES) {
       await prisma.module.upsert({
         where: { slug: mod.slug },
-        update: {},
+        update: { name: mod.name },
         create: { name: mod.name, slug: mod.slug }
       });
     }

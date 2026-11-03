@@ -40,9 +40,9 @@ const CANONICAL_MODULE_ORDER = [
 ];
 
 const DEFAULT_SYSTEM_MODULES = [
-  { name: 'LC Gates', slug: 'lc-gates' },
+  { name: 'My Gates', slug: 'lc-gates' },
   { name: 'Reports', slug: 'reports' },
-  { name: 'Cluster', slug: 'cluster' },
+  { name: 'Gate Management', slug: 'cluster' },
   { name: 'Device Registry', slug: 'devices' },
   { name: 'Scope Groups', slug: 'scope-groups' },
   { name: 'Manage Users', slug: 'manage-users' },
@@ -150,7 +150,15 @@ export default function Dashboard({ user, onLogout }: Props) {
       if (Array.isArray(data) && data.length > 0) {
         const modMap = new Map<string, any>();
         DEFAULT_SYSTEM_MODULES.forEach(m => modMap.set(m.slug, m));
-        data.forEach((m: any) => modMap.set(m.slug, m));
+        data.forEach((m: any) => {
+          if (m.slug === 'cluster') {
+            modMap.set(m.slug, { ...m, name: 'Gate Management' });
+          } else if (m.slug === 'lc-gates') {
+            modMap.set(m.slug, { ...m, name: 'My Gates' });
+          } else {
+            modMap.set(m.slug, m);
+          }
+        });
         setSystemModules(sortModules(Array.from(modMap.values())));
       }
     } catch (err) {

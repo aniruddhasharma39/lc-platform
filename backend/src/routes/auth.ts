@@ -10,6 +10,7 @@ import { send2FactorSmsOtp } from '../lib/twofactor';
 import { sendEmailOtp } from '../lib/emailService';
 import { extractRegistrationUserFields, checkRegistrationUniqueness } from '../lib/userExtract';
 import { validateRegistrationUniqueness } from '../lib/uniqueness';
+import { DEPARTMENTS, DESIGNATIONS, getDesignationConfig, getDesignationsForDepartment } from '../lib/railwayHierarchy';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -23,6 +24,97 @@ cloudinary.config({
 const loginSchema = z.object({
   identifier: z.string().min(1),
   password: z.string().min(1),
+});
+
+router.get('/installed-hierarchy', async (req, res, next) => {
+  try {
+    const gates = await prisma.lCGate.findMany({
+      select: {
+        id: true,
+        lcNumber: true,
+        name: true,
+        locationName: true,
+        zone: true,
+        division: true,
+        stationId: true,
+        station: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            division: true,
+            zone: true,
+          }
+        }
+      },
+      orderBy: { lcNumber: 'asc' }
+    });
+
+    // Group only geographical units that have actual LC Gate installations
+    const zoneMap = new Map<string, Map<string, Map<string, any>>>();
+
+    for (const g of gates) {
+      const zoneName = (g.zone || g.station?.zone || 'Unassigned Zone').trim();
+      const divName = (g.division || g.station?.division || 'Unassigned Division').trim();
+
+      let divMap = zoneMap.get(zoneName);
+      if (!divMap) {
+        divMap = new Map();
+        zoneMap.set(zoneName, divMap);
+      }
+
+      let stMap = divMap.get(divName);
+      if (!stMap) {
+        stMap = new Map();
+        divMap.set(divName, stMap);
+      }
+
+      const stId = g.station ? g.station.id : null;
+      const stKey = stId ? `station-${stId}` : `loc-${g.locationName || g.id}`;
+
+      let stEntry = stMap.get(stKey);
+      if (!stEntry) {
+        stEntry = {
+          id: stId,
+          code: g.station ? g.station.code : 'GATE-LOC',
+          name: g.station ? g.station.name : (g.locationName || g.lcNumber),
+          gates: []
+        };
+        stMap.set(stKey, stEntry);
+      }
+
+      stEntry.gates.push({
+        id: g.id,
+        lcNumber: g.lcNumber,
+        name: g.name || g.lcNumber,
+        locationName: g.locationName,
+      });
+    }
+
+    const zones = Array.from(zoneMap.entries()).map(([zoneName, divMap]) => ({
+      name: zoneName,
+      divisions: Array.from(divMap.entries()).map(([divName, stMap]) => ({
+        name: divName,
+        stations: Array.from(stMap.values())
+      }))
+    }));
+
+    const departments = DEPARTMENTS.map(deptName => ({
+      name: deptName,
+      designations: getDesignationsForDepartment(deptName).map(d => ({
+        name: d.name,
+        seniority: d.seniority,
+        level: d.level,
+        maxGates: d.maxGates,
+        immediateSuperior: d.immediateSuperior,
+        description: d.description,
+      }))
+    }));
+
+    res.json({ zones, departments });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.post('/check-availability', async (req, res, next) => {
@@ -99,20 +191,104 @@ router.post('/register', upload.any(), async (req, res, next) => {
       });
     }
 
-    // Upload files to Cloudinary
+    // Upload files to Cloudinary with safe base64 fallback
+    let idCardUploadedUrl = parsedData.idCard || parsedData.idCardUrl || null;
     if (req.files && Array.isArray(req.files)) {
       for (const file of req.files) {
-        const fileUrl = await new Promise<string>((resolve, reject) => {
-          const stream = cloudinary.uploader.upload_stream(
-            { folder: 'lc-platform-registration' },
-            (error, result) => {
-              if (error) reject(error);
-              else resolve(result!.secure_url);
-            }
-          );
-          stream.end(file.buffer);
-        });
-        parsedData[file.fieldname] = fileUrl; // Add URL to the JSON payload mapped by fieldName
+        let fileUrl = '';
+        if (process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_CLOUD_NAME) {
+          try {
+            fileUrl = await new Promise<string>((resolve, reject) => {
+              const stream = cloudinary.uploader.upload_stream(
+                { folder: 'lc-platform-registration' },
+                (error, result) => {
+                  if (error) reject(error);
+                  else resolve(result!.secure_url);
+                }
+              );
+              stream.end(file.buffer);
+            });
+          } catch (uploadErr) {
+            console.warn('Cloudinary upload failed, falling back to data URL:', uploadErr);
+            fileUrl = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
+          }
+        } else {
+          fileUrl = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
+        }
+        parsedData[file.fieldname] = fileUrl;
+        if (file.fieldname === 'idCard' || file.fieldname === 'idCardUrl' || file.fieldname === 'identityCard') {
+          idCardUploadedUrl = fileUrl;
+        }
+      }
+    }
+
+    // Extract railway organization fields
+    const department = (parsedData.department || req.body.department || '').trim();
+    const designation = (parsedData.designation || req.body.designation || '').trim();
+    const zone = (parsedData.zone || req.body.zone || '').trim();
+    const division = (parsedData.division || req.body.division || '').trim();
+    const stationIdRaw = parsedData.stationId !== undefined ? parsedData.stationId : req.body.stationId;
+    const stationId = (stationIdRaw !== null && stationIdRaw !== undefined && stationIdRaw !== '') ? parseInt(stationIdRaw, 10) : null;
+    
+    let gateIds: number[] = [];
+    if (parsedData.gateIds) {
+      gateIds = Array.isArray(parsedData.gateIds)
+        ? parsedData.gateIds.map((id: any) => parseInt(id, 10)).filter((n: number) => !isNaN(n))
+        : [parseInt(parsedData.gateIds, 10)].filter((n: number) => !isNaN(n));
+    } else if (req.body.gateIds) {
+      gateIds = Array.isArray(req.body.gateIds)
+        ? req.body.gateIds.map((id: any) => parseInt(id, 10)).filter((n: number) => !isNaN(n))
+        : [parseInt(req.body.gateIds, 10)].filter((n: number) => !isNaN(n));
+    }
+
+    const declarationConfirmed = Boolean(parsedData.declarationConfirmed ?? req.body.declarationConfirmed ?? false);
+
+    // Validate Official Railway Department & Designation
+    const desigCfg = getDesignationConfig(designation);
+    if (designation && !desigCfg) {
+      return res.status(400).json({ error: `Invalid railway designation "${designation}". Please select an official designation.` });
+    }
+
+    if (desigCfg) {
+      if (department && department.toLowerCase() !== desigCfg.department.toLowerCase()) {
+        return res.status(400).json({ error: `Designation "${designation}" belongs to ${desigCfg.department} department, not ${department}.` });
+      }
+
+      // Enforce station requirement for station/gate level roles
+      if ((desigCfg.level === 'STATION' || desigCfg.level === 'GATE') && !stationId) {
+        return res.status(400).json({ error: `Station selection is mandatory for ${designation}.` });
+      }
+
+      // Enforce Gateman strictly ONE gate rule (Section 4.2 & 9)
+      if (desigCfg.name === 'Gateman') {
+        if (!Array.isArray(gateIds) || gateIds.length !== 1) {
+          return res.status(400).json({ error: 'A Gateman must be assigned to exactly ONE Level Crossing Gate.' });
+        }
+      }
+
+      // Enforce Station Master & Engineering Supervisor multiple/single gate requirement
+      if (desigCfg.name === 'Station Master' || desigCfg.name === 'Engineering Supervisor') {
+        if (!Array.isArray(gateIds) || gateIds.length === 0) {
+          return res.status(400).json({ error: `At least one Level Crossing Gate under the selected station must be assigned for ${designation}.` });
+        }
+      }
+
+      // Enforce mandatory security and verification declaration (Section 6)
+      if (!declarationConfirmed) {
+        return res.status(400).json({ error: 'You must confirm the official security declaration stating that all submitted information is accurate.' });
+      }
+
+      // Enforce Identity Document upload
+      if (!idCardUploadedUrl && !parsedData.idCard && !parsedData.identityCard) {
+        return res.status(400).json({ error: 'Official Railway Identity Document upload is mandatory for registration.' });
+      }
+
+      // Resolve matching role ID from designation
+      const matchedRole = await prisma.role.findFirst({
+        where: { name: desigCfg.defaultRoleName }
+      });
+      if (matchedRole) {
+        requestedRoleId = matchedRole.id;
       }
     }
 
@@ -127,6 +303,14 @@ router.post('/register', upload.any(), async (req, res, next) => {
         formId,
         data: JSON.stringify(dataToStore),
         requestedRoleId: requestedRoleId !== -1 ? requestedRoleId : null,
+        department: department || (desigCfg ? desigCfg.department : null),
+        designation: desigCfg ? desigCfg.name : designation || null,
+        zone: zone || null,
+        division: division || null,
+        stationId: stationId || null,
+        gateIds: gateIds,
+        idCardUrl: idCardUploadedUrl || null,
+        declarationConfirmed: declarationConfirmed,
         status: 'PENDING'
       }
     });

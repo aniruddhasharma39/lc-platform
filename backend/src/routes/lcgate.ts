@@ -3,8 +3,9 @@ import { z } from 'zod';
 import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { buildUserGateWhereClause, verifyGateAccess } from '../lib/railwayHierarchy';
 import { authenticate } from '../middleware/auth';
-import { RAILWAY_DATA, RAILWAY_ZONES, divisionsForZone } from '../lib/railwayData';
+import { RAILWAY_DATA, RAILWAY_ZONES, RAILWAY_STATIONS, divisionsForZone, stationsForDivision, findZoneForDivision } from '../lib/railwayData';
 import { getAllDescendantScopeGroupIds, getAllAncestorScopeGroupIds } from '../lib/scopeHierarchy';
 import { publishMqttMessage } from '../lib/iotClient';
 import { broadcastGateTelemetry, getGateTelemetryPayload } from '../lib/telemetryWs';
@@ -31,10 +32,42 @@ const createGateSchema = z.object({
   name: z.string().nullable().optional(),
   lcNumberDigits: z.string().optional(),
   lcNumber: z.string().optional(),
-  deviceId: z.number().int().optional().nullable(),
+  deviceId: z.preprocess(
+    (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
+    z.number().int().optional().nullable()
+  ),
   locationName: z.string().min(1),
   zone: z.string().min(1),
   division: z.string().min(1),
+  stationId: z.preprocess(
+    (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
+    z.number().int().nullable().optional()
+  ),
+  stationCode: z.string().nullable().optional(),
+  stationName: z.string().nullable().optional(),
+  latitude: z.preprocess(
+    (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
+    z.number().nullable().optional()
+  ),
+  longitude: z.preprocess(
+    (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
+    z.number().nullable().optional()
+  ),
+});
+
+const updateGateSchema = z.object({
+  name: z.string().nullable().optional(),
+  lcNumberDigits: z.string().optional(),
+  lcNumber: z.string().optional(),
+  locationName: z.string().min(1).optional(),
+  zone: z.string().optional(),
+  division: z.string().optional(),
+  stationId: z.preprocess(
+    (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
+    z.number().int().nullable().optional()
+  ),
+  stationCode: z.string().nullable().optional(),
+  stationName: z.string().nullable().optional(),
   latitude: z.preprocess(
     (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
     z.number().nullable().optional()
@@ -62,6 +95,7 @@ router.get('/reference-data', authenticate, async (req, res) => {
   res.json({
     zones: RAILWAY_ZONES,
     divisionsByZone: RAILWAY_DATA,
+    stationsByDivision: RAILWAY_STATIONS,
   });
 });
 
@@ -70,6 +104,85 @@ router.get('/divisions', authenticate, async (req, res) => {
   const zone = typeof req.query.zone === 'string' ? req.query.zone : '';
   res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
   res.json({ zone, divisions: divisionsForZone(zone) });
+});
+
+// Stations for a division and/or zone
+router.get('/stations', authenticate, async (req, res, next) => {
+  try {
+    const division = typeof req.query.division === 'string' ? req.query.division.trim() : undefined;
+    const zone = typeof req.query.zone === 'string' ? req.query.zone.trim() : undefined;
+
+    let where: any = {};
+    if (division) where.division = { equals: division, mode: 'insensitive' };
+    if (zone) where.zone = { equals: zone, mode: 'insensitive' };
+
+    const dbStations = await prisma.station.findMany({
+      where,
+      orderBy: { name: 'asc' },
+      select: { id: true, code: true, name: true, division: true, zone: true }
+    });
+
+    if (dbStations.length > 0) {
+      return res.json(dbStations);
+    }
+
+    const fallback = stationsForDivision(division).map((s, idx) => ({
+      id: idx + 1,
+      code: s.code,
+      name: s.name,
+      division: division || 'Pune',
+      zone: zone || 'Central Railway',
+    }));
+    res.json(fallback);
+  } catch (err) {
+    next(err);
+  }
+});
+
+const createStationSchema = z.object({
+  name: z.string().min(1, 'Station name is required'),
+  code: z.string().min(1, 'Station code is required'),
+  division: z.string().min(1, 'Division is required'),
+  zone: z.string().optional(),
+});
+
+// Dynamic/manual Station creation with deduplication
+router.post('/stations', authenticate, async (req, res, next) => {
+  try {
+    const data = createStationSchema.parse(req.body);
+    const cleanCode = data.code.trim().toUpperCase();
+    const cleanName = data.name.trim();
+    const cleanDiv = data.division.trim();
+    const cleanZone = (data.zone || findZoneForDivision(cleanDiv) || 'Western Railway').trim();
+
+    // Deduplication check: case-insensitive check by code
+    let station = await prisma.station.findUnique({
+      where: { code: cleanCode }
+    });
+
+    if (station) {
+      return res.json(station);
+    }
+
+    station = await prisma.station.create({
+      data: {
+        code: cleanCode,
+        name: cleanName,
+        division: cleanDiv,
+        zone: cleanZone,
+      }
+    });
+
+    res.status(201).json(station);
+  } catch (error: any) {
+    if (error?.code === 'P2002') {
+      const existing = await prisma.station.findUnique({
+        where: { code: req.body.code?.trim().toUpperCase() }
+      });
+      if (existing) return res.json(existing);
+    }
+    next(error);
+  }
 });
 
 // GET /dashboard-summary - Home screen KPIs, gate cycle stats & cluster map coordinates
@@ -101,17 +214,21 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       };
     } else {
       if (!isDeveloper) {
-        return res.json({
-          totalDevices: 0,
-          totalClusters: 0,
-          totalConfiguredClusters: 0,
-          totalUnconfiguredGates: 0,
-          totalAllGates: 0,
-          totalCyclesToday: 0,
-          totalOpenGates: 0,
-          totalClosedGates: 0,
-          gates: []
-        });
+        const designationClause = await buildUserGateWhereClause(req.user, prisma);
+        if (designationClause.id === -1) {
+          return res.json({
+            totalDevices: 0,
+            totalClusters: 0,
+            totalConfiguredClusters: 0,
+            totalUnconfiguredGates: 0,
+            totalAllGates: 0,
+            totalCyclesToday: 0,
+            totalOpenGates: 0,
+            totalClosedGates: 0,
+            gates: []
+          });
+        }
+        whereClause = { ...whereClause, ...designationClause };
       }
     }
 
@@ -123,6 +240,7 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       where: whereClause,
       orderBy: { lcNumber: 'asc' },
       include: {
+        station: { select: { id: true, code: true, name: true, division: true, zone: true } },
         deviceRegistries: true,
         events: {
           orderBy: { openedAt: 'desc' },
@@ -202,6 +320,9 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
           masterSerialNumber: 'Unassigned',
           mastersCount: 0,
           slavesCount: 0,
+          stationId: gate.stationId || null,
+          stationCode: (gate as any).station?.code || null,
+          stationName: (gate as any).station?.name || null,
           scopeGroupId: assignedScope?.id || null,
           scopeGroupName: assignedScope?.name || null,
           scopeGroupColor: assignedScope?.color || null,
@@ -280,6 +401,9 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
         masterSerialNumber: primaryMaster,
         mastersCount: gate.masters.length,
         slavesCount,
+        stationId: gate.stationId || null,
+        stationCode: (gate as any).station?.code || null,
+        stationName: (gate as any).station?.name || null,
         scopeGroupId: assignedScope?.id || null,
         scopeGroupName: assignedScope?.name || null,
         scopeGroupColor: assignedScope?.color || null,
@@ -356,6 +480,25 @@ router.post('/', authenticate, async (req: any, res, next) => {
       ? data.name.trim() 
       : (data.locationName ? data.locationName.trim() : cleanLcNumber);
 
+    let resolvedStationId: number | null = data.stationId || null;
+    if (!resolvedStationId && (data.stationCode || data.stationName)) {
+      const code = (data.stationCode || data.stationName || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 8);
+      if (code) {
+        let st = await prisma.station.findUnique({ where: { code } });
+        if (!st && data.stationName) {
+          st = await prisma.station.create({
+            data: {
+              code,
+              name: data.stationName.trim(),
+              division: data.division || 'Ahmedabad',
+              zone: data.zone || 'Western Railway'
+            }
+          }).catch(() => null);
+        }
+        if (st) resolvedStationId = st.id;
+      }
+    }
+
     const gate = await prisma.$transaction(async (tx) => {
       const created = await tx.lCGate.create({
         data: {
@@ -364,10 +507,24 @@ router.post('/', authenticate, async (req: any, res, next) => {
           locationName: data.locationName.trim(),
           zone: data.zone || 'Central Railway',
           division: data.division || 'Pune',
+          stationId: resolvedStationId,
           latitude: data.latitude,
           longitude: data.longitude,
         },
+        include: {
+          station: true,
+          masters: true,
+          deviceRegistries: true,
+        }
       });
+
+      // If physical device was optionally selected at creation, link it now
+      if (data.deviceId) {
+        await tx.deviceRegistry.update({
+          where: { id: data.deviceId },
+          data: { gateId: created.id }
+        }).catch(console.warn);
+      }
 
       // Auto-link to creator's assigned scope group so it immediately appears in their scope
       if (req.user?.id) {
@@ -400,6 +557,178 @@ router.post('/', authenticate, async (req: any, res, next) => {
   }
 });
 
+// PUT /:id - Edit and update an existing LC Gate
+router.put('/:id', authenticate, async (req: any, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid gate ID' });
+
+    const existing = await prisma.lCGate.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ error: 'LC Gate not found' });
+
+    const data = updateGateSchema.parse(req.body);
+
+    let cleanLcNumber = existing.lcNumber;
+    const rawLc = (data.lcNumber || data.lcNumberDigits || '').trim();
+    if (rawLc) {
+      cleanLcNumber = rawLc.toUpperCase().startsWith('LC-')
+        ? rawLc.toUpperCase()
+        : `LC-${rawLc.toUpperCase()}`;
+
+      if (cleanLcNumber !== existing.lcNumber) {
+        const duplicate = await prisma.lCGate.findFirst({
+          where: {
+            lcNumber: { equals: cleanLcNumber, mode: 'insensitive' },
+            id: { not: id }
+          }
+        });
+        if (duplicate) {
+          return res.status(400).json({ error: `Gate with LC Number "${cleanLcNumber}" already exists` });
+        }
+      }
+    }
+
+    let resolvedStationId = data.stationId !== undefined ? data.stationId : existing.stationId;
+    if (!resolvedStationId && (data.stationCode || data.stationName)) {
+      const code = (data.stationCode || data.stationName || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 8);
+      if (code) {
+        let st = await prisma.station.findUnique({ where: { code } });
+        if (!st && data.stationName) {
+          st = await prisma.station.create({
+            data: {
+              code,
+              name: data.stationName.trim(),
+              division: data.division || existing.division || 'Ahmedabad',
+              zone: data.zone || existing.zone || 'Western Railway'
+            }
+          }).catch(() => null);
+        }
+        if (st) resolvedStationId = st.id;
+      }
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const gate = await tx.lCGate.update({
+        where: { id },
+        data: {
+          name: data.name !== undefined ? (data.name?.trim() || null) : existing.name,
+          lcNumber: cleanLcNumber,
+          locationName: data.locationName ? data.locationName.trim() : existing.locationName,
+          zone: data.zone || existing.zone,
+          division: data.division || existing.division,
+          stationId: resolvedStationId,
+          latitude: data.latitude !== undefined ? data.latitude : existing.latitude,
+          longitude: data.longitude !== undefined ? data.longitude : existing.longitude,
+        },
+        include: {
+          station: true,
+          masters: {
+            include: { childDevices: true, evidences: true }
+          },
+          deviceRegistries: true,
+        }
+      });
+
+      const gateScopes = await tx.scopeGroupGate.findMany({
+        where: { gateId: id },
+        select: { scopeGroupId: true },
+      });
+      await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+
+      return gate;
+    });
+
+    res.json(updated);
+  } catch (error: any) {
+    if (error?.code === 'P2002') {
+      return res.status(400).json({ error: 'An LC Gate with this number already exists in the system.' });
+    }
+    next(error);
+  }
+});
+
+// POST /:id/assign-device - Assign physical AWS IoT device to LC Gate / Master Unit
+router.post('/:id/assign-device', authenticate, async (req: any, res, next) => {
+  try {
+    const gateId = parseInt(req.params.id, 10);
+    if (isNaN(gateId)) return res.status(400).json({ error: 'Invalid gate ID' });
+
+    const { deviceId, masterId, childDeviceId } = req.body;
+    if (!deviceId) return res.status(400).json({ error: 'deviceId is required' });
+
+    const gate = await prisma.lCGate.findUnique({ where: { id: gateId }, include: { masters: true } });
+    if (!gate) return res.status(404).json({ error: 'LC Gate not found' });
+
+    const dev = await prisma.deviceRegistry.findUnique({ where: { id: Number(deviceId) } });
+    if (!dev) return res.status(404).json({ error: 'Device not found in registry' });
+
+    let targetMasterId = masterId ? Number(masterId) : null;
+    if (!targetMasterId && gate.masters.length > 0) {
+      targetMasterId = gate.masters[0].id;
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const devUpdated = await tx.deviceRegistry.update({
+        where: { id: dev.id },
+        data: {
+          gateId: gate.id,
+          masterId: targetMasterId,
+          childDeviceId: childDeviceId ? Number(childDeviceId) : null,
+        }
+      });
+
+      const gateScopes = await tx.scopeGroupGate.findMany({
+        where: { gateId },
+        select: { scopeGroupId: true },
+      });
+      await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+
+      return devUpdated;
+    });
+
+    res.json({ success: true, message: 'Device assigned successfully', device: updated });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /:id/unassign-device - Unassign physical AWS IoT device from LC Gate
+router.post('/:id/unassign-device', authenticate, async (req: any, res, next) => {
+  try {
+    const gateId = parseInt(req.params.id, 10);
+    if (isNaN(gateId)) return res.status(400).json({ error: 'Invalid gate ID' });
+
+    const { deviceId } = req.body;
+    if (!deviceId) return res.status(400).json({ error: 'deviceId is required' });
+
+    const dev = await prisma.deviceRegistry.findUnique({ where: { id: Number(deviceId) } });
+    if (!dev) return res.status(404).json({ error: 'Device not found in registry' });
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const devUpdated = await tx.deviceRegistry.update({
+        where: { id: dev.id },
+        data: {
+          gateId: null,
+          masterId: null,
+          childDeviceId: null,
+        }
+      });
+
+      const gateScopes = await tx.scopeGroupGate.findMany({
+        where: { gateId },
+        select: { scopeGroupId: true },
+      });
+      await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+
+      return devUpdated;
+    });
+
+    res.json({ success: true, message: 'Device unassigned successfully', device: updated });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // GET /status-summary - Dedicated, lightweight real-time connectivity status for accessible gates
 router.get('/status-summary', authenticate, async (req: any, res, next) => {
   try {
@@ -425,7 +754,11 @@ router.get('/status-summary', authenticate, async (req: any, res, next) => {
         some: { scopeGroupId: { in: accessibleScopeGroupIds } }
       };
     } else if (!isDeveloper) {
-      return res.json({ verifiedAt: new Date().toISOString(), statuses: [] });
+      const designationClause = await buildUserGateWhereClause(req.user, prisma);
+      if (designationClause.id === -1) {
+        return res.json({ verifiedAt: new Date().toISOString(), statuses: [] });
+      }
+      whereClause = { ...whereClause, ...designationClause };
     }
 
     // 2. Query accessible gates and their identifiers without full joins
@@ -611,7 +944,12 @@ router.get('/', authenticate, async (req: any, res, next) => {
               }
             }
           } else {
-            isNoScope = true;
+            const designationClause = await buildUserGateWhereClause(req.user, tx as any);
+            if (designationClause.id === -1) {
+              isNoScope = true;
+            } else {
+              whereClause = { ...whereClause, ...designationClause };
+            }
           }
         }
 
@@ -699,6 +1037,7 @@ router.get('/', authenticate, async (req: any, res, next) => {
       where: snapshot.whereClause,
       orderBy: { createdAt: 'desc' },
       include: {
+        station: { select: { id: true, code: true, name: true, division: true, zone: true } },
         deviceRegistries: true,
         events: {
           orderBy: { openedAt: 'desc' },
@@ -874,7 +1213,10 @@ const createMasterSchema = z.object({
   masterSequence: z.number().int().min(1).max(99).optional(),
   powerSource: z.enum(['SOLAR', 'DIRECT']),
   serialNumber: z.string().optional(),
-  deviceId: z.number().int(),
+  deviceId: z.preprocess(
+    (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
+    z.number().int().optional().nullable()
+  ),
 });
 
 // Add a Master to an LC Gate with mandatory AWS IoT registry association & standard slave creation
@@ -890,22 +1232,15 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
       return res.status(404).json({ error: 'LC Gate not found' });
     }
 
-    if (!data.deviceId) {
-      return res.status(400).json({ error: 'Please select a provisioned AWS IoT Master device from the registry.' });
-    }
-
-    const dev = await prisma.deviceRegistry.findUnique({ where: { id: data.deviceId } });
-    if (!dev) {
-      return res.status(400).json({ error: 'Selected device does not exist in AWS IoT registry.' });
-    }
-    if (dev.masterId && dev.masterId !== 0) {
-      return res.status(400).json({ error: `Device "${dev.thingName}" is already assigned to another Master Unit.` });
-    }
-
-    // Authoritative serial number strictly comes from AWS IoT Device Registry
-    const serialNumber = dev.thingName || dev.serialNumber;
-    if (!serialNumber) {
-      return res.status(400).json({ error: 'Selected device does not have a valid Thing Name / Serial Number in AWS IoT.' });
+    let dev: any = null;
+    if (data.deviceId) {
+      dev = await prisma.deviceRegistry.findUnique({ where: { id: data.deviceId } });
+      if (!dev) {
+        return res.status(400).json({ error: 'Selected device does not exist in AWS IoT registry.' });
+      }
+      if (dev.masterId && dev.masterId !== 0) {
+        return res.status(400).json({ error: `Device "${dev.thingName}" is already assigned to another Master Unit.` });
+      }
     }
 
     const existingMasters = await prisma.masterUnit.findMany({
@@ -921,6 +1256,14 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
         nextSeq++;
       }
       targetSequence = nextSeq;
+    }
+
+    const seqStr = targetSequence.toString().padStart(2, '0');
+    let serialNumber = data.serialNumber ? data.serialNumber.trim() : '';
+    if (dev) {
+      serialNumber = serialNumber || dev.thingName || dev.serialNumber || `${gate.lcNumber}-${seqStr}`;
+    } else if (!serialNumber) {
+      serialNumber = `${gate.lcNumber}-${seqStr}`;
     }
 
     const existing = await prisma.masterUnit.findUnique({ where: { serialNumber } });
@@ -963,6 +1306,89 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
     // Slave devices (Barrier A, Barrier B, etc.) are explicitly added by the user as needed.
 
     res.status(201).json(master);
+  } catch (error: any) {
+    if (error?.code === 'P2002') {
+      return res.status(400).json({ error: 'Master Unit serial number must be unique.' });
+    }
+    next(error);
+  }
+});
+
+const updateMasterSchema = z.object({
+  powerSource: z.enum(['SOLAR', 'DIRECT']).optional(),
+  serialNumber: z.string().optional(),
+  deviceId: z.preprocess(
+    (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
+    z.number().int().optional().nullable()
+  ),
+  unassignDevice: z.boolean().optional(),
+});
+
+// PUT /masters/:id - Update Master Unit configuration (power source, serial, hardware device mapping)
+router.put('/masters/:id', authenticate, async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid master ID' });
+
+    const existing = await prisma.masterUnit.findUnique({
+      where: { id },
+      include: { gate: true, deviceRegistries: true }
+    });
+    if (!existing) return res.status(404).json({ error: 'Master Unit not found' });
+
+    const data = updateMasterSchema.parse(req.body);
+
+    const updated = await prisma.$transaction(async (tx) => {
+      let serialNumber = existing.serialNumber;
+      if (data.serialNumber && data.serialNumber.trim() && data.serialNumber.trim() !== existing.serialNumber) {
+        serialNumber = data.serialNumber.trim();
+        const dup = await tx.masterUnit.findUnique({ where: { serialNumber } });
+        if (dup && dup.id !== id) {
+          throw new Error(`Master Unit with serial number "${serialNumber}" already exists.`);
+        }
+      }
+
+      const m = await tx.masterUnit.update({
+        where: { id },
+        data: {
+          powerSource: data.powerSource || existing.powerSource,
+          serialNumber,
+        },
+        include: { childDevices: true, deviceRegistries: true }
+      });
+
+      // Handle unassigning device
+      if (data.unassignDevice) {
+        await tx.deviceRegistry.updateMany({
+          where: { masterId: id },
+          data: { masterId: null, gateId: null }
+        });
+      }
+
+      // Handle linking or changing device
+      if (data.deviceId !== undefined && data.deviceId !== null) {
+        // Unlink previous device from this master
+        await tx.deviceRegistry.updateMany({
+          where: { masterId: id },
+          data: { masterId: null, gateId: null }
+        });
+        // Link new device
+        await tx.deviceRegistry.update({
+          where: { id: data.deviceId },
+          data: { masterId: id, gateId: existing.gateId }
+        });
+      }
+
+      const gateScopes = await tx.scopeGroupGate.findMany({
+        where: { gateId: existing.gateId },
+        select: { scopeGroupId: true },
+      });
+      await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+
+      return m;
+    });
+
+    res.json(updated);
   } catch (error: any) {
     if (error?.code === 'P2002') {
       return res.status(400).json({ error: 'Master Unit serial number must be unique.' });
@@ -1134,6 +1560,11 @@ router.delete('/masters/:id', authenticate, async (req, res, next) => {
     
     await prisma.$transaction(async (tx) => {
       const targetMaster = await tx.masterUnit.findUnique({ where: { id }, select: { gateId: true } });
+      // Explicitly detach any mapped hardware devices back to the unassigned registry pool
+      await tx.deviceRegistry.updateMany({
+        where: { masterId: id },
+        data: { masterId: null, gateId: null, childDeviceId: null }
+      });
       await tx.masterUnit.delete({ where: { id } });
       if (targetMaster) {
         const gateScopes = await tx.scopeGroupGate.findMany({
@@ -1162,6 +1593,11 @@ router.delete('/devices/:id', authenticate, async (req, res, next) => {
         where: { id },
         include: { master: { select: { gateId: true } } },
       });
+      // Explicitly detach child device mapping from registry pool
+      await tx.deviceRegistry.updateMany({
+        where: { childDeviceId: id },
+        data: { childDeviceId: null }
+      });
       await tx.childDevice.delete({ where: { id } });
       if (targetDevice?.master) {
         const gateScopes = await tx.scopeGroupGate.findMany({
@@ -1182,35 +1618,18 @@ router.delete('/devices/:id', authenticate, async (req, res, next) => {
 // Get single LC Gate with masters, childDevices, and evidences
 router.get('/:id', authenticate, async (req: any, res, next) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid gate ID' });
 
-    const isDeveloper = req.user?.role === 'Developer';
-    if (!isDeveloper) {
-      // Authorization check: Verify if this gate is accessible within user's assigned scope groups
-      const userScopes = await prisma.scopeGroupUser.findMany({
-        where: { userId: req.user.id },
-        select: { scopeGroupId: true },
-      });
-      const assignedScopeGroupIds = userScopes.map((s) => s.scopeGroupId);
-      if (assignedScopeGroupIds.length === 0) {
-        return res.status(403).json({ error: 'Access denied: No scope groups assigned' });
-      }
-      const accessibleScopeGroupIds = await getAllDescendantScopeGroupIds(assignedScopeGroupIds);
-      const isGateInScope = await prisma.scopeGroupGate.findFirst({
-        where: {
-          gateId: id,
-          scopeGroupId: { in: accessibleScopeGroupIds },
-        },
-      });
-      if (!isGateInScope) {
-        return res.status(403).json({ error: 'Access denied: Gate is outside your assigned scope' });
-      }
+    const isAuthorized = await verifyGateAccess(req.user, id, prisma);
+    if (!isAuthorized) {
+      return res.status(403).json({ error: 'Access denied: Gate is outside your assigned scope or geographical jurisdiction' });
     }
 
     const gate = await prisma.lCGate.findUnique({
       where: { id },
       include: {
+        station: { select: { id: true, code: true, name: true, division: true, zone: true } },
         deviceRegistries: true,
         scopeGroups: {
           include: {
@@ -1330,23 +1749,28 @@ function buildGateTelemetry(gate: any) {
     });
   });
 
+  const gateInfo = {
+    id: gate.id,
+    lcNumber: gate.lcNumber,
+    name: gate.name || gate.locationName,
+    locationName: gate.locationName,
+    zone: gate.zone,
+    division: gate.division,
+    stationId: gate.stationId || null,
+    station: gate.station || null,
+    latitude: gate.latitude,
+    longitude: gate.longitude,
+    powerSource: isSolar ? 'SOLAR' : 'DIRECT',
+    mastersCount: masterList.length,
+    slavesCount: slavesList.length,
+    masters: mastersWithRegistry,
+    slaves: slavesList,
+    deviceRegistries: registeredDevices,
+  };
+
   return {
-    cluster: {
-      id: gate.id,
-      lcNumber: gate.lcNumber,
-      name: gate.name || gate.locationName,
-      locationName: gate.locationName,
-      zone: gate.zone,
-      division: gate.division,
-      latitude: gate.latitude,
-      longitude: gate.longitude,
-      powerSource: isSolar ? 'SOLAR' : 'DIRECT',
-      mastersCount: masterList.length,
-      slavesCount: slavesList.length,
-      masters: mastersWithRegistry,
-      slaves: slavesList,
-      deviceRegistries: registeredDevices,
-    },
+    cluster: gateInfo,
+    gate: gateInfo,
     awsConfig: {
       provisioningMode: 'AWS_FLEET_PROVISIONING',
       region: 'ap-south-1 (Mumbai)',
@@ -1359,14 +1783,20 @@ function buildGateTelemetry(gate: any) {
 }
 
 // Get Live Telemetry, Historical MQTT Payloads & Device Inspection Data for a Gate
-router.get('/:id/telemetry', authenticate, async (req, res, next) => {
+router.get('/:id/telemetry', authenticate, async (req: any, res, next) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid gate ID' });
+
+    const isAuthorized = await verifyGateAccess(req.user, id, prisma);
+    if (!isAuthorized) {
+      return res.status(403).json({ error: 'Access denied: You do not have geographical jurisdiction for this Level Crossing Gate.' });
+    }
 
     const gate = await prisma.lCGate.findUnique({
       where: { id },
       include: {
+        station: { select: { id: true, code: true, name: true, division: true, zone: true } },
         scopeGroups: {
           include: {
             scopeGroup: {
@@ -1557,10 +1987,16 @@ router.delete('/:id', authenticate, async (req, res, next) => {
       // 2. Bump report revision for this gate
       await bumpReportRevisionInTx(tx, id);
 
-      // 3. Delete the gate (cascades deletion of LCGateEvent)
+      // 3. Explicitly detach all hardware devices in DeviceRegistry back to unassigned inventory pool
+      await tx.deviceRegistry.updateMany({
+        where: { gateId: id },
+        data: { gateId: null, masterId: null, childDeviceId: null }
+      });
+
+      // 4. Delete the gate (cascades deletion of LCGateEvent)
       await tx.lCGate.delete({ where: { id } });
 
-      // 4. Bump directory revisions for affected scopes
+      // 5. Bump directory revisions for affected scopes
       await bumpDirectoryRevision(
         targetGateScopes.map(s => s.scopeGroupId),
         targetGateScopes.length === 0,

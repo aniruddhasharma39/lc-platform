@@ -3,7 +3,7 @@ import {
   FaArchway, FaMapMarkerAlt, FaCogs, FaCamera, FaEye, FaSun, 
   FaBolt, FaPlug, FaCheckCircle, FaSearchPlus, FaTimes, FaRedo, FaTrash,
   FaFilter, FaChevronDown, FaChevronUp, FaLayerGroup, FaShieldAlt, FaMicrochip,
-  FaSearch, FaPlus, FaExclamationTriangle
+  FaSearch, FaPlus, FaExclamationTriangle, FaEdit, FaTrain
 } from 'react-icons/fa';
 import type { User } from '../../types';
 import './ClusterDashboard.css';
@@ -11,6 +11,7 @@ import { API_URL } from '../../config';
 import { RAILWAY_ZONES, RAILWAY_DATA } from './railwayData';
 import { useToast } from '../../context/ToastContext';
 import DeviceInfoModal from '../../components/DeviceInfoModal';
+import StationSearchSelect from '../../components/StationSearchSelect';
 import { lcGatesCacheService } from '../../services/lcGatesCacheService';
 import { clusterCacheService } from '../../services/clusterCacheService';
 
@@ -41,7 +42,7 @@ export default function ClusterDashboard(_props: Props) {
   const [gates, setGates] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [view, setView] = useState<'list' | 'create_gate' | 'gate_detail'>('list');
+  const [view, setView] = useState<'list' | 'create_gate' | 'edit_gate' | 'gate_detail'>('list');
   const [selectedGate, setSelectedGate] = useState<any>(null);
   const [deviceInfoModalTarget, setDeviceInfoModalTarget] = useState<any | null>(null);
 
@@ -560,6 +561,12 @@ export default function ClusterDashboard(_props: Props) {
                       <div className="flex items-center gap-2" style={{ flexWrap: 'wrap' }}>
                         {gate.zone && <span className="badge badge-indigo" style={{ fontSize: '0.75rem', padding: '4px 10px' }}>{gate.zone}</span>}
                         {gate.division && <span className="badge" style={{ fontSize: '0.75rem', padding: '4px 10px', backgroundColor: 'rgba(14, 154, 167, 0.1)', color: '#0e9aa7', fontWeight: 600 }}>{gate.division}</span>}
+                        {(gate.station || gate.stationName) && (
+                          <span className="badge" style={{ fontSize: '0.75rem', padding: '4px 10px', backgroundColor: 'rgba(99, 102, 241, 0.1)', color: '#4f46e5', fontWeight: 600 }}>
+                            <FaTrain style={{ display: 'inline', marginRight: 4 }} />
+                            {gate.station?.name || gate.stationName} {gate.station?.code ? `(${gate.station.code})` : ''}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <button 
@@ -628,10 +635,25 @@ export default function ClusterDashboard(_props: Props) {
         />
       )}
 
+      {view === 'edit_gate' && selectedGate && (
+        <UpdateGateForm
+          gate={selectedGate}
+          zones={refZones}
+          divisionsByZone={refDivisions}
+          onCancel={() => setView('gate_detail')}
+          onSuccess={(updated: any) => {
+            setSelectedGate(updated);
+            setView('gate_detail');
+            fetchGates();
+          }}
+        />
+      )}
+
       {view === 'gate_detail' && selectedGate && (
         <GateDetailView 
           gate={selectedGate} 
           onBack={() => { setView('list'); setSelectedGate(null); }} 
+          onEdit={() => setView('edit_gate')}
           onUpdate={() => { clusterCacheService.invalidate(getCacheUserId(_props.user)); fetchGates(undefined, true); }}
           onOpenDeviceInfo={setDeviceInfoModalTarget}
         />
@@ -687,12 +709,14 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
   const [locationName, setLocationName] = useState('');
   const [zone, setZone] = useState('');
   const [division, setDivision] = useState('');
+  const [selectedStation, setSelectedStation] = useState<any>(null);
   const [lat, setLat] = useState('');
   const [lng, setLng] = useState('');
   const [gettingLocation, setGettingLocation] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const currentDivisions = zone ? (divisionsByZone[zone] || []) : [];
+
   const canSubmit = Boolean(lcNumber.trim() && locationName.trim() && zone && division);
 
   const handleGetLocation = (e: React.MouseEvent) => {
@@ -740,6 +764,9 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
           locationName: locationName.trim(),
           zone,
           division,
+          stationId: selectedStation?.id ? selectedStation.id : undefined,
+          stationCode: selectedStation?.code ? selectedStation.code : undefined,
+          stationName: selectedStation?.name ? selectedStation.name : undefined,
           latitude: lat ? parseFloat(lat) : undefined,
           longitude: lng ? parseFloat(lng) : undefined
         })
@@ -794,7 +821,7 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
 
         <div className="form-group">
           <label>Railway Zone *</label>
-          <select className="glass-input" required value={zone} onChange={(e) => { setZone(e.target.value); setDivision(''); }}>
+          <select className="glass-input" required value={zone} onChange={(e) => { setZone(e.target.value); setDivision(''); setSelectedStation(null); }}>
             <option value="">Select Zone…</option>
             {(zones || []).map((z: string) => <option key={z} value={z}>{z}</option>)}
           </select>
@@ -802,10 +829,25 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
 
         <div className="form-group">
           <label>Division *</label>
-          <select className="glass-input" required disabled={!zone} value={division} onChange={(e) => setDivision(e.target.value)}>
+          <select className="glass-input" required disabled={!zone} value={division} onChange={(e) => { setDivision(e.target.value); setSelectedStation(null); }}>
             <option value="">{zone ? 'Select Division…' : 'Select Zone first…'}</option>
             {currentDivisions.map((d: string) => <option key={d} value={d}>{d}</option>)}
           </select>
+        </div>
+
+        <div className="form-group">
+          <label>Railway Station (Optional)</label>
+          <StationSearchSelect
+            zone={zone}
+            division={division}
+            selectedStationId={selectedStation?.id}
+            selectedStationCode={selectedStation?.code}
+            onSelectStation={(st) => setSelectedStation(st)}
+            disabled={!division}
+          />
+          <small className="text-muted mt-1 block">
+            Bind this LC Gate to a Railway Station for organizational reporting &amp; station-level user access. Search by name or code, or add a custom station.
+          </small>
         </div>
         
         <div className="location-box glass-panel p-4 rounded-lg">
@@ -829,7 +871,7 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
   );
 }
 
-function GateDetailView({ gate, onBack, onUpdate, onOpenDeviceInfo }: any) {
+function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: any) {
   const { success: toastSuccess, error: toastError } = useToast();
   const [addingMaster, setAddingMaster] = useState(false);
   const [addingDeviceToMaster, setAddingDeviceToMaster] = useState<number | null>(null);
@@ -839,6 +881,34 @@ function GateDetailView({ gate, onBack, onUpdate, onOpenDeviceInfo }: any) {
 
   const [masterToDelete, setMasterToDelete] = useState<any>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [showAssignDeviceModal, setShowAssignDeviceModal] = useState(false);
+  const [editingMaster, setEditingMaster] = useState<any>(null);
+  const [unassigningDeviceId, setUnassigningDeviceId] = useState<number | null>(null);
+
+  const handleUnassignDevice = async (deviceId: number) => {
+    if (!window.confirm('Are you sure you want to unassign this AWS IoT device from this LC Gate? The hardware record will be preserved in Device Registry.')) {
+      return;
+    }
+    setUnassigningDeviceId(deviceId);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/lcgate/${gate.id}/unassign-device`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ deviceId }),
+      });
+      if (res.ok) {
+        toastSuccess('Physical AWS IoT device unassigned successfully.', 'Device Unassigned');
+        onUpdate();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toastError(err.error || 'Failed to unassign device', 'Unassign Failed');
+      }
+    } catch (e: any) {
+      toastError(e.message || 'Error occurred while unassigning device.', 'Network Error');
+    } finally {
+      setUnassigningDeviceId(null);
+    }
+  };
 
   const executeDeleteMaster = async (masterId: number) => {
     try {
@@ -905,10 +975,24 @@ function GateDetailView({ gate, onBack, onUpdate, onOpenDeviceInfo }: any) {
               )}
               {gate.zone && <div className="badge badge-blue" style={{ fontSize: '0.85rem', padding: '6px 12px', fontWeight: 600 }}>{gate.zone}</div>}
               {gate.division && <div className="badge" style={{ fontSize: '0.85rem', padding: '6px 12px', fontWeight: 600, backgroundColor: 'rgba(14, 154, 167, 0.1)', color: '#0e9aa7' }}>{gate.division}</div>}
+              {(gate.station || gate.stationName) && (
+                <div className="badge" style={{ fontSize: '0.85rem', padding: '6px 12px', fontWeight: 600, backgroundColor: 'rgba(99, 102, 241, 0.1)', color: '#4f46e5' }}>
+                  <FaTrain style={{ display: 'inline', marginRight: 5 }} />
+                  {gate.station?.name || gate.stationName} {gate.station?.code ? `(${gate.station.code})` : ''}
+                </div>
+              )}
             </div>
           </div>
         </div>
         <div className="flex items-center gap-3">
+          <button 
+            className="btn-small btn-outline flex items-center gap-2 hover-lift"
+            style={{ padding: '9px 16px', fontSize: '0.88rem', cursor: 'pointer', background: '#ffffff' }}
+            onClick={onEdit}
+            title="Edit LC Gate Configuration"
+          >
+            <FaEdit /> Edit LC Gate
+          </button>
           {gate.masters && gate.masters.length > 0 && (
             <button 
               className="btn-small btn-primary flex items-center gap-2 hover-lift"
@@ -923,6 +1007,84 @@ function GateDetailView({ gate, onBack, onUpdate, onOpenDeviceInfo }: any) {
 
       {!addingMaster && !addingDeviceToMaster && !uploadingEvidenceFor && (
         <>
+          {/* ── PHYSICAL AWS IOT DEVICE REGISTRY MAPPING ── */}
+          <div className="glass-card mb-6 p-5 rounded-2xl" style={{ border: '1px solid rgba(11, 60, 122, 0.15)', background: '#ffffff', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
+            <div className="flex justify-between items-center mb-4 flex-wrap gap-2">
+              <div>
+                <h4 className="m-0 font-bold flex items-center gap-2 text-base" style={{ color: '#0B3C7A' }}>
+                  <FaMicrochip /> Physical AWS IoT Devices ({gate.deviceRegistries?.length || 0})
+                </h4>
+                <p className="text-xs text-muted m-0 mt-1">
+                  Registered AWS IoT Core devices mapped to this LC Gate. Devices can be assigned or unassigned at any time.
+                </p>
+              </div>
+              <button 
+                className="btn-small btn-primary flex items-center gap-1.5 hover-lift"
+                style={{ padding: '7px 14px', fontSize: '0.82rem', cursor: 'pointer' }}
+                onClick={() => setShowAssignDeviceModal(true)}
+              >
+                <FaPlus size={11} /> Assign Registered Device
+              </button>
+            </div>
+
+            {(!gate.deviceRegistries || gate.deviceRegistries.length === 0) ? (
+              <div className="p-4 text-center rounded-xl" style={{ background: '#f8fafc', border: '1px dashed #cbd5e1', color: '#64748b', fontSize: '0.88rem' }}>
+                No physical hardware assigned yet. This LC Gate is independently configured with railway hierarchy &amp; coordinates.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {gate.deviceRegistries.map((dev: any) => (
+                  <div key={dev.id} className="p-3.5 rounded-xl border flex items-center justify-between gap-3" style={{ background: '#f8fafc', borderColor: '#e2e8f0' }}>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <strong className="text-sm font-mono text-slate-900">{dev.thingName}</strong>
+                        <span className="badge badge-blue text-[10px]">{dev.deviceType}</span>
+                        <span className="badge text-[10px]" style={{ background: dev.status === 'ACTIVE' ? '#dcfce7' : '#f1f5f9', color: dev.status === 'ACTIVE' ? '#15803d' : '#64748b' }}>
+                          {dev.status}
+                        </span>
+                      </div>
+                      <div className="text-xs text-muted mt-1">
+                        Serial: {dev.serialNumber || 'N/A'} {dev.firmwareVersion ? `| FW: ${dev.firmwareVersion}` : ''}
+                      </div>
+                    </div>
+                    <button
+                      className="btn-small btn-outline flex items-center gap-1 text-danger hover-lift"
+                      style={{ padding: '5px 10px', fontSize: '0.75rem', borderColor: '#fca5a5', color: '#dc2626', cursor: 'pointer', background: '#ffffff' }}
+                      onClick={() => handleUnassignDevice(dev.id)}
+                      disabled={unassigningDeviceId === dev.id}
+                      title="Unassign hardware device from gate"
+                    >
+                      <FaTimes size={10} /> {unassigningDeviceId === dev.id ? '...' : 'Unassign'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {showAssignDeviceModal && (
+            <AssignDeviceModal
+              gate={gate}
+              onClose={() => setShowAssignDeviceModal(false)}
+              onSuccess={() => {
+                setShowAssignDeviceModal(false);
+                onUpdate();
+              }}
+            />
+          )}
+
+          {editingMaster && (
+            <EditMasterModal
+              gate={gate}
+              master={editingMaster}
+              onClose={() => setEditingMaster(null)}
+              onSuccess={() => {
+                setEditingMaster(null);
+                onUpdate();
+              }}
+            />
+          )}
+
           <div className="flex justify-between items-center mb-6">
             <h3 className="m-0 text-xl font-bold">Master Units</h3>
             <button className="btn-primary flex items-center gap-2" onClick={() => setAddingMaster(true)}>
@@ -954,6 +1116,14 @@ function GateDetailView({ gate, onBack, onUpdate, onOpenDeviceInfo }: any) {
                         onClick={() => onOpenDeviceInfo?.({ gate, master })}
                       >
                         <FaMicrochip style={{ fontSize: '0.95rem' }} /> Device Info
+                      </button>
+                      <button 
+                        className="btn-small btn-outline flex items-center gap-2 hover-lift" 
+                        style={{ padding: '8px 12px', fontSize: '0.85rem', cursor: 'pointer', background: '#ffffff' }}
+                        onClick={() => setEditingMaster(master)}
+                        title="Edit Master Unit Configuration & Power Source"
+                      >
+                        <FaEdit style={{ fontSize: '0.95rem' }} /> Edit Master
                       </button>
                       <button 
                         className="btn-small flex items-center gap-2 hover-lift" 
@@ -1104,7 +1274,7 @@ function GateDetailView({ gate, onBack, onUpdate, onOpenDeviceInfo }: any) {
             <div className="flex justify-between items-center pb-4 mb-4 border-b border-gray-200">
               <div>
                 <h3 className="text-xl font-bold flex items-center gap-2 m-0" style={{ color: '#0B3C7A' }}>
-                  <FaEye /> Cluster Evidence: Master #{viewingEvidenceFor.masterSequence} ({viewingEvidenceFor.serialNumber})
+                  <FaEye /> LC Gate Evidence: Master #{viewingEvidenceFor.masterSequence} ({viewingEvidenceFor.serialNumber})
                 </h3>
                 <p className="text-sm text-gray-500 m-0 mt-1">
                   Complete photographic verification proofs for all gateway units, SIM cards, power sources & connected slaves.
@@ -1298,10 +1468,454 @@ function EvidenceCardViewer({ title, subtitle, evidence, onPreview }: { title: s
   );
 }
 
+// ── Standalone Form to Edit / Update Existing LC Gate ──
+function UpdateGateForm({ gate, onCancel, onSuccess, zones, divisionsByZone }: any) {
+  const { success: toastSuccess, error: toastError, warning: toastWarning } = useToast();
+  const [name, setName] = useState(gate.name || '');
+  const [lcNumber, setLcNumber] = useState(gate.lcNumber || '');
+  const [locationName, setLocationName] = useState(gate.locationName || '');
+  const [zone, setZone] = useState(gate.zone || '');
+  const [division, setDivision] = useState(gate.division || '');
+  const [selectedStation, setSelectedStation] = useState<any>(gate.station ? {
+    id: gate.station.id,
+    code: gate.station.code,
+    name: gate.station.name,
+    division: gate.station.division,
+    zone: gate.station.zone,
+  } : (gate.stationName ? {
+    code: gate.stationCode || 'STN',
+    name: gate.stationName,
+    division: gate.division,
+    zone: gate.zone,
+  } : null));
+  const [lat, setLat] = useState(gate.latitude !== null && gate.latitude !== undefined ? String(gate.latitude) : '');
+  const [lng, setLng] = useState(gate.longitude !== null && gate.longitude !== undefined ? String(gate.longitude) : '');
+  const [gettingLocation, setGettingLocation] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const currentDivisions = zone ? (divisionsByZone[zone] || []) : [];
+
+  const canSubmit = Boolean(lcNumber.trim() && locationName.trim() && zone && division);
+
+  const handleGetLocation = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setGettingLocation(true);
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setLat(position.coords.latitude.toString());
+          setLng(position.coords.longitude.toString());
+          setGettingLocation(false);
+          toastSuccess(`Acquired GPS: ${position.coords.latitude.toFixed(5)}, ${position.coords.longitude.toFixed(5)}`, 'GPS Located');
+        },
+        (error) => {
+          toastError(`Error getting location: ${error.message}`, 'Location Error');
+          setGettingLocation(false);
+        },
+        { enableHighAccuracy: true }
+      );
+    } else {
+      toastWarning("Geolocation is not supported by your browser.", "GPS Unavailable");
+      setGettingLocation(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setSubmitting(true);
+    try {
+      const raw = lcNumber.trim();
+      const cleanLc = raw.toUpperCase().startsWith('LC-')
+        ? raw.toUpperCase()
+        : `LC-${raw.toUpperCase()}`;
+
+      const res = await fetch(`${API_URL}/api/v1/lcgate/${gate.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({
+          name: name.trim() || undefined,
+          lcNumber: cleanLc,
+          locationName: locationName.trim(),
+          zone,
+          division,
+          stationId: selectedStation?.id ? selectedStation.id : null,
+          stationCode: selectedStation?.code ? selectedStation.code : null,
+          stationName: selectedStation?.name ? selectedStation.name : null,
+          latitude: lat ? parseFloat(lat) : null,
+          longitude: lng ? parseFloat(lng) : null
+        })
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        lcGatesCacheService.markStale(getCacheUserId());
+        toastSuccess(`LC Gate "${cleanLc}" updated successfully.`, 'Gate Updated');
+        onSuccess(updated);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toastError(err.error || 'Failed to update gate', 'Update Failed');
+      }
+    } catch (e: any) {
+      console.error(e);
+      toastError(e.message || 'Network error occurred while updating gate.', 'Network Error');
+    }
+    setSubmitting(false);
+  };
+
+  return (
+    <div className="glass-card max-w-lg mx-auto slide-up">
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h3 className="title-gradient m-0">Edit LC Gate Details</h3>
+          <p className="text-xs text-muted m-0 mt-1">Update railway organizational mapping &amp; configuration</p>
+        </div>
+        <button className="btn-icon" onClick={onCancel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FaTimes size={16} /></button>
+      </div>
+      
+      <form onSubmit={handleSubmit} className="flex-col gap-4">
+        <div className="form-group">
+          <label>LC Number *</label>
+          <input 
+            className="glass-input font-bold" 
+            type="text" 
+            required
+            value={lcNumber} 
+            onChange={e => setLcNumber(e.target.value)} 
+          />
+        </div>
+
+        <div className="form-group">
+          <label>Location Description *</label>
+          <input className="glass-input" type="text" required value={locationName} onChange={e => setLocationName(e.target.value)} />
+        </div>
+
+        <div className="form-group">
+          <label>Gate Name / Label</label>
+          <input className="glass-input" type="text" value={name} onChange={e => setName(e.target.value)} />
+        </div>
+
+        <div className="form-group">
+          <label>Railway Zone *</label>
+          <select className="glass-input" required value={zone} onChange={(e) => { setZone(e.target.value); setDivision(''); setSelectedStation(null); }}>
+            <option value="">Select Zone…</option>
+            {(zones || []).map((z: string) => <option key={z} value={z}>{z}</option>)}
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label>Division *</label>
+          <select className="glass-input" required disabled={!zone} value={division} onChange={(e) => { setDivision(e.target.value); setSelectedStation(null); }}>
+            <option value="">{zone ? 'Select Division…' : 'Select Zone first…'}</option>
+            {currentDivisions.map((d: string) => <option key={d} value={d}>{d}</option>)}
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label>Railway Station (Optional)</label>
+          <StationSearchSelect
+            zone={zone}
+            division={division}
+            selectedStationId={selectedStation?.id}
+            selectedStationCode={selectedStation?.code}
+            onSelectStation={(st) => setSelectedStation(st)}
+            disabled={!division}
+          />
+          <small className="text-muted mt-1 block">
+            Bind this LC Gate to a Railway Station for organizational reporting &amp; station-level user access. Search by name or code, or add a custom station.
+          </small>
+        </div>
+        
+        <div className="location-box glass-panel p-4 rounded-lg">
+          <div className="flex justify-between items-center mb-2">
+            <label className="m-0">GPS Coordinates</label>
+            <button className="btn-small btn-primary flex items-center gap-1" onClick={handleGetLocation} disabled={gettingLocation}>
+              {gettingLocation ? 'Locating...' : <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><FaMapMarkerAlt /> Auto-fill GPS</span>}
+            </button>
+          </div>
+          <div className="flex gap-4">
+            <input className="glass-input flex-1" type="number" step="any" placeholder="Latitude" value={lat} onChange={e => setLat(e.target.value)} />
+            <input className="glass-input flex-1" type="number" step="any" placeholder="Longitude" value={lng} onChange={e => setLng(e.target.value)} />
+          </div>
+        </div>
+
+        <div className="flex gap-3 justify-end mt-4">
+          <button type="button" className="btn-outline flex-1 py-2.5" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="submit" className="btn-primary flex-1 py-2.5" disabled={submitting || !canSubmit}>
+            {submitting ? 'Saving...' : 'Save Changes'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// ── Modal to Assign Registered AWS IoT Device to LC Gate ──
+function AssignDeviceModal({ gate, onClose, onSuccess }: any) {
+  const { success: toastSuccess, error: toastError } = useToast();
+  const [unassignedDevices, setUnassignedDevices] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedDeviceId, setSelectedDeviceId] = useState('');
+  const [selectedMasterId, setSelectedMasterId] = useState('');
+  const [assigning, setAssigning] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API_URL}/api/v1/devices?limit=100&unassigned=true`, {
+      headers: authHeaders(),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data?.devices && Array.isArray(data.devices)) {
+          setUnassignedDevices(data.devices);
+        }
+      })
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleAssign = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedDeviceId) {
+      toastError('Please choose a device to assign.', 'Selection Required');
+      return;
+    }
+    setAssigning(true);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/lcgate/${gate.id}/assign-device`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          deviceId: parseInt(selectedDeviceId, 10),
+          masterId: selectedMasterId ? parseInt(selectedMasterId, 10) : undefined,
+        }),
+      });
+      if (res.ok) {
+        toastSuccess('Device assigned successfully to this LC Gate.', 'Device Assigned');
+        onSuccess();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toastError(err.error || 'Failed to assign device', 'Assignment Failed');
+      }
+    } catch (e: any) {
+      toastError(e.message || 'Error assigning device.', 'Network Error');
+    } finally {
+      setAssigning(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay fade-in">
+      <div className="modal-content glass-card scale-in max-w-md w-full" style={{ padding: 24 }}>
+        <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-200">
+          <div>
+            <h3 className="m-0 text-lg font-bold text-slate-900 flex items-center gap-2">
+              <FaMicrochip /> Assign AWS IoT Device
+            </h3>
+            <p className="text-xs text-muted m-0 mt-0.5">Map physical hardware to LC Gate {gate.lcNumber}</p>
+          </div>
+          <button className="btn-icon" onClick={onClose}><FaTimes size={16} /></button>
+        </div>
+
+        <form onSubmit={handleAssign} className="flex flex-col gap-4">
+          <div className="form-group">
+            <label className="text-xs font-bold text-slate-700 uppercase">Available Devices in Registry *</label>
+            <select
+              className="glass-input font-mono text-sm"
+              required
+              disabled={loading}
+              value={selectedDeviceId}
+              onChange={e => setSelectedDeviceId(e.target.value)}
+            >
+              <option value="">{loading ? 'Loading devices…' : (unassignedDevices.length === 0 ? 'No unassigned devices available' : '-- Select AWS IoT Thing --')}</option>
+              {unassignedDevices.map(d => (
+                <option key={d.id} value={d.id.toString()}>
+                  {d.thingName} {d.serialNumber && d.serialNumber !== d.thingName ? `(${d.serialNumber})` : ''} - {d.deviceType}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {gate.masters && gate.masters.length > 0 && (
+            <div className="form-group">
+              <label className="text-xs font-bold text-slate-700 uppercase">Link to Master Unit (Optional)</label>
+              <select
+                className="glass-input text-sm"
+                value={selectedMasterId}
+                onChange={e => setSelectedMasterId(e.target.value)}
+              >
+                <option value="">-- Associate with Gate (Primary Master) --</option>
+                {gate.masters.map((m: any) => (
+                  <option key={m.id} value={m.id.toString()}>
+                    Master #{m.masterSequence}: {m.serialNumber} ({m.powerSource})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div className="flex gap-3 justify-end mt-4">
+            <button type="button" className="btn-outline flex-1 py-2" onClick={onClose}>
+              Cancel
+            </button>
+            <button type="submit" className="btn-primary flex-1 py-2" disabled={assigning || !selectedDeviceId}>
+              {assigning ? 'Assigning...' : 'Assign Device'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ── Modal to Edit Existing Master Unit Configuration (Power source & Device link) ──
+function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
+  const { success: toastSuccess, error: toastError } = useToast();
+  const [serialNumber, setSerialNumber] = useState(master.serialNumber || '');
+  const [powerSource, setPowerSource] = useState(master.powerSource || 'SOLAR');
+  const [deviceList, setDeviceList] = useState<any[]>([]);
+  
+  const initiallyAssignedDevice = (gate.deviceRegistries || []).find((d: any) => d.masterId === master.id);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>(
+    initiallyAssignedDevice ? String(initiallyAssignedDevice.id) : ''
+  );
+  const [loadingDevices, setLoadingDevices] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API_URL}/api/v1/devices?limit=100&unassigned=true`, {
+      headers: authHeaders()
+    })
+      .then(r => r.json())
+      .then(data => {
+        let list = (data && Array.isArray(data.devices)) ? data.devices : [];
+        if (initiallyAssignedDevice && !list.some((d: any) => d.id === initiallyAssignedDevice.id)) {
+          list = [initiallyAssignedDevice, ...list];
+        }
+        setDeviceList(list);
+      })
+      .catch(console.error)
+      .finally(() => setLoadingDevices(false));
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!serialNumber.trim()) {
+      toastError('Master Serial Identifier is required.', 'Validation Error');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const devIdNum = selectedDeviceId ? parseInt(selectedDeviceId, 10) : null;
+      const unassign = initiallyAssignedDevice && !devIdNum;
+
+      const res = await fetch(`${API_URL}/api/v1/lcgate/masters/${master.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          serialNumber: serialNumber.trim(),
+          powerSource,
+          deviceId: devIdNum,
+          unassignDevice: Boolean(unassign),
+        })
+      });
+
+      if (res.ok) {
+        toastSuccess('Master unit configuration updated successfully.', 'Master Updated');
+        onSuccess();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toastError(err.error || 'Failed to update master unit', 'Update Failed');
+      }
+    } catch (e: any) {
+      toastError(e.message || 'Error updating master unit.', 'Network Error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay fade-in">
+      <div className="modal-content glass-card scale-in max-w-md w-full" style={{ padding: 24 }}>
+        <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-200">
+          <div>
+            <h3 className="m-0 text-lg font-bold text-slate-900 flex items-center gap-2">
+              <FaEdit /> Edit Master Unit Configuration
+            </h3>
+            <p className="text-xs text-muted m-0 mt-0.5">Master #{master.masterSequence} for LC Gate {gate.lcNumber}</p>
+          </div>
+          <button className="btn-icon" onClick={onClose}><FaTimes size={16} /></button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <div className="form-group">
+            <label className="text-xs font-bold text-slate-700 uppercase">Master Serial Identifier *</label>
+            <input
+              type="text"
+              required
+              className="glass-input font-mono font-bold"
+              value={serialNumber}
+              onChange={e => setSerialNumber(e.target.value)}
+            />
+          </div>
+
+          <div className="form-group">
+            <label className="text-xs font-bold text-slate-700 uppercase">Power Source *</label>
+            <select
+              className="glass-input"
+              value={powerSource}
+              onChange={e => setPowerSource(e.target.value)}
+            >
+              <option value="SOLAR">Solar Power (Photovoltaic)</option>
+              <option value="DIRECT">Direct Current Supply (AC Mains)</option>
+            </select>
+          </div>
+
+          <div className="form-group" style={{ background: 'rgba(11, 60, 122, 0.04)', padding: 12, borderRadius: 8, border: '1px solid rgba(11, 60, 122, 0.12)' }}>
+            <label className="text-xs font-bold text-slate-700 uppercase flex items-center gap-1.5" style={{ color: 'var(--primary)' }}>
+              <FaMicrochip /> Linked AWS IoT Device (Optional)
+            </label>
+            <select
+              className="glass-input font-mono text-sm mt-1"
+              value={selectedDeviceId}
+              disabled={loadingDevices}
+              onChange={e => setSelectedDeviceId(e.target.value)}
+            >
+              <option value="">-- No Device Assigned (Virtual / Decoupled) --</option>
+              {deviceList.map((d: any) => (
+                <option key={d.id} value={String(d.id)}>
+                  {d.thingName} {d.serialNumber && d.serialNumber !== d.thingName ? `(${d.serialNumber})` : ''} - {d.deviceType} {d.id === initiallyAssignedDevice?.id ? '(Currently Linked)' : ''}
+                </option>
+              ))}
+            </select>
+            <small className="text-muted mt-1 block">
+              Physical hardware from AWS IoT Device Registry. You can change or unassign this device at any time without deleting the gate.
+            </small>
+          </div>
+
+          <div className="flex gap-3 justify-end mt-4">
+            <button type="button" className="btn-outline flex-1 py-2" onClick={onClose}>
+              Cancel
+            </button>
+            <button type="submit" className="btn-primary flex-1 py-2" disabled={submitting}>
+              {submitting ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
   const { success: toastSuccess, error: toastError } = useToast();
   const [masterSequence, setMasterSequence] = useState('1');
   const [powerSource, setPowerSource] = useState('SOLAR');
+  const [customSerial, setCustomSerial] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
 
   // Device Registry Integration
@@ -1361,15 +1975,9 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedDeviceId) {
-      toastError('Please select a provisioned Master device from AWS IoT Registry.', 'Device Required');
-      return;
-    }
-    const chosen = deviceList.find(d => d.id.toString() === selectedDeviceId);
-    if (!chosen) {
-      toastError('Selected AWS IoT device is invalid.', 'Device Error');
-      return;
-    }
+    const chosen = selectedDeviceId ? deviceList.find(d => d.id.toString() === selectedDeviceId) : null;
+    const autoSerial = chosen ? chosen.thingName : `${gate.lcNumber}-${masterSequence.padStart(2, '0')}`;
+    const serialToUse = (customSerial.trim() || autoSerial).trim();
 
     setSubmitting(true);
     try {
@@ -1382,7 +1990,8 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
         body: JSON.stringify({ 
           masterSequence: parseInt(masterSequence, 10), 
           powerSource,
-          deviceId: chosen.id,
+          serialNumber: serialToUse,
+          deviceId: chosen ? chosen.id : undefined,
         })
       });
       if (res.ok) {
@@ -1423,7 +2032,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
         }
 
         lcGatesCacheService.markStale(getCacheUserId());
-        toastSuccess(`Master Unit ${chosenDevice ? chosenDevice.thingName : `${gate.lcNumber}-${masterSequence.padStart(2, '0')}`} added successfully${simPhotoBase64 ? ' with SIM photo' : ''}.`, 'Master Unit Added');
+        toastSuccess(`Master Unit ${serialToUse} added successfully${simPhotoBase64 ? ' with SIM photo' : ''}.`, 'Master Unit Added');
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
@@ -1443,49 +2052,41 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
         <button className="btn-icon" onClick={onCancel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FaTimes size={16} /></button>
       </div>
       <form onSubmit={handleSubmit} className="flex-col gap-4">
-        {/* Device Registry Dropdown (Mandatory) */}
+        {/* Device Registry Dropdown (Optional) */}
         <div className="form-group" style={{ background: 'rgba(11, 60, 122, 0.04)', padding: 12, borderRadius: 8, border: '1px solid rgba(11, 60, 122, 0.12)' }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--primary)', fontWeight: 600 }}>
-            <FaMicrochip /> Select Provisioned Master from Registry *
+            <FaMicrochip /> Select Provisioned Master from Registry (Optional)
           </label>
           <select 
             className="glass-input" 
             value={selectedDeviceId}
             onChange={(e) => setSelectedDeviceId(e.target.value)}
-            required
           >
-            <option value="">{deviceList.length === 0 ? '-- No unassigned Master devices found in registry --' : '-- Select AWS IoT Thing Name * --'}</option>
+            <option value="">-- Virtual Master (Assign Hardware Later) --</option>
             {deviceList.map(dev => (
               <option key={dev.id} value={dev.id.toString()}>
                 {dev.thingName} {dev.firmwareVersion ? `(${dev.firmwareVersion})` : ''}
               </option>
             ))}
           </select>
-          {deviceList.length === 0 ? (
-            <small style={{ color: '#dc2626', marginTop: 6, display: 'block', fontWeight: 500 }}>
-              ⚠️ No unassigned Master devices in registry. Please provision a Master device in AWS IoT Core first.
-            </small>
-          ) : (
-            <small className="text-muted mt-1 block">
-              Mandatory: Select a Master hardware device registered via Fleet Provisioning / AWS IoT Core.
-            </small>
-          )}
+          <small className="text-muted mt-1 block">
+            Optional: Link a provisioned AWS IoT device now, or create the Master Unit independently without physical hardware.
+          </small>
         </div>
 
         <div className="form-group">
           <label>Master Serial Identifier *</label>
           <div className="flex items-center gap-2">
             <input 
-              className="glass-input flex-1 font-bold" 
-              style={{ backgroundColor: 'rgba(0,0,0,0.05)', cursor: 'not-allowed', color: chosenDevice ? 'var(--primary)' : '#94a3b8' }} 
+              className="glass-input flex-1 font-bold font-mono" 
               type="text" 
-              readOnly
-              value={chosenDevice ? chosenDevice.thingName : ''} 
-              placeholder="Select an AWS IoT device above"
+              value={customSerial !== '' ? customSerial : (chosenDevice ? chosenDevice.thingName : `${gate.lcNumber}-${masterSequence.padStart(2, '0')}`)} 
+              onChange={e => setCustomSerial(e.target.value)}
+              placeholder="e.g. LC-0001-01"
             />
           </div>
-          <small className="mt-1 block" style={{ color: chosenDevice ? '#059669' : '#dc2626' }}>
-            {chosenDevice ? 'Authoritative identifier strictly from AWS IoT Device Registry.' : 'Mandatory: Select a provisioned Master device above.'}
+          <small className="mt-1 block text-muted">
+            {chosenDevice ? `Physical hardware linked: ${chosenDevice.thingName}` : 'Auto-generated virtual master identifier. Physical hardware can be assigned at any time.'}
           </small>
         </div>
         <div className="form-group">
@@ -1517,7 +2118,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
             Attach photo of the installed SIM card & ICCID number. You can also view or update it anytime in the Evidence Checklist.
           </small>
         </div>
-        <button type="submit" className="btn-primary w-full mt-4 py-3" disabled={submitting || !selectedDeviceId}>
+        <button type="submit" className="btn-primary w-full mt-4 py-3" disabled={submitting}>
           {submitting ? 'Saving...' : 'Create Master Unit'}
         </button>
       </form>

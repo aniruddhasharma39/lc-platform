@@ -26,6 +26,8 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
   Map<String, List<String>> _divisionsByZone = RailwayData.data;
   String? _zone;
   String? _division;
+  String? _stationCode;
+  List<StationReference> _stations = [];
   bool _loadingReference = true;
 
   bool _isLoading = false;
@@ -157,6 +159,7 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
         'zone': _zone,
         'division': _division,
       };
+      if (_stationCode != null) body['stationCode'] = _stationCode;
 
       if (lat != null) body['latitude'] = lat;
       if (lng != null) body['longitude'] = lng;
@@ -283,9 +286,33 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
                             onChanged: _zone == null
                                 ? null
                                 : (val) {
-                                    setState(() => _division = val);
+                                    setState(() {
+                                      _division = val;
+                                      _stationCode = null;
+                                      _stations = RailwayData.stationsForDivision(val);
+                                    });
                                   },
                             hint: Text(_zone == null ? 'Select Zone first...' : 'Select Division'),
+                          ),
+                          const SizedBox(height: 16),
+
+                          // Station Dropdown
+                          DropdownButtonFormField<String>(
+                            value: _stationCode,
+                            decoration: InputDecoration(
+                              labelText: 'Railway Station (Optional)',
+                              prefixIcon: const Icon(Icons.train_outlined),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            items: _stations
+                                .map((s) => DropdownMenuItem(value: s.code, child: Text('${s.name} (${s.code})', overflow: TextOverflow.ellipsis)))
+                                .toList(),
+                            onChanged: _division == null
+                                ? null
+                                : (val) {
+                                    setState(() => _stationCode = val);
+                                  },
+                            hint: Text(_division == null ? 'Select Division first...' : 'Select Station'),
                           ),
                           const SizedBox(height: 16),
 

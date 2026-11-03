@@ -6,47 +6,80 @@ import { authenticate, requireModule } from '../middleware/auth';
 import { extractRegistrationUserFields } from '../lib/userExtract';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
+import { canApproveRequest, getDesignationConfig, DESIGNATIONS } from '../lib/railwayHierarchy';
 
 const router = Router();
 
 router.use(authenticate);
 
-router.get('/', requireModule('manage-users'), async (req, res, next) => {
+router.get('/', requireModule('manage-users'), async (req: any, res, next) => {
   try {
-    const users = await prisma.user.findMany({
-      include: {
-        role: true,
-        requestedRole: true,
-        scopeGroups: {
-          include: { scopeGroup: true }
-        }
-      },
-      orderBy: { createdAt: 'desc' }
+    const isDeveloper = req.user?.role?.name === 'Developer' || req.user?.roleId === 1;
+
+    // Fetch approver's assigned gates if any
+    const approverUserGates = await prisma.userGate.findMany({
+      where: { userId: req.user.id },
+      select: { gateId: true }
     });
-    
-    const [pendingRequests, roles] = await Promise.all([
-      prisma.registrationRequest.findMany({
-        where: { status: 'PENDING' },
-        include: { form: true },
+    const approverGateIds = approverUserGates.map(ug => ug.gateId);
+
+    const [users, allPendingRequests, roles, allGates] = await Promise.all([
+      prisma.user.findMany({
+        include: {
+          role: true,
+          requestedRole: true,
+          station: { select: { id: true, code: true, name: true, division: true, zone: true } },
+          assignedGates: {
+            include: {
+              gate: { select: { id: true, lcNumber: true, locationName: true, name: true } }
+            }
+          },
+          scopeGroups: {
+            include: { scopeGroup: true }
+          }
+        },
         orderBy: { createdAt: 'desc' }
       }),
-      prisma.role.findMany()
+      prisma.registrationRequest.findMany({
+        where: { status: 'PENDING' },
+        include: {
+          form: true,
+          station: { select: { id: true, code: true, name: true, division: true, zone: true } }
+        },
+        orderBy: { createdAt: 'desc' }
+      }),
+      prisma.role.findMany(),
+      prisma.lCGate.findMany({
+        select: { id: true, lcNumber: true, locationName: true, name: true, stationId: true }
+      })
     ]);
 
     const roleMap = new Map(roles.map(r => [r.id, r.name]));
+    const gateMap = new Map(allGates.map(g => [g.id, g]));
 
     const existingEmails = new Set(users.map(u => (u.email || '').toLowerCase().trim()).filter(Boolean));
     const existingMobiles = new Set(users.map(u => (u.mobile || '').replace(/\D/g, '').slice(-10)).filter(Boolean));
     const existingEmpIds = new Set(users.map(u => (u.employeeId || '').toLowerCase().trim()).filter(Boolean));
 
-    const enhancedPendingRequests = pendingRequests.map(r => {
+    // Check which immediate superiors are currently registered in the system
+    // key: `${designation}:${division}`
+    const superiorActiveMap = new Set(
+      users
+        .filter(u => u.status === 'APPROVED' && u.designation && u.division)
+        .map(u => `${(u.designation || "").toLowerCase()}:${(u.division || "").toLowerCase()}`)
+    );
+
+    // Filter and enhance pending requests based on reporting hierarchy and jurisdiction
+    const visiblePendingRequests: any[] = [];
+
+    for (const r of allPendingRequests) {
       let resolvedRoleId = r.requestedRoleId;
       let reqData: any = {};
       if (r.data) {
         try {
           reqData = JSON.parse(r.data);
-          if (reqData.roleId) resolvedRoleId = parseInt(reqData.roleId);
-          else if (reqData.requestedRoleId) resolvedRoleId = parseInt(reqData.requestedRoleId);
+          if (reqData.roleId) resolvedRoleId = parseInt(reqData.roleId, 10);
+          else if (reqData.requestedRoleId) resolvedRoleId = parseInt(reqData.requestedRoleId, 10);
         } catch (_) {}
       }
 
@@ -66,16 +99,48 @@ router.get('/', requireModule('manage-users'), async (req, res, next) => {
         conflictReasons.push(`Employee ID "${extracted.employeeId}" is already registered`);
       }
 
-      return {
+      // Check immediate superior availability
+      const targetDesigCfg = getDesignationConfig(r.designation);
+      const immediateSuperior = targetDesigCfg ? targetDesigCfg.immediateSuperior : null;
+      let immediateSuperiorAvailable = true;
+      if (immediateSuperior && r.division) {
+        immediateSuperiorAvailable = superiorActiveMap.has(`${immediateSuperior.toLowerCase()}:${r.division.toLowerCase()}`);
+      }
+
+      // Check authorization to approve
+      const authCheck = canApproveRequest(req.user, r, approverGateIds);
+
+      // Section 8: An authenticated user sees ONLY registration requests they are authorized to review!
+      // Developers see all requests, with clear tags for governance intervention / pending superiors
+      if (!isDeveloper && !authCheck.allowed) {
+        continue;
+      }
+
+      // Resolve gate details for requested gate IDs
+      const requestedGates = (r.gateIds || []).map(gid => gateMap.get(gid)).filter(Boolean);
+
+      visiblePendingRequests.push({
         ...r,
+        department: r.department || reqData.department,
+        designation: r.designation || reqData.designation,
+        zone: r.zone || reqData.zone,
+        division: r.division || reqData.division,
+        stationId: r.stationId || (reqData.stationId ? parseInt(reqData.stationId, 10) : null),
+        idCardUrl: r.idCardUrl || reqData.idCard || reqData.idCardUrl || reqData.identityCard,
+        requestedGates,
         requestedRoleId: resolvedRoleId,
         requestedRoleName: resolvedRoleId ? roleMap.get(resolvedRoleId) || null : null,
+        immediateSuperior,
+        immediateSuperiorAvailable,
+        canApprove: authCheck.allowed,
+        isGovernanceIntervention: authCheck.isGovernanceIntervention || false,
+        notAllowedReason: authCheck.reason,
         hasConflict: conflictReasons.length > 0,
         conflictReasons,
-      };
-    });
+      });
+    }
     
-    res.json({ users, pendingRequests: enhancedPendingRequests });
+    res.json({ users, pendingRequests: visiblePendingRequests });
   } catch (error) {
     next(error);
   }
@@ -83,6 +148,12 @@ router.get('/', requireModule('manage-users'), async (req, res, next) => {
 
 const approveSchema = z.object({
   roleId: z.number().int(),
+  zone: z.string().optional().nullable(),
+  division: z.string().optional().nullable(),
+  stationId: z.preprocess(
+    (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
+    z.number().int().optional().nullable()
+  ),
 });
 
 router.put('/request/:id/approve', requireModule('manage-users'), async (req: any, res, next) => {
@@ -96,6 +167,36 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
     });
     if (!request || request.status !== 'PENDING') {
       return res.status(404).json({ error: 'Request not found or not pending' });
+    }
+
+    // Verify hierarchical reporting relationship and geographical jurisdiction
+    const approverUserGates = await prisma.userGate.findMany({
+      where: { userId: req.user.id },
+      select: { gateId: true }
+    });
+    const approverGateIds = approverUserGates.map(ug => ug.gateId);
+
+    const authCheck = canApproveRequest(req.user, request, approverGateIds);
+    if (!authCheck.allowed) {
+      return res.status(403).json({
+        error: authCheck.reason || 'You are not authorized to approve this registration request.'
+      });
+    }
+
+    // Atomic lock to prevent simultaneous approvals/rejections (Section 8)
+    const locked = await prisma.registrationRequest.updateMany({
+      where: { id, status: 'PENDING' },
+      data: {
+        status: 'APPROVED',
+        approvedByUserId: req.user.id,
+        approvedAt: new Date()
+      }
+    });
+
+    if (locked.count === 0) {
+      return res.status(409).json({
+        error: 'This registration request has already been processed by another officer.'
+      });
     }
 
     const formData = JSON.parse(request.data);
@@ -166,7 +267,20 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
       mappedMetadata[label] = v;
     }
     
-// Create the actual user
+// Resolve role for designation if not explicitly provided
+    let finalRoleId = data.roleId;
+    const reqDesig = request.designation || formData.designation;
+    if (reqDesig) {
+      const desigCfg = getDesignationConfig(reqDesig);
+      if (desigCfg) {
+        const matchedRole = await prisma.role.findFirst({
+          where: { name: desigCfg.defaultRoleName }
+        });
+        if (matchedRole) finalRoleId = matchedRole.id;
+      }
+    }
+
+    // Create the actual user
     let user;
     try {
       user = await prisma.user.create({
@@ -175,9 +289,14 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
           email: targetEmail,
           mobile: targetMobile,
           employeeId: targetEmpId,
-          department: targetDept,
+          department: request.department || targetDept,
+          designation: reqDesig || null,
           requestedRoleId: request.requestedRoleId,
-          roleId: data.roleId,
+          roleId: finalRoleId,
+          zone: request.zone || data.zone || null,
+          division: request.division || data.division || null,
+          stationId: request.stationId || data.stationId || null,
+          idCardUrl: request.idCardUrl || formData.idCard || formData.idCardUrl || null,
           passwordHash: (formData.password && formData.password.trim().length > 0)
             ? formData.password
             : await bcrypt.hash('123456', 10),
@@ -185,7 +304,22 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
           metadata: JSON.stringify(mappedMetadata)
         }
       });
+
+      // Link explicitly assigned LC Gates in UserGate table (Section 9)
+      const gateIdsToAssign: number[] = Array.isArray(request.gateIds) ? request.gateIds : [];
+      for (const gId of gateIdsToAssign) {
+        await prisma.userGate.upsert({
+          where: { userId_gateId: { userId: user.id, gateId: gId } },
+          update: {},
+          create: { userId: user.id, gateId: gId }
+        });
+      }
     } catch (err: any) {
+      // Revert request status if user creation failed
+      await prisma.registrationRequest.update({
+        where: { id },
+        data: { status: 'PENDING', approvedByUserId: null, approvedAt: null }
+      });
       if (err?.code === 'P2002') {
         const target = err.meta?.target || 'unique field';
         return res.status(409).json({
@@ -194,11 +328,6 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
       }
       throw err;
     }
-
-    await prisma.registrationRequest.update({
-      where: { id },
-      data: { status: 'APPROVED' }
-    });
 
     await prisma.auditLog.create({
       data: {
@@ -223,23 +352,85 @@ router.put('/request/:id/reject', requireModule('manage-users'), async (req: any
     const id = parseInt(req.params.id, 10);
     const data = rejectSchema.parse(req.body);
 
-    await prisma.registrationRequest.update({
-      where: { id },
+    if (!data.reason || data.reason.trim().length === 0) {
+      return res.status(400).json({ error: 'A specific reason is mandatory for rejecting an employee registration.' });
+    }
+
+    const request = await prisma.registrationRequest.findUnique({ where: { id } });
+    if (!request || request.status !== 'PENDING') {
+      return res.status(404).json({ error: 'Request not found or already processed.' });
+    }
+
+    // Verify hierarchical reporting relationship
+    const approverUserGates = await prisma.userGate.findMany({
+      where: { userId: req.user.id },
+      select: { gateId: true }
+    });
+    const approverGateIds = approverUserGates.map(ug => ug.gateId);
+
+    const authCheck = canApproveRequest(req.user, request, approverGateIds);
+    if (!authCheck.allowed) {
+      return res.status(403).json({
+        error: authCheck.reason || 'You are not authorized to reject this registration request.'
+      });
+    }
+
+    const locked = await prisma.registrationRequest.updateMany({
+      where: { id, status: 'PENDING' },
       data: {
         status: 'REJECTED',
-        rejectionReason: data.reason,
-      },
+        rejectionReason: data.reason.trim(),
+        approvedByUserId: req.user.id,
+        approvedAt: new Date()
+      }
     });
+
+    if (locked.count === 0) {
+      return res.status(409).json({ error: 'This request was already decided by another officer.' });
+    }
 
     await prisma.auditLog.create({
       data: {
         userId: req.user.id,
         action: 'REJECT_USER_REQUEST',
-        details: `Rejected registration request ${id}`,
+        details: `Rejected registration request ${id} for "${request.designation || 'applicant'}": ${data.reason}`,
       },
     });
 
-    res.json({ success: true });
+    res.json({ success: true, message: 'Registration request rejected.' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Exceptional escalation route when immediate superior is not registered (Section 7.5)
+router.post('/request/:id/escalate', requireModule('manage-users'), async (req: any, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { reason } = req.body;
+
+    const request = await prisma.registrationRequest.findUnique({ where: { id } });
+    if (!request || request.status !== 'PENDING') {
+      return res.status(404).json({ error: 'Request not found or already processed.' });
+    }
+
+    await prisma.registrationRequest.update({
+      where: { id },
+      data: {
+        isEscalated: true,
+        escalationReason: reason || 'Escalated for governance-level review because immediate senior officer is not registered.'
+      }
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        action: 'ESCALATE_USER_REQUEST',
+        details: `Escalated registration request ${id} to governance: ${reason || 'Immediate superior unavailable'}`,
+      },
+    });
+
+    res.json({ success: true, message: 'Request escalated to governance authority.' });
   } catch (error) {
     next(error);
   }
@@ -300,6 +491,49 @@ router.put('/:id/reactivate', requireModule('manage-users'), async (req: any, re
     });
 
     res.json(user);
+  } catch (error) {
+    next(error);
+  }
+});
+
+const railwayMappingSchema = z.object({
+  zone: z.string().optional().nullable(),
+  division: z.string().optional().nullable(),
+  stationId: z.preprocess(
+    (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
+    z.number().int().optional().nullable()
+  ),
+});
+
+router.put('/:id/railway-mapping', requireModule('manage-users'), async (req: any, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid user ID' });
+
+    const data = railwayMappingSchema.parse(req.body);
+    const updated = await prisma.user.update({
+      where: { id },
+      data: {
+        zone: data.zone !== undefined ? data.zone : undefined,
+        division: data.division !== undefined ? data.division : undefined,
+        stationId: data.stationId !== undefined ? data.stationId : undefined,
+      },
+      include: {
+        role: true,
+        station: true,
+        scopeGroups: { include: { scopeGroup: true } }
+      }
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        action: 'UPDATE_USER_RAILWAY_MAPPING',
+        details: `Updated railway mapping for user ${updated.fullName} (Zone: ${updated.zone || 'N/A'}, Div: ${updated.division || 'N/A'}, Station: ${updated.stationId || 'N/A'})`,
+      },
+    }).catch(console.warn);
+
+    res.json(updated);
   } catch (error) {
     next(error);
   }
