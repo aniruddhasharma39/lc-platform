@@ -12,3 +12,4 @@ Future<void> saveAndOpenFilePlatform({
   await file.writeAsBytes(bytes, flush: true);
   await OpenFilex.open(file.path);
 }
+

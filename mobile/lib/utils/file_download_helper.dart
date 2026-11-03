@@ -8,3 +8,4 @@ Future<void> downloadFileUniversal({
   required String mimeType,
 }) =>
     saveAndOpenFilePlatform(bytes: bytes, filename: filename, mimeType: mimeType);
+

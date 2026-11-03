@@ -5,3 +5,4 @@ Future<void> saveAndOpenFilePlatform({
 }) async {
   throw UnsupportedError('Cannot download files on this platform');
 }
+

@@ -16,3 +16,4 @@ Future<void> saveAndOpenFilePlatform({
   html.document.body?.children.remove(anchor);
   html.Url.revokeObjectUrl(url);
 }
+
