@@ -19,6 +19,7 @@ import {
   FaRoad,
   FaChartLine,
   FaCalculator,
+  FaFileCsv,
 } from 'react-icons/fa';
 import type { User } from '../../types';
 import { API_URL } from '../../config';
@@ -1026,7 +1027,7 @@ export default function ReportsScreen({ user }: Props) {
   };
 
   // Direct Download Trigger (Server-Side Excel or PDF on Full Filtered Dataset)
-  const handleDownloadReport = async (format: 'xlsx' | 'pdf') => {
+  const handleDownloadReport = async (format: 'xlsx' | 'pdf' | 'csv') => {
     if (selectedGateIds.length === 0) {
       toastInfo('Please select at least one gate to generate the report');
       return;
@@ -1465,16 +1466,16 @@ export default function ReportsScreen({ user }: Props) {
                 {reportType === 'count' ? 'Export Count Report' : reportType === 'duration' ? 'Export Duration Report' : reportType === 'holistic' ? 'Export Holistic Report' : 'Export Event Log'}
               </span>
             </div>
-            <div className="export-buttons-pair">
+            <div className="export-buttons-pair" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px' }}>
               <button
                 type="button"
                 className="btn btn-success btn-sm export-action-btn"
                 onClick={() => handleDownloadReport('xlsx')}
                 disabled={isExporting || (reportType === 'complete_log' && selectedExportColumns.length === 0)}
-                title={reportType === 'duration' ? 'Download analytical Cycle Report (.xlsx)' : 'Download operational Complete Log (.xlsx)'}
+                title="Download Excel (.xlsx)"
               >
                 <FaFileExcel />
-                <span>{isExporting ? 'Exporting...' : 'Excel (.xlsx)'}</span>
+                <span>{isExporting ? '...' : 'Excel'}</span>
               </button>
 
               <button
@@ -1482,10 +1483,21 @@ export default function ReportsScreen({ user }: Props) {
                 className="btn btn-danger btn-sm export-action-btn"
                 onClick={() => handleDownloadReport('pdf')}
                 disabled={isExporting || (reportType === 'complete_log' && selectedExportColumns.length === 0)}
-                title={reportType === 'duration' ? 'Download analytical Cycle Report (.pdf)' : 'Download operational Complete Log (.pdf)'}
+                title="Download PDF (.pdf)"
               >
                 <FaFilePdf />
-                <span>{isExporting ? 'Exporting...' : 'PDF (.pdf)'}</span>
+                <span>{isExporting ? '...' : 'PDF'}</span>
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm export-action-btn"
+                onClick={() => handleDownloadReport('csv')}
+                disabled={isExporting || (reportType === 'complete_log' && selectedExportColumns.length === 0)}
+                title="Download CSV (.csv)"
+              >
+                <FaFileCsv />
+                <span>{isExporting ? '...' : 'CSV'}</span>
               </button>
             </div>
           </div>

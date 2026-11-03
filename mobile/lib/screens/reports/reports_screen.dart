@@ -1075,9 +1075,84 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                             children: [
                               Expanded(
                                 child: InkWell(
+                                  onTap: () => setModalState(() => selectedReportType = 'count'),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: selectedReportType == 'count' ? const Color(0xFF2563EB).withValues(alpha: 0.08) : Colors.white,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: selectedReportType == 'count' ? const Color(0xFF2563EB) : Colors.grey.shade300,
+                                        width: 2,
+                                      ),
+                                    ),
+                                    child: Column(
+                                      children: const [
+                                        Icon(Icons.format_list_numbered_rounded, color: Color(0xFF2563EB), size: 22),
+                                        SizedBox(height: 4),
+                                        Text('Count', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('Ops Rollup', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => setModalState(() => selectedReportType = 'duration'),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: (selectedReportType == 'duration' || selectedReportType == 'cycle') ? const Color(0xFF046A38).withValues(alpha: 0.08) : Colors.white,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: (selectedReportType == 'duration' || selectedReportType == 'cycle') ? const Color(0xFF046A38) : Colors.grey.shade300,
+                                        width: 2,
+                                      ),
+                                    ),
+                                    child: Column(
+                                      children: const [
+                                        Icon(Icons.timer_outlined, color: Color(0xFF046A38), size: 22),
+                                        SizedBox(height: 4),
+                                        Text('Duration', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('Open/Close', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => setModalState(() => selectedReportType = 'holistic'),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: selectedReportType == 'holistic' ? const Color(0xFF7C3AED).withValues(alpha: 0.08) : Colors.white,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: selectedReportType == 'holistic' ? const Color(0xFF7C3AED) : Colors.grey.shade300,
+                                        width: 2,
+                                      ),
+                                    ),
+                                    child: Column(
+                                      children: const [
+                                        Icon(Icons.account_tree_outlined, color: Color(0xFF7C3AED), size: 22),
+                                        SizedBox(height: 4),
+                                        Text('Holistic', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('Exec Tree', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: InkWell(
                                   onTap: () => setModalState(() => selectedReportType = 'complete_log'),
                                   child: Container(
-                                    padding: const EdgeInsets.all(12),
+                                    padding: const EdgeInsets.all(10),
                                     decoration: BoxDecoration(
                                       color: selectedReportType == 'complete_log' ? AppColors.primary.withValues(alpha: 0.08) : Colors.white,
                                       borderRadius: BorderRadius.circular(10),
@@ -1088,35 +1163,10 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                     ),
                                     child: Column(
                                       children: const [
-                                        Icon(Icons.format_list_bulleted_rounded, color: AppColors.primary, size: 24),
-                                        SizedBox(height: 6),
-                                        Text('Complete Log', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                                        Text('Chronological logs', style: TextStyle(fontSize: 10.5, color: Colors.grey)),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: InkWell(
-                                  onTap: () => setModalState(() => selectedReportType = 'cycle'),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(12),
-                                    decoration: BoxDecoration(
-                                      color: selectedReportType == 'cycle' ? const Color(0xFF046A38).withValues(alpha: 0.08) : Colors.white,
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: selectedReportType == 'cycle' ? const Color(0xFF046A38) : Colors.grey.shade300,
-                                        width: 2,
-                                      ),
-                                    ),
-                                    child: Column(
-                                      children: const [
-                                        Icon(Icons.insights_rounded, color: Color(0xFF046A38), size: 24),
-                                        SizedBox(height: 6),
-                                        Text('Cycle Report', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                                        Text('Operating cycles audit', style: TextStyle(fontSize: 10.5, color: Colors.grey)),
+                                        Icon(Icons.table_rows_outlined, color: AppColors.primary, size: 22),
+                                        SizedBox(height: 4),
+                                        Text('Event Log', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('Raw Events', style: TextStyle(fontSize: 10, color: Colors.grey)),
                                       ],
                                     ),
                                   ),
@@ -1155,7 +1205,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                 child: InkWell(
                                   onTap: () => setModalState(() => selectedFormat = 'xlsx'),
                                   child: Container(
-                                    padding: const EdgeInsets.all(12),
+                                    padding: const EdgeInsets.all(10),
                                     decoration: BoxDecoration(
                                       color: selectedFormat == 'xlsx' ? const Color(0xFF107C41).withValues(alpha: 0.08) : Colors.white,
                                       borderRadius: BorderRadius.circular(10),
@@ -1163,21 +1213,21 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                     ),
                                     child: Column(
                                       children: const [
-                                        Icon(Icons.table_view_rounded, color: Color(0xFF107C41), size: 28),
-                                        SizedBox(height: 6),
-                                        Text('Excel (.xlsx)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
-                                        Text('Formatted sheet', style: TextStyle(fontSize: 10.5, color: Colors.grey)),
+                                        Icon(Icons.table_view_rounded, color: Color(0xFF107C41), size: 24),
+                                        SizedBox(height: 4),
+                                        Text('Excel', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('.xlsx', style: TextStyle(fontSize: 10, color: Colors.grey)),
                                       ],
                                     ),
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 12),
+                              const SizedBox(width: 8),
                               Expanded(
                                 child: InkWell(
                                   onTap: () => setModalState(() => selectedFormat = 'pdf'),
                                   child: Container(
-                                    padding: const EdgeInsets.all(12),
+                                    padding: const EdgeInsets.all(10),
                                     decoration: BoxDecoration(
                                       color: selectedFormat == 'pdf' ? const Color(0xFFE11D48).withValues(alpha: 0.08) : Colors.white,
                                       borderRadius: BorderRadius.circular(10),
@@ -1185,10 +1235,32 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                     ),
                                     child: Column(
                                       children: const [
-                                        Icon(Icons.picture_as_pdf_rounded, color: Color(0xFFE11D48), size: 28),
-                                        SizedBox(height: 6),
-                                        Text('PDF Document', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
-                                        Text('Printable logsheet', style: TextStyle(fontSize: 10.5, color: Colors.grey)),
+                                        Icon(Icons.picture_as_pdf_rounded, color: Color(0xFFE11D48), size: 24),
+                                        SizedBox(height: 4),
+                                        Text('PDF', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('.pdf', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => setModalState(() => selectedFormat = 'csv'),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: selectedFormat == 'csv' ? const Color(0xFF2563EB).withValues(alpha: 0.08) : Colors.white,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: selectedFormat == 'csv' ? const Color(0xFF2563EB) : Colors.grey.shade300, width: 2),
+                                    ),
+                                    child: Column(
+                                      children: const [
+                                        Icon(Icons.file_present_rounded, color: Color(0xFF2563EB), size: 24),
+                                        SizedBox(height: 4),
+                                        Text('CSV', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('.csv', style: TextStyle(fontSize: 10, color: Colors.grey)),
                                       ],
                                     ),
                                   ),
