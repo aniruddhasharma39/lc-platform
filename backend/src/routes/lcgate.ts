@@ -2016,7 +2016,7 @@ router.delete('/:id', authenticate, async (req, res, next) => {
       // 1. Capture and preserve all events belonging to this gate in Tombstones prior to cascade delete
       const eventsToDelete = await tx.lCGateEvent.findMany({
         where: { gateId: id },
-        select: { id: true, gateId: true, openedAt: true },
+         select: { id: true, gateId: true, openedAt: true, closedAt: true, durationSeconds: true, status: true, openedBy: true, closedBy: true, trainNumber: true, remarks: true },
       });
 
       if (eventsToDelete.length > 0) {
@@ -2050,7 +2050,7 @@ router.delete('/:id', authenticate, async (req, res, next) => {
         targetGateScopes.length === 0,
         tx
       );
-    });
+    }, { timeout: 120000, maxWait: 10000 });
     res.status(204).send();
   } catch (error) {
     next(error);
