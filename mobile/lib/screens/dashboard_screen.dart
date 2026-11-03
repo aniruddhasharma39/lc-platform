@@ -10,7 +10,7 @@ import 'branding_screen.dart';
 import 'registration_builder_screen.dart';
 import 'cluster/cluster_main_screen.dart';
 import 'profile_screen.dart';
-import 'scope_groups/scope_groups_screen.dart';
+
 import 'device_registry/device_registry_screen.dart';
 import 'lc_gates/lc_gates_screen.dart';
 import 'reports/reports_screen.dart';
@@ -35,7 +35,6 @@ const List<String> _canonicalModuleOrder = [
   'cluster',
   'devices',
   'device-registry',
-  'scope-groups',
   'manage-users',
   'registration',
   'roles',
@@ -47,7 +46,6 @@ const List<Map<String, String>> _defaultModules = [
   {'name': 'Reports', 'slug': 'reports'},
   {'name': 'Gate Management', 'slug': 'cluster'},
   {'name': 'Device Registry', 'slug': 'devices'},
-  {'name': 'Scope Groups', 'slug': 'scope-groups'},
   {'name': 'Manage Users', 'slug': 'manage-users'},
   {'name': 'Registration Builder', 'slug': 'registration'},
   {'name': 'Roles', 'slug': 'roles'},
@@ -68,8 +66,6 @@ String _getModuleTitle(dynamic m) {
     case 'devices':
     case 'device-registry':
       return 'Device Registry';
-    case 'scope-groups':
-      return 'Scope Groups';
     case 'manage-users':
       return 'Manage Users';
     case 'registration':
@@ -925,7 +921,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         case 'cluster': return Icons.device_hub;
         case 'devices':
         case 'device-registry': return Icons.developer_board;
-        case 'scope-groups': return Icons.layers;
         default: return Icons.extension;
       }
     }
@@ -1183,7 +1178,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_currentView == 'registration') return RegistrationBuilderScreen(user: widget.user);
     if (_currentView == 'cluster') return ClusterMainScreen(user: widget.user);
     if (_currentView == 'devices' || _currentView == 'device-registry') return DeviceRegistryScreen(user: widget.user);
-    if (_currentView == 'scope-groups') return ScopeGroupsScreen(user: widget.user);
     
     return Center(child: Text('Module $_currentView not implemented yet.'));
   }

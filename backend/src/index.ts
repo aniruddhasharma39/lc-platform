@@ -12,7 +12,7 @@ import lcgateRoutes from './routes/lcgate';
 import deviceRoutes from './routes/deviceRegistry';
 import evidenceRoutes from './routes/evidence';
 import notificationsRoutes from './routes/notifications';
-import scopeGroupsRoutes from './routes/scopeGroups';
+
 import reportsRoutes from './routes/reports';
 import { errorHandler } from './middleware/error';
 import { prisma } from './lib/prisma';
@@ -52,7 +52,7 @@ app.use('/api/v1/lcgates', lcgateRoutes);
 app.use('/api/v1/devices', deviceRoutes);
 app.use('/api/v1/evidence', evidenceRoutes);
 app.use('/api/v1/notifications', notificationsRoutes);
-app.use('/api/v1/scope-groups', scopeGroupsRoutes);
+
 app.use('/api/v1/reports', reportsRoutes);
 
 // Error Handling
@@ -66,7 +66,7 @@ const ensureSystemModules = async () => {
       { name: 'Reports', slug: 'reports' },
       { name: 'Cluster', slug: 'cluster' },
       { name: 'Device Registry', slug: 'devices' },
-      { name: 'Scope Groups', slug: 'scope-groups' },
+
       { name: 'Manage Users', slug: 'manage-users' },
       { name: 'Registration Builder', slug: 'registration' },
       { name: 'Roles', slug: 'roles' },

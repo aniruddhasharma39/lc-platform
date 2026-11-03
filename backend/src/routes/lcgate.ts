@@ -8,7 +8,7 @@ import { prisma } from '../lib/prisma';
 import { buildUserGateWhereClause, verifyGateAccess } from '../lib/railwayHierarchy';
 import { authenticate } from '../middleware/auth';
 import { RAILWAY_DATA, RAILWAY_ZONES, RAILWAY_STATIONS, divisionsForZone, stationsForDivision, findZoneForDivision } from '../lib/railwayData';
-import { getAllDescendantScopeGroupIds, getAllAncestorScopeGroupIds } from '../lib/scopeHierarchy';
+
 import { publishMqttMessage } from '../lib/iotClient';
 import { broadcastGateTelemetry, getGateTelemetryPayload } from '../lib/telemetryWs';
 import { bumpDirectoryRevision, getDirectoryRevisionToken } from '../lib/revisionManager';
@@ -192,47 +192,32 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
   try {
     const isDeveloper = req.user?.role === 'Developer';
 
-    // 1. Concurrently fetch user assigned scopes and directory revision settings in a single network round-trip
-    const [userScopes, directorySettings] = await Promise.all([
-      prisma.scopeGroupUser.findMany({
-        where: { userId: req.user.id },
-        select: { scopeGroupId: true }
-      }),
-      prisma.appSetting.findMany({
-        where: { key: { startsWith: 'DIRECTORY_' } },
-        select: { key: true, value: true }
-      }),
-    ]);
-    const assignedScopeGroupIds = userScopes.map(s => s.scopeGroupId);
+    // Role-based access (no scope groups)
+    const directorySettings = await prisma.appSetting.findMany({
+      where: { key: { startsWith: 'DIRECTORY_' } },
+      select: { key: true, value: true }
+    });
 
     let whereClause: any = {};
 
-    if (assignedScopeGroupIds.length > 0) {
-      const accessibleScopeGroupIds = await getAllDescendantScopeGroupIds(assignedScopeGroupIds);
-      whereClause.scopeGroups = {
-        some: {
-          scopeGroupId: { in: accessibleScopeGroupIds }
-        }
-      };
-    } else {
-      if (!isDeveloper) {
-        const designationClause = await buildUserGateWhereClause(req.user, prisma);
-        if (designationClause.id === -1) {
-          return res.json({
-            totalDevices: 0,
-            totalClusters: 0,
-            totalConfiguredClusters: 0,
-            totalUnconfiguredGates: 0,
-            totalAllGates: 0,
-            totalCyclesToday: 0,
-            totalOpenGates: 0,
-            totalClosedGates: 0,
-            gates: []
-          });
-        }
-        whereClause = { ...whereClause, ...designationClause };
+    if (!isDeveloper) {
+      const designationClause = await buildUserGateWhereClause(req.user, prisma);
+      if (designationClause.id === -1) {
+        return res.json({
+          totalDevices: 0,
+          totalClusters: 0,
+          totalConfiguredClusters: 0,
+          totalUnconfiguredGates: 0,
+          totalAllGates: 0,
+          totalCyclesToday: 0,
+          totalOpenGates: 0,
+          totalClosedGates: 0,
+          gates: []
+        });
       }
+      whereClause = { ...whereClause, ...designationClause };
     }
+
 
     // Start of today (00:00:00)
     const startOfToday = new Date();
@@ -736,32 +721,21 @@ router.get('/status-summary', authenticate, async (req: any, res, next) => {
   try {
     const isDeveloper = req.user?.role === 'Developer';
 
-    // 1. Concurrently fetch user assigned scopes and directory revision settings in a single network round-trip
-    const [userScopes, directorySettings] = await Promise.all([
-      prisma.scopeGroupUser.findMany({
-        where: { userId: req.user.id },
-        select: { scopeGroupId: true }
-      }),
-      prisma.appSetting.findMany({
-        where: { key: { startsWith: 'DIRECTORY_' } },
-        select: { key: true, value: true }
-      }),
-    ]);
-    const assignedScopeGroupIds = userScopes.map(s => s.scopeGroupId);
+    // Role-based access (no scope groups)
+    const directorySettings = await prisma.appSetting.findMany({
+      where: { key: { startsWith: 'DIRECTORY_' } },
+      select: { key: true, value: true }
+    });
 
     let whereClause: any = {};
-    if (assignedScopeGroupIds.length > 0) {
-      const accessibleScopeGroupIds = await getAllDescendantScopeGroupIds(assignedScopeGroupIds);
-      whereClause.scopeGroups = {
-        some: { scopeGroupId: { in: accessibleScopeGroupIds } }
-      };
-    } else if (!isDeveloper) {
+    if (!isDeveloper) {
       const designationClause = await buildUserGateWhereClause(req.user, prisma);
       if (designationClause.id === -1) {
         return res.json({ verifiedAt: new Date().toISOString(), statuses: [] });
       }
       whereClause = { ...whereClause, ...designationClause };
     }
+
 
     // 2. Query accessible gates and their identifiers without full joins
     const gates = await prisma.lCGate.findMany({
@@ -884,76 +858,21 @@ router.get('/', authenticate, async (req: any, res, next) => {
           return { isRoleForbidden: true, liveRoleName };
         }
 
-        // Read effective user scope assignments within snapshot
-        const userScopes = await tx.scopeGroupUser.findMany({
-          where: { userId: req.user.id },
-          select: { scopeGroupId: true },
-        });
-        const assignedScopeGroupIds = userScopes.map((s) => s.scopeGroupId);
-
-        // Derive effective accessible gate set / where clause from the same snapshot
+        // Role-based access (no scope groups)
         let whereClause: any = {};
         let isForbidden = false;
         let isNoScope = false;
         let relevantScopeGroupIds: number[] = [];
 
-        if (assignedScopeGroupIds.length > 0) {
-          const descendantScopeIds = await getAllDescendantScopeGroupIds(assignedScopeGroupIds, tx);
-          const ancestorScopeIds = await getAllAncestorScopeGroupIds(assignedScopeGroupIds, tx);
-          relevantScopeGroupIds = Array.from(new Set([...assignedScopeGroupIds, ...descendantScopeIds, ...ancestorScopeIds]));
-
-          let targetScopeIds = descendantScopeIds;
-
-          if (req.query.scopeGroupId) {
-            if (req.query.scopeGroupId === 'all') {
-              targetScopeIds = isDeveloper ? [] : descendantScopeIds;
-            } else {
-              const paramId = parseInt(req.query.scopeGroupId as string, 10);
-              if (!isNaN(paramId)) {
-                if (!isDeveloper && !descendantScopeIds.includes(paramId)) {
-                  isForbidden = true;
-                }
-                if (req.query.directOnly === 'true') {
-                  targetScopeIds = [paramId];
-                } else {
-                  targetScopeIds = await getAllDescendantScopeGroupIds([paramId], tx);
-                }
-              }
-            }
-          }
-
-          if (targetScopeIds.length > 0) {
-            whereClause.scopeGroups = {
-              some: {
-                scopeGroupId: { in: targetScopeIds },
-              },
-            };
-          }
-        } else {
-          if (isDeveloper) {
-            if (req.query.scopeGroupId && req.query.scopeGroupId !== 'all') {
-              const paramId = parseInt(req.query.scopeGroupId as string, 10);
-              if (!isNaN(paramId)) {
-                const ids =
-                  req.query.directOnly === 'true'
-                    ? [paramId]
-                    : await getAllDescendantScopeGroupIds([paramId], tx);
-                whereClause.scopeGroups = {
-                  some: { scopeGroupId: { in: ids } },
-                };
-                const ancestors = await getAllAncestorScopeGroupIds([paramId], tx);
-                relevantScopeGroupIds = Array.from(new Set([paramId, ...ids, ...ancestors]));
-              }
-            }
+        if (!isDeveloper) {
+          const designationClause = await buildUserGateWhereClause(req.user, tx as any);
+          if (designationClause.id === -1) {
+            isNoScope = true;
           } else {
-            const designationClause = await buildUserGateWhereClause(req.user, tx as any);
-            if (designationClause.id === -1) {
-              isNoScope = true;
-            } else {
-              whereClause = { ...whereClause, ...designationClause };
-            }
+            whereClause = { ...whereClause, ...designationClause };
           }
         }
+
 
         // Read all relevant directory revisions within the same snapshot
         const directorySettings = await tx.appSetting.findMany({
@@ -970,7 +889,7 @@ router.get('/', authenticate, async (req: any, res, next) => {
         );
 
         return {
-          assignedScopeGroupIds,
+          assignedScopeGroupIds: [],
           relevantScopeGroupIds,
           directorySettings,
           revisionToken,

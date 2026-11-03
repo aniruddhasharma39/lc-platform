@@ -82,10 +82,31 @@ async function seedGatesAndEvents() {
       }
     }).catch(() => {});
 
+    // Ensure MasterUnit and ChildDevice
+    let master = await prisma.masterUnit.findFirst({ where: { gateId: gate.id } });
+    if (!master) {
+      master = await prisma.masterUnit.create({
+        data: {
+          serialNumber: `MST-${g.lcNumber}`,
+          masterSequence: 1,
+          powerSource: 'SOLAR',
+          gateId: gate.id,
+        }
+      });
+      await prisma.childDevice.create({
+        data: {
+          serialNumber: `SLV-${g.lcNumber}-01`,
+          type: 'DEVICE_1',
+          deviceSequence: 1,
+          masterId: master.id,
+        }
+      });
+    }
+
     // Link device in DeviceRegistry to this gate
     await prisma.deviceRegistry.updateMany({
       where: { serialNumber: g.lcNumber },
-      data: { gateId: gate.id }
+      data: { gateId: gate.id, masterId: master.id }
     });
   }
   console.log(`Ensured ${createdGates.length} LC Gates linked to cluster ${cluster.id}`);

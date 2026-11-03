@@ -13,7 +13,7 @@ import RegistrationBuilder from './RegistrationBuilder';
 import Branding from './Branding';
 import ClusterDashboard from './Cluster/ClusterDashboard';
 import ManageUsers from './ManageUsers';
-import ScopeGroupManagement from './ScopeGroups/ScopeGroupManagement';
+
 import LCGatesScreen from './LCGates/LCGatesScreen';
 import HomeDashboard from './Home/HomeDashboard';
 import DeviceRegistryScreen from './DeviceRegistry/DeviceRegistryScreen';
@@ -32,7 +32,7 @@ const CANONICAL_MODULE_ORDER = [
   'cluster',
   'devices',
   'device-registry',
-  'scope-groups',
+
   'manage-users',
   'registration',
   'roles',
@@ -44,7 +44,7 @@ const DEFAULT_SYSTEM_MODULES = [
   { name: 'Reports', slug: 'reports' },
   { name: 'Gate Management', slug: 'cluster' },
   { name: 'Device Registry', slug: 'devices' },
-  { name: 'Scope Groups', slug: 'scope-groups' },
+
   { name: 'Manage Users', slug: 'manage-users' },
   { name: 'Registration Builder', slug: 'registration' },
   { name: 'Roles', slug: 'roles' },
@@ -719,7 +719,6 @@ if (m.slug === 'cluster') return true;
           {currentView === 'registration' && <RegistrationBuilder />}
           {currentView === 'branding' && <Branding user={user} />}
           {currentView === 'cluster' && <ClusterDashboard user={user} />}
-          {currentView === 'scope-groups' && <ScopeGroupManagement user={user} />}
           {currentView === 'manage-users' && <ManageUsers user={user} onUserUpdate={fetchNotifications} />}
           {(currentView === 'devices' || currentView === 'device-registry') && <DeviceRegistryScreen user={user} />}
 

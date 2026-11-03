@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { prisma } from '../lib/prisma';
 import { authenticate, AuthRequest } from '../middleware/auth';
-import { getAllDescendantScopeGroupIds } from '../lib/scopeHierarchy';
+import { buildUserGateWhereClause } from '../lib/railwayHierarchy';
 import { syncHistoricalTelemetryEvents } from '../lib/telemetryMonitor';
 import { getDirectoryRevisionToken } from '../lib/revisionManager';
 import {
@@ -56,136 +56,43 @@ async function resolveUserAccess(req: AuthRequest) {
   const roleName = (req.user?.role || '').toLowerCase();
   const isDeveloper = roleName.includes('developer') || roleName.includes('admin');
 
-  // 1. Fetch user's directly assigned scope groups
-  const userScopes = await prisma.scopeGroupUser.findMany({
-    where: { userId: req.user!.id },
-    include: {
-      scopeGroup: {
-        select: { id: true, name: true, color: true, parentId: true }
-      }
-    }
+  // Role-based gate access (no scope groups)
+  const whereClause = await buildUserGateWhereClause(req.user, prisma);
+  const accessibleGates = await prisma.lCGate.findMany({
+    where: whereClause,
+    select: { id: true, lcNumber: true, locationName: true, name: true, zone: true, division: true }
   });
+  const accessibleGateIds = accessibleGates.map(g => g.id);
 
-  const directScopeIds = userScopes.map(s => s.scopeGroupId);
+  // Present as a single virtual cluster so existing frontend keeps working
+  const pseudoGroup: any = {
+    id: 0,
+    name: 'All Gates',
+    color: '#0B3C7A',
+    parentId: null,
+    parent: null,
+    gates: accessibleGates.map(g => ({ gate: g })),
+    _count: { gates: accessibleGates.length }
+  };
 
-  // If user has assigned scope groups, resolve hierarchy
-  if (directScopeIds.length > 0) {
-    const accessibleScopeIds = await getAllDescendantScopeGroupIds(directScopeIds);
-
-    const accessibleGroups = await prisma.scopeGroup.findMany({
-      where: { id: { in: accessibleScopeIds } },
-      include: {
-        _count: { select: { gates: true } },
-        parent: { select: { id: true, name: true } },
-        gates: {
-          include: {
-            gate: {
-              select: { id: true, lcNumber: true, locationName: true, name: true, zone: true, division: true }
-            }
-          }
-        }
-      },
-      orderBy: { name: 'asc' }
-    });
-
-    const accessibleGateIds = Array.from(
-      new Set(accessibleGroups.flatMap(g => g.gates.map(link => link.gateId)))
-    );
-
-    return {
-      isDeveloper,
-      hasAssignedScopes: true,
-      accessibleScopeIds,
-      accessibleGroups,
-      accessibleGateIds,
-    };
-  }
-
-  // If Developer has no explicit scope assignments, they have global access
-  if (isDeveloper) {
-    const allGroups = await prisma.scopeGroup.findMany({
-      include: {
-        _count: { select: { gates: true } },
-        parent: { select: { id: true, name: true } },
-        gates: {
-          include: {
-            gate: {
-              select: { id: true, lcNumber: true, locationName: true, name: true, zone: true, division: true }
-            }
-          }
-        }
-      },
-      orderBy: { name: 'asc' }
-    });
-
-    const allGates = await prisma.lCGate.findMany({
-      select: { id: true }
-    });
-
-    return {
-      isDeveloper: true,
-      hasAssignedScopes: false,
-      accessibleScopeIds: allGroups.map(g => g.id),
-      accessibleGroups: allGroups,
-      accessibleGateIds: allGates.map(g => g.id),
-    };
-  }
-
-  // Non-developer with no assigned clusters has no access
   return {
-    isDeveloper: false,
+    isDeveloper,
     hasAssignedScopes: false,
     accessibleScopeIds: [],
-    accessibleGroups: [],
-    accessibleGateIds: [],
+    accessibleGroups: accessibleGateIds.length > 0 ? [pseudoGroup] : [],
+    accessibleGateIds,
   };
 }
 
-/**
- * Helper to resolve target gate IDs based on user's authorized access,
- * requested scopeGroupIds ('all' or array of numbers), and requested gateIds ('all' or array).
- */
 async function resolveFilteredGateIds(
   access: Awaited<ReturnType<typeof resolveUserAccess>>,
   requestedScopeGroupIdsParam?: string | null,
   requestedGateIdsParam?: string | null
 ): Promise<{ targetGateIds: number[]; targetScopeGroupIds: number[] }> {
-  // 1. Determine active scope groups
-  let targetScopeGroupIds: number[] = [];
+  // Role-based: pool is all accessible gates (no scope groups)
+  let poolGateIds: number[] = access.accessibleGateIds;
 
-  if (requestedScopeGroupIdsParam && requestedScopeGroupIdsParam !== 'all') {
-    const parsedIds = requestedScopeGroupIdsParam
-      .split(',')
-      .map(s => parseInt(s.trim(), 10))
-      .filter(n => !isNaN(n));
-
-    if (access.isDeveloper) {
-      targetScopeGroupIds = parsedIds;
-    } else {
-      // Strictly filter to authorized scope groups only
-      targetScopeGroupIds = parsedIds.filter(id => access.accessibleScopeIds.includes(id));
-    }
-  } else {
-    // 'all' or omitted
-    targetScopeGroupIds = access.accessibleScopeIds;
-  }
-
-  // 2. Resolve gates belonging to target scope groups
-  let poolGateIds: number[] = [];
-  if (targetScopeGroupIds.length > 0) {
-    const links = await prisma.scopeGroupGate.findMany({
-      where: { scopeGroupId: { in: targetScopeGroupIds } },
-      select: { gateId: true }
-    });
-    poolGateIds = Array.from(new Set(links.map(l => l.gateId)));
-  }
-
-  // If Developer requested 'all' with no scope groups or no gate links, include all accessible gates
-  if (access.isDeveloper && (!requestedScopeGroupIdsParam || requestedScopeGroupIdsParam === 'all') && poolGateIds.length === 0) {
-    poolGateIds = access.accessibleGateIds;
-  }
-
-  // 3. Filter down by requested gateIds if specified
+  // Filter down by requested gateIds if specified
   let targetGateIds: number[] = poolGateIds;
 
   if (requestedGateIdsParam && requestedGateIdsParam !== 'all') {
@@ -201,8 +108,9 @@ async function resolveFilteredGateIds(
     }
   }
 
-  return { targetGateIds, targetScopeGroupIds };
+  return { targetGateIds, targetScopeGroupIds: [] };
 }
+
 
 /**
  * 1. GET /api/v1/reports/clusters
@@ -227,7 +135,7 @@ router.get('/clusters', async (req: AuthRequest, res, next) => {
       parentId: group.parentId,
       parentName: group.parent?.name || null,
       gateCount: group.gates.length,
-      gates: group.gates.map(l => ({
+      gates: group.gates.map((l: any) => ({
         id: l.gate.id,
         lcNumber: l.gate.lcNumber,
         name: l.gate.name,

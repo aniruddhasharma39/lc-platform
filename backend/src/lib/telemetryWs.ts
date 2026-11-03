@@ -45,8 +45,42 @@ export async function getGateTelemetryPayload(gateId: number) {
 
   if (!gate) return null;
 
-  // If gate has no Master Unit attached, it has NO live hardware telemetry!
+  // If gate has no Master Unit attached, it has NO live hardware telemetry, but operational records still exist!
   if (!gate.masters || gate.masters.length === 0) {
+    const rawEvents = await prisma.lCGateEvent.findMany({
+      where: { gateId },
+      orderBy: { openedAt: 'desc' },
+      take: 100,
+    }).catch(() => []);
+
+    const nowMs = Date.now();
+    const operationalCycles = rawEvents.map(ev => {
+      let duration = ev.durationSeconds;
+      if (duration === null || duration === undefined) {
+        if (ev.closedAt) {
+          duration = Math.max(0, Math.round((new Date(ev.closedAt).getTime() - new Date(ev.openedAt).getTime()) / 1000));
+        } else {
+          duration = Math.max(0, Math.round((nowMs - new Date(ev.openedAt).getTime()) / 1000));
+        }
+      }
+      return {
+        id: ev.id,
+        gateId: ev.gateId,
+        openedAt: ev.openedAt.toISOString(),
+        closedAt: ev.closedAt ? ev.closedAt.toISOString() : null,
+        durationSeconds: duration,
+        formattedDuration: ev.closedAt ? formatDurationHuman(duration) : `${formatDurationHuman(duration)} (In Progress)`,
+        status: ev.status,
+        openedBy: ev.openedBy,
+        closedBy: ev.closedBy,
+        trainNumber: ev.trainNumber,
+        remarks: ev.remarks,
+        createdAt: ev.createdAt.toISOString(),
+      };
+    });
+
+    const lastClosedCycle = operationalCycles.find(c => c.closedAt !== null);
+
     return {
       success: true,
       gateId: gate.id,
@@ -58,31 +92,31 @@ export async function getGateTelemetryPayload(gateId: number) {
       deviceStatus: 'UNCONFIGURED',
       isDeviceOnline: false,
       lastSeenAt: null,
-      currentStatus: 'UNCONFIGURED',
+      currentStatus: 'CLOSED',
       currentOperationalState: {
         isCurrentlyOpen: false,
-        currentStatus: 'UNCONFIGURED',
+        currentStatus: 'CLOSED',
         rawReportedStatus: 'NO_MASTER',
         currentStateStartedAt: null,
         timeInCurrentStateSeconds: 0,
         timeInCurrentStateFormatted: '—',
         activeCycle: null,
-        lastClosedCycle: null,
-        totalCyclesRecorded: 0,
+        lastClosedCycle: lastClosedCycle || null,
+        totalCyclesRecorded: operationalCycles.length,
       },
       topic: null,
       counts: {
-        all: 0,
+        all: operationalCycles.length,
         telemetry: 0,
         manifest: 0,
         healthCheck: 0,
-        cycles: 0,
+        cycles: operationalCycles.length,
       },
       payloads: [],
       telemetryRecords: [],
       manifestRecords: [],
       healthRecords: [],
-      operationalCycles: [],
+      operationalCycles,
       latestTelemetry: null,
       latestManifest: null,
       latestHealthCheck: null,

@@ -8,7 +8,7 @@ import { recordGateTelemetryTransition } from '../lib/telemetryMonitor';
 import { broadcastGateTelemetry } from '../lib/telemetryWs';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
-import { getAllAncestorScopeGroupIds } from '../lib/scopeHierarchy';
+
 
 const router = Router();
 
@@ -817,7 +817,7 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
             select: { scopeGroupId: true },
           });
           const scopeIds = Array.from(new Set(scopes.map((s: any) => s.scopeGroupId)));
-          const ancestors = await getAllAncestorScopeGroupIds(scopeIds, tx);
+          const ancestors: number[] = [];
           affectedScopeIds = Array.from(new Set([...scopeIds, ...ancestors]));
           isGlobal = affectedScopeIds.length === 0;
           await bumpDirectoryRevision(affectedScopeIds, isGlobal, tx);

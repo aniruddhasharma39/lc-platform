@@ -105,28 +105,6 @@ export default function ClusterDashboard(_props: Props) {
     }
   };
 
-  const fetchScopeData = async () => {
-    try {
-      // 1. Always fetch my-scope to see which Scope Groups the current user belongs to
-      const myRes = await fetch(`${API_URL}/api/v1/scope-groups/my-scope`, { headers: authHeaders() });
-      if (myRes.ok) {
-        const myData = await myRes.json();
-        setMyScopeGroups(myData.scopeGroups || []);
-      }
-
-      // 2. If user is Developer, also fetch all scope groups for the admin dropdown selector
-      if (_props.user.role === 'Developer') {
-        const res = await fetch(`${API_URL}/api/v1/scope-groups`, { headers: authHeaders() });
-        if (res.ok) {
-          const data = await res.json();
-          setAllScopeGroupsList(Array.isArray(data) ? data : []);
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to load scope data', e);
-    }
-  };
-
   const fetchGates = async (overrideScopeId?: string, forceRefresh = false) => {
     const activeScope = overrideScopeId !== undefined ? overrideScopeId : developerScopeId;
     const scopeKey = activeScope || 'ALL';
@@ -210,7 +188,6 @@ export default function ClusterDashboard(_props: Props) {
   useEffect(() => {
     fetchGates();
     fetchReferenceData();
-    fetchScopeData();
   }, []);
 
   const divisionOptions = useMemo(() => {

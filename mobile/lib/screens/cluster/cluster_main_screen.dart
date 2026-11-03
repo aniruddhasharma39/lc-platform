@@ -93,11 +93,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
     // 3. Fetch reference data in background (with If-None-Match conditional header)
     _fetchReferenceData();
 
-    // 4. Fetch scope hierarchy
-    _fetchMyScope();
-    if (_isDeveloper) {
-      _fetchScopeGroupsForDeveloper();
-    }
+    // Scope groups removed; no scope hierarchy fetch
   }
 
   Future<void> _loadCachedReferenceData() async {
@@ -108,40 +104,11 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           _zones = cached.zones;
           _divisionsByZone = cached.divisionsByZone;
         });
+
       }
     } catch (_) {}
   }
 
-  Future<void> _fetchScopeGroupsForDeveloper() async {
-    try {
-      final res = await http.get(
-        Uri.parse('$baseUrl/scope-groups'),
-        headers: {'Authorization': 'Bearer $_token'},
-      );
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        if (data is List && mounted) {
-          setState(() => _allScopeGroupsList = data);
-        }
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _fetchMyScope() async {
-    try {
-      final res = await http.get(
-        Uri.parse('$baseUrl/scope-groups/my-scope'),
-        headers: {'Authorization': 'Bearer $_token'},
-      );
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        if (data is Map && data['scopeGroups'] is List) {
-          final list = (data['scopeGroups'] as List)
-              .map((g) => (g['name'] ?? '').toString())
-              .where((s) => s.isNotEmpty)
-              .toList();
-          if (mounted) setState(() => _scopeNames = list);
-        }
       }
     } catch (e) {
       debugPrint('Error fetching scope groups: $e');
@@ -204,7 +171,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
   }
 
   Future<void> _fetchGates({bool isManualRefresh = false, String? overrideScopeId}) async {
-    final activeScope = overrideScopeId ?? _developerScopeId;
+    const activeScope = '';
 
     // Step 1: Check L1 Memory / L2 Disk cache for instant rendering
     final cached = LCGatesCacheService.instance.getCachedGatesSync(_userId, scopeGroupId: activeScope) ??
@@ -232,7 +199,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
     }
 
     try {
-      final query = activeScope.isNotEmpty ? '?scopeGroupId=${Uri.encodeComponent(activeScope)}' : '';
+    final query = '';
       final headers = <String, String>{
         'Authorization': 'Bearer $_token',
       };
@@ -738,99 +705,6 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
         },
       ),
       body: Column(
-        children: [
-          // 1. Developer Scope View Selector Strip (Parity with Web ClusterDashboard)
-          if (_isDeveloper && _allScopeGroupsList.isNotEmpty)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              color: Colors.white,
-              child: Row(
-                children: [
-                  const Icon(Icons.layers_outlined, size: 18, color: AppColors.primary),
-                  const SizedBox(width: 8),
-                  const Text('Scope View:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF334155))),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFFCBD5E1)),
-                      ),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
-                          value: _developerScopeId,
-                          isExpanded: true,
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primary),
-                          items: [
-                            const DropdownMenuItem(value: '', child: Text('My Assigned Scope')),
-                            const DropdownMenuItem(value: 'all', child: Text('All Gates (Admin View)')),
-                            ..._allScopeGroupsList.map((sg) {
-                              final idStr = sg['id'].toString();
-                              final name = sg['name'] ?? 'Scope';
-                              final count = sg['_count']?['gates'] ?? sg['gates']?.length ?? 0;
-                              return DropdownMenuItem(
-                                value: idStr,
-                                child: Text('$name ($count gates)', overflow: TextOverflow.ellipsis),
-                              );
-                            }),
-                          ],
-                          onChanged: (val) {
-                            if (val != null) {
-                              setState(() => _developerScopeId = val);
-                              _fetchGates(overrideScopeId: val);
-                              final msg = val == 'all'
-                                  ? 'Switched to All Gates (Admin View).'
-                                  : val.isNotEmpty
-                                      ? 'Filtered gates by selected scope group.'
-                                      : 'Switched to Assigned Scope.';
-                              AppFeedback.showInfo(context, msg);
-                            }
-                          },
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          // 2. Assigned Scope Banner (when not in "All")
-          if (_scopeNames.isNotEmpty && _developerScopeId != 'all')
-            Container(
-              margin: const EdgeInsets.fromLTRB(14, 8, 14, 0),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: AppColors.primary.withValues(alpha: 0.05),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppColors.primary.withValues(alpha: 0.15)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.layers, size: 16, color: AppColors.primary),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Assigned Scope: ${_scopeNames.join(", ")}',
-                      style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF0F172A)),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      '${filtered.length} Accessible',
-                      style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
-                    ),
-                  ),
-                ],
-              ),
-            ),
 
           // 3. Active Filters Chips Strip (Visible when filters are active)
           if (_hasActiveFilters)
