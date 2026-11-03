@@ -516,9 +516,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 },
                                 child: InkWell(
                                   onTap: () {
-                                    if (!isRead) {
-                                      _markNotificationRead(itemId);
-                                    }
+                                    _dismissNotification(itemId);
                                     Navigator.pop(sheetContext);
                                     if (item['targetModule'] != null || item['link'] != null) {
                                       setState(() {

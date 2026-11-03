@@ -165,9 +165,29 @@ export function canApproveRequest(approver: any, request: any, approverGateIds: 
   isGovernanceIntervention?: boolean;
 } {
   // System administrators / Developers retain governance-level authority
-  const isDeveloper = approver.role?.name === 'Developer' || approver.roleId === 1;
+  const isDeveloper = approver.role === 'Developer' || approver.role?.name === 'Developer' || approver.roleId === 1;
 
-  const targetCfg = getDesignationConfig(request.designation);
+  // Extract target fields safely from request or request.data
+  let targetDesignation = request.designation;
+  let targetDepartment = request.department;
+  let targetZone = request.zone;
+  let targetDivision = request.division;
+  let targetStationId = request.stationId;
+  let targetGateIds = request.gateIds;
+
+  if (!targetDesignation && request.data) {
+    try {
+      const parsed = typeof request.data === 'string' ? JSON.parse(request.data) : request.data;
+      targetDesignation = parsed.designation || parsed.role || parsed.roleName;
+      targetDepartment = parsed.department || targetDepartment;
+      targetZone = parsed.zone || targetZone;
+      targetDivision = parsed.division || targetDivision;
+      targetStationId = parsed.stationId !== undefined ? parsed.stationId : targetStationId;
+      targetGateIds = parsed.gateIds || targetGateIds;
+    } catch {}
+  }
+
+  const targetCfg = getDesignationConfig(targetDesignation);
   if (!targetCfg) {
     if (isDeveloper) return { allowed: true, isGovernanceIntervention: true };
     return { allowed: false, reason: 'Unknown or unconfigured requested designation.' };
@@ -183,7 +203,8 @@ export function canApproveRequest(approver: any, request: any, approverGateIds: 
   }
 
   // Normal hierarchical check: Approver designation must match immediate superior
-  const approverCfg = getDesignationConfig(approver.designation);
+  const approverDesigName = approver.designation || (typeof approver.role === 'string' ? approver.role : approver.role?.name);
+  const approverCfg = getDesignationConfig(approverDesigName);
   
   if (isDeveloper) {
     // Developer can approve as a governance intervention (e.g. when immediate superior is not yet registered)
@@ -197,31 +218,39 @@ export function canApproveRequest(approver: any, request: any, approverGateIds: 
     };
   }
 
-  // Geographical jurisdiction validation
-  if (request.zone && approver.zone && request.zone.toLowerCase() !== approver.zone.toLowerCase()) {
+  // Department must match
+  if (approverCfg.department !== targetCfg.department) {
     return {
       allowed: false,
-      reason: `Approver zone (${approver.zone}) does not match applicant zone (${request.zone}).`
+      reason: `Approver department (${approverCfg.department}) does not match applicant department (${targetCfg.department}).`
     };
   }
 
-  if (request.division && approver.division && request.division.toLowerCase() !== approver.division.toLowerCase()) {
+  // Geographical jurisdiction validation
+  if (targetZone && approver.zone && targetZone.toLowerCase() !== approver.zone.toLowerCase()) {
     return {
       allowed: false,
-      reason: `Approver division (${approver.division}) does not match applicant division (${request.division}).`
+      reason: `Approver zone (${approver.zone}) does not match applicant zone (${targetZone}).`
+    };
+  }
+
+  if (targetDivision && approver.division && targetDivision.toLowerCase() !== approver.division.toLowerCase()) {
+    return {
+      allowed: false,
+      reason: `Approver division (${approver.division}) does not match applicant division (${targetDivision}).`
     };
   }
 
   // If approver is an Engineering Supervisor approving a Gateman:
   // Must be in the same station or responsible for the Gateman's requested gate!
   if (approverCfg.name === 'Engineering Supervisor' && targetCfg.name === 'Gateman') {
-    if (approver.stationId && request.stationId && approver.stationId !== request.stationId) {
+    if (approver.stationId && targetStationId && approver.stationId !== targetStationId) {
       return {
         allowed: false,
         reason: 'Engineering Supervisor can only review Gatemen assigned to their own station.'
       };
     }
-    const reqGateIds: number[] = Array.isArray(request.gateIds) ? request.gateIds : [];
+    const reqGateIds: number[] = Array.isArray(targetGateIds) ? targetGateIds : [];
     if (approverGateIds.length > 0 && reqGateIds.length > 0) {
       const hasOverlap = reqGateIds.some(gid => approverGateIds.includes(gid));
       if (!hasOverlap) {
@@ -237,8 +266,140 @@ export function canApproveRequest(approver: any, request: any, approverGateIds: 
 }
 
 /**
- * Build Prisma where clause for filtering gates accessible to a user
+ * Build Prisma where clause for filtering existing users visible to a viewer in User Management.
+ * Enforces strict downward role hierarchy:
+ * 1. Developer sees all users.
+ * 2. Departmental isolation: Operations only sees Operations, Engineering only sees Engineering.
+ * 3. Strict downward seniority: viewer only sees subordinates strictly below them in seniority (target.seniority > viewer.seniority).
+ * 4. Geographical jurisdiction:
+ *    - Divisional officers see subordinates in their own zone & division.
+ *    - Station officers see subordinates in their own station or supervised gates.
+ *    - Gate level staff (Gateman) sees NO users.
  */
+export async function buildUserManagementWhereClause(viewer: any, prisma: PrismaClient): Promise<any> {
+  const isDeveloper = viewer.role === 'Developer' || viewer.role?.name === 'Developer' || viewer.roleId === 1;
+  if (isDeveloper) return {};
+
+  let effectiveViewer = viewer;
+  if (viewer.id && (viewer.division === undefined || viewer.designation === undefined)) {
+    const fetched = await prisma.user.findUnique({
+      where: { id: viewer.id },
+      select: { id: true, department: true, designation: true, zone: true, division: true, stationId: true, role: { select: { name: true } } }
+    });
+    if (fetched) {
+      effectiveViewer = { ...viewer, ...fetched };
+    }
+  }
+
+  const viewerDesigName = effectiveViewer.designation || (typeof effectiveViewer.role === 'string' ? effectiveViewer.role : effectiveViewer.role?.name);
+  const viewerCfg = getDesignationConfig(viewerDesigName);
+
+  // If no designation or not recognized in railway hierarchy, cannot manage any users
+  if (!viewerCfg) {
+    return { id: -1 };
+  }
+
+  // Gate-level role (e.g. Gateman): lowest level, sees NO users
+  if (viewerCfg.level === 'GATE') {
+    return { id: -1 };
+  }
+
+  // Find all subordinate designations in the SAME department with strictly lower rank (seniority > viewerCfg.seniority)
+  const subordinateConfigs = Object.values(DESIGNATIONS).filter(
+    d => d.department === viewerCfg.department && d.seniority > viewerCfg.seniority
+  );
+
+  if (subordinateConfigs.length === 0) {
+    return { id: -1 };
+  }
+
+  const subordinateNames = subordinateConfigs.map(d => d.name);
+
+  // Exclude self, exclude Developer, restrict to viewer's department, and restrict to subordinate designations
+  const baseConditions: any[] = [
+    { id: { not: effectiveViewer.id } },
+    { role: { name: { not: 'Developer' } } },
+    { department: { equals: viewerCfg.department, mode: 'insensitive' } },
+    {
+      OR: [
+        { designation: { in: subordinateNames } },
+        { role: { name: { in: subordinateNames } } }
+      ]
+    }
+  ];
+
+  // Geographical jurisdiction filtering
+  if (viewerCfg.level === 'DIVISIONAL') {
+    if (effectiveViewer.division) {
+      baseConditions.push({ division: { equals: effectiveViewer.division, mode: 'insensitive' } });
+    }
+    if (effectiveViewer.zone) {
+      baseConditions.push({ zone: { equals: effectiveViewer.zone, mode: 'insensitive' } });
+    }
+  } else if (viewerCfg.level === 'STATION') {
+    // Station/Section supervisor: can only see subordinates assigned to their station or supervised gates
+    const viewerGates = await prisma.userGate.findMany({
+      where: { userId: effectiveViewer.id },
+      select: { gateId: true }
+    });
+    const viewerGateIds = viewerGates.map(ug => ug.gateId);
+
+    const stationConditions: any[] = [];
+    if (effectiveViewer.stationId) {
+      stationConditions.push({ stationId: effectiveViewer.stationId });
+    }
+    if (viewerGateIds.length > 0) {
+      stationConditions.push({
+        assignedGates: {
+          some: {
+            gateId: { in: viewerGateIds }
+          }
+        }
+      });
+    }
+
+    if (stationConditions.length > 0) {
+      baseConditions.push({ OR: stationConditions });
+    } else {
+      return { id: -1 };
+    }
+  }
+
+  return { AND: baseConditions };
+}
+
+/**
+ * Verify whether an authenticated viewer has authority to manage (deactivate, reactivate, change role, delete) a target user.
+ */
+export async function verifyUserManagementAccess(viewer: any, targetUserId: number, prisma: PrismaClient): Promise<{ allowed: boolean; reason?: string }> {
+  const isDeveloper = viewer.role === 'Developer' || viewer.role?.name === 'Developer' || viewer.roleId === 1;
+  if (isDeveloper) return { allowed: true };
+
+  if (viewer.id === targetUserId) {
+    return { allowed: false, reason: 'You cannot perform administrative management actions on your own account.' };
+  }
+
+  const whereClause = await buildUserManagementWhereClause(viewer, prisma);
+  const targetUser = await prisma.user.findFirst({
+    where: {
+      AND: [
+        { id: targetUserId },
+        whereClause
+      ]
+    },
+    select: { id: true, fullName: true, designation: true }
+  });
+
+  if (!targetUser) {
+    return {
+      allowed: false,
+      reason: 'Forbidden: You do not have hierarchical authority to manage this user.'
+    };
+  }
+
+  return { allowed: true };
+}
+
 export async function buildUserGateWhereClause(user: any, prisma: PrismaClient): Promise<any> {
   const isDeveloper = user.role?.name === 'Developer' || user.role === 'Developer' || user.roleId === 1;
   if (isDeveloper) return {};

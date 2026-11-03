@@ -6,7 +6,7 @@ import { authenticate, requireModule } from '../middleware/auth';
 import { extractRegistrationUserFields } from '../lib/userExtract';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
-import { canApproveRequest, getDesignationConfig, DESIGNATIONS } from '../lib/railwayHierarchy';
+import { canApproveRequest, getDesignationConfig, DESIGNATIONS, buildUserManagementWhereClause, verifyUserManagementAccess } from '../lib/railwayHierarchy';
 
 const router = Router();
 
@@ -14,7 +14,14 @@ router.use(authenticate);
 
 router.get('/', requireModule('manage-users'), async (req: any, res, next) => {
   try {
-    const isDeveloper = req.user?.role?.name === 'Developer' || req.user?.roleId === 1;
+    const isDeveloper = req.user?.role === 'Developer' || req.user?.role?.name === 'Developer' || req.user?.roleId === 1;
+
+    // Retrieve full viewer record for reliable hierarchy evaluation
+    const currentUser = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      include: { role: true }
+    });
+    const viewer = currentUser || req.user;
 
     // Fetch approver's assigned gates if any
     const approverUserGates = await prisma.userGate.findMany({
@@ -23,8 +30,12 @@ router.get('/', requireModule('manage-users'), async (req: any, res, next) => {
     });
     const approverGateIds = approverUserGates.map(ug => ug.gateId);
 
+    // Build role hierarchy filter for existing users
+    const userWhereClause = await buildUserManagementWhereClause(viewer, prisma);
+
     const [users, allPendingRequests, roles, allGates] = await Promise.all([
       prisma.user.findMany({
+        where: userWhereClause,
         include: {
           role: true,
           requestedRole: true,
@@ -105,7 +116,7 @@ router.get('/', requireModule('manage-users'), async (req: any, res, next) => {
       }
 
       // Check authorization to approve
-      const authCheck = canApproveRequest(req.user, r, approverGateIds);
+      const authCheck = canApproveRequest(viewer, r, approverGateIds);
 
       // Section 8: An authenticated user sees ONLY registration requests they are authorized to review!
       // Developers see all requests, with clear tags for governance intervention / pending superiors

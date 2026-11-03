@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { authenticate, AuthRequest } from '../middleware/auth';
+import { canApproveRequest } from '../lib/railwayHierarchy';
 
 const router = Router();
 
@@ -44,6 +45,20 @@ router.get('/', async (req: AuthRequest, res, next) => {
     const canManageUsers = isDev || user.allowedModules?.includes('manage-users');
     const canAccessClusters = isDev || user.allowedModules?.includes('cluster');
 
+    // Retrieve full approver record to accurately evaluate hierarchy and jurisdiction
+    const fullUser = await prisma.user.findUnique({
+      where: { id: user.id },
+      include: { role: true }
+    });
+    const approver = fullUser || user;
+
+    // Fetch approver's assigned gates if any
+    const approverUserGates = await prisma.userGate.findMany({
+      where: { userId: user.id },
+      select: { gateId: true }
+    });
+    const approverGateIds = approverUserGates.map(ug => ug.gateId);
+
     const state = await getUserNotificationState(user.id);
     const dismissedSet = new Set(state.dismissedIds);
     const readSet = new Set(state.readIds);
@@ -59,18 +74,25 @@ router.get('/', async (req: AuthRequest, res, next) => {
       targetModule?: string;
     }> = [];
 
-    // 1. New user request for approval
+    // 1. New user request for approval: ONLY visible to authorized immediate superiors
     if (canManageUsers) {
       const pendingRequests = await prisma.registrationRequest.findMany({
         where: { status: 'PENDING' },
         include: { form: true },
         orderBy: { createdAt: 'desc' },
-        take: 20
+        take: 30
       });
 
       for (const reqItem of pendingRequests) {
         const id = `req_${reqItem.id}`;
-        if (dismissedSet.has(id)) continue;
+        // If dismissed or already read/gone through, do not show
+        if (dismissedSet.has(id) || readSet.has(id)) continue;
+
+        // Check if current user is authorized to approve/reject this request
+        const authCheck = canApproveRequest(approver, reqItem, approverGateIds);
+        if (!isDev && !authCheck.allowed) {
+          continue; // User is NOT authorized to review this request; suppress notification
+        }
 
         let applicantName = 'New Applicant';
         try {
@@ -78,15 +100,14 @@ router.get('/', async (req: AuthRequest, res, next) => {
           if (reqData.fullName) applicantName = reqData.fullName;
         } catch {}
 
-        const isRead = readSet.has(id);
         notifications.push({
           id,
           type: 'user_request',
           title: 'New User Request',
           message: `${applicantName} has submitted registration for approval.`,
           createdAt: reqItem.createdAt.toISOString(),
-          isRead,
-          read: isRead,
+          isRead: false,
+          read: false,
           targetModule: 'manage-users'
         });
       }
@@ -101,17 +122,16 @@ router.get('/', async (req: AuthRequest, res, next) => {
 
       for (const gate of gates) {
         const id = `cluster_${gate.id}`;
-        if (dismissedSet.has(id)) continue;
+        if (dismissedSet.has(id) || readSet.has(id)) continue;
 
-        const isRead = readSet.has(id);
         notifications.push({
           id,
           type: 'cluster_created',
           title: 'New Cluster Created',
           message: `Cluster LC #${gate.lcNumber} (${gate.locationName}) is live.`,
           createdAt: gate.createdAt.toISOString(),
-          isRead,
-          read: isRead,
+          isRead: false,
+          read: false,
           targetModule: 'cluster'
         });
       }
@@ -125,17 +145,16 @@ router.get('/', async (req: AuthRequest, res, next) => {
 
       for (const master of masters) {
         const id = `master_${master.id}`;
-        if (dismissedSet.has(id)) continue;
+        if (dismissedSet.has(id) || readSet.has(id)) continue;
 
-        const isRead = readSet.has(id);
         notifications.push({
           id,
           type: 'device_registered',
           title: 'New Device Registered',
           message: `Master Unit #${master.serialNumber} registered at Gate #${master.gate?.lcNumber || 'N/A'}.`,
           createdAt: master.createdAt.toISOString(),
-          isRead,
-          read: isRead,
+          isRead: false,
+          read: false,
           targetModule: 'cluster'
         });
       }
@@ -148,17 +167,16 @@ router.get('/', async (req: AuthRequest, res, next) => {
 
       for (const child of childDevices) {
         const id = `child_${child.id}`;
-        if (dismissedSet.has(id)) continue;
+        if (dismissedSet.has(id) || readSet.has(id)) continue;
 
-        const isRead = readSet.has(id);
         notifications.push({
           id,
           type: 'device_registered',
           title: 'New Child Device',
           message: `${child.type} #${child.serialNumber} linked to Gate #${child.master?.gate?.lcNumber || 'N/A'}.`,
           createdAt: child.createdAt.toISOString(),
-          isRead,
-          read: isRead,
+          isRead: false,
+          read: false,
           targetModule: 'cluster'
         });
       }
@@ -167,7 +185,7 @@ router.get('/', async (req: AuthRequest, res, next) => {
     // Sort by latest createdAt descending
     notifications.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-    const unreadCount = notifications.filter(n => !n.isRead).length;
+    const unreadCount = notifications.length;
 
     res.json({
       notifications,
@@ -185,13 +203,23 @@ async function getAllActiveNotificationIds(user: any): Promise<string[]> {
   const canAccessClusters = isDev || user.allowedModules?.includes('cluster');
   const ids: string[] = [];
 
+  const approverUserGates = await prisma.userGate.findMany({
+    where: { userId: user.id },
+    select: { gateId: true }
+  });
+  const approverGateIds = approverUserGates.map(ug => ug.gateId);
+
   if (canManageUsers) {
     const pendingRequests = await prisma.registrationRequest.findMany({
       where: { status: 'PENDING' },
-      select: { id: true },
       take: 50
     });
-    for (const r of pendingRequests) ids.push(`req_${r.id}`);
+    for (const r of pendingRequests) {
+      const authCheck = canApproveRequest(user, r, approverGateIds);
+      if (isDev || authCheck.allowed) {
+        ids.push(`req_${r.id}`);
+      }
+    }
   }
 
   if (canAccessClusters) {
@@ -208,7 +236,7 @@ async function getAllActiveNotificationIds(user: any): Promise<string[]> {
   return ids;
 }
 
-// Mark all notifications as read
+// Mark all notifications as read & clear them
 router.post('/read-all', async (req: AuthRequest, res, next) => {
   try {
     const user = req.user!;
@@ -216,13 +244,22 @@ router.post('/read-all', async (req: AuthRequest, res, next) => {
     const state = await getUserNotificationState(user.id);
 
     const newReadSet = new Set(state.readIds);
+    const newDismissedSet = new Set(state.dismissedIds);
+
     if (Array.isArray(notificationIds) && notificationIds.length > 0) {
-      notificationIds.forEach(id => newReadSet.add(id));
+      notificationIds.forEach(id => {
+        newReadSet.add(id);
+        newDismissedSet.add(id);
+      });
     } else {
       const allIds = await getAllActiveNotificationIds(user);
-      allIds.forEach(id => newReadSet.add(id));
+      allIds.forEach(id => {
+        newReadSet.add(id);
+        newDismissedSet.add(id);
+      });
     }
     state.readIds = Array.from(newReadSet);
+    state.dismissedIds = Array.from(newDismissedSet);
 
     await saveUserNotificationState(user.id, state);
     res.json({ success: true, message: 'All notifications marked as read' });
@@ -239,8 +276,14 @@ router.post('/clear-all', async (req: AuthRequest, res, next) => {
     const allIds = await getAllActiveNotificationIds(user);
 
     const newDismissedSet = new Set(state.dismissedIds);
-    allIds.forEach(id => newDismissedSet.add(id));
+    const newReadSet = new Set(state.readIds);
+
+    allIds.forEach(id => {
+      newDismissedSet.add(id);
+      newReadSet.add(id);
+    });
     state.dismissedIds = Array.from(newDismissedSet);
+    state.readIds = Array.from(newReadSet);
 
     await saveUserNotificationState(user.id, state);
     res.json({ success: true, message: 'All notifications cleared' });
@@ -249,7 +292,7 @@ router.post('/clear-all', async (req: AuthRequest, res, next) => {
   }
 });
 
-// Mark single notification as read
+// Mark single notification as read & dismissed so it goes away once viewed
 router.put('/:id/read', async (req: AuthRequest, res, next) => {
   try {
     const user = req.user!;
@@ -258,8 +301,11 @@ router.put('/:id/read', async (req: AuthRequest, res, next) => {
 
     if (!state.readIds.includes(notifId)) {
       state.readIds.push(notifId);
-      await saveUserNotificationState(user.id, state);
     }
+    if (!state.dismissedIds.includes(notifId)) {
+      state.dismissedIds.push(notifId);
+    }
+    await saveUserNotificationState(user.id, state);
 
     res.json({ success: true });
   } catch (error) {
@@ -276,8 +322,11 @@ router.delete('/:id', async (req: AuthRequest, res, next) => {
 
     if (!state.dismissedIds.includes(notifId)) {
       state.dismissedIds.push(notifId);
-      await saveUserNotificationState(user.id, state);
     }
+    if (!state.readIds.includes(notifId)) {
+      state.readIds.push(notifId);
+    }
+    await saveUserNotificationState(user.id, state);
 
     res.json({ success: true, message: 'Notification dismissed' });
   } catch (error) {
