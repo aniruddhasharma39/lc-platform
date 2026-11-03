@@ -32,11 +32,15 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   bool _isDeveloper = false;
   String get _userId => widget.user['id']?.toString() ?? '0';
 
-  // 1. Report Type Switcher
-  String _reportType = 'complete_log'; // 'complete_log' | 'cycle'
-  Map<String, dynamic>? _cycleAnalytics;
+  // 1. Report Type Switcher: count | duration | holistic | complete_log
+  String _reportType = 'count';
+  Map<String, dynamic>? _countAnalytics;
+  bool _isLoadingCount = false;
+  Map<String, dynamic>? _cycleAnalytics; // Duration Analytics
   bool _isLoadingCycle = false;
   int? _selectedCycleGateId;
+  Map<String, dynamic>? _holisticAnalytics;
+  bool _isLoadingHolistic = false;
 
   // 2. Clusters & Hierarchy Selection
   List<dynamic> _clusters = [];
@@ -192,10 +196,81 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         _dateRange = DateTimeRange(start: DateTime(now.year, now.month, 1), end: now);
       }
     });
-    if (_reportType == 'cycle') {
-      _fetchCycleAnalytics();
+    _triggerReportFetch();
+  }
+
+  Future<void> _triggerReportFetch({bool forceReload = false}) async {
+    if (_reportType == 'count') {
+      await _fetchCountAnalytics();
+    } else if (_reportType == 'duration' || _reportType == 'cycle') {
+      await _fetchCycleAnalytics();
+    } else if (_reportType == 'holistic') {
+      await _fetchHolisticAnalytics();
     } else {
-      _fetchRecords();
+      await _fetchRecords(forceReload: forceReload);
+    }
+  }
+
+
+  // Fetch Count Report Analytics
+  Future<void> _fetchCountAnalytics() async {
+    if (!mounted) return;
+    setState(() => _isLoadingCount = true);
+    try {
+      final queryParams = <String, String>{
+        'startDate': _formatDate(_dateRange.start),
+        'endDate': _formatDate(_dateRange.end),
+      };
+      if (_selectedGateIds.isNotEmpty) {
+        queryParams['gateIds'] = _selectedGateIds.join(',');
+      } else if (_isDeveloper) {
+        queryParams['gateIds'] = 'all';
+      }
+      final uri = Uri.parse('$baseUrl/api/v1/reports/count').replace(queryParameters: queryParams);
+      final res = await http.get(uri, headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      }).timeout(const Duration(seconds: 15));
+      if (res.statusCode == 200 && mounted) {
+        setState(() {
+          _countAnalytics = json.decode(res.body);
+        });
+      }
+    } catch (e) {
+      debugPrint('[ReportsScreen] Count analytics error: $e');
+    } finally {
+      if (mounted) setState(() => _isLoadingCount = false);
+    }
+  }
+
+  // Fetch Holistic Report Analytics
+  Future<void> _fetchHolisticAnalytics() async {
+    if (!mounted) return;
+    setState(() => _isLoadingHolistic = true);
+    try {
+      final queryParams = <String, String>{
+        'startDate': _formatDate(_dateRange.start),
+        'endDate': _formatDate(_dateRange.end),
+      };
+      if (_selectedGateIds.isNotEmpty) {
+        queryParams['gateIds'] = _selectedGateIds.join(',');
+      } else if (_isDeveloper) {
+        queryParams['gateIds'] = 'all';
+      }
+      final uri = Uri.parse('$baseUrl/api/v1/reports/holistic').replace(queryParameters: queryParams);
+      final res = await http.get(uri, headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_token',
+      }).timeout(const Duration(seconds: 15));
+      if (res.statusCode == 200 && mounted) {
+        setState(() {
+          _holisticAnalytics = json.decode(res.body);
+        });
+      }
+    } catch (e) {
+      debugPrint('[ReportsScreen] Holistic analytics error: $e');
+    } finally {
+      if (mounted) setState(() => _isLoadingHolistic = false);
     }
   }
 
@@ -370,8 +445,12 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
             }
           }
         });
-        if (_reportType == 'cycle') {
+        if (_reportType == 'count') {
+          _fetchCountAnalytics();
+        } else if (_reportType == 'duration' || _reportType == 'cycle') {
           _fetchCycleAnalytics();
+        } else if (_reportType == 'holistic') {
+          _fetchHolisticAnalytics();
         } else {
           _fetchRecords();
         }
@@ -749,11 +828,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                             onPressed: () {
                               Navigator.pop(ctx);
                               setState(() {});
-                              if (_reportType == 'cycle') {
-                                _fetchCycleAnalytics();
-                              } else {
-                                _fetchRecords();
-                              }
+                              _triggerReportFetch();
                             },
                             child: Text('Apply Selection (${_selectedGateIds.length} Gates)', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
                           ),
@@ -1244,7 +1319,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Force Refresh',
-            onPressed: () => _reportType == 'cycle' ? _fetchCycleAnalytics() : _fetchRecords(forceReload: true),
+            onPressed: () => _triggerReportFetch(forceReload: true),
           ),
           IconButton(
             icon: const Icon(Icons.download, color: Color(0xFF10B981)),
@@ -1256,7 +1331,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       body: _isLoadingClusters
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
-              onRefresh: () => _reportType == 'cycle' ? _fetchCycleAnalytics() : _fetchRecords(forceReload: true),
+              onRefresh: () => _triggerReportFetch(forceReload: true),
               child: ListView(
                 padding: const EdgeInsets.all(12),
                 children: [
@@ -1325,11 +1400,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                     _dateRange = picked;
                                     _activePreset = 'custom';
                                   });
-                                  if (_reportType == 'cycle') {
-                                    _fetchCycleAnalytics();
-                                  } else {
-                                    _fetchRecords();
-                                  }
+                                  _triggerReportFetch();
                                 }
                               },
                               child: Row(
@@ -1462,6 +1533,10 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                     const SizedBox(height: 12),
 
                     _buildCompleteLogList(),
+                  ] else if (_reportType == 'count') ...[
+                    _buildCountReportView(),
+                  ] else if (_reportType == 'holistic') ...[
+                    _buildHolisticReportView(),
                   ] else ...[
                     _buildCycleAnalyticsView(),
                   ],
@@ -1472,6 +1547,13 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   }
 
   Widget _buildReportTypeSelector() {
+    final tabs = [
+      {'key': 'count', 'label': 'Count', 'icon': Icons.format_list_numbered_rounded, 'color': const Color(0xFF2563EB)},
+      {'key': 'duration', 'label': 'Duration', 'icon': Icons.timer_outlined, 'color': const Color(0xFF046A38)},
+      {'key': 'holistic', 'label': 'Holistic', 'icon': Icons.account_tree_outlined, 'color': const Color(0xFF7C3AED)},
+      {'key': 'complete_log', 'label': 'Event Log', 'icon': Icons.table_rows_outlined, 'color': AppColors.primary},
+    ];
+
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(4),
@@ -1481,85 +1563,56 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         border: Border.all(color: Colors.grey.shade200),
       ),
       child: Row(
-        children: [
-          Expanded(
+        children: tabs.map((tab) {
+          final isSelected = _reportType == tab['key'] || (_reportType == 'cycle' && tab['key'] == 'duration');
+          final color = tab['color'] as Color;
+          return Expanded(
             child: InkWell(
               onTap: () {
-                if (_reportType != 'complete_log') {
-                  setState(() => _reportType = 'complete_log');
-                  if (_records.isEmpty) {
+                final k = tab['key'] as String;
+                if (_reportType != k) {
+                  setState(() => _reportType = k);
+                  if (k == 'count' && _countAnalytics == null) {
+                    _fetchCountAnalytics();
+                  } else if (k == 'duration' && _cycleAnalytics == null) {
+                    _fetchCycleAnalytics();
+                  } else if (k == 'holistic' && _holisticAnalytics == null) {
+                    _fetchHolisticAnalytics();
+                  } else if (k == 'complete_log' && _records.isEmpty) {
                     _fetchRecords();
                   }
                 }
               },
               borderRadius: BorderRadius.circular(8),
               child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 9),
+                padding: const EdgeInsets.symmetric(vertical: 8),
                 decoration: BoxDecoration(
-                  color: _reportType == 'complete_log' ? AppColors.primary : Colors.transparent,
+                  color: isSelected ? color : Colors.transparent,
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(
-                      Icons.format_list_bulleted_rounded,
-                      size: 16,
-                      color: _reportType == 'complete_log' ? Colors.white : Colors.grey.shade700,
+                      tab['icon'] as IconData,
+                      size: 14,
+                      color: isSelected ? Colors.white : Colors.grey.shade700,
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: 4),
                     Text(
-                      'Complete Log',
+                      tab['label'] as String,
                       style: TextStyle(
-                        fontSize: 12.5,
+                        fontSize: 11.5,
                         fontWeight: FontWeight.bold,
-                        color: _reportType == 'complete_log' ? Colors.white : Colors.grey.shade700,
+                        color: isSelected ? Colors.white : Colors.grey.shade700,
                       ),
                     ),
                   ],
                 ),
               ),
             ),
-          ),
-          const SizedBox(width: 4),
-          Expanded(
-            child: InkWell(
-              onTap: () {
-                if (_reportType != 'cycle') {
-                  setState(() => _reportType = 'cycle');
-                  _fetchCycleAnalytics();
-                }
-              },
-              borderRadius: BorderRadius.circular(8),
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 9),
-                decoration: BoxDecoration(
-                  color: _reportType == 'cycle' ? const Color(0xFF046A38) : Colors.transparent,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.insights_rounded,
-                      size: 16,
-                      color: _reportType == 'cycle' ? Colors.white : Colors.grey.shade700,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Cycle Report',
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.bold,
-                        color: _reportType == 'cycle' ? Colors.white : Colors.grey.shade700,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ],
+          );
+        }).toList(),
       ),
     );
   }
@@ -2187,4 +2240,342 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       ),
     );
   }
+
+  // =========================================================================
+  // COUNT REPORT VIEW
+  // =========================================================================
+  Widget _buildCountReportView() {
+    if (_isLoadingCount) {
+      return Container(
+        padding: const EdgeInsets.symmetric(vertical: 48),
+        alignment: Alignment.center,
+        child: Column(
+          children: const [
+            CircularProgressIndicator(color: Color(0xFF2563EB)),
+            SizedBox(height: 12),
+            Text('Aggregating operations across railway hierarchy...', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          ],
+        ),
+      );
+    }
+
+    if (_countAnalytics == null) {
+      return Container(
+        padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey.shade200),
+        ),
+        child: Column(
+          children: [
+            Icon(Icons.format_list_numbered_rounded, size: 40, color: Colors.grey.shade400),
+            const SizedBox(height: 10),
+            const Text('No count analytics loaded', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+            const SizedBox(height: 4),
+            Text('Tap refresh to compute opening & closing counts.', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+          ],
+        ),
+      );
+    }
+
+    final summary = (_countAnalytics!['summary'] as Map<String, dynamic>?) ?? {};
+    final totalOps = summary['totalOperations'] ?? 0;
+    final totalOpen = summary['totalOpenCount'] ?? 0;
+    final totalClose = summary['totalCloseCount'] ?? 0;
+    final activeGates = summary['activeGatesCount'] ?? 0;
+
+    final gateReports = (_countAnalytics!['gateReports'] as List?) ?? [];
+    // station breakdown used in rollups
+    final divisionBreakdown = (_countAnalytics!['divisionBreakdown'] as List?) ?? [];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Summary KPI row
+        Row(
+          children: [
+            Expanded(child: _buildCycleKpiCard('Total Ops', '$totalOps', Icons.alt_route_rounded, const Color(0xFF2563EB), 'Combined events')),
+            const SizedBox(width: 8),
+            Expanded(child: _buildCycleKpiCard('Openings', '$totalOpen', Icons.lock_open_rounded, const Color(0xFF10B981), 'Barrier opens')),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(child: _buildCycleKpiCard('Closings', '$totalClose', Icons.lock_outline_rounded, const Color(0xFFEF4444), 'Barrier closes')),
+            const SizedBox(width: 8),
+            Expanded(child: _buildCycleKpiCard('Active Gates', '$activeGates', Icons.grid_view_rounded, const Color(0xFF8B5CF6), 'Reporting gates')),
+          ],
+        ),
+        const SizedBox(height: 14),
+
+        // Gate-wise Breakdown Table
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey.shade200),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Gate-wise Operation Counts', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  Text('${gateReports.length} gates', style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+                ],
+              ),
+              const Divider(height: 16),
+              ...gateReports.map((gr) {
+                final gate = (gr['gate'] as Map<String, dynamic>?) ?? {};
+                final gateNo = gate['gateNumber'] ?? 'Unknown';
+                final station = gate['station'] ?? '—';
+                final div = gate['division'] ?? '—';
+                final gOpen = gr['openCount'] ?? 0;
+                final gClose = gr['closeCount'] ?? 0;
+                final gTotal = gr['totalOperations'] ?? 0;
+
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey.shade200),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('$gateNo', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A))),
+                          Text('$station Station · $div', style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          _buildMiniBadge('Open', '$gOpen', const Color(0xFF10B981)),
+                          const SizedBox(width: 6),
+                          _buildMiniBadge('Close', '$gClose', const Color(0xFFEF4444)),
+                          const SizedBox(width: 6),
+                          _buildMiniBadge('Total', '$gTotal', const Color(0xFF2563EB)),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        // Station & Division Hierarchy Summary
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey.shade200),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Division & Station Rollups', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              const Divider(height: 16),
+              ...divisionBreakdown.map((div) {
+                final divName = div['division'] ?? '—';
+                final divTotal = div['totalOperations'] ?? 0;
+                final divGates = div['gateCount'] ?? 0;
+                final divStations = div['stationCount'] ?? 0;
+
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('$divName Division ($divStations stations, $divGates gates)', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                      Text('$divTotal ops', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF2563EB))),
+                    ],
+                  ),
+                );
+              }),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // =========================================================================
+  // HOLISTIC MANAGEMENT REPORT VIEW
+  // =========================================================================
+  Widget _buildHolisticReportView() {
+    if (_isLoadingHolistic) {
+      return Container(
+        padding: const EdgeInsets.symmetric(vertical: 48),
+        alignment: Alignment.center,
+        child: Column(
+          children: const [
+            CircularProgressIndicator(color: Color(0xFF7C3AED)),
+            SizedBox(height: 12),
+            Text('Generating consolidated executive management report...', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          ],
+        ),
+      );
+    }
+
+    if (_holisticAnalytics == null) {
+      return Container(
+        padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey.shade200),
+        ),
+        child: Column(
+          children: [
+            Icon(Icons.account_tree_outlined, size: 40, color: Colors.grey.shade400),
+            const SizedBox(height: 10),
+            const Text('No holistic analytics loaded', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+            const SizedBox(height: 4),
+            Text('Tap refresh to compile hierarchical counts and durations.', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+          ],
+        ),
+      );
+    }
+
+    final summary = (_holisticAnalytics!['summary'] as Map<String, dynamic>?) ?? {};
+    final totalOps = summary['totalOperations'] ?? 0;
+    final totalOpen = summary['totalOpenFormatted'] ?? '0s';
+    final avgOpen = summary['avgOpenDurationFormatted'] ?? '0s';
+    final delays = summary['extendedDelaysCount'] ?? 0;
+    final tree = (_holisticAnalytics!['tree'] as List?) ?? [];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Executive KPI Cards
+        Row(
+          children: [
+            Expanded(child: _buildCycleKpiCard('Total Operations', '$totalOps', Icons.alt_route_rounded, const Color(0xFF7C3AED), 'Network Total')),
+            const SizedBox(width: 8),
+            Expanded(child: _buildCycleKpiCard('Total Open Time', '$totalOpen', Icons.timer_outlined, const Color(0xFF2563EB), 'Network Open Window')),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(child: _buildCycleKpiCard('Avg Open Duration', '$avgOpen', Icons.speed_rounded, const Color(0xFF046A38), 'Per Open Operation')),
+            const SizedBox(width: 8),
+            Expanded(child: _buildCycleKpiCard('Delays (>10m)', '$delays', Icons.warning_amber_rounded, const Color(0xFFEF4444), 'Extended Closures')),
+          ],
+        ),
+        const SizedBox(height: 14),
+
+        // Consolidated Hierarchy Drilldown Tree
+        Text('Executive Drilldown Hierarchy (Zone ➔ Division ➔ Station ➔ Gate)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey.shade700)),
+        const SizedBox(height: 8),
+
+        ...tree.map((zoneObj) {
+          final zoneName = zoneObj['zone'] ?? 'Unknown Zone';
+          final zGates = zoneObj['totalGates'] ?? 0;
+          final zOps = zoneObj['totalOperations'] ?? 0;
+          final zOpen = zoneObj['totalOpenFormatted'] ?? '0s';
+          final divisions = (zoneObj['divisions'] as List?) ?? [];
+
+          return Card(
+            margin: const EdgeInsets.only(bottom: 10),
+            elevation: 0.5,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade200)),
+            child: ExpansionTile(
+              initiallyExpanded: true,
+              leading: const Icon(Icons.public, color: Color(0xFF7C3AED)),
+              title: Text('$zoneName Zone', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+              subtitle: Text('$zGates Gates · $zOps Ops · $zOpen Open Window', style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+              children: divisions.map((divObj) {
+                final divName = divObj['division'] ?? 'Unknown Division';
+                final dGates = divObj['totalGates'] ?? 0;
+                final dOps = divObj['totalOperations'] ?? 0;
+                final stations = (divObj['stations'] as List?) ?? [];
+
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  child: Card(
+                    color: Colors.grey.shade50,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: BorderSide(color: Colors.grey.shade200)),
+                    child: ExpansionTile(
+                      initiallyExpanded: true,
+                      title: Text('$divName Division', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                      subtitle: Text('$dGates Gates · $dOps Operations', style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+                      children: stations.map((stObj) {
+                        final stName = stObj['station'] ?? 'Station';
+                        final sOps = stObj['totalOperations'] ?? 0;
+                        final gates = (stObj['gates'] as List?) ?? [];
+
+                        return Container(
+                          padding: const EdgeInsets.all(8),
+                          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(6)),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text('$stName Station', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                  Text('$sOps Total Ops', style: const TextStyle(fontSize: 11, color: Color(0xFF7C3AED), fontWeight: FontWeight.bold)),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              ...gates.map((g) {
+                                final gNo = g['gateNumber'] ?? 'LC';
+                                final gOpen = g['openCount'] ?? 0;
+                                final gClose = g['closeCount'] ?? 0;
+                                final gAvg = g['avgOpenDurationFormatted'] ?? '—';
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 2),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(' • $gNo', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w500)),
+                                      Text('Open: $gOpen | Close: $gClose | Avg: $gAvg', style: TextStyle(fontSize: 10.5, color: Colors.grey.shade700)),
+                                    ],
+                                  ),
+                                );
+                              }),
+                            ],
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _buildMiniBadge(String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        '$label: $value',
+        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: color),
+      ),
+    );
+  }
+
 }

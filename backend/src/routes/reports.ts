@@ -19,14 +19,25 @@ import {
   deleteOperationalEvents,
   calculateAuthoritativeMetrics,
 } from '../lib/reportRevisionManager';
-import { getFullCycleAnalytics } from '../lib/cycleReportService';
+import {
+  getFullCycleAnalytics,
+  getCountReportAnalytics,
+  getDurationReportAnalytics,
+  getHolisticReportAnalytics
+} from '../lib/cycleReportService';
 import {
   exportCompleteLogExcel,
   exportCompleteLogPdf,
   exportCompleteLogCsv,
   exportCycleExcel,
   exportCyclePdf,
-  exportCycleCsv
+  exportCycleCsv,
+  exportCountExcel,
+  exportCountPdf,
+  exportCountCsv,
+  exportHolisticExcel,
+  exportHolisticPdf,
+  exportHolisticCsv
 } from '../lib/reportExporter';
 
 const router = Router();
@@ -1055,6 +1066,100 @@ router.get('/cycle-analytics', async (req: AuthRequest, res: Response, next: any
  * 4. GET /api/v1/reports/export
  * Downloads either Complete Log Report or Cycle Report as Excel (.xlsx), PDF (.pdf), or RFC-4180 CSV
  */
+
+/**
+ * GET /api/v1/reports/count
+ * Returns operations count aggregated by Zone, Division, Station, and individual LC Gate
+ */
+router.get('/count', async (req: AuthRequest, res: Response, next: any) => {
+  try {
+    const access = await resolveUserAccess(req);
+    const gateIdsParam = (req.query.gateIds || req.query.gateId) as string | undefined;
+    const { targetGateIds } = await resolveFilteredGateIds(access, undefined, gateIdsParam);
+
+    const today = new Date();
+    const defaultEnd = today.toISOString().split('T')[0];
+    const defaultStartObj = new Date(today);
+    defaultStartObj.setDate(today.getDate() - 7);
+    const defaultStart = defaultStartObj.toISOString().split('T')[0];
+
+    const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate ? req.query.startDate : defaultStart;
+    const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate ? req.query.endDate : defaultEnd;
+
+    const data = await getCountReportAnalytics({
+      targetGateIds,
+      startDateStr,
+      endDateStr
+    });
+
+    res.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/reports/duration
+ * Returns duration analysis (open vs closed, averages, extended delays, daily breakdown)
+ */
+router.get('/duration', async (req: AuthRequest, res: Response, next: any) => {
+  try {
+    const access = await resolveUserAccess(req);
+    const gateIdsParam = (req.query.gateIds || req.query.gateId) as string | undefined;
+    const { targetGateIds } = await resolveFilteredGateIds(access, undefined, gateIdsParam);
+
+    const today = new Date();
+    const defaultEnd = today.toISOString().split('T')[0];
+    const defaultStartObj = new Date(today);
+    defaultStartObj.setDate(today.getDate() - 7);
+    const defaultStart = defaultStartObj.toISOString().split('T')[0];
+
+    const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate ? req.query.startDate : defaultStart;
+    const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate ? req.query.endDate : defaultEnd;
+
+    const data = await getDurationReportAnalytics({
+      targetGateIds,
+      startDateStr,
+      endDateStr
+    });
+
+    res.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/reports/holistic
+ * Management-level consolidated hierarchy combining Count and Duration metrics
+ */
+router.get('/holistic', async (req: AuthRequest, res: Response, next: any) => {
+  try {
+    const access = await resolveUserAccess(req);
+    const gateIdsParam = (req.query.gateIds || req.query.gateId) as string | undefined;
+    const { targetGateIds } = await resolveFilteredGateIds(access, undefined, gateIdsParam);
+
+    const today = new Date();
+    const defaultEnd = today.toISOString().split('T')[0];
+    const defaultStartObj = new Date(today);
+    defaultStartObj.setDate(today.getDate() - 7);
+    const defaultStart = defaultStartObj.toISOString().split('T')[0];
+
+    const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate ? req.query.startDate : defaultStart;
+    const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate ? req.query.endDate : defaultEnd;
+
+    const data = await getHolisticReportAnalytics({
+      targetGateIds,
+      startDateStr,
+      endDateStr
+    });
+
+    res.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
   try {
     const reportType = (req.query.reportType as string || 'complete_log').toLowerCase();
@@ -1062,8 +1167,62 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
     const statusFilter = typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL';
     const shiftFilter = typeof req.query.shift === 'string' ? req.query.shift.toUpperCase() : 'ALL';
 
-    // ── REPORT TYPE 2: CYCLE REPORT ──
-    if (reportType === 'cycle') {
+    // ── REPORT TYPE: COUNT REPORT ──
+    if (reportType === 'count') {
+      const access = await resolveUserAccess(req);
+      const gateIdsParam = (req.query.gateIds || req.query.gateId) as string | undefined;
+      const { targetGateIds } = await resolveFilteredGateIds(access, undefined, gateIdsParam);
+
+      const today = new Date();
+      const defaultEnd = today.toISOString().split('T')[0];
+      const defaultStartObj = new Date(today);
+      defaultStartObj.setDate(today.getDate() - 7);
+      const defaultStart = defaultStartObj.toISOString().split('T')[0];
+
+      const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate ? req.query.startDate : defaultStart;
+      const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate ? req.query.endDate : defaultEnd;
+
+      const countData = await getCountReportAnalytics({ targetGateIds, startDateStr, endDateStr });
+      const filenameBase = `LC_Gate_Count_Report_${startDateStr}_to_${endDateStr}`;
+
+      if (format === 'xlsx' || format === 'excel') {
+        return await exportCountExcel(res, countData, { filenameBase });
+      } else if (format === 'pdf') {
+        return await exportCountPdf(res, countData, { filenameBase });
+      } else {
+        return exportCountCsv(res, countData, { filenameBase });
+      }
+    }
+
+    // ── REPORT TYPE: HOLISTIC MANAGEMENT REPORT ──
+    if (reportType === 'holistic') {
+      const access = await resolveUserAccess(req);
+      const gateIdsParam = (req.query.gateIds || req.query.gateId) as string | undefined;
+      const { targetGateIds } = await resolveFilteredGateIds(access, undefined, gateIdsParam);
+
+      const today = new Date();
+      const defaultEnd = today.toISOString().split('T')[0];
+      const defaultStartObj = new Date(today);
+      defaultStartObj.setDate(today.getDate() - 7);
+      const defaultStart = defaultStartObj.toISOString().split('T')[0];
+
+      const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate ? req.query.startDate : defaultStart;
+      const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate ? req.query.endDate : defaultEnd;
+
+      const holisticData = await getHolisticReportAnalytics({ targetGateIds, startDateStr, endDateStr });
+      const filenameBase = `LC_Gate_Holistic_Management_Report_${startDateStr}_to_${endDateStr}`;
+
+      if (format === 'xlsx' || format === 'excel') {
+        return await exportHolisticExcel(res, holisticData, { filenameBase });
+      } else if (format === 'pdf') {
+        return await exportHolisticPdf(res, holisticData, { filenameBase });
+      } else {
+        return exportHolisticCsv(res, holisticData, { filenameBase });
+      }
+    }
+
+    // ── REPORT TYPE: DURATION / CYCLE REPORT ──
+    if (reportType === 'duration' || reportType === 'cycle') {
       const access = await resolveUserAccess(req);
       const scopeGroupIdsParam = (req.query.scopeGroupIds || req.query.scopeGroupId) as string | undefined;
       const gateIdsParam = (req.query.gateIds || req.query.gateId) as string | undefined;

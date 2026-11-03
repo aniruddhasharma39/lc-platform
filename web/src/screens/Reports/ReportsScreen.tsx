@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   FaFileExcel,
   FaFilePdf,
@@ -17,7 +17,8 @@ import {
   FaClock,
   FaHourglassHalf,
   FaRoad,
-  FaChartLine
+  FaChartLine,
+  FaCalculator,
 } from 'react-icons/fa';
 import type { User } from '../../types';
 import { API_URL } from '../../config';
@@ -69,6 +70,164 @@ export interface GateCycleReport {
     totalOpenFormatted: string;
   };
   dailyBreakdown: DailyCycleMetric[];
+}
+
+
+export interface GateCountItem {
+  gateId: number;
+  lcNumber: string;
+  name: string | null;
+  locationName: string;
+  zone: string | null;
+  division: string | null;
+  stationId: number | null;
+  stationName: string | null;
+  stationCode: string | null;
+  openCount: number;
+  closeCount: number;
+  totalOperations: number;
+}
+
+export interface StationCountItem {
+  stationId: number | null;
+  stationName: string;
+  stationCode: string;
+  zone: string;
+  division: string;
+  gatesCount: number;
+  openCount: number;
+  closeCount: number;
+  totalOperations: number;
+  gates: GateCountItem[];
+}
+
+export interface DivisionCountItem {
+  division: string;
+  zone: string;
+  stationCount: number;
+  gatesCount: number;
+  openCount: number;
+  closeCount: number;
+  totalOperations: number;
+  stations: StationCountItem[];
+}
+
+export interface CountReportResponse {
+  startDate: string;
+  endDate: string;
+  kpis: {
+    totalOperations: number;
+    totalOpenCount: number;
+    totalCloseCount: number;
+    reportingGatesCount: number;
+    peakOperationGate: {
+      lcNumber: string;
+      operations: number;
+      locationName: string;
+    } | null;
+  };
+  gates: GateCountItem[];
+  stations: StationCountItem[];
+  divisions: DivisionCountItem[];
+}
+
+export interface HolisticLCItem {
+  gateId: number;
+  lcNumber: string;
+  name: string | null;
+  locationName: string;
+  stationName: string | null;
+  stationCode: string | null;
+  division: string | null;
+  zone: string | null;
+  totalOperations: number;
+  openCount: number;
+  closeCount: number;
+  totalOpenSeconds: number;
+  totalOpenFormatted: string;
+  avgOpenSeconds: number;
+  avgOpenFormatted: string;
+  totalClosedSeconds: number;
+  totalClosedFormatted: string;
+  extendedDelaysCount: number;
+}
+
+export interface HolisticStationItem {
+  stationId: number | null;
+  stationName: string;
+  stationCode: string;
+  division: string;
+  zone: string;
+  gatesCount: number;
+  totalOperations: number;
+  openCount: number;
+  closeCount: number;
+  totalOpenSeconds: number;
+  totalOpenFormatted: string;
+  avgOpenSeconds: number;
+  avgOpenFormatted: string;
+  totalClosedSeconds: number;
+  totalClosedFormatted: string;
+  extendedDelaysCount: number;
+  gates: HolisticLCItem[];
+}
+
+export interface HolisticDivisionItem {
+  division: string;
+  zone: string;
+  stationCount: number;
+  gatesCount: number;
+  totalOperations: number;
+  openCount: number;
+  closeCount: number;
+  totalOpenSeconds: number;
+  totalOpenFormatted: string;
+  avgOpenSeconds: number;
+  avgOpenFormatted: string;
+  totalClosedSeconds: number;
+  totalClosedFormatted: string;
+  extendedDelaysCount: number;
+  stations: HolisticStationItem[];
+}
+
+export interface HolisticZoneItem {
+  zone: string;
+  divisionCount: number;
+  stationCount: number;
+  gatesCount: number;
+  totalOperations: number;
+  openCount: number;
+  closeCount: number;
+  totalOpenSeconds: number;
+  totalOpenFormatted: string;
+  avgOpenSeconds: number;
+  avgOpenFormatted: string;
+  totalClosedSeconds: number;
+  totalClosedFormatted: string;
+  extendedDelaysCount: number;
+  divisions: HolisticDivisionItem[];
+}
+
+export interface HolisticReportResponse {
+  startDate: string;
+  endDate: string;
+  kpis: {
+    totalZones: number;
+    totalDivisions: number;
+    totalStations: number;
+    totalGates: number;
+    totalOperations: number;
+    totalOpenSeconds: number;
+    totalOpenFormatted: string;
+    avgOpenSeconds: number;
+    avgOpenFormatted: string;
+    totalClosedSeconds: number;
+    totalClosedFormatted: string;
+    totalExtendedDelays: number;
+  };
+  hierarchy: HolisticZoneItem[];
+  flatStations: HolisticStationItem[];
+  flatGates: HolisticLCItem[];
 }
 
 export interface FullCycleAnalyticsResponse {
@@ -149,7 +308,15 @@ export default function ReportsScreen({ user }: Props) {
   const [showColumnsPopover, setShowColumnsPopover] = useState<boolean>(false);
 
   // 5. Operational Records & Caching State
-  const [reportType, setReportType] = useState<'complete_log' | 'cycle'>('complete_log');
+  const [reportType, setReportType] = useState<'count' | 'duration' | 'holistic' | 'complete_log'>('count');
+  const [countData, setCountData] = useState<CountReportResponse | null>(null);
+  const [loadingCountData, setLoadingCountData] = useState<boolean>(false);
+  const [countSubView, setCountSubView] = useState<'by_gate' | 'by_station' | 'by_division'>('by_gate');
+
+  const [holisticData, setHolisticData] = useState<HolisticReportResponse | null>(null);
+  const [loadingHolisticData, setLoadingHolisticData] = useState<boolean>(false);
+  const [holisticSubView, setHolisticSubView] = useState<'hierarchy' | 'stations' | 'gates'>('hierarchy');
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
   const [cycleData, setCycleData] = useState<FullCycleAnalyticsResponse | null>(null);
   const [loadingCycleData, setLoadingCycleData] = useState<boolean>(false);
   const [selectedCycleGateId, setSelectedCycleGateId] = useState<number | 'ALL'>('ALL');
@@ -513,6 +680,77 @@ export default function ReportsScreen({ user }: Props) {
     debouncedSearch
   ]);
 
+
+  // ── COUNT REPORT DATA FETCHING ──────────────────────────────────────────
+  const fetchCountData = useCallback(async (
+    targetGateIds: number[],
+    start: string,
+    end: string
+  ) => {
+    if (targetGateIds.length === 0) {
+      setCountData(null);
+      return;
+    }
+    setLoadingCountData(true);
+    try {
+      const url = new URL(`${API_URL}/api/v1/reports/count`);
+      if (targetGateIds.length > 0) {
+        url.searchParams.append('gateIds', targetGateIds.join(','));
+      } else if (isDeveloper) {
+        url.searchParams.append('gateIds', 'all');
+      }
+      url.searchParams.append('startDate', start);
+      url.searchParams.append('endDate', end);
+
+      const res = await fetch(url.toString(), { headers: authHeaders() });
+      if (res.ok) {
+        const json: CountReportResponse = await res.json();
+        setCountData(json);
+      }
+    } catch (err) {
+      console.error('Failed to fetch count report:', err);
+    } finally {
+      setLoadingCountData(false);
+    }
+  }, [isDeveloper]);
+
+  // ── HOLISTIC REPORT DATA FETCHING ────────────────────────────────────────
+  const fetchHolisticData = useCallback(async (
+    targetGateIds: number[],
+    start: string,
+    end: string
+  ) => {
+    if (targetGateIds.length === 0) {
+      setHolisticData(null);
+      return;
+    }
+    setLoadingHolisticData(true);
+    try {
+      const url = new URL(`${API_URL}/api/v1/reports/holistic`);
+      if (targetGateIds.length > 0) {
+        url.searchParams.append('gateIds', targetGateIds.join(','));
+      } else if (isDeveloper) {
+        url.searchParams.append('gateIds', 'all');
+      }
+      url.searchParams.append('startDate', start);
+      url.searchParams.append('endDate', end);
+
+      const res = await fetch(url.toString(), { headers: authHeaders() });
+      if (res.ok) {
+        const json: HolisticReportResponse = await res.json();
+        setHolisticData(json);
+        // Expand first zone by default
+        if (json.hierarchy.length > 0) {
+          setExpandedKeys(new Set([`zone_${json.hierarchy[0].zone}`]));
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch holistic report:', err);
+    } finally {
+      setLoadingHolisticData(false);
+    }
+  }, [isDeveloper]);
+
   // ── CYCLE REPORT DATA FETCHING ──────────────────────────────────────────
   const fetchCycleData = useCallback(async (
     targetClusterIds: number[],
@@ -553,7 +791,7 @@ export default function ReportsScreen({ user }: Props) {
   }, [isDeveloper]);
 
   useEffect(() => {
-    if (reportType === 'cycle' && selectedGateIds.length > 0) {
+    if (reportType === 'duration' && selectedGateIds.length > 0) {
       fetchCycleData(selectedClusterIds, selectedGateIds, startDateStr, endDateStr);
     }
   }, [reportType, selectedClusterIds, selectedGateIds, startDateStr, endDateStr, fetchCycleData]);
@@ -797,22 +1035,22 @@ export default function ReportsScreen({ user }: Props) {
     setIsExporting(true);
     setExportFormat(format.toUpperCase());
     setExportProgress(15);
-    setExportStage(reportType === 'cycle'
+    setExportStage(reportType === 'duration'
       ? 'Calculating analytical gate cycles & duration metrics from database...'
       : 'Querying operational records from database...');
 
     const progressTimer = setInterval(() => {
       setExportProgress((prev) => {
         if (prev < 40) {
-          setExportStage(reportType === 'cycle'
+          setExportStage(reportType === 'duration'
             ? 'Aggregating daily cycle counts and opening/closing intervals...'
             : 'Calculating KPI metrics and column layouts...');
           return prev + 12;
         }
         if (prev < 75) {
           setExportStage(format === 'pdf'
-            ? (reportType === 'cycle' ? 'Compiling Cycle Summary PDF document...' : 'Compiling PDF document layout & styles...')
-            : (reportType === 'cycle' ? 'Building Cycle Analytics Excel workbook...' : 'Building Excel spreadsheet workbook...'));
+            ? (reportType === 'duration' ? 'Compiling Cycle Summary PDF document...' : 'Compiling PDF document layout & styles...')
+            : (reportType === 'duration' ? 'Building Cycle Analytics Excel workbook...' : 'Building Excel spreadsheet workbook...'));
           return prev + 8;
         }
         if (prev < 92) {
@@ -855,8 +1093,12 @@ export default function ReportsScreen({ user }: Props) {
       }
 
       const blob = await res.blob();
-      const downloadFilename = reportType === 'cycle'
-        ? `LC_Gate_Cycle_Report_${startDateStr}_to_${endDateStr}.${format}`
+      const downloadFilename = reportType === 'count'
+        ? `LC_Gate_Count_Report_${startDateStr}_to_${endDateStr}.${format}`
+        : reportType === 'holistic'
+        ? `LC_Gate_Holistic_Management_Report_${startDateStr}_to_${endDateStr}.${format}`
+        : reportType === 'duration'
+        ? `LC_Gate_Duration_Report_${startDateStr}_to_${endDateStr}.${format}`
         : `LC_Gate_Complete_Log_${startDateStr}_to_${endDateStr}.${format}`;
 
       const downloadUrl = window.URL.createObjectURL(blob);
@@ -926,8 +1168,8 @@ export default function ReportsScreen({ user }: Props) {
                 </button>
                 <button
                   type="button"
-                  className={`report-type-tab-btn ${reportType === 'cycle' ? 'active' : ''}`}
-                  onClick={() => setReportType('cycle')}
+                  className={`report-type-tab-btn ${reportType === 'duration' ? 'active' : ''}`}
+                  onClick={() => setReportType('duration')}
                   title="Analytical operational cycles, daily counts & opening/closing intervals"
                 >
                   <FaRetweet /> Cycle Report
@@ -1220,7 +1462,7 @@ export default function ReportsScreen({ user }: Props) {
           <div className="sidebar-action-footer">
             <div className="export-label-row">
               <span className="export-tag-title">
-                {reportType === 'cycle' ? 'Export Cycle Report' : 'Export Complete Log'}
+                {reportType === 'count' ? 'Export Count Report' : reportType === 'duration' ? 'Export Duration Report' : reportType === 'holistic' ? 'Export Holistic Report' : 'Export Event Log'}
               </span>
             </div>
             <div className="export-buttons-pair">
@@ -1229,7 +1471,7 @@ export default function ReportsScreen({ user }: Props) {
                 className="btn btn-success btn-sm export-action-btn"
                 onClick={() => handleDownloadReport('xlsx')}
                 disabled={isExporting || (reportType === 'complete_log' && selectedExportColumns.length === 0)}
-                title={reportType === 'cycle' ? 'Download analytical Cycle Report (.xlsx)' : 'Download operational Complete Log (.xlsx)'}
+                title={reportType === 'duration' ? 'Download analytical Cycle Report (.xlsx)' : 'Download operational Complete Log (.xlsx)'}
               >
                 <FaFileExcel />
                 <span>{isExporting ? 'Exporting...' : 'Excel (.xlsx)'}</span>
@@ -1240,7 +1482,7 @@ export default function ReportsScreen({ user }: Props) {
                 className="btn btn-danger btn-sm export-action-btn"
                 onClick={() => handleDownloadReport('pdf')}
                 disabled={isExporting || (reportType === 'complete_log' && selectedExportColumns.length === 0)}
-                title={reportType === 'cycle' ? 'Download analytical Cycle Report (.pdf)' : 'Download operational Complete Log (.pdf)'}
+                title={reportType === 'duration' ? 'Download analytical Cycle Report (.pdf)' : 'Download operational Complete Log (.pdf)'}
               >
                 <FaFilePdf />
                 <span>{isExporting ? 'Exporting...' : 'PDF (.pdf)'}</span>
@@ -1249,29 +1491,32 @@ export default function ReportsScreen({ user }: Props) {
           </div>
         </aside>
 
+        
         {/* ═══════════════════════════════════════════════════════════
-            RIGHT COLUMN: MAIN WORKSPACE (Real-Time Reactive)
+            RIGHT COLUMN: MAIN WORKSPACE (Count, Duration, Holistic, Event Log)
            ═══════════════════════════════════════════════════════════ */}
-        {reportType === 'cycle' ? (
+        {reportType === 'count' ? (
+          /* ═══════════════════════════════════════════════════════════════
+             1. COUNT REPORT VIEW
+             ═══════════════════════════════════════════════════════════════ */
           <main className="view-log-main-card">
-            {/* Header */}
             <div className="view-log-header">
               <div>
                 <div className="log-title-row">
-                  <FaRetweet className="text-primary mr-2" />
-                  <h3 className="log-title">Cycle Report: Analytical Summary & Gate Utilization</h3>
-                  {loadingCycleData ? (
+                  <FaCalculator className="text-primary mr-2" />
+                  <h3 className="log-title">Count Report: Gate Operations Volume Audit</h3>
+                  {loadingCountData ? (
                     <span className="live-status-pill updating">
-                      <FaSyncAlt className="spin mr-1" /> Calculating cycles...
+                      <FaSyncAlt className="spin mr-1" /> Calculating counts...
                     </span>
                   ) : (
                     <span className="live-status-pill synced">
-                      <span className="pulse-dot" /> Live Synced
+                      <span className="pulse-dot" /> Live Aggregated
                     </span>
                   )}
                 </div>
                 <span className="log-subtitle">
-                  Analytical operational cycles, closing durations, and opening intervals from <strong>{startDateStr}</strong> to <strong>{endDateStr}</strong>
+                  Aggregated barrier operations (openings, closures, and total volume) from <strong>{startDateStr}</strong> to <strong>{endDateStr}</strong>
                 </span>
               </div>
 
@@ -1279,12 +1524,11 @@ export default function ReportsScreen({ user }: Props) {
                 <button
                   type="button"
                   className="btn btn-secondary btn-sm"
-                  onClick={() => fetchCycleData(selectedClusterIds, selectedGateIds, startDateStr, endDateStr)}
-                  disabled={loadingCycleData}
-                  title="Recalculate cycle metrics from database"
+                  onClick={() => fetchCountData(selectedGateIds, startDateStr, endDateStr)}
+                  disabled={loadingCountData}
                   style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.35rem 0.75rem', borderRadius: '8px' }}
                 >
-                  <FaSyncAlt className={loadingCycleData ? 'spin' : ''} />
+                  <FaSyncAlt className={loadingCountData ? 'spin' : ''} />
                   <span>Refresh</span>
                 </button>
               </div>
@@ -1294,13 +1538,225 @@ export default function ReportsScreen({ user }: Props) {
             <div className="cycle-kpi-grid">
               <div className="cycle-kpi-card">
                 <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Total Operations</span>
+                  <FaCalculator className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value">
+                  {countData?.kpis.totalOperations.toLocaleString('en-IN') ?? '0'}
+                </div>
+                <span className="cycle-kpi-sub">Total barrier movements</span>
+              </div>
+
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Total Openings</span>
+                  <FaHourglassHalf className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value" style={{ color: '#0284c7' }}>
+                  {countData?.kpis.totalOpenCount.toLocaleString('en-IN') ?? '0'}
+                </div>
+                <span className="cycle-kpi-sub">Road clearance events</span>
+              </div>
+
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Total Closures</span>
+                  <FaRoad className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value" style={{ color: '#10b981' }}>
+                  {countData?.kpis.totalCloseCount.toLocaleString('en-IN') ?? '0'}
+                </div>
+                <span className="cycle-kpi-sub">Rail safety closures</span>
+              </div>
+
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Busiest Level Crossing</span>
+                  <FaArchway className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value" style={{ fontSize: '1.25rem' }}>
+                  {countData?.kpis.peakOperationGate ? countData.kpis.peakOperationGate.lcNumber : '—'}
+                </div>
+                <span className="cycle-kpi-sub">
+                  {countData?.kpis.peakOperationGate ? `${countData.kpis.peakOperationGate.operations} operations (${countData.kpis.peakOperationGate.locationName})` : 'No data'}
+                </span>
+              </div>
+            </div>
+
+            {/* Sub-View Switcher Pills */}
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid #e2e8f0', paddingBottom: '0.6rem' }}>
+              <button
+                type="button"
+                className={`cycle-gate-tab-pill ${countSubView === 'by_gate' ? 'active' : ''}`}
+                onClick={() => setCountSubView('by_gate')}
+              >
+                Level Crossing View ({countData?.gates.length || 0} Gates)
+              </button>
+              <button
+                type="button"
+                className={`cycle-gate-tab-pill ${countSubView === 'by_station' ? 'active' : ''}`}
+                onClick={() => setCountSubView('by_station')}
+              >
+                Station Summary ({countData?.stations.length || 0} Stations)
+              </button>
+              <button
+                type="button"
+                className={`cycle-gate-tab-pill ${countSubView === 'by_division' ? 'active' : ''}`}
+                onClick={() => setCountSubView('by_division')}
+              >
+                Division Summary ({countData?.divisions.length || 0} Divisions)
+              </button>
+            </div>
+
+            {/* Table Area */}
+            <div className="table-responsive">
+              <table className="reports-table">
+                <thead>
+                  {countSubView === 'by_gate' ? (
+                    <tr>
+                      <th>Zone</th>
+                      <th>Division</th>
+                      <th>Station</th>
+                      <th>LC Gate #</th>
+                      <th>Location</th>
+                      <th style={{ textAlign: 'right' }}>Open Count</th>
+                      <th style={{ textAlign: 'right' }}>Close Count</th>
+                      <th style={{ textAlign: 'right' }}>Total Operations</th>
+                    </tr>
+                  ) : countSubView === 'by_station' ? (
+                    <tr>
+                      <th>Zone</th>
+                      <th>Division</th>
+                      <th>Station Name</th>
+                      <th>Station Code</th>
+                      <th style={{ textAlign: 'center' }}>Gates Count</th>
+                      <th style={{ textAlign: 'right' }}>Open Count</th>
+                      <th style={{ textAlign: 'right' }}>Close Count</th>
+                      <th style={{ textAlign: 'right' }}>Total Operations</th>
+                    </tr>
+                  ) : (
+                    <tr>
+                      <th>Zone</th>
+                      <th>Division</th>
+                      <th style={{ textAlign: 'center' }}>Stations Count</th>
+                      <th style={{ textAlign: 'center' }}>Gates Count</th>
+                      <th style={{ textAlign: 'right' }}>Open Count</th>
+                      <th style={{ textAlign: 'right' }}>Close Count</th>
+                      <th style={{ textAlign: 'right' }}>Total Operations</th>
+                    </tr>
+                  )}
+                </thead>
+                <tbody>
+                  {loadingCountData ? (
+                    <tr>
+                      <td colSpan={8} style={{ textAlign: 'center', padding: '40px 0', color: '#64748b' }}>
+                        <FaSyncAlt className="spin mr-2" /> Aggregating counts from database...
+                      </td>
+                    </tr>
+                  ) : countSubView === 'by_gate' ? (
+                    (countData?.gates || []).map(g => (
+                      <tr key={g.gateId}>
+                        <td>{g.zone}</td>
+                        <td>{g.division}</td>
+                        <td>{g.stationName} ({g.stationCode})</td>
+                        <td><strong>{g.lcNumber}</strong></td>
+                        <td>{g.locationName}</td>
+                        <td style={{ textAlign: 'right', color: '#0369a1', fontWeight: 600 }}>{g.openCount}</td>
+                        <td style={{ textAlign: 'right', color: '#047857', fontWeight: 600 }}>{g.closeCount}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 800, color: '#0f172a' }}>{g.totalOperations}</td>
+                      </tr>
+                    ))
+                  ) : countSubView === 'by_station' ? (
+                    (countData?.stations || []).map((s, idx) => (
+                      <tr key={idx}>
+                        <td>{s.zone}</td>
+                        <td>{s.division}</td>
+                        <td><strong>{s.stationName}</strong></td>
+                        <td><span className="badge badge-secondary">{s.stationCode}</span></td>
+                        <td style={{ textAlign: 'center' }}>{s.gatesCount}</td>
+                        <td style={{ textAlign: 'right', color: '#0369a1', fontWeight: 600 }}>{s.openCount}</td>
+                        <td style={{ textAlign: 'right', color: '#047857', fontWeight: 600 }}>{s.closeCount}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 800, color: '#0f172a' }}>{s.totalOperations}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    (countData?.divisions || []).map((d, idx) => (
+                      <tr key={idx}>
+                        <td>{d.zone}</td>
+                        <td><strong>{d.division}</strong></td>
+                        <td style={{ textAlign: 'center' }}>{d.stationCount}</td>
+                        <td style={{ textAlign: 'center' }}>{d.gatesCount}</td>
+                        <td style={{ textAlign: 'right', color: '#0369a1', fontWeight: 600 }}>{d.openCount}</td>
+                        <td style={{ textAlign: 'right', color: '#047857', fontWeight: 600 }}>{d.closeCount}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 800, color: '#0f172a' }}>{d.totalOperations}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </main>
+        ) : reportType === 'duration' ? (
+          /* ═══════════════════════════════════════════════════════════════
+             2. DURATION REPORT VIEW
+             ═══════════════════════════════════════════════════════════════ */
+          <main className="view-log-main-card">
+            <div className="view-log-header">
+              <div>
+                <div className="log-title-row">
+                  <FaClock className="text-primary mr-2" />
+                  <h3 className="log-title">Duration Report: Gate Open vs Closed Timing Analysis</h3>
+                  {loadingCycleData ? (
+                    <span className="live-status-pill updating">
+                      <FaSyncAlt className="spin mr-1" /> Calculating durations...
+                    </span>
+                  ) : (
+                    <span className="live-status-pill synced">
+                      <span className="pulse-dot" /> Live Synced
+                    </span>
+                  )}
+                </div>
+                <span className="log-subtitle">
+                  Road clearance durations, train closure blocks, and daily time breakdown from <strong>{startDateStr}</strong> to <strong>{endDateStr}</strong>
+                </span>
+              </div>
+
+              <div className="view-log-header-right">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => fetchCycleData(selectedClusterIds, selectedGateIds, startDateStr, endDateStr)}
+                  disabled={loadingCycleData}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.35rem 0.75rem', borderRadius: '8px' }}
+                >
+                  <FaSyncAlt className={loadingCycleData ? 'spin' : ''} />
+                  <span>Refresh</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Duration KPI Cards Grid */}
+            <div className="cycle-kpi-grid">
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
                   <span className="cycle-kpi-title">Completed Cycles</span>
                   <FaRetweet className="cycle-kpi-icon" />
                 </div>
                 <div className="cycle-kpi-value">
                   {cycleData?.overall.totalCycles.toLocaleString('en-IN') ?? '0'}
                 </div>
-                <span className="cycle-kpi-sub">OPEN → CLOSED → OPEN operations</span>
+                <span className="cycle-kpi-sub">Total measured operations</span>
+              </div>
+
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Avg Opening Duration</span>
+                  <FaClock className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value" style={{ color: '#0369a1' }}>
+                  {cycleData?.overall.avgOpeningFormatted || '—'}
+                </div>
+                <span className="cycle-kpi-sub">Mean road clearance time</span>
               </div>
 
               <div className="cycle-kpi-card">
@@ -1308,32 +1764,10 @@ export default function ReportsScreen({ user }: Props) {
                   <span className="cycle-kpi-title">Avg Closing Time</span>
                   <FaHourglassHalf className="cycle-kpi-icon" />
                 </div>
-                <div className="cycle-kpi-value">
+                <div className="cycle-kpi-value" style={{ color: '#10b981' }}>
                   {cycleData?.overall.avgClosingFormatted || '—'}
                 </div>
-                <span className="cycle-kpi-sub">Mean closure duration per cycle</span>
-              </div>
-
-              <div className="cycle-kpi-card">
-                <div className="cycle-kpi-header">
-                  <span className="cycle-kpi-title">Avg Opening Interval</span>
-                  <FaClock className="cycle-kpi-icon" />
-                </div>
-                <div className="cycle-kpi-value">
-                  {cycleData?.overall.avgOpeningFormatted || '—'}
-                </div>
-                <span className="cycle-kpi-sub">Road clearance interval between closures</span>
-              </div>
-
-              <div className="cycle-kpi-card">
-                <div className="cycle-kpi-header">
-                  <span className="cycle-kpi-title">Total Closed Duration</span>
-                  <FaRoad className="cycle-kpi-icon" />
-                </div>
-                <div className="cycle-kpi-value">
-                  {cycleData?.overall.totalClosedFormatted || '0s'}
-                </div>
-                <span className="cycle-kpi-sub">Cumulative road restriction</span>
+                <span className="cycle-kpi-sub">Mean train safety closure</span>
               </div>
 
               <div className="cycle-kpi-card">
@@ -1344,7 +1778,18 @@ export default function ReportsScreen({ user }: Props) {
                 <div className="cycle-kpi-value">
                   {cycleData?.overall.totalOpenFormatted || '0s'}
                 </div>
-                <span className="cycle-kpi-sub">Cumulative road clearance time</span>
+                <span className="cycle-kpi-sub">Cumulative road clearance</span>
+              </div>
+
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Total Closed Duration</span>
+                  <FaRoad className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value">
+                  {cycleData?.overall.totalClosedFormatted || '0s'}
+                </div>
+                <span className="cycle-kpi-sub">Cumulative rail restriction</span>
               </div>
             </div>
 
@@ -1377,66 +1822,45 @@ export default function ReportsScreen({ user }: Props) {
               <table className="reports-table">
                 <thead>
                   <tr>
-                    <th>Gate</th>
-                    <th>Operational Date</th>
-                    <th className="text-center">Completed Cycles</th>
-                    <th className="text-center">Avg Closing Time</th>
-                    <th className="text-center">Avg Opening Time</th>
-                    <th className="text-center">Total Closed</th>
-                    <th className="text-center">Total Open</th>
+                    <th>Date</th>
+                    <th>LC Gate #</th>
+                    <th>Location / Station</th>
+                    <th style={{ textAlign: 'center' }}>Completed Cycles</th>
+                    <th style={{ textAlign: 'right' }}>Avg Opening Duration</th>
+                    <th style={{ textAlign: 'right' }}>Avg Closing Duration</th>
+                    <th style={{ textAlign: 'right' }}>Total Closed Time</th>
+                    <th style={{ textAlign: 'right' }}>Total Open Time</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {loadingCycleData && !cycleData ? (
+                  {loadingCycleData ? (
                     <tr>
-                      <td colSpan={7} className="text-center py-5">
-                        <FaSyncAlt className="spin mr-2" /> Calculating operational cycle metrics...
+                      <td colSpan={8} style={{ textAlign: 'center', padding: '40px 0', color: '#64748b' }}>
+                        <FaSyncAlt className="spin mr-2" /> Calculating duration metrics from database...
                       </td>
                     </tr>
                   ) : !cycleData || cycleData.gateReports.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="text-center py-5 empty-cell">
-                        <FaArchway size={34} className="mb-2 text-muted" />
-                        <p style={{ margin: 0, fontWeight: 700, fontSize: '0.95rem', color: '#334155' }}>
-                          No operational cycle records found.
-                        </p>
-                        <small className="text-muted">
-                          Adjust scope groups, gates, or date range in the left builder panel.
-                        </small>
+                      <td colSpan={8} style={{ textAlign: 'center', padding: '40px 0', color: '#64748b' }}>
+                        No cycle records found for the selected gates and dates.
                       </td>
                     </tr>
                   ) : (
                     cycleData.gateReports
-                      .filter(gr => selectedCycleGateId === 'ALL' || selectedCycleGateId === gr.gate.id)
+                      .filter(gr => selectedCycleGateId === 'ALL' || gr.gate.id === selectedCycleGateId)
                       .flatMap(gr =>
-                        gr.dailyBreakdown.map((day, idx) => (
-                          <tr key={`${gr.gate.id}_${day.dateStr}_${idx}`}>
-                            <td>
-                              <strong className="lc-tag">{gr.gate.lcNumber}</strong>
-                              <span className="text-muted small ml-1">{gr.gate.locationName}</span>
-                            </td>
+                        gr.dailyBreakdown.map(day => (
+                          <tr key={`${gr.gate.id}-${day.dateStr}`}>
                             <td>{day.dateFormatted}</td>
-                            <td className="text-center">
-                              {day.completedCycles > 0 ? (
-                                <span className="cycle-count-badge">
-                                  {day.completedCycles}
-                                </span>
-                              ) : (
-                                <span className="cycle-zero-badge">0</span>
-                              )}
+                            <td><strong>{gr.gate.lcNumber}</strong></td>
+                            <td>{gr.gate.locationName}</td>
+                            <td style={{ textAlign: 'center' }}>
+                              <span className="badge badge-primary">{day.completedCycles}</span>
                             </td>
-                            <td className="text-center text-mono">
-                              {day.avgClosingFormatted}
-                            </td>
-                            <td className="text-center text-mono">
-                              {day.avgOpeningFormatted}
-                            </td>
-                            <td className="text-center text-mono">
-                              {day.totalClosedFormatted}
-                            </td>
-                            <td className="text-center text-mono">
-                              {day.totalOpenFormatted}
-                            </td>
+                            <td style={{ textAlign: 'right', color: '#0369a1', fontWeight: 600 }}>{day.avgOpeningFormatted}</td>
+                            <td style={{ textAlign: 'right', color: '#047857', fontWeight: 600 }}>{day.avgClosingFormatted}</td>
+                            <td style={{ textAlign: 'right' }}>{day.totalClosedFormatted}</td>
+                            <td style={{ textAlign: 'right', fontWeight: 700 }}>{day.totalOpenFormatted}</td>
                           </tr>
                         ))
                       )
@@ -1445,7 +1869,355 @@ export default function ReportsScreen({ user }: Props) {
               </table>
             </div>
           </main>
+        ) : reportType === 'holistic' ? (
+          /* ═══════════════════════════════════════════════════════════════
+             3. HOLISTIC MANAGEMENT REPORT VIEW
+             ═══════════════════════════════════════════════════════════════ */
+          <main className="view-log-main-card">
+            <div className="view-log-header">
+              <div>
+                <div className="log-title-row">
+                  <FaLayerGroup className="text-primary mr-2" />
+                  <h3 className="log-title">Holistic Report: Consolidated Management Hierarchy</h3>
+                  {loadingHolisticData ? (
+                    <span className="live-status-pill updating">
+                      <FaSyncAlt className="spin mr-1" /> Consolidating metrics...
+                    </span>
+                  ) : (
+                    <span className="live-status-pill synced">
+                      <span className="pulse-dot" /> Management View
+                    </span>
+                  )}
+                </div>
+                <span className="log-subtitle">
+                  Unified operations count and duration performance rolled up across Indian Railways hierarchy
+                </span>
+              </div>
+
+              <div className="view-log-header-right">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => fetchHolisticData(selectedGateIds, startDateStr, endDateStr)}
+                  disabled={loadingHolisticData}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.35rem 0.75rem', borderRadius: '8px' }}
+                >
+                  <FaSyncAlt className={loadingHolisticData ? 'spin' : ''} />
+                  <span>Refresh</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Holistic Executive KPI Summary */}
+            <div className="cycle-kpi-grid">
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Active Hierarchy</span>
+                  <FaLayerGroup className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value" style={{ fontSize: '1.2rem' }}>
+                  {holisticData ? `${holisticData.kpis.totalGates} Gates (${holisticData.kpis.totalStations} Stations)` : '—'}
+                </div>
+                <span className="cycle-kpi-sub">
+                  {holisticData ? `Across ${holisticData.kpis.totalDivisions} Divisions & ${holisticData.kpis.totalZones} Zones` : '—'}
+                </span>
+              </div>
+
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Total Operations</span>
+                  <FaCalculator className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value">
+                  {holisticData?.kpis.totalOperations.toLocaleString('en-IN') ?? '0'}
+                </div>
+                <span className="cycle-kpi-sub">Open + Close movements</span>
+              </div>
+
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Total Open Duration</span>
+                  <FaChartLine className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value" style={{ color: '#0369a1' }}>
+                  {holisticData?.kpis.totalOpenFormatted || '0s'}
+                </div>
+                <span className="cycle-kpi-sub">Avg per open: {holisticData?.kpis.avgOpenFormatted || '0s'}</span>
+              </div>
+
+              <div className="cycle-kpi-card">
+                <div className="cycle-kpi-header">
+                  <span className="cycle-kpi-title">Extended Delays (&gt;10m)</span>
+                  <FaHourglassHalf className="cycle-kpi-icon" />
+                </div>
+                <div className="cycle-kpi-value" style={{ color: (holisticData?.kpis.totalExtendedDelays || 0) > 0 ? '#b45309' : '#10b981' }}>
+                  {holisticData?.kpis.totalExtendedDelays ?? 0}
+                </div>
+                <span className="cycle-kpi-sub">Critical road blockages</span>
+              </div>
+            </div>
+
+            {/* Sub-View Switcher Pills */}
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid #e2e8f0', paddingBottom: '0.6rem' }}>
+              <button
+                type="button"
+                className={`cycle-gate-tab-pill ${holisticSubView === 'hierarchy' ? 'active' : ''}`}
+                onClick={() => setHolisticSubView('hierarchy')}
+              >
+                Tree Hierarchy (Zone → Div → Station → Gate)
+              </button>
+              <button
+                type="button"
+                className={`cycle-gate-tab-pill ${holisticSubView === 'stations' ? 'active' : ''}`}
+                onClick={() => setHolisticSubView('stations')}
+              >
+                Station Performance Ranking ({holisticData?.flatStations.length || 0})
+              </button>
+              <button
+                type="button"
+                className={`cycle-gate-tab-pill ${holisticSubView === 'gates' ? 'active' : ''}`}
+                onClick={() => setHolisticSubView('gates')}
+              >
+                Gate-Level Detailed Matrix ({holisticData?.flatGates.length || 0})
+              </button>
+            </div>
+
+            {/* Table Area */}
+            <div className="table-responsive">
+              {holisticSubView === 'hierarchy' ? (
+                <table className="reports-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '38%' }}>Jurisdiction / Entity</th>
+                      <th style={{ textAlign: 'center' }}>Gates</th>
+                      <th style={{ textAlign: 'right' }}>Operations</th>
+                      <th style={{ textAlign: 'right' }}>Open Count</th>
+                      <th style={{ textAlign: 'right' }}>Close Count</th>
+                      <th style={{ textAlign: 'right' }}>Total Open Time</th>
+                      <th style={{ textAlign: 'right' }}>Avg Open</th>
+                      <th style={{ textAlign: 'center' }}>Delays (&gt;10m)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loadingHolisticData ? (
+                      <tr>
+                        <td colSpan={8} style={{ textAlign: 'center', padding: '40px 0', color: '#64748b' }}>
+                          <FaSyncAlt className="spin mr-2" /> Consolidating management hierarchy...
+                        </td>
+                      </tr>
+                    ) : (
+                      (holisticData?.hierarchy || []).map(zn => {
+                        const zKey = `zone_${zn.zone}`;
+                        const isZoneOpen = expandedKeys.has(zKey);
+                        return (
+                          <React.Fragment key={zKey}>
+                            {/* ZONE ROW */}
+                            <tr
+                              onClick={() => {
+                                const next = new Set(expandedKeys);
+                                if (isZoneOpen) next.delete(zKey); else next.add(zKey);
+                                setExpandedKeys(next);
+                              }}
+                              style={{ background: '#e0f2fe', cursor: 'pointer', fontWeight: 800 }}
+                            >
+                              <td>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#0369a1' }}>
+                                  {isZoneOpen ? <FaChevronDown size={10} /> : <FaChevronUp size={10} style={{ transform: 'rotate(90deg)' }} />}
+                                  <FaLayerGroup size={12} />
+                                  <span>ZONE: {zn.zone}</span>
+                                </span>
+                              </td>
+                              <td style={{ textAlign: 'center' }}>{zn.gatesCount}</td>
+                              <td style={{ textAlign: 'right' }}>{zn.totalOperations}</td>
+                              <td style={{ textAlign: 'right', color: '#0369a1' }}>{zn.openCount}</td>
+                              <td style={{ textAlign: 'right', color: '#047857' }}>{zn.closeCount}</td>
+                              <td style={{ textAlign: 'right' }}>{zn.totalOpenFormatted}</td>
+                              <td style={{ textAlign: 'right' }}>{zn.avgOpenFormatted}</td>
+                              <td style={{ textAlign: 'center' }}>
+                                <span className={`badge ${zn.extendedDelaysCount > 0 ? 'badge-warning' : 'badge-success'}`}>
+                                  {zn.extendedDelaysCount}
+                                </span>
+                              </td>
+                            </tr>
+
+                            {/* DIVISIONS */}
+                            {isZoneOpen && zn.divisions.map(div => {
+                              const dKey = `div_${zn.zone}_${div.division}`;
+                              const isDivOpen = expandedKeys.has(dKey);
+                              return (
+                                <React.Fragment key={dKey}>
+                                  <tr
+                                    onClick={() => {
+                                      const next = new Set(expandedKeys);
+                                      if (isDivOpen) next.delete(dKey); else next.add(dKey);
+                                      setExpandedKeys(next);
+                                    }}
+                                    style={{ background: '#f1f5f9', cursor: 'pointer', fontWeight: 700 }}
+                                  >
+                                    <td style={{ paddingLeft: '2rem' }}>
+                                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#334155' }}>
+                                        {isDivOpen ? <FaChevronDown size={9} /> : <FaChevronUp size={9} style={{ transform: 'rotate(90deg)' }} />}
+                                        <span>DIVISION: {div.division}</span>
+                                      </span>
+                                    </td>
+                                    <td style={{ textAlign: 'center' }}>{div.gatesCount}</td>
+                                    <td style={{ textAlign: 'right' }}>{div.totalOperations}</td>
+                                    <td style={{ textAlign: 'right', color: '#0369a1' }}>{div.openCount}</td>
+                                    <td style={{ textAlign: 'right', color: '#047857' }}>{div.closeCount}</td>
+                                    <td style={{ textAlign: 'right' }}>{div.totalOpenFormatted}</td>
+                                    <td style={{ textAlign: 'right' }}>{div.avgOpenFormatted}</td>
+                                    <td style={{ textAlign: 'center' }}>
+                                      <span className={`badge ${div.extendedDelaysCount > 0 ? 'badge-warning' : 'badge-success'}`}>
+                                        {div.extendedDelaysCount}
+                                      </span>
+                                    </td>
+                                  </tr>
+
+                                  {/* STATIONS */}
+                                  {isDivOpen && div.stations.map(st => {
+                                    const sKey = `st_${st.stationName}`;
+                                    const isStOpen = expandedKeys.has(sKey);
+                                    return (
+                                      <React.Fragment key={sKey}>
+                                        <tr
+                                          onClick={() => {
+                                            const next = new Set(expandedKeys);
+                                            if (isStOpen) next.delete(sKey); else next.add(sKey);
+                                            setExpandedKeys(next);
+                                          }}
+                                          style={{ background: '#ffffff', cursor: 'pointer' }}
+                                        >
+                                          <td style={{ paddingLeft: '3.5rem' }}>
+                                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#0f172a' }}>
+                                              {isStOpen ? <FaChevronDown size={8} /> : <FaChevronUp size={8} style={{ transform: 'rotate(90deg)' }} />}
+                                              <strong>{st.stationName} ({st.stationCode})</strong>
+                                            </span>
+                                          </td>
+                                          <td style={{ textAlign: 'center' }}>{st.gatesCount}</td>
+                                          <td style={{ textAlign: 'right', fontWeight: 700 }}>{st.totalOperations}</td>
+                                          <td style={{ textAlign: 'right', color: '#0369a1' }}>{st.openCount}</td>
+                                          <td style={{ textAlign: 'right', color: '#047857' }}>{st.closeCount}</td>
+                                          <td style={{ textAlign: 'right' }}>{st.totalOpenFormatted}</td>
+                                          <td style={{ textAlign: 'right' }}>{st.avgOpenFormatted}</td>
+                                          <td style={{ textAlign: 'center' }}>{st.extendedDelaysCount}</td>
+                                        </tr>
+
+                                        {/* GATES UNDER STATION */}
+                                        {isStOpen && st.gates.map(g => (
+                                          <tr key={g.gateId} style={{ background: '#fafafa', fontSize: '0.82rem' }}>
+                                            <td style={{ paddingLeft: '5rem', color: '#64748b' }}>
+                                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                                <FaArchway size={10} color="#0B3C7A" />
+                                                <strong style={{ color: '#0f172a' }}>{g.lcNumber}</strong> — {g.locationName}
+                                              </span>
+                                            </td>
+                                            <td style={{ textAlign: 'center', color: '#94a3b8' }}>1</td>
+                                            <td style={{ textAlign: 'right', fontWeight: 600 }}>{g.totalOperations}</td>
+                                            <td style={{ textAlign: 'right', color: '#0369a1' }}>{g.openCount}</td>
+                                            <td style={{ textAlign: 'right', color: '#047857' }}>{g.closeCount}</td>
+                                            <td style={{ textAlign: 'right' }}>{g.totalOpenFormatted}</td>
+                                            <td style={{ textAlign: 'right' }}>{g.avgOpenFormatted}</td>
+                                            <td style={{ textAlign: 'center' }}>{g.extendedDelaysCount}</td>
+                                          </tr>
+                                        ))}
+                                      </React.Fragment>
+                                    );
+                                  })}
+                                </React.Fragment>
+                              );
+                            })}
+                          </React.Fragment>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              ) : holisticSubView === 'stations' ? (
+                <table className="reports-table">
+                  <thead>
+                    <tr>
+                      <th>Zone</th>
+                      <th>Division</th>
+                      <th>Station Name</th>
+                      <th>Code</th>
+                      <th style={{ textAlign: 'center' }}>Gates Count</th>
+                      <th style={{ textAlign: 'right' }}>Operations</th>
+                      <th style={{ textAlign: 'right' }}>Open Count</th>
+                      <th style={{ textAlign: 'right' }}>Close Count</th>
+                      <th style={{ textAlign: 'right' }}>Total Open Time</th>
+                      <th style={{ textAlign: 'right' }}>Avg Open</th>
+                      <th style={{ textAlign: 'center' }}>Delays (&gt;10m)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(holisticData?.flatStations || []).map((st, idx) => (
+                      <tr key={idx}>
+                        <td>{st.zone}</td>
+                        <td>{st.division}</td>
+                        <td><strong>{st.stationName}</strong></td>
+                        <td><span className="badge badge-secondary">{st.stationCode}</span></td>
+                        <td style={{ textAlign: 'center' }}>{st.gatesCount}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{st.totalOperations}</td>
+                        <td style={{ textAlign: 'right', color: '#0369a1' }}>{st.openCount}</td>
+                        <td style={{ textAlign: 'right', color: '#047857' }}>{st.closeCount}</td>
+                        <td style={{ textAlign: 'right' }}>{st.totalOpenFormatted}</td>
+                        <td style={{ textAlign: 'right' }}>{st.avgOpenFormatted}</td>
+                        <td style={{ textAlign: 'center' }}>
+                          <span className={`badge ${st.extendedDelaysCount > 0 ? 'badge-warning' : 'badge-success'}`}>
+                            {st.extendedDelaysCount}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <table className="reports-table">
+                  <thead>
+                    <tr>
+                      <th>Zone</th>
+                      <th>Division</th>
+                      <th>Station</th>
+                      <th>LC Gate #</th>
+                      <th>Location</th>
+                      <th style={{ textAlign: 'right' }}>Operations</th>
+                      <th style={{ textAlign: 'right' }}>Open Count</th>
+                      <th style={{ textAlign: 'right' }}>Close Count</th>
+                      <th style={{ textAlign: 'right' }}>Total Open Time</th>
+                      <th style={{ textAlign: 'right' }}>Avg Open</th>
+                      <th style={{ textAlign: 'center' }}>Delays (&gt;10m)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(holisticData?.flatGates || []).map(g => (
+                      <tr key={g.gateId}>
+                        <td>{g.zone}</td>
+                        <td>{g.division}</td>
+                        <td>{g.stationName} ({g.stationCode})</td>
+                        <td><strong>{g.lcNumber}</strong></td>
+                        <td>{g.locationName}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 800 }}>{g.totalOperations}</td>
+                        <td style={{ textAlign: 'right', color: '#0369a1' }}>{g.openCount}</td>
+                        <td style={{ textAlign: 'right', color: '#047857' }}>{g.closeCount}</td>
+                        <td style={{ textAlign: 'right' }}>{g.totalOpenFormatted}</td>
+                        <td style={{ textAlign: 'right' }}>{g.avgOpenFormatted}</td>
+                        <td style={{ textAlign: 'center' }}>
+                          <span className={`badge ${g.extendedDelaysCount > 0 ? 'badge-warning' : 'badge-success'}`}>
+                            {g.extendedDelaysCount}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </main>
         ) : (
+          /* ═══════════════════════════════════════════════════════════════
+             4. DETAILED OPERATIONAL EVENT LOG (COMPLETE LOG)
+             ═══════════════════════════════════════════════════════════════ */
+
           <main className="view-log-main-card">
             <div className="view-log-header">
             <div>

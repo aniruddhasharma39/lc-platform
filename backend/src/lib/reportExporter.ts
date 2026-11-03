@@ -9,6 +9,9 @@ import {
   getISTDateString,
   formatISTDateDisplay,
   formatDurationHuman,
+  CountReportResponse,
+  DurationReportResponse,
+  HolisticReportResponse
 } from './cycleReportService';
 
 export interface CompleteLogReportData {
@@ -1213,5 +1216,406 @@ export function exportCycleCsv(
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.csv"`);
   res.status(200).send(csvContent);
+}
+
+
+
+// ============================================================================
+// COUNT REPORT EXPORTERS (CSV, EXCEL, PDF)
+// ============================================================================
+
+export function exportCountCsv(
+  res: Response,
+  data: CountReportResponse,
+  options: { filenameBase: string }
+) {
+  const escapeCsv = (val: any) => {
+    if (val === null || val === undefined) return '""';
+    const str = String(val).replace(/"/g, '""');
+    return `"${str}"`;
+  };
+
+  const headers = [
+    'Zone',
+    'Division',
+    'Station',
+    'Station Code',
+    'LC Number',
+    'Gate Name / Location',
+    'Open Count',
+    'Close Count',
+    'Total Operations'
+  ];
+
+  const rows: string[] = [];
+  rows.push(headers.map(escapeCsv).join(','));
+
+  for (const g of data.gates) {
+    const row = [
+      g.zone || '-',
+      g.division || '-',
+      g.stationName || '-',
+      g.stationCode || '-',
+      g.lcNumber,
+      g.locationName,
+      g.openCount,
+      g.closeCount,
+      g.totalOperations
+    ];
+    rows.push(row.map(escapeCsv).join(','));
+  }
+
+  const csvContent = rows.join('\r\n');
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.csv"`);
+  res.status(200).send(csvContent);
+}
+
+export async function exportCountExcel(
+  res: Response,
+  data: CountReportResponse,
+  options: { filenameBase: string }
+) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Indian Railways - Level Crossing Platform';
+  workbook.created = new Date();
+
+  const sheet = workbook.addWorksheet('Count Report', {
+    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 }
+  });
+
+  const lastColLetter = 'I';
+
+  // Row 1: Header
+  sheet.mergeCells(`A1:${lastColLetter}1`);
+  const r1 = sheet.getCell('A1');
+  r1.value = 'GOVERNMENT OF INDIA — MINISTRY OF RAILWAYS';
+  r1.font = { name: 'Calibri', size: 12, bold: true, color: { argb: 'FFFFFFFF' } };
+  r1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
+  r1.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(1).height = 24;
+
+  // Row 2: Title
+  sheet.mergeCells(`A2:${lastColLetter}2`);
+  const r2 = sheet.getCell('A2');
+  r2.value = 'INDIAN RAILWAYS — LEVEL CROSSING OPERATIONS COUNT REPORT';
+  r2.font = { name: 'Calibri', size: 15, bold: true, color: { argb: 'FFFFFFFF' } };
+  r2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
+  r2.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(2).height = 32;
+
+  // Row 3: Subtitle
+  sheet.mergeCells(`A3:${lastColLetter}3`);
+  const r3 = sheet.getCell('A3');
+  r3.value = `Gate Barrier Operations Volume Audit (${data.startDate} to ${data.endDate})`;
+  r3.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF003580' } };
+  r3.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8D5A3' } };
+  r3.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(3).height = 22;
+
+  // Row 5-6: KPI Cards
+  sheet.getCell('A5').value = 'Total Operations';
+  sheet.getCell('A6').value = data.kpis.totalOperations;
+  sheet.getCell('C5').value = 'Total Open Count';
+  sheet.getCell('C6').value = data.kpis.totalOpenCount;
+  sheet.getCell('E5').value = 'Total Close Count';
+  sheet.getCell('E6').value = data.kpis.totalCloseCount;
+  sheet.getCell('G5').value = 'Peak Activity Gate';
+  sheet.getCell('G6').value = data.kpis.peakOperationGate ? `${data.kpis.peakOperationGate.lcNumber} (${data.kpis.peakOperationGate.operations})` : '—';
+
+  for (const col of ['A', 'C', 'E', 'G']) {
+    sheet.getCell(`${col}5`).font = { bold: true, size: 9, color: { argb: 'FF64748B' } };
+    sheet.getCell(`${col}6`).font = { bold: true, size: 14, color: { argb: 'FF003580' } };
+  }
+
+  // Row 8: Table Header
+  const headers = ['Zone', 'Division', 'Station', 'Code', 'LC Gate #', 'Location / Landmark', 'Open Count', 'Close Count', 'Total Operations'];
+  sheet.getRow(8).values = headers;
+  sheet.getRow(8).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  sheet.getRow(8).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B3C7A' } };
+  sheet.getRow(8).height = 26;
+
+  let rowIdx = 9;
+  for (const g of data.gates) {
+    const row = sheet.getRow(rowIdx);
+    row.values = [
+      g.zone,
+      g.division,
+      g.stationName,
+      g.stationCode,
+      g.lcNumber,
+      g.locationName,
+      g.openCount,
+      g.closeCount,
+      g.totalOperations
+    ];
+    if (rowIdx % 2 === 0) {
+      row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+    }
+    rowIdx++;
+  }
+
+  // Auto-fit column widths
+  sheet.columns = [
+    { width: 18 }, { width: 16 }, { width: 18 }, { width: 10 },
+    { width: 14 }, { width: 24 }, { width: 14 }, { width: 14 }, { width: 18 }
+  ];
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.xlsx"`);
+  await workbook.xlsx.write(res);
+  res.end();
+}
+
+export async function exportCountPdf(
+  res: Response,
+  data: CountReportResponse,
+  options: { filenameBase: string }
+) {
+  const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.pdf"`);
+  doc.pipe(res);
+
+  // Header
+  doc.rect(30, 25, 782, 35).fill('#003580');
+  doc.fillColor('#FFFFFF').fontSize(14).font('Helvetica-Bold').text('INDIAN RAILWAYS — LEVEL CROSSING COUNT REPORT', 35, 36, { align: 'center', width: 772 });
+
+  doc.fillColor('#334155').fontSize(10).font('Helvetica').text(`Audit Period: ${data.startDate} to ${data.endDate} | Total Operations: ${data.kpis.totalOperations} (Open: ${data.kpis.totalOpenCount}, Close: ${data.kpis.totalCloseCount})`, 35, 70);
+
+  // Table
+  let y = 95;
+  doc.rect(30, y, 782, 20).fill('#0B3C7A');
+  doc.fillColor('#FFFFFF').fontSize(9).font('Helvetica-Bold');
+  doc.text('Zone', 35, y + 5, { width: 80 });
+  doc.text('Division', 120, y + 5, { width: 80 });
+  doc.text('Station', 205, y + 5, { width: 90 });
+  doc.text('LC Gate #', 300, y + 5, { width: 80 });
+  doc.text('Location', 385, y + 5, { width: 150 });
+  doc.text('Open Count', 540, y + 5, { width: 70, align: 'right' });
+  doc.text('Close Count', 620, y + 5, { width: 70, align: 'right' });
+  doc.text('Total Operations', 700, y + 5, { width: 90, align: 'right' });
+
+  y += 20;
+  doc.font('Helvetica').fontSize(9);
+
+  for (const g of data.gates) {
+    if (y > 540) {
+      doc.addPage({ margin: 30, size: 'A4', layout: 'landscape' });
+      y = 35;
+    }
+    doc.fillColor('#0F172A');
+    doc.text(g.zone || '-', 35, y + 4, { width: 80 });
+    doc.text(g.division || '-', 120, y + 4, { width: 80 });
+    doc.text(g.stationName || '-', 205, y + 4, { width: 90 });
+    doc.text(g.lcNumber, 300, y + 4, { width: 80 });
+    doc.text(g.locationName, 385, y + 4, { width: 150 });
+    doc.text(String(g.openCount), 540, y + 4, { width: 70, align: 'right' });
+    doc.text(String(g.closeCount), 620, y + 4, { width: 70, align: 'right' });
+    doc.text(String(g.totalOperations), 700, y + 4, { width: 90, align: 'right' });
+
+    doc.strokeColor('#E2E8F0').lineWidth(0.5).moveTo(30, y + 18).lineTo(812, y + 18).stroke();
+    y += 18;
+  }
+
+  doc.end();
+}
+
+// ============================================================================
+// HOLISTIC REPORT EXPORTERS (CSV, EXCEL, PDF)
+// ============================================================================
+
+export function exportHolisticCsv(
+  res: Response,
+  data: HolisticReportResponse,
+  options: { filenameBase: string }
+) {
+  const escapeCsv = (val: any) => {
+    if (val === null || val === undefined) return '""';
+    const str = String(val).replace(/"/g, '""');
+    return `"${str}"`;
+  };
+
+  const headers = [
+    'Zone',
+    'Division',
+    'Station',
+    'LC Gate Number',
+    'Location Name',
+    'Total Operations',
+    'Open Count',
+    'Close Count',
+    'Total Open Duration',
+    'Average Open Duration',
+    'Total Closed Duration',
+    'Extended Delays (>10m)'
+  ];
+
+  const rows: string[] = [];
+  rows.push(headers.map(escapeCsv).join(','));
+
+  for (const g of data.flatGates) {
+    const row = [
+      g.zone || '-',
+      g.division || '-',
+      g.stationName || '-',
+      g.lcNumber,
+      g.locationName,
+      g.totalOperations,
+      g.openCount,
+      g.closeCount,
+      g.totalOpenFormatted,
+      g.avgOpenFormatted,
+      g.totalClosedFormatted,
+      g.extendedDelaysCount
+    ];
+    rows.push(row.map(escapeCsv).join(','));
+  }
+
+  const csvContent = rows.join('\r\n');
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.csv"`);
+  res.status(200).send(csvContent);
+}
+
+export async function exportHolisticExcel(
+  res: Response,
+  data: HolisticReportResponse,
+  options: { filenameBase: string }
+) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Indian Railways - Level Crossing Platform';
+  workbook.created = new Date();
+
+  // Sheet 1: Hierarchy Management Summary (Zone -> Division -> Station)
+  const sheet1 = workbook.addWorksheet('Management Hierarchy', {
+    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 }
+  });
+
+  sheet1.mergeCells('A1:I1');
+  const r1 = sheet1.getCell('A1');
+  r1.value = 'INDIAN RAILWAYS — HOLISTIC LEVEL CROSSING MANAGEMENT SUMMARY';
+  r1.font = { name: 'Calibri', size: 14, bold: true, color: { argb: 'FFFFFFFF' } };
+  r1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
+  r1.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet1.getRow(1).height = 30;
+
+  sheet1.getRow(3).values = ['Jurisdiction Level', 'Name', 'Total Gates', 'Operations', 'Open Count', 'Close Count', 'Total Open Time', 'Avg Open Time', 'Delays (>10m)'];
+  sheet1.getRow(3).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  sheet1.getRow(3).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B3C7A' } };
+  sheet1.getRow(3).height = 24;
+
+  let rIdx = 4;
+  for (const zn of data.hierarchy) {
+    const zRow = sheet1.getRow(rIdx++);
+    zRow.values = ['ZONE', zn.zone, zn.gatesCount, zn.totalOperations, zn.openCount, zn.closeCount, zn.totalOpenFormatted, zn.avgOpenFormatted, zn.extendedDelaysCount];
+    zRow.font = { bold: true };
+    zRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0F2FE' } };
+
+    for (const div of zn.divisions) {
+      const dRow = sheet1.getRow(rIdx++);
+      dRow.values = ['  DIVISION', `  ${div.division}`, div.gatesCount, div.totalOperations, div.openCount, div.closeCount, div.totalOpenFormatted, div.avgOpenFormatted, div.extendedDelaysCount];
+      dRow.font = { bold: true };
+      dRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+
+      for (const st of div.stations) {
+        const sRow = sheet1.getRow(rIdx++);
+        sRow.values = ['    STATION', `    ${st.stationName} (${st.stationCode})`, st.gatesCount, st.totalOperations, st.openCount, st.closeCount, st.totalOpenFormatted, st.avgOpenFormatted, st.extendedDelaysCount];
+        for (const g of st.gates) {
+          const gRow = sheet1.getRow(rIdx++);
+          gRow.values = ['      LC GATE', `      ${g.lcNumber} - ${g.locationName}`, 1, g.totalOperations, g.openCount, g.closeCount, g.totalOpenFormatted, g.avgOpenFormatted, g.extendedDelaysCount];
+        }
+      }
+    }
+  }
+
+  sheet1.columns = [
+    { width: 16 }, { width: 28 }, { width: 12 }, { width: 14 },
+    { width: 12 }, { width: 12 }, { width: 18 }, { width: 16 }, { width: 14 }
+  ];
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.xlsx"`);
+  await workbook.xlsx.write(res);
+  res.end();
+}
+
+export async function exportHolisticPdf(
+  res: Response,
+  data: HolisticReportResponse,
+  options: { filenameBase: string }
+) {
+  const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.pdf"`);
+  doc.pipe(res);
+
+  doc.rect(30, 25, 782, 35).fill('#003580');
+  doc.fillColor('#FFFFFF').fontSize(14).font('Helvetica-Bold').text('INDIAN RAILWAYS — HOLISTIC MANAGEMENT REPORT', 35, 36, { align: 'center', width: 772 });
+
+  doc.fillColor('#334155').fontSize(10).font('Helvetica').text(`Audit Period: ${data.startDate} to ${data.endDate} | Total Gates: ${data.kpis.totalGates} | Total Operations: ${data.kpis.totalOperations} | Total Open Time: ${data.kpis.totalOpenFormatted}`, 35, 70);
+
+  let y = 95;
+  doc.rect(30, y, 782, 20).fill('#0B3C7A');
+  doc.fillColor('#FFFFFF').fontSize(9).font('Helvetica-Bold');
+  doc.text('Jurisdiction', 35, y + 5, { width: 120 });
+  doc.text('Station / LC Gate', 160, y + 5, { width: 140 });
+  doc.text('Gates', 305, y + 5, { width: 45, align: 'center' });
+  doc.text('Operations', 355, y + 5, { width: 65, align: 'right' });
+  doc.text('Open Count', 425, y + 5, { width: 65, align: 'right' });
+  doc.text('Close Count', 495, y + 5, { width: 65, align: 'right' });
+  doc.text('Total Open Time', 565, y + 5, { width: 85, align: 'right' });
+  doc.text('Avg Open', 655, y + 5, { width: 65, align: 'right' });
+  doc.text('Delays (>10m)', 725, y + 5, { width: 80, align: 'right' });
+
+  y += 20;
+
+  for (const zn of data.hierarchy) {
+    if (y > 540) { doc.addPage({ margin: 30, size: 'A4', layout: 'landscape' }); y = 35; }
+    doc.rect(30, y, 782, 16).fill('#E0F2FE');
+    doc.fillColor('#0369A1').fontSize(9).font('Helvetica-Bold');
+    doc.text(`Zone: ${zn.zone}`, 35, y + 3, { width: 260 });
+    doc.text(String(zn.gatesCount), 305, y + 3, { width: 45, align: 'center' });
+    doc.text(String(zn.totalOperations), 355, y + 3, { width: 65, align: 'right' });
+    doc.text(String(zn.openCount), 425, y + 3, { width: 65, align: 'right' });
+    doc.text(String(zn.closeCount), 495, y + 3, { width: 65, align: 'right' });
+    doc.text(zn.totalOpenFormatted, 565, y + 3, { width: 85, align: 'right' });
+    doc.text(zn.avgOpenFormatted, 655, y + 3, { width: 65, align: 'right' });
+    doc.text(String(zn.extendedDelaysCount), 725, y + 3, { width: 80, align: 'right' });
+    y += 17;
+
+    for (const div of zn.divisions) {
+      if (y > 540) { doc.addPage({ margin: 30, size: 'A4', layout: 'landscape' }); y = 35; }
+      doc.rect(30, y, 782, 16).fill('#F1F5F9');
+      doc.fillColor('#334155').fontSize(9).font('Helvetica-Bold');
+      doc.text(`  Division: ${div.division}`, 45, y + 3, { width: 250 });
+      doc.text(String(div.gatesCount), 305, y + 3, { width: 45, align: 'center' });
+      doc.text(String(div.totalOperations), 355, y + 3, { width: 65, align: 'right' });
+      doc.text(String(div.openCount), 425, y + 3, { width: 65, align: 'right' });
+      doc.text(String(div.closeCount), 495, y + 3, { width: 65, align: 'right' });
+      doc.text(div.totalOpenFormatted, 565, y + 3, { width: 85, align: 'right' });
+      doc.text(div.avgOpenFormatted, 655, y + 3, { width: 65, align: 'right' });
+      doc.text(String(div.extendedDelaysCount), 725, y + 3, { width: 80, align: 'right' });
+      y += 17;
+
+      for (const st of div.stations) {
+        if (y > 540) { doc.addPage({ margin: 30, size: 'A4', layout: 'landscape' }); y = 35; }
+        doc.fillColor('#0F172A').font('Helvetica');
+        doc.text(`    ${st.stationName} (${st.stationCode})`, 55, y + 3, { width: 240 });
+        doc.text(String(st.gatesCount), 305, y + 3, { width: 45, align: 'center' });
+        doc.text(String(st.totalOperations), 355, y + 3, { width: 65, align: 'right' });
+        doc.text(String(st.openCount), 425, y + 3, { width: 65, align: 'right' });
+        doc.text(String(st.closeCount), 495, y + 3, { width: 65, align: 'right' });
+        doc.text(st.totalOpenFormatted, 565, y + 3, { width: 85, align: 'right' });
+        doc.text(st.avgOpenFormatted, 655, y + 3, { width: 65, align: 'right' });
+        doc.text(String(st.extendedDelaysCount), 725, y + 3, { width: 80, align: 'right' });
+
+        doc.strokeColor('#E2E8F0').lineWidth(0.5).moveTo(30, y + 16).lineTo(812, y + 16).stroke();
+        y += 17;
+      }
+    }
+  }
+
+  doc.end();
 }
 
