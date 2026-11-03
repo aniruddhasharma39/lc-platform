@@ -1271,8 +1271,8 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                       padding: const EdgeInsets.symmetric(vertical: 8),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
                     ),
-                    icon: const Icon(Icons.tune, size: 14, color: Colors.white),
-                    label: const Text('Inspect Telemetry', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white)),
+                    icon: const Icon(Icons.history_rounded, size: 14, color: Colors.white),
+                    label: const Text('Gate Records', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white)),
                     onPressed: () => _openClusterDetail(gate, 'telemetry'),
                   ),
                 ),
@@ -1556,11 +1556,11 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.tune, size: 14, color: _clusterTab == 'telemetry' ? AppColors.primary : const Color(0xFF64748B)),
+                        Icon(Icons.history_rounded, size: 14, color: _clusterTab == 'telemetry' ? AppColors.primary : const Color(0xFF64748B)),
                         const SizedBox(width: 5),
                         Flexible(
                           child: Text(
-                            'Live Telemetry & Inspect',
+                            'Operational Records',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
@@ -1675,6 +1675,8 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               final master = Map<String, dynamic>.from(rawMaster);
               final childDevices = (master['childDevices'] as List?) ?? [];
               final isMasterExpanded = _expandedMasterIndex == mIdx;
+              final masterSerial = (master['serialNumber'] ?? '').toString();
+              final isVirtual = masterSerial.contains('(Virtual Master)') || ((master['deviceRegistries'] as List?)?.isEmpty ?? true);
 
               // Extract component-wise evidence photos uploaded during setup
               final masterEv = _findDeviceEvidence(master, 'MASTER');
@@ -1719,9 +1721,35 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(
-                                    'Master #${master['masterSequence']}: ${master['serialNumber']}',
-                                    style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          'Master #${master['masterSequence']}: ${master['serialNumber']}',
+                                          style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: isVirtual ? const Color(0xFFFEF3C7) : const Color(0xFFDCFCE7),
+                                          borderRadius: BorderRadius.circular(10),
+                                          border: Border.all(
+                                            color: isVirtual ? const Color(0xFFFDE68A) : const Color(0xFF86EFAC),
+                                          ),
+                                        ),
+                                        child: Text(
+                                          isVirtual ? 'VIRTUAL' : 'LINKED',
+                                          style: TextStyle(
+                                            fontSize: 9.5,
+                                            fontWeight: FontWeight.bold,
+                                            color: isVirtual ? const Color(0xFFD97706) : const Color(0xFF15803D),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                   Text(
                                     'Primary Gateway • ${master['powerSource'] == 'SOLAR' ? 'Solar Powered' : 'Direct AC Power'}',
@@ -1746,6 +1774,70 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
+                            // Hardware Link & Device Topology Status Banner
+                            Container(
+                              margin: const EdgeInsets.only(bottom: 12),
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: isVirtual ? const Color(0xFFFFFBEB) : const Color(0xFFF0FDF4),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: isVirtual ? const Color(0xFFFDE68A) : const Color(0xFFBBF7D0),
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    isVirtual ? Icons.router_outlined : Icons.check_circle_outline,
+                                    size: 18,
+                                    color: isVirtual ? const Color(0xFFD97706) : const Color(0xFF16A34A),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          isVirtual ? 'Virtual Master (No Physical Hardware Linked)' : 'Linked to AWS IoT Device',
+                                          style: TextStyle(
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.bold,
+                                            color: isVirtual ? const Color(0xFF92400E) : const Color(0xFF166534),
+                                          ),
+                                        ),
+                                        Text(
+                                          isVirtual
+                                              ? 'Tap to link provisioned edge hardware at any time'
+                                              : 'Receiving live gate operations from AWS IoT Core',
+                                          style: TextStyle(
+                                            fontSize: 10.5,
+                                            color: isVirtual ? const Color(0xFFB45309) : const Color(0xFF15803D),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: isVirtual ? const Color(0xFF0F172A) : const Color(0xFF475569),
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                      minimumSize: Size.zero,
+                                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                    ),
+                                    onPressed: () => _showLinkHardwareSheet(master, gate),
+                                    icon: Icon(isVirtual ? Icons.link : Icons.tune, size: 12),
+                                    label: Text(
+                                      isVirtual ? 'Link Hardware' : 'Manage Device',
+                                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+
                             // Component 1: Master Unit (ESP Gateway) & Its Uploaded Evidence Photo
                             _buildDeviceEvidenceCard(
                               title: 'Master Gateway Unit (ESP)',
@@ -2486,6 +2578,461 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             message,
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), height: 1.3),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _refreshSelectedGate(int gateId) async {
+    try {
+      final res = await http.get(
+        Uri.parse('$baseUrl/lcgate/$gateId'),
+        headers: {'Authorization': 'Bearer $_token'},
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        final gateData = data is Map ? (data['cluster'] ?? data) : null;
+        if (gateData != null && mounted) {
+          setState(() {
+            _selectedGate = Map<String, dynamic>.from(gateData);
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  void _showLinkHardwareSheet(Map<String, dynamic> master, Map<String, dynamic> gate) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) => _HardwareLinkSheet(
+        master: master,
+        gate: gate,
+        token: _token,
+        userId: _userId,
+        onLinked: () {
+          Navigator.pop(sheetCtx);
+          final gId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
+          if (gId > 0) _refreshSelectedGate(gId);
+          LCGatesCacheService.instance.markStale(_userId);
+          _fetchData(isManual: true);
+        },
+      ),
+    );
+  }
+}
+
+class _HardwareLinkSheet extends StatefulWidget {
+  final Map<String, dynamic> master;
+  final Map<String, dynamic> gate;
+  final String token;
+  final String userId;
+  final VoidCallback onLinked;
+
+  const _HardwareLinkSheet({
+    required this.master,
+    required this.gate,
+    required this.token,
+    required this.userId,
+    required this.onLinked,
+  });
+
+  @override
+  State<_HardwareLinkSheet> createState() => _HardwareLinkSheetState();
+}
+
+class _HardwareLinkSheetState extends State<_HardwareLinkSheet> {
+  bool _loading = true;
+  bool _submitting = false;
+  List<dynamic> _availableDevices = [];
+  String? _selectedDeviceId;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchUnassignedDevices();
+  }
+
+  Future<void> _fetchUnassignedDevices() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final res = await http.get(
+        Uri.parse('$baseUrl/devices?limit=100&deviceType=MASTER&unassigned=true'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data is Map && data['devices'] is List && mounted) {
+          final list = (data['devices'] as List).where((d) => d['masterId'] == null).toList();
+          setState(() {
+            _availableDevices = list;
+            _loading = false;
+          });
+          return;
+        }
+      }
+      throw Exception('Failed to load devices from registry');
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = 'Unable to fetch devices: $e';
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _linkDevice(int? deviceId) async {
+    if (_submitting) return;
+    setState(() => _submitting = true);
+    try {
+      final masterId = widget.master['id'];
+      final body = <String, dynamic>{};
+      if (deviceId != null) {
+        body['deviceId'] = deviceId;
+      } else {
+        body['unassignDevice'] = true;
+      }
+
+      final res = await http.put(
+        Uri.parse('$baseUrl/lcgate/masters/$masterId'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${widget.token}',
+        },
+        body: json.encode(body),
+      );
+
+      if (res.statusCode == 200) {
+        if (mounted) {
+          AppFeedback.showSuccess(
+            context,
+            deviceId != null
+                ? 'AWS IoT Master device linked successfully.'
+                : 'Master reverted to Virtual Master.',
+          );
+        }
+        widget.onLinked();
+      } else {
+        String msg = 'Failed to update hardware mapping';
+        try {
+          final b = json.decode(res.body);
+          if (b['error'] != null) msg = b['error'];
+        } catch (_) {}
+        if (mounted) AppFeedback.showError(context, msg);
+      }
+    } catch (e) {
+      if (mounted) AppFeedback.showError(context, 'Error: $e');
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final masterSerial = (widget.master['serialNumber'] ?? '').toString();
+    final isVirtual = masterSerial.contains('(Virtual Master)') ||
+        ((widget.master['deviceRegistries'] as List?)?.isEmpty ?? true);
+
+    return Container(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.85,
+      ),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Drag handle
+          Container(
+            margin: const EdgeInsets.only(top: 10, bottom: 6),
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade300,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+
+          // Header
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE0F2FE),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.router_rounded, color: Color(0xFF0284C7), size: 20),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Link AWS IoT Master Device',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                      ),
+                      Text(
+                        'Master #${widget.master['masterSequence']} • Gate ${widget.gate['lcNumber']}',
+                        style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 20, color: Colors.grey),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Current Hardware Status Card
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: isVirtual ? const Color(0xFFFFFBEB) : const Color(0xFFF0FDF4),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: isVirtual ? const Color(0xFFFDE68A) : const Color(0xFFBBF7D0),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  isVirtual ? Icons.info_outline : Icons.check_circle_outline,
+                                  size: 16,
+                                  color: isVirtual ? const Color(0xFFD97706) : const Color(0xFF16A34A),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  isVirtual ? 'Virtual Master Status' : 'Physical Hardware Linked',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: isVirtual ? const Color(0xFF92400E) : const Color(0xFF166534),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: isVirtual ? Colors.amber.shade100 : Colors.green.shade100,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                isVirtual ? 'VIRTUAL' : 'LINKED',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: isVirtual ? Colors.amber.shade900 : Colors.green.shade900,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Identifier: $masterSerial',
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, fontFamily: 'monospace'),
+                        ),
+                        if (!isVirtual) ...[
+                          const SizedBox(height: 10),
+                          OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFFDC2626),
+                              side: const BorderSide(color: Color(0xFFFCA5A5)),
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                            ),
+                            onPressed: _submitting ? null : () => _linkDevice(null),
+                            icon: const Icon(Icons.link_off, size: 14),
+                            label: const Text('Unlink Hardware (Revert to Virtual Master)', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 18),
+
+                  // Available Unassigned Devices Section
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Available AWS IoT Master Units',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.refresh, size: 18, color: Color(0xFF0284C7)),
+                        onPressed: _loading ? null : _fetchUnassignedDevices,
+                        tooltip: 'Refresh list',
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+
+                  if (_loading)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 30),
+                      child: Center(child: CircularProgressIndicator()),
+                    )
+                  else if (_error != null)
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.red.shade200),
+                      ),
+                      child: Text(_error!, style: TextStyle(color: Colors.red.shade700, fontSize: 12)),
+                    )
+                  else if (_availableDevices.isEmpty)
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      alignment: Alignment.center,
+                      child: Column(
+                        children: [
+                          Icon(Icons.router_outlined, size: 36, color: Colors.grey.shade400),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'No unassigned Master units available',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF334155)),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Provision a new Master unit in the AWS IoT Device Registry first.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
+                          ),
+                        ],
+                      ),
+                    )
+                  else
+                    ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: _availableDevices.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 8),
+                      itemBuilder: (context, idx) {
+                        final dev = _availableDevices[idx];
+                        final devId = dev['id'].toString();
+                        final thingName = dev['thingName'] ?? 'Unknown Device';
+                        final fw = dev['firmwareVersion'] ?? 'v1.0';
+                        final isSelected = _selectedDeviceId == devId;
+
+                        return InkWell(
+                          onTap: () {
+                            setState(() {
+                              _selectedDeviceId = devId;
+                            });
+                          },
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: isSelected ? const Color(0xFFF0F9FF) : Colors.white,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: isSelected ? const Color(0xFF0284C7) : const Color(0xFFE2E8F0),
+                                width: isSelected ? 1.5 : 1,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Radio<String>(
+                                  value: devId,
+                                  groupValue: _selectedDeviceId,
+                                  onChanged: (val) {
+                                    setState(() => _selectedDeviceId = val);
+                                  },
+                                  activeColor: const Color(0xFF0284C7),
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        thingName,
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                                      ),
+                                      Text(
+                                        'Firmware: $fw • AWS IoT Core Master Gateway',
+                                        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+
+                  const SizedBox(height: 20),
+
+                  // Confirm button
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0F172A),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      onPressed: (_submitting || _selectedDeviceId == null)
+                          ? null
+                          : () {
+                              final idNum = int.tryParse(_selectedDeviceId!);
+                              if (idNum != null) _linkDevice(idNum);
+                            },
+                      icon: _submitting
+                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.link, size: 16),
+                      label: Text(
+                        _submitting ? 'Linking Hardware...' : 'Link Selected Device',
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ],
       ),

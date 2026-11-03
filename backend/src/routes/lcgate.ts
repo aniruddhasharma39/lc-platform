@@ -1133,8 +1133,8 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
     let serialNumber = data.serialNumber ? data.serialNumber.trim() : '';
     if (dev) {
       serialNumber = serialNumber || dev.thingName || dev.serialNumber || `${gate.lcNumber}-${seqStr}`;
-    } else if (!serialNumber) {
-      serialNumber = `${gate.lcNumber}-${seqStr}`;
+    } else if (!serialNumber || serialNumber === `${gate.lcNumber}-${seqStr}`) {
+      serialNumber = `${gate.lcNumber}-${seqStr} (Virtual Master)`;
     }
 
     const existing = await prisma.masterUnit.findUnique({ where: { serialNumber } });
@@ -1207,8 +1207,50 @@ router.put('/masters/:id', authenticate, async (req, res, next) => {
 
     const updated = await prisma.$transaction(async (tx) => {
       let serialNumber = existing.serialNumber;
+      const seqStr = existing.masterSequence.toString().padStart(2, '0');
+      const virtualSerial = `${existing.gate?.lcNumber || 'LC'}-${seqStr} (Virtual Master)`;
+
       if (data.serialNumber && data.serialNumber.trim() && data.serialNumber.trim() !== existing.serialNumber) {
         serialNumber = data.serialNumber.trim();
+      }
+
+      // Handle unassigning device (revert to Virtual Master if no custom serial provided)
+      if (data.unassignDevice) {
+        await tx.deviceRegistry.updateMany({
+          where: { masterId: id },
+          data: { masterId: null, gateId: null }
+        });
+        if (!data.serialNumber || serialNumber === existing.serialNumber) {
+          serialNumber = virtualSerial;
+        }
+      }
+
+      // Handle linking or changing device
+      if (data.deviceId !== undefined && data.deviceId !== null) {
+        const linkedDev = await tx.deviceRegistry.findUnique({
+          where: { id: data.deviceId }
+        });
+        if (!linkedDev) {
+          throw new Error('Device not found in registry');
+        }
+        // Unlink previous device from this master
+        await tx.deviceRegistry.updateMany({
+          where: { masterId: id },
+          data: { masterId: null, gateId: null }
+        });
+        // Link new device
+        await tx.deviceRegistry.update({
+          where: { id: data.deviceId },
+          data: { masterId: id, gateId: existing.gateId }
+        });
+
+        // If current serial is virtual or unmodified, adopt the linked device thingName
+        if (!data.serialNumber || serialNumber.includes('(Virtual Master)')) {
+          serialNumber = linkedDev.thingName || linkedDev.serialNumber || serialNumber;
+        }
+      }
+
+      if (serialNumber !== existing.serialNumber) {
         const dup = await tx.masterUnit.findUnique({ where: { serialNumber } });
         if (dup && dup.id !== id) {
           throw new Error(`Master Unit with serial number "${serialNumber}" already exists.`);
@@ -1224,33 +1266,10 @@ router.put('/masters/:id', authenticate, async (req, res, next) => {
         include: { childDevices: true, deviceRegistries: true }
       });
 
-      // Handle unassigning device
-      if (data.unassignDevice) {
-        await tx.deviceRegistry.updateMany({
-          where: { masterId: id },
-          data: { masterId: null, gateId: null }
-        });
-      }
-
-      // Handle linking or changing device
-      if (data.deviceId !== undefined && data.deviceId !== null) {
-        // Unlink previous device from this master
-        await tx.deviceRegistry.updateMany({
-          where: { masterId: id },
-          data: { masterId: null, gateId: null }
-        });
-        // Link new device
-        await tx.deviceRegistry.update({
-          where: { id: data.deviceId },
-          data: { masterId: id, gateId: existing.gateId }
-        });
-      }
-
-            await bumpDirectoryRevision([], true, tx);
+      await bumpDirectoryRevision([], true, tx);
 
       return m;
     });
-
     res.json(updated);
   } catch (error: any) {
     if (error?.code === 'P2002') {
@@ -1593,8 +1612,10 @@ function buildGateTelemetry(gate: any) {
 
   const mastersWithRegistry = masterList.map((m: any) => {
     const reg = regMap.get(m.serialNumber);
+    const isVirtual = !reg || (m.serialNumber && m.serialNumber.includes('(Virtual Master)'));
     return {
       ...m,
+      isVirtual,
       awsThingName: reg ? reg.thingName : null,
       awsStatus: reg ? reg.status : 'CONFIGURED',
       deviceName: reg?.attributes?.deviceName || reg?.attributes?.hardware?.deviceName || 'LC Gate Controller',

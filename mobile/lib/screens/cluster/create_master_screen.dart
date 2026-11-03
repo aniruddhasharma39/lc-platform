@@ -140,10 +140,15 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
 
     try {
       final seqNum = int.tryParse(_seqCtrl.text) ?? 1;
+      final seqStr = seqNum.toString().padLeft(2, '0');
+      final serialNumber = chosenDevice != null
+          ? (chosenDevice['thingName'] ?? chosenDevice['serialNumber'] ?? '').toString()
+          : '${widget.gate['lcNumber']}-$seqStr (Virtual Master)';
 
       final body = <String, dynamic>{
         'masterSequence': seqNum,
         'powerSource': _powerSource,
+        'serialNumber': serialNumber,
       };
 
       if (chosenDevice != null) {

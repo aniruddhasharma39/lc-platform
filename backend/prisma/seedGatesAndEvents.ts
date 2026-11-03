@@ -10,8 +10,7 @@ async function seedGatesAndEvents() {
 
   // 2. Gates metadata
   const gatesData: any[] = [];
-
-  const createdGates: any[] = [];
+  const createdGates = await prisma.lCGate.findMany();
   for (const g of gatesData) {
     const existing = await prisma.lCGate.findUnique({ where: { id: g.id } });
     let gate;

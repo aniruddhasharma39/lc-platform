@@ -1916,7 +1916,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const chosen = selectedDeviceId ? deviceList.find(d => d.id.toString() === selectedDeviceId) : null;
-    const autoSerial = chosen ? chosen.thingName : `${gate.lcNumber}-${masterSequence.padStart(2, '0')}`;
+    const autoSerial = chosen ? chosen.thingName : `${gate.lcNumber}-${masterSequence.padStart(2, '0')} (Virtual Master)`;
     const serialToUse = (customSerial.trim() || autoSerial).trim();
 
     setSubmitting(true);
@@ -2020,7 +2020,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
             <input 
               className="glass-input flex-1 font-bold font-mono" 
               type="text" 
-              value={customSerial !== '' ? customSerial : (chosenDevice ? chosenDevice.thingName : `${gate.lcNumber}-${masterSequence.padStart(2, '0')}`)} 
+              value={customSerial !== '' ? customSerial : (chosenDevice ? chosenDevice.thingName : `${gate.lcNumber}-${masterSequence.padStart(2, '0')} (Virtual Master)`)} 
               onChange={e => setCustomSerial(e.target.value)}
               placeholder="e.g. LC-0001-01"
             />

@@ -34,7 +34,7 @@ import { lcGatesCacheService } from '../../services/lcGatesCacheService';
 import './LCGatesScreen.css';
 import { useToast } from '../../context/ToastContext';
 import {
-  FaSlidersH,
+  
   FaHeartbeat,
   FaTable,
   FaCopy,
@@ -275,7 +275,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
   const wsRef = useRef<WebSocket | null>(null);
   const [selectedPayloadId, setSelectedPayloadId] = useState<number | null>(null);
   const [selectedCycleId, setSelectedCycleId] = useState<number | null>(null);
-  const [inspectSubTab, setInspectSubTab] = useState<'telemetry' | 'manifest' | 'health' | 'all' | 'cycles'>('telemetry');
+  const [inspectSubTab, setInspectSubTab] = useState<'telemetry' | 'manifest' | 'health' | 'all' | 'cycles'>('cycles');
   const [healthCheckStage, setHealthCheckStage] = useState<'IDLE' | 'DISPATCHING' | 'LISTENING' | 'SUCCESS' | 'TIMEOUT'>('IDLE');
   const [telemetryViewMode, setTelemetryViewMode] = useState<'table' | 'raw'>('table');
   const [triggeringHealthCheck, setTriggeringHealthCheck] = useState<boolean>(false);
@@ -1158,7 +1158,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
               onClick={() => setClusterTab('about_manifest')}
             >
               <FaInfoCircle size={14} />
-              <span>About LC Gate & Hardware Manifest</span>
+              <span>About LC Gate</span>
             </button>
             <button
               type="button"
@@ -1166,7 +1166,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
               onClick={() => setClusterTab('telemetry')}
             >
               <FaHistory size={14} />
-              <span>Operational History</span>
+              <span>Operational Records</span>
             </button>
           </div>
 
@@ -1580,7 +1580,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                       {gateTelemetry?.thingName || selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}
                     </h3>
                     <span className="badge badge-indigo" style={{ fontSize: '0.76rem', padding: '3px 9px' }}>
-                      AWS IoT Core
+                      Primary Controller
                     </span>
                     {(selectedGate.locationName || selectedGate.name) && (
                       <span style={{ fontSize: '0.84rem', fontWeight: 600, color: '#475569' }}>
@@ -1792,60 +1792,64 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button
                     type="button"
-                    className={`telemetry-tab-btn ${inspectSubTab === 'telemetry' ? 'active' : ''}`}
-                    onClick={() => { setInspectSubTab('telemetry'); setSelectedPayloadId(null); }}
-                  >
-                    <FaBroadcastTower size={13} />
-                    <span>Telemetry</span>
-                    <span className="badge badge-indigo" style={{ fontSize: '0.7rem', padding: '1px 6px', marginLeft: 4 }}>
-                      {telemetryRecords.length}
-                    </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={`telemetry-tab-btn ${inspectSubTab === 'manifest' ? 'active' : ''}`}
-                    onClick={() => { setInspectSubTab('manifest'); setSelectedPayloadId(null); }}
-                  >
-                    <FaFileAlt size={13} />
-                    <span>Manifest</span>
-                    <span className="badge badge-indigo" style={{ fontSize: '0.7rem', padding: '1px 6px', marginLeft: 4 }}>
-                      {manifestRecords.length}
-                    </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={`telemetry-tab-btn ${inspectSubTab === 'health' ? 'active' : ''}`}
-                    onClick={() => { setInspectSubTab('health'); setSelectedPayloadId(null); }}
-                  >
-                    <FaHeartbeat size={13} />
-                    <span>Health Check</span>
-                    <span className="badge badge-indigo" style={{ fontSize: '0.7rem', padding: '1px 6px', marginLeft: 4 }}>
-                      {healthRecords.length}
-                    </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={`telemetry-tab-btn ${inspectSubTab === 'all' ? 'active' : ''}`}
-                    onClick={() => { setInspectSubTab('all'); setSelectedPayloadId(null); }}
-                  >
-                    <FaServer size={13} />
-                    <span>All Records ({allHistoricPayloads.length})</span>
-                  </button>
-
-                  <button
-                    type="button"
                     className={`telemetry-tab-btn ${inspectSubTab === 'cycles' ? 'active' : ''}`}
                     onClick={() => { setInspectSubTab('cycles'); setSelectedCycleId(null); }}
                   >
                     <FaHistory size={13} />
-                    <span>Operational Cycles</span>
+                    <span>Opening & Closing Records</span>
                     <span className="badge badge-indigo" style={{ fontSize: '0.7rem', padding: '1px 6px', marginLeft: 4 }}>
                       {operationalCycles.length}
                     </span>
                   </button>
+
+                  {user.role === 'Developer' && (
+                    <>
+                      <button
+                        type="button"
+                        className={`telemetry-tab-btn ${inspectSubTab === 'telemetry' ? 'active' : ''}`}
+                        onClick={() => { setInspectSubTab('telemetry'); setSelectedPayloadId(null); }}
+                      >
+                        <FaBroadcastTower size={13} />
+                        <span>Telemetry Logs</span>
+                        <span className="badge badge-indigo" style={{ fontSize: '0.7rem', padding: '1px 6px', marginLeft: 4 }}>
+                          {telemetryRecords.length}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className={`telemetry-tab-btn ${inspectSubTab === 'manifest' ? 'active' : ''}`}
+                        onClick={() => { setInspectSubTab('manifest'); setSelectedPayloadId(null); }}
+                      >
+                        <FaFileAlt size={13} />
+                        <span>Manifest</span>
+                        <span className="badge badge-indigo" style={{ fontSize: '0.7rem', padding: '1px 6px', marginLeft: 4 }}>
+                          {manifestRecords.length}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className={`telemetry-tab-btn ${inspectSubTab === 'health' ? 'active' : ''}`}
+                        onClick={() => { setInspectSubTab('health'); setSelectedPayloadId(null); }}
+                      >
+                        <FaHeartbeat size={13} />
+                        <span>Health Check</span>
+                        <span className="badge badge-indigo" style={{ fontSize: '0.7rem', padding: '1px 6px', marginLeft: 4 }}>
+                          {healthRecords.length}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className={`telemetry-tab-btn ${inspectSubTab === 'all' ? 'active' : ''}`}
+                        onClick={() => { setInspectSubTab('all'); setSelectedPayloadId(null); }}
+                      >
+                        <FaServer size={13} />
+                        <span>All Packets ({allHistoricPayloads.length})</span>
+                      </button>
+                    </>
+                  )}
                 </div>
 
                 {/* View Format Toggle (Table vs Raw JSON) */}
@@ -2346,40 +2350,6 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                    {/* Topic Banner */}
-                    <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-                      <div>
-                        <div style={{ fontSize: '0.72rem', color: '#64748b', textTransform: 'uppercase', fontWeight: 700 }}>
-                          MQTT Telemetry Topic
-                        </div>
-                        <code style={{ fontSize: '0.86rem', color: '#0369a1', fontWeight: 600 }}>
-                          {inspectSubTab === 'manifest'
-                            ? `lc/devices/${gateTelemetry?.thingName || selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}/manifest`
-                            : inspectSubTab === 'all'
-                            ? `lc-gate/${gateTelemetry?.thingName || selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}/#`
-                            : `lc-gate/${gateTelemetry?.thingName || selectedGate.masters?.[0]?.serialNumber || selectedGate.lcNumber}/telemetry`}
-                        </code>
-                      </div>
-                      {currentViewingRecord?.payload?.Status && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ fontSize: '0.8rem', color: '#475569', fontWeight: 600 }}>Reported Gate State:</span>
-                          <span
-                            style={{
-                              padding: '4px 14px',
-                              borderRadius: 6,
-                              fontWeight: 800,
-                              fontSize: '0.88rem',
-                              letterSpacing: '0.4px',
-                              background: String(currentViewingRecord.payload.Status).toUpperCase() === 'CLOSED' ? '#dcfce7' : '#fee2e2',
-                              color: String(currentViewingRecord.payload.Status).toUpperCase() === 'CLOSED' ? '#15803d' : '#b91c1c',
-                              border: `1px solid ${String(currentViewingRecord.payload.Status).toUpperCase() === 'CLOSED' ? '#86efac' : '#fca5a5'}`
-                            }}
-                          >
-                            {String(currentViewingRecord.payload.Status).toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : currentViewingRecord.payload.Status}
-                          </span>
-                        </div>
-                      )}
-                    </div>
 
                     {/* Selected Payload Presentation */}
                     {currentViewingRecord ? (
@@ -2764,8 +2734,8 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                           onClick={() => handleOpenClusterTelemetry(gate)}
                           title="View AWS Fleet Provisioning & device telemetry"
                         >
-                          <FaSlidersH />
-                          <span>Inspect Telemetry</span>
+                          <FaHistory />
+                          <span>Gate Records</span>
                         </button>
                       </div>
                     </div>

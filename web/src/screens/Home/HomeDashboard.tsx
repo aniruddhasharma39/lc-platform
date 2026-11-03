@@ -368,6 +368,7 @@ export default function HomeDashboard({
         marker.openPopup();
       }
     }
+    onNavigateToGate(gate.id, 'about');
   };
 
   const scrollSlider = (direction: 'left' | 'right') => {
@@ -936,7 +937,7 @@ export default function HomeDashboard({
                       }}
                     >
                       <FaInfoCircle size={12} />
-                      <span>View Gate Details & Logs</span>
+                      <span>View Gate Details & Records</span>
                     </button>
                   </div>
                 </div>
