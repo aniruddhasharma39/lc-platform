@@ -100,7 +100,6 @@ const authHeaders = () => ({
 
 // Clean column definitions
 const REPORT_COLUMNS = [
-  { key: 'scopeGroup', label: 'Cluster' },
   { key: 'lcNumber', label: 'LC Number' },
   { key: 'locationName', label: 'Location' },
   { key: 'zone', label: 'Zone' },
@@ -785,7 +784,7 @@ export default function ReportsScreen({ user }: Props) {
   };
 
   const handleResetDefaultColumns = () => {
-    setSelectedExportColumns(['scopeGroup', 'lcNumber', 'locationName', 'openedDate', 'openedTime', 'closedTime', 'durationFormatted', 'status']);
+    setSelectedExportColumns(['lcNumber', 'locationName', 'openedDate', 'openedTime', 'closedTime', 'durationFormatted', 'status']);
   };
 
   // Direct Download Trigger (Server-Side Excel or PDF on Full Filtered Dataset)

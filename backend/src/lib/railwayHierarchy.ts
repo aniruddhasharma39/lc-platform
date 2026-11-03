@@ -30,7 +30,7 @@ export const DESIGNATIONS: Record<string, DesignationConfig> = {
     immediateSuperior: null,
     description: 'Senior Divisional Operations Manager (Divisional-level officer)',
     defaultRoleName: 'Senior DOM',
-    defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'devices', 'manage-users', 'scope-groups']
+    defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'devices', 'manage-users']
   },
   'DOM': {
     name: 'DOM',
@@ -40,7 +40,7 @@ export const DESIGNATIONS: Record<string, DesignationConfig> = {
     immediateSuperior: 'Senior DOM',
     description: 'Divisional Operations Manager (Divisional-level officer)',
     defaultRoleName: 'DOM',
-    defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'devices', 'manage-users', 'scope-groups']
+    defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'devices', 'manage-users']
   },
   'ADOM/AOM': {
     name: 'ADOM/AOM',
@@ -50,7 +50,7 @@ export const DESIGNATIONS: Record<string, DesignationConfig> = {
     immediateSuperior: 'DOM',
     description: 'Assistant Divisional Operations Manager / AOM (Divisional-level officer)',
     defaultRoleName: 'ADOM/AOM',
-    defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'devices', 'manage-users', 'scope-groups']
+    defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'devices', 'manage-users']
   },
   'Station Master': {
     name: 'Station Master',
@@ -75,7 +75,7 @@ export const DESIGNATIONS: Record<string, DesignationConfig> = {
     immediateSuperior: null,
     description: 'Senior Divisional Engineer (Divisional-level officer)',
     defaultRoleName: 'Senior DEN',
-    defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'devices', 'manage-users', 'scope-groups']
+    defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'devices', 'manage-users']
   },
   'DEN': {
     name: 'DEN',
@@ -85,7 +85,7 @@ export const DESIGNATIONS: Record<string, DesignationConfig> = {
     immediateSuperior: 'Senior DEN',
     description: 'Divisional Engineer (Divisional-level officer)',
     defaultRoleName: 'DEN',
-    defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'devices', 'manage-users', 'scope-groups']
+    defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'devices', 'manage-users']
   },
   'ADEN': {
     name: 'ADEN',
@@ -95,7 +95,7 @@ export const DESIGNATIONS: Record<string, DesignationConfig> = {
     immediateSuperior: 'DEN',
     description: 'Assistant Divisional Engineer (Divisional-level officer)',
     defaultRoleName: 'ADEN',
-    defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'devices', 'manage-users', 'scope-groups']
+    defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'devices', 'manage-users']
   },
   'Engineering Supervisor': {
     name: 'Engineering Supervisor',

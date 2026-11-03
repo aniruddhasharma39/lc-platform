@@ -26,7 +26,8 @@ import {
   FaShieldAlt
 } from 'react-icons/fa';
 
-import type { User, ScopeGroupItem } from '../../types';
+import type { User } from '../../types';
+type ScopeGroupItem = any;
 import { API_URL } from '../../config';
 import DeviceInfoModal from '../../components/DeviceInfoModal';
 import { lcGatesCacheService } from '../../services/lcGatesCacheService';

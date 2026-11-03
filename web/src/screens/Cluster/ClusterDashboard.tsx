@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   FaArchway, FaMapMarkerAlt, FaCogs, FaCamera, FaEye, FaSun, 
   FaBolt, FaPlug, FaCheckCircle, FaSearchPlus, FaTimes, FaRedo, FaTrash,
-  FaFilter, FaChevronDown, FaChevronUp, FaLayerGroup, FaShieldAlt, FaMicrochip,
+  FaFilter, FaChevronDown, FaChevronUp, FaMicrochip,
   FaSearch, FaPlus, FaExclamationTriangle, FaEdit, FaTrain
 } from 'react-icons/fa';
 import type { User } from '../../types';
@@ -65,11 +65,6 @@ export default function ClusterDashboard(_props: Props) {
    const [deletingGate, setDeletingGate] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
 
-  // Scope Groups State
-  const [developerScopeId, setDeveloperScopeId] = useState('');
-  const [allScopeGroupsList, _setAllScopeGroupsList] = useState<any[]>([]);
-  const [myScopeGroups, _setMyScopeGroups] = useState<any[]>([]);
-
   // Intelligent Caching States
   const [isFromCache, setIsFromCache] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -105,9 +100,8 @@ export default function ClusterDashboard(_props: Props) {
     }
   };
 
-  const fetchGates = async (overrideScopeId?: string, forceRefresh = false) => {
-    const activeScope = overrideScopeId !== undefined ? overrideScopeId : developerScopeId;
-    const scopeKey = activeScope || 'ALL';
+  const fetchGates = async (forceRefresh = false) => {
+    const scopeKey = 'ALL';
     const userId = getCacheUserId(_props.user);
 
     // 1. Stale-While-Revalidate: Instant render from L1/L2 cache
@@ -133,13 +127,12 @@ export default function ClusterDashboard(_props: Props) {
 
     setFetchError(null);
     try {
-      const query = activeScope ? `?scopeGroupId=${encodeURIComponent(activeScope)}` : '';
       const headers: any = authHeaders();
       if (storedETag) {
         headers['If-None-Match'] = storedETag;
       }
 
-      const res = await fetch(`${API_URL}/api/v1/lcgate${query}`, { headers });
+      const res = await fetch(`${API_URL}/api/v1/lcgate`, { headers });
 
       if (res.status === 304) {
         // Fast-path: Server confirms cache is completely up to date!
@@ -276,17 +269,17 @@ export default function ClusterDashboard(_props: Props) {
       if (res.ok) {
         clusterCacheService.invalidate(getCacheUserId(_props.user));
         lcGatesCacheService.removeGate(getCacheUserId(_props.user), gateId);
-        fetchGates(undefined, true);
+        fetchGates(true);
         toastSuccess(`Gate "${gateLabel}" permanently deleted.`, "Gate Deleted");
       } else {
         const err = await res.json().catch(() => ({}));
         toastError(err.error || 'Failed to delete gate from server.', 'Delete Error');
-        fetchGates(undefined, true);
+        fetchGates(true);
       }
     } catch (e: any) {
       console.error(e);
       toastError(e.message || 'Network error while deleting gate.', 'Network Error');
-      fetchGates(undefined, true);
+      fetchGates(true);
     } finally {
       setDeletingGate(false);
     }
@@ -314,30 +307,6 @@ export default function ClusterDashboard(_props: Props) {
             </div>
 
             <div className="cluster-header-actions">
-              {/* Developer Scope Selector */}
-              {_props.user.role === 'Developer' && allScopeGroupsList.length > 0 && (
-                <div className="cluster-scope-selector-box">
-                  <FaLayerGroup size={13} style={{ color: 'var(--primary)', flexShrink: 0 }} />
-                  <span className="cluster-scope-label">Scope View:</span>
-                  <select
-                    value={developerScopeId}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setDeveloperScopeId(val);
-                      fetchGates(val);
-                      toastInfo(val === 'all' ? 'Switched to All Gates (Admin View).' : val ? 'Filtered gates by selected scope group.' : 'Switched to Assigned Scope.', 'Scope View');
-                    }}
-                    className="cluster-scope-select"
-                  >
-                    <option value="">My Assigned Scope</option>
-                    <option value="all">All Gates (Admin View)</option>
-                    {allScopeGroupsList.map(sg => (
-                      <option key={sg.id} value={sg.id}>{sg.name} ({sg._count?.gates || sg.gates?.length || 0} gates)</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
               {/* Intelligent Cache Sync Indicator */}
               {isSyncing && (
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 12px', fontSize: '11px', background: '#e0f2fe', color: '#0369a1', borderRadius: '6px', fontWeight: 600 }}>
@@ -489,21 +458,6 @@ export default function ClusterDashboard(_props: Props) {
             </div>
           )}
 
-          {/* Active Scope Banner for assigned scopes */}
-          {myScopeGroups.length > 0 && developerScopeId !== 'all' && (
-            <div style={{ margin: '0 0 16px 0', padding: '10px 16px', background: 'rgba(11, 60, 122, 0.05)', border: '1px solid rgba(11, 60, 122, 0.15)', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <FaLayerGroup style={{ color: 'var(--primary)' }} />
-                <span style={{ fontSize: '0.88rem', color: '#1e293b' }}>
-                  <strong>Assigned Scope:</strong> {myScopeGroups.map(s => s.name).join(', ')}
-                </span>
-              </div>
-              <span className="badge" style={{ backgroundColor: 'var(--primary)', color: 'white', fontSize: '0.75rem' }}>
-                {visibleGates.length} {visibleGates.length === 1 ? 'Gate Accessible' : 'Gates Accessible'}
-              </span>
-            </div>
-          )}
-
           {loading ? (
             <div className="spinner-container"><div className="spinner"></div></div>
           ) : fetchError && gates.length === 0 ? (
@@ -520,17 +474,11 @@ export default function ClusterDashboard(_props: Props) {
           ) : gates.length === 0 ? (
             <div className="empty-state glass-card">
               <div className="empty-icon" style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
-                {myScopeGroups.length === 0 && _props.user.role === 'Developer' ? (
-                  <FaArchway size={48} color="#64748b" />
-                ) : (
-                  <FaShieldAlt size={48} color="#0B3C7A" />
-                )}
+                <FaArchway size={48} color="#0B3C7A" />
               </div>
-              <h3>{myScopeGroups.length === 0 && _props.user.role === 'Developer' ? 'No Gates Found' : 'No Gates in Your Assigned Scope'}</h3>
+              <h3>No Gates Found</h3>
               <p>
-                {myScopeGroups.length === 0 && _props.user.role === 'Developer'
-                  ? 'Get started by creating your first Level Crossing Gate.'
-                  : 'You have not been assigned to any Scope Groups containing LC Gates yet. Please contact your system administrator or developer.'}
+                Get started by creating your first Level Crossing Gate or verify that gates are assigned to your jurisdiction.
               </p>
             </div>
           ) : visibleGates.length === 0 ? (
@@ -623,7 +571,7 @@ export default function ClusterDashboard(_props: Props) {
           zones={refZones}
           divisionsByZone={refDivisions}
           onCancel={() => setView('list')} 
-          onSuccess={() => { setView('list'); clusterCacheService.invalidate(getCacheUserId(_props.user)); fetchGates(undefined, true); }} 
+          onSuccess={() => { setView('list'); clusterCacheService.invalidate(getCacheUserId(_props.user)); fetchGates(true); }} 
         />
       )}
 
@@ -646,7 +594,7 @@ export default function ClusterDashboard(_props: Props) {
           gate={selectedGate} 
           onBack={() => { setView('list'); setSelectedGate(null); }} 
           onEdit={() => setView('edit_gate')}
-          onUpdate={() => { clusterCacheService.invalidate(getCacheUserId(_props.user)); fetchGates(undefined, true); }}
+          onUpdate={() => { clusterCacheService.invalidate(getCacheUserId(_props.user)); fetchGates(true); }}
           onOpenDeviceInfo={setDeviceInfoModalTarget}
         />
       )}

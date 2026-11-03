@@ -81,7 +81,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   bool _isExporting = false;
 
   final List<Map<String, String>> _reportColumns = [
-    {'key': 'scopeGroup', 'label': 'Cluster / Scope Group'},
     {'key': 'lcNumber', 'label': 'LC Number'},
     {'key': 'locationName', 'label': 'Location Name'},
     {'key': 'zone', 'label': 'Zone'},
@@ -624,7 +623,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          const Text('Scope Groups & Gates', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                          const Text('Select LC Gates', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: AppColors.primary)),
                           Row(
                             children: [
                               TextButton(
@@ -1286,8 +1285,8 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Text('Clusters & Gates Selection', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
-                                Text('${_selectedClusterIds.length} Clusters • ${_selectedGateIds.length} Gates Selected', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                                const Text('Select Level Crossing Gates', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+                                Text('${_selectedGateIds.length} Gate(s) Selected for Analytics', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
                               ],
                             ),
                           ),

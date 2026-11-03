@@ -420,11 +420,6 @@ export default function HomeDashboard({
           </div>
           <p style={{ margin: 0, fontSize: '0.88rem', color: '#94a3b8' }}>
             Level Crossing Operations & Real-Time Monitoring Dashboard
-            {user.scopeGroups && user.scopeGroups.length > 0 && (
-              <span style={{ marginLeft: 8, color: '#e2e8f0' }}>
-                • Scoped to: <strong>{user.scopeGroups.map((s) => s.name).join(', ')}</strong>
-              </span>
-            )}
           </p>
         </div>
 

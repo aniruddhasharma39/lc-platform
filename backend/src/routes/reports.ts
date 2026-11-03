@@ -120,11 +120,11 @@ router.get('/clusters', async (req: AuthRequest, res, next) => {
   try {
     const access = await resolveUserAccess(req);
 
-    if (!access.isDeveloper && access.accessibleScopeIds.length === 0) {
+    if (!access.isDeveloper && access.accessibleGateIds.length === 0) {
       return res.json({
         clusters: [],
         isDeveloper: false,
-        message: 'No clusters are assigned to your account. Please contact an administrator.'
+        message: 'No gates are assigned to your account. Please contact an administrator.'
       });
     }
 
@@ -166,13 +166,39 @@ router.get('/clusters', async (req: AuthRequest, res, next) => {
 });
 
 /**
+ * 1b. GET /api/v1/reports/gates
+ * Returns flat list of LC gates accessible to user (role-based)
+ */
+router.get('/gates', async (req: AuthRequest, res, next) => {
+  try {
+    const access = await resolveUserAccess(req);
+    const whereClause = await buildUserGateWhereClause(req.user, prisma);
+    const gates = await prisma.lCGate.findMany({
+      where: whereClause,
+      select: {
+        id: true,
+        lcNumber: true,
+        name: true,
+        locationName: true,
+        zone: true,
+        division: true,
+      },
+      orderBy: { lcNumber: 'asc' }
+    });
+    res.json({ gates, isDeveloper: access.isDeveloper });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * Core query helper to fetch operational events with date range, multi-scope, multi-gate, and filters
  */
 async function fetchFilteredOperationalEvents(req: AuthRequest, dbClient: any = prisma) {
   const access = await resolveUserAccess(req);
   const client = (dbClient?.lCGateEvent ? dbClient : prisma) as typeof prisma;
 
-  if (!access.isDeveloper && access.accessibleScopeIds.length === 0) {
+  if (!access.isDeveloper && access.accessibleGateIds.length === 0) {
     return {
       access,
       targetGateIds: [],
@@ -380,7 +406,7 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
   try {
     const access = await resolveUserAccess(req);
 
-    if (!access.isDeveloper && access.accessibleScopeIds.length === 0) {
+    if (!access.isDeveloper && access.accessibleGateIds.length === 0) {
       return res.json({
         dateRange: { startDate: '', endDate: '' },
         filters: { scopeGroupIds: [], gateIds: [], selectedGatesCount: 0, selectedScopeGroupsCount: 0 },
@@ -969,7 +995,7 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
 router.get('/cycle-analytics', async (req: AuthRequest, res: Response, next: any) => {
   try {
     const access = await resolveUserAccess(req);
-    if (!access.isDeveloper && access.accessibleScopeIds.length === 0) {
+    if (!access.isDeveloper && access.accessibleGateIds.length === 0) {
       return res.json({
         startDate: '',
         endDate: '',

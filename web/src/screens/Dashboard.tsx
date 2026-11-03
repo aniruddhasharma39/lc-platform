@@ -671,12 +671,10 @@ export default function Dashboard({ user, onLogout }: Props) {
             {(() => {
               const roleName = typeof user.role === 'object' ? (user.role as any)?.name : user.role;
               const isDev = roleName === 'Developer' || roleName?.toLowerCase() === 'developer';
-              const hasAssignedScopes = Boolean(user.scopeGroups && user.scopeGroups.length > 0);
               const modulesToShow = (systemModules.length > 0 ? systemModules : DEFAULT_SYSTEM_MODULES)
                 .filter(m => {
                   if (isDev) return true;
-if (m.slug === 'cluster') return true;
-                  if ((m.slug === 'lc-gates' || m.slug === 'reports') && hasAssignedScopes) return true;
+                  if (m.slug === 'cluster' || m.slug === 'lc-gates' || m.slug === 'reports') return true;
                   return user.allowedModules && user.allowedModules.includes(m.slug);
                 });
               return modulesToShow.map(mod => {
@@ -845,21 +843,11 @@ if (m.slug === 'cluster') return true;
                     </strong>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gridColumn: '1 / -1' }}>
-                    <span className="text-muted" style={{ fontSize: '0.78rem', fontWeight: 600, marginBottom: 4 }}>ASSIGNED SCOPE GROUPS</span>
+                    <span className="text-muted" style={{ fontSize: '0.78rem', fontWeight: 600, marginBottom: 4 }}>ACCESS PRIVILEGES</span>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      {(profileData?.scopeGroups && profileData.scopeGroups.length > 0) ? (
-                        profileData.scopeGroups.map((sg: any) => (
-                          <span key={sg.id} className="badge" style={{ backgroundColor: sg.color || '#0B3C7A', color: 'white' }}>
-                            {sg.name}
-                          </span>
-                        ))
-                      ) : user.role === 'Developer' ? (
-                        <span className="badge" style={{ backgroundColor: 'var(--primary)', color: 'white' }}>
-                          Full Access (Developer Mode)
-                        </span>
-                      ) : (
-                        <span style={{ fontSize: '0.88rem', color: '#94a3b8' }}>No scope groups assigned</span>
-                      )}
+                      <span className="badge" style={{ backgroundColor: 'var(--primary)', color: 'white' }}>
+                        {user.role === 'Developer' ? 'Full Access (System Developer)' : `Role: ${typeof user.role === 'object' ? (user.role as any)?.name : user.role}`}
+                      </span>
                     </div>
                   </div>
                 </div>
