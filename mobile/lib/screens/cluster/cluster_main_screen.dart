@@ -652,7 +652,6 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
         Uri.parse('$baseUrl/lcgate/${gate['id']}'),
         headers: {'Authorization': 'Bearer $_token'},
       );
-      if (mounted) Navigator.of(context).pop(); // close spinner
       if (res.statusCode == 204 || res.statusCode == 200) {
         await LCGatesCacheService.instance.removeGateAcrossAllScopes(_userId, gate['id']);
         await _fetchGates();
@@ -671,7 +670,6 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
       }
     } catch (e) {
       if (mounted) {
-        Navigator.of(context).pop();
         AppFeedback.showError(context, 'Network error deleting LC Gate: $e');
       }
     } finally {

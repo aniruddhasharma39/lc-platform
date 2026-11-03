@@ -62,6 +62,7 @@ export default function ClusterDashboard(_props: Props) {
 
   // Modals
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+   const [deletingGate, setDeletingGate] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
 
   // Scope Groups State
@@ -278,6 +279,7 @@ export default function ClusterDashboard(_props: Props) {
       return;
     }
     const gateLabel = selectedGate.name || selectedGate.lcNumber;
+     setDeletingGate(true);
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/${selectedGate.id}`, {
         method: 'DELETE',
@@ -299,7 +301,9 @@ export default function ClusterDashboard(_props: Props) {
     } catch (e: any) {
       console.error(e);
       toastError(e.message || 'Network error while deleting gate.', 'Network Error');
-    }
+     } finally {
+       setDeletingGate(false);
+     }
   };
 
   return (
@@ -681,10 +685,10 @@ export default function ClusterDashboard(_props: Props) {
               <button className="btn-outline" onClick={() => setShowDeleteModal(false)}>Cancel</button>
               <button 
                 className="btn-danger" 
-                disabled={deleteConfirmText !== (selectedGate.name || selectedGate.lcNumber)}
+                 disabled={deletingGate || deleteConfirmText !== (selectedGate.name || selectedGate.lcNumber)}
                 onClick={handleDeleteGate}
               >
-                I understand the consequences, delete this gate
+                 {deletingGate ? 'Deleting...' : 'I understand the consequences, delete this gate'}
               </button>
             </div>
           </div>
