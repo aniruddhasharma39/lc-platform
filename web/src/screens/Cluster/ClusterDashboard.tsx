@@ -556,8 +556,10 @@ export default function ClusterDashboard(_props: Props) {
                 <div key={gate.id} className="gate-card glass-card hover-lift" onClick={() => { setSelectedGate(gate); setView('gate_detail'); }} style={{ padding: '24px', cursor: 'pointer' }}>
                   <div className="gate-header flex justify-between items-start" style={{ marginBottom: '28px' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-start' }}>
-                      <h3 className="m-0" style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--text-main)', lineHeight: '1.2' }}>{gate.name || (gate.locationName ? `${gate.locationName} (${gate.lcNumber})` : gate.lcNumber)}</h3>
-                      <span className="badge badge-blue" style={{ fontSize: '0.85rem', padding: '6px 12px', letterSpacing: '0.5px' }}>{gate.lcNumber || 'No LC#'}</span>
+                      <h3 className="m-0" style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--text-main)', lineHeight: '1.2' }}>{gate.lcNumber || 'LC-GATE'}</h3>
+                      {gate.name && gate.name !== gate.lcNumber && (
+                        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 500 }}>{gate.name}</span>
+                      )}
                       <div className="flex items-center gap-2" style={{ flexWrap: 'wrap' }}>
                         {gate.zone && <span className="badge badge-indigo" style={{ fontSize: '0.75rem', padding: '4px 10px' }}>{gate.zone}</span>}
                         {gate.division && <span className="badge" style={{ fontSize: '0.75rem', padding: '4px 10px', backgroundColor: 'rgba(14, 154, 167, 0.1)', color: '#0e9aa7', fontWeight: 600 }}>{gate.division}</span>}
@@ -1195,11 +1197,11 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
                             
                             <div className="flex justify-between items-center gap-4">
                               <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 500, lineHeight: '1.3' }}>
-                                {dev.type === 'DEVICE_1' ? 'Hall Effect + Limit Switch' : 'Tilt Sensor'}
+                                {dev.type === 'LIMIT_SWITCH' ? 'Limit Switch' : dev.type === 'HALL_EFFECT' ? 'Hall Effect Sensor' : dev.type === 'TILT_SENSOR' ? 'Tilt Sensor' : (dev.type === 'DEVICE_1' ? 'Limit Switch & Hall Effect' : 'Tilt Sensor')}
                               </span>
                               <div style={{ display: 'flex', alignItems: 'center' }}>
                                 <span className="badge badge-blue" style={{ whiteSpace: 'nowrap', fontWeight: 700, padding: '4px 10px', fontSize: '0.75rem', letterSpacing: '0.5px', textTransform: 'uppercase', borderRadius: '6px' }}>
-                                  {dev.type === 'DEVICE_1' ? 'Type A' : 'Type B'}
+                                  {dev.type === 'LIMIT_SWITCH' || dev.type === 'DEVICE_1' ? 'Type A (Limit Switch)' : dev.type === 'HALL_EFFECT' || dev.type === 'DEVICE_2' ? 'Type B (Hall Effect)' : 'Type C (Tilt Sensor)'}
                                 </span>
                               </div>
                             </div>
@@ -2128,16 +2130,32 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
 
 function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
   const { success: toastSuccess, error: toastError } = useToast();
-  const [type, setType] = useState('DEVICE_1');
+  const [type, setType] = useState('LIMIT_SWITCH');
   const [submitting, setSubmitting] = useState(false);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+
+  const getLetter = (t: string) => {
+    if (t === 'LIMIT_SWITCH' || t === 'DEVICE_1') return 'A';
+    if (t === 'HALL_EFFECT' || t === 'DEVICE_2') return 'B';
+    return 'C';
+  };
+
+  const getTypeName = (t: string) => {
+    if (t === 'LIMIT_SWITCH' || t === 'DEVICE_1') return 'Limit Switch';
+    if (t === 'HALL_EFFECT' || t === 'DEVICE_2') return 'Hall Effect Sensor';
+    return 'Tilt Sensor';
+  };
+
+  const letter = getLetter(type);
 
   // Compute initial sequence based on already loaded childDevices
   const [nextSequence, setNextSequence] = useState<number>(() => {
-    const letter = 'A';
-    const prefix = `${master.serialNumber}-${letter}`;
+    const curLetter = getLetter('LIMIT_SWITCH');
+    const prefix = `${master.serialNumber}-${curLetter}`;
     const taken = new Set<number>();
     (master.childDevices || []).forEach((d: any) => {
-      if (d.deviceSequence && d.deviceSequence > 0 && d.type === 'DEVICE_1') taken.add(d.deviceSequence);
+      if (d.deviceSequence && d.deviceSequence > 0 && (d.type === 'LIMIT_SWITCH' || d.type === 'DEVICE_1')) taken.add(d.deviceSequence);
       if (d.serialNumber === prefix) taken.add(1);
       else if (d.serialNumber?.startsWith(`${prefix}-`)) {
         const num = parseInt(d.serialNumber.slice(`${prefix}-`.length), 10);
@@ -2166,13 +2184,34 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
     return () => { isMounted = false; };
   }, [master.id, type]);
 
-  const letter = type === 'DEVICE_1' ? 'A' : 'B';
   const derivedSerial = `${master.serialNumber}-${letter}-${nextSequence}`;
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      setImageFile(file);
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        setImagePreview(ev.target?.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     try {
+      let imageBase64: string | undefined = undefined;
+      if (imageFile) {
+        imageBase64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(imageFile);
+        });
+      }
+
       const res = await fetch(`${API_URL}/api/v1/lcgate/masters/${master.id}/devices`, {
         method: 'POST',
         headers: {
@@ -2183,11 +2222,12 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
           type, 
           deviceSequence: nextSequence,
           serialNumber: derivedSerial,
+          imageBase64: imageBase64 || undefined
         })
       });
       if (res.ok) {
         lcGatesCacheService.markStale(getCacheUserId());
-        toastSuccess(`Wired Slave Unit ${derivedSerial} (${type === 'DEVICE_1' ? 'Barrier A' : 'Barrier B'}) added successfully.`, 'Wired Hardware Linked');
+        toastSuccess(`Slave Unit ${derivedSerial} (${getTypeName(type)}) created successfully${imageBase64 ? ' with installation photo' : ''}.`, 'Slave Created');
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
@@ -2203,7 +2243,7 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
   return (
     <div className="glass-card max-w-lg mx-auto slide-up">
       <div className="flex justify-between items-center mb-6">
-        <h3 className="m-0 title-gradient">Add Wired Slave Unit</h3>
+        <h3 className="m-0 title-gradient">Add Slave Device</h3>
         <button className="btn-icon" onClick={onCancel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FaTimes size={16} /></button>
       </div>
       <form onSubmit={handleSubmit} className="flex-col gap-4">
@@ -2213,15 +2253,22 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
             <FaPlug /> Hardwired Physical Sub-Assembly
           </div>
           <p className="text-sm m-0" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
-            Slave units have no separate GSM modem or MCU; they communicate directly via hardware wiring to Master Unit <strong>{master.serialNumber}</strong>. Multiple slave units of the same type are sequentially numbered: <code>{master.serialNumber}-A-1</code>, <code>{master.serialNumber}-A-2</code> (Barrier A) or <code>{master.serialNumber}-B-1</code>, <code>{master.serialNumber}-B-2</code> (Barrier B).
+            Slave units communicate directly via hardware wiring to Master Unit <strong>{master.serialNumber}</strong>:
+            <br />
+            • <strong>A</strong>: Limit Switch
+            <br />
+            • <strong>B</strong>: Hall Effect Sensor
+            <br />
+            • <strong>C</strong>: Tilt Sensor
           </p>
         </div>
 
         <div className="form-group">
-          <label>Wired Barrier Type *</label>
+          <label>Slave Device Type *</label>
           <select className="glass-input" value={type} onChange={e => setType(e.target.value)}>
-            <option value="DEVICE_1">Device 1 (Barrier A / HallEffect Sensor + LimitSwitch)</option>
-            <option value="DEVICE_2">Device 2 (Barrier B / HallEffect Sensor + LimitSwitch)</option>
+            <option value="LIMIT_SWITCH">A - Limit Switch</option>
+            <option value="HALL_EFFECT">B - Hall Effect Sensor</option>
+            <option value="TILT_SENSOR">C - Tilt Sensor</option>
           </select>
         </div>
 
@@ -2237,22 +2284,48 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
             />
           </div>
           <small className="text-muted mt-1 block">
-            Automated sequential identifier #{nextSequence} for {type === 'DEVICE_1' ? 'Type A (Barrier A)' : 'Type B (Barrier B)'} under Master Unit {master.serialNumber}.
+            Automated sequential identifier #{nextSequence} for {getTypeName(type)} (Type {letter}) under Master Unit {master.serialNumber}.
           </small>
         </div>
 
-        <div className="form-group" style={{ background: 'var(--surface)', padding: 12, borderRadius: 8, border: '1px solid var(--border)' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700, display: 'block', marginBottom: 6 }}>
-            Hardware Sensors Attached:
-          </span>
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="badge badge-blue">HallEffect Sensor</span>
-            <span className="badge badge-indigo">LimitSwitch</span>
-          </div>
+        {/* Image Upload Option for Slave Device */}
+        <div className="form-group" style={{ background: 'var(--surface)', padding: 14, borderRadius: 10, border: '1px solid var(--border)' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, marginBottom: 8, fontSize: '0.85rem' }}>
+            <FaCamera /> Upload Installation Photo (Optional)
+          </label>
+          <input 
+            type="file" 
+            accept="image/*" 
+            capture="environment"
+            onChange={handleImageChange}
+            className="glass-input"
+            style={{ fontSize: '0.85rem', padding: '8px' }}
+          />
+          {imagePreview && (
+            <div className="mt-3 relative" style={{ width: '120px', height: '90px' }}>
+              <img 
+                src={imagePreview} 
+                alt="Slave Installation Preview" 
+                style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '8px', border: '1px solid var(--border)' }} 
+              />
+              <button 
+                type="button" 
+                onClick={() => { setImageFile(null); setImagePreview(null); }}
+                className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow"
+                style={{ border: 'none', cursor: 'pointer', lineHeight: 0 }}
+                title="Remove Photo"
+              >
+                <FaTimes size={12} />
+              </button>
+            </div>
+          )}
+          <small className="text-muted mt-1 block">
+            Attach photo proof of physical sensor mounting and wiring for this slave device.
+          </small>
         </div>
 
-        <button type="submit" className="btn-primary w-full mt-4 py-3" disabled={submitting}>
-          {submitting ? 'Linking...' : `Connect Wired Unit (${derivedSerial})`}
+        <button type="submit" className="btn-primary w-full mt-2 py-3" disabled={submitting}>
+          {submitting ? 'Connecting...' : `Add ${getTypeName(type)} (${derivedSerial})`}
         </button>
       </form>
     </div>

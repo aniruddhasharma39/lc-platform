@@ -6,6 +6,7 @@ import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
 import 'railway_data.dart';
+import 'station_search_sheet.dart';
 
 class CreateGateScreen extends StatefulWidget {
   final String token;
@@ -27,6 +28,7 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
   String? _zone;
   String? _division;
   String? _stationCode;
+  StationReference? _selectedStation;
   List<StationReference> _stations = [];
   bool _loadingReference = true;
 
@@ -289,6 +291,7 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
                                     setState(() {
                                       _division = val;
                                       _stationCode = null;
+                                      _selectedStation = null;
                                       _stations = RailwayData.stationsForDivision(val);
                                     });
                                   },
@@ -296,23 +299,58 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
                           ),
                           const SizedBox(height: 16),
 
-                          // Station Dropdown
-                          DropdownButtonFormField<String>(
-                            value: _stationCode,
-                            decoration: InputDecoration(
-                              labelText: 'Railway Station (Optional)',
-                              prefixIcon: const Icon(Icons.train_outlined),
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                            ),
-                            items: _stations
-                                .map((s) => DropdownMenuItem(value: s.code, child: Text('${s.name} (${s.code})', overflow: TextOverflow.ellipsis)))
-                                .toList(),
-                            onChanged: _division == null
+                                                    // Searchable Railway Station Selector with Search Bar & Custom Addition
+                          InkWell(
+                            borderRadius: BorderRadius.circular(10),
+                            onTap: _division == null
                                 ? null
-                                : (val) {
-                                    setState(() => _stationCode = val);
+                                : () async {
+                                    final picked = await StationSearchSheet.show(
+                                      context,
+                                      token: widget.token,
+                                      zone: _zone,
+                                      division: _division,
+                                      selectedCode: _stationCode,
+                                    );
+                                    if (picked != null && mounted) {
+                                      setState(() {
+                                        _selectedStation = picked;
+                                        _stationCode = picked.code;
+                                      });
+                                    }
                                   },
-                            hint: Text(_division == null ? 'Select Division first...' : 'Select Station'),
+                            child: InputDecorator(
+                              decoration: InputDecoration(
+                                labelText: 'Railway Station (Optional)',
+                                prefixIcon: const Icon(Icons.train_outlined),
+                                suffixIcon: _stationCode != null
+                                    ? IconButton(
+                                        icon: const Icon(Icons.clear, size: 18),
+                                        onPressed: () {
+                                          setState(() {
+                                            _stationCode = null;
+                                            _selectedStation = null;
+                                          });
+                                        },
+                                      )
+                                    : const Icon(Icons.arrow_drop_down),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                                helperText: _division == null
+                                    ? 'Select Division first to choose a station.'
+                                    : 'Tap to search stations by name/code or add custom.',
+                              ),
+                              child: Text(
+                                _selectedStation != null
+                                    ? '${_selectedStation!.name} (${_selectedStation!.code})'
+                                    : (_stationCode != null
+                                        ? _stationCode!
+                                        : (_division == null ? 'Select Division first...' : 'Tap to search stations...')),
+                                style: TextStyle(
+                                  color: _stationCode != null ? const Color(0xFF0F172A) : const Color(0xFF64748B),
+                                  fontWeight: _stationCode != null ? FontWeight.w600 : FontWeight.normal,
+                                ),
+                              ),
+                            ),
                           ),
                           const SizedBox(height: 16),
 

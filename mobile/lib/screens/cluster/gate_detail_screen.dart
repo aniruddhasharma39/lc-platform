@@ -3,6 +3,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'create_master_screen.dart';
+import 'package:image_picker/image_picker.dart';
+import 'station_search_sheet.dart';
 import 'railway_data.dart';
 import 'evidence_checklist_screen.dart';
 import '../../config.dart';
@@ -167,20 +169,43 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                     },
                   ),
                   const SizedBox(height: 10),
-                  DropdownButtonFormField<String>(
-                    value: selectedStationCode,
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Railway Station (Optional)', isDense: true, border: OutlineInputBorder()),
-                    items: [
-                      const DropdownMenuItem<String>(value: null, child: Text('No Station Specified', style: TextStyle(fontSize: 12, color: Colors.grey))),
-                      ...stations.map((st) => DropdownMenuItem<String>(
-                        value: st.code,
-                        child: Text('${st.name} (${st.code})', style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis),
-                      )),
-                    ],
-                    onChanged: (val) {
-                      setModalState(() => selectedStationCode = val);
-                    },
+                  InkWell(
+                    onTap: selectedDivision.isEmpty
+                        ? null
+                        : () async {
+                            final picked = await StationSearchSheet.show(
+                              context,
+                              token: widget.token,
+                              zone: selectedZone,
+                              division: selectedDivision,
+                              selectedCode: selectedStationCode,
+                            );
+                            if (picked != null) {
+                              setModalState(() {
+                                selectedStationCode = picked.code;
+                              });
+                            }
+                          },
+                    child: InputDecorator(
+                      decoration: InputDecoration(
+                        labelText: 'Railway Station (Optional)',
+                        isDense: true,
+                        border: const OutlineInputBorder(),
+                        suffixIcon: selectedStationCode != null
+                            ? IconButton(
+                                icon: const Icon(Icons.clear, size: 16),
+                                onPressed: () => setModalState(() => selectedStationCode = null),
+                              )
+                            : const Icon(Icons.arrow_drop_down),
+                      ),
+                      child: Text(
+                        selectedStationCode != null ? selectedStationCode! : 'Tap to search stations...',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: selectedStationCode != null ? const Color(0xFF0F172A) : Colors.grey,
+                        ),
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 10),
                   Row(
@@ -591,9 +616,39 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
   }
 
   Future<void> _addSlaveDevice(Map master) async {
+    String getSlaveLetter(String type) {
+      switch (type) {
+        case 'LIMIT_SWITCH':
+        case 'DEVICE_1':
+          return 'A';
+        case 'HALL_EFFECT':
+        case 'DEVICE_2':
+          return 'B';
+        case 'TILT_SENSOR':
+          return 'C';
+        default:
+          return 'A';
+      }
+    }
+
+    String getSlaveName(String type) {
+      switch (type) {
+        case 'LIMIT_SWITCH':
+        case 'DEVICE_1':
+          return 'Limit Switch';
+        case 'HALL_EFFECT':
+        case 'DEVICE_2':
+          return 'Hall Effect Sensor';
+        case 'TILT_SENSOR':
+          return 'Tilt Sensor';
+        default:
+          return 'Slave Device';
+      }
+    }
+
     int calcLocalSeq(String type) {
       final devices = (master['childDevices'] as List? ?? [])
-          .where((d) => d['type'] == type)
+          .where((d) => d['type'] == type || (type == 'LIMIT_SWITCH' && d['type'] == 'DEVICE_1') || (type == 'HALL_EFFECT' && d['type'] == 'DEVICE_2'))
           .toList();
       final taken = devices.map((d) => d['deviceSequence'] as int? ?? 0).toSet();
       int next = 1;
@@ -603,11 +658,13 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
       return next;
     }
 
-    String selectedType = 'DEVICE_1';
+    String selectedType = 'LIMIT_SWITCH';
     final seqCtrl = TextEditingController(
-      text: calcLocalSeq('DEVICE_1').toString().padLeft(2, '0'),
+      text: calcLocalSeq('LIMIT_SWITCH').toString().padLeft(2, '0'),
     );
     bool isSyncing = false;
+    XFile? slavePhoto;
+    final ImagePicker picker = ImagePicker();
 
     Future<void> fetchSeq(String type, void Function(void Function()) setDialogState) async {
       try {
@@ -631,68 +688,166 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
       }
     }
 
-    // Immediately show dialog without waiting for blocking network request!
     bool? add = await showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Add Slave Device'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              RadioListTile(
-                title: const Text('Device 1'),
-                subtitle: const Text('Hall Effect + Limit Switch'),
-                value: 'DEVICE_1',
-                groupValue: selectedType,
-                onChanged: (val) {
-                  final newType = val.toString();
-                  final nextLocal = calcLocalSeq(newType);
-                  setDialogState(() {
-                    selectedType = newType;
-                    seqCtrl.text = nextLocal.toString().padLeft(2, '0');
-                    isSyncing = true;
-                  });
-                  fetchSeq(newType, setDialogState);
-                },
-              ),
-              RadioListTile(
-                title: const Text('Device 2'),
-                subtitle: const Text('Tilt Sensor'),
-                value: 'DEVICE_2',
-                groupValue: selectedType,
-                onChanged: (val) {
-                  final newType = val.toString();
-                  final nextLocal = calcLocalSeq(newType);
-                  setDialogState(() {
-                    selectedType = newType;
-                    seqCtrl.text = nextLocal.toString().padLeft(2, '0');
-                    isSyncing = true;
-                  });
-                  fetchSeq(newType, setDialogState);
-                },
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: seqCtrl,
-                readOnly: true,
-                decoration: InputDecoration(
-                  labelText: 'Device Sequence (2 Digits) *',
-                  prefixText: '${master['serialNumber']}-${selectedType == 'DEVICE_1' ? 'A' : 'B'}-',
-                  prefixStyle: const TextStyle(fontWeight: FontWeight.bold, color: Colors.indigo),
-                  suffixIcon: isSyncing
-                      ? const Padding(
-                          padding: EdgeInsets.all(12),
-                          child: SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        )
-                      : null,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Add Slave Device', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'Select slave sensor type and attach optional installation proof photo.',
+                  style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                 ),
-              )
-            ],
+                const SizedBox(height: 14),
+
+                // 1. Slave Type Dropdown
+                DropdownButtonFormField<String>(
+                  value: selectedType,
+                  decoration: const InputDecoration(
+                    labelText: 'Slave Device Type *',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                    prefixIcon: Icon(Icons.sensors, color: AppColors.primary),
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'LIMIT_SWITCH',
+                      child: Text('A - Limit Switch', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                    ),
+                    DropdownMenuItem(
+                      value: 'HALL_EFFECT',
+                      child: Text('B - Hall Effect Sensor', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                    ),
+                    DropdownMenuItem(
+                      value: 'TILT_SENSOR',
+                      child: Text('C - Tilt Sensor', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                    ),
+                  ],
+                  onChanged: (val) {
+                    if (val != null) {
+                      final newType = val;
+                      final nextLocal = calcLocalSeq(newType);
+                      setDialogState(() {
+                        selectedType = newType;
+                        seqCtrl.text = nextLocal.toString().padLeft(2, '0');
+                        isSyncing = true;
+                      });
+                      fetchSeq(newType, setDialogState);
+                    }
+                  },
+                ),
+                const SizedBox(height: 14),
+
+                // 2. Sequential Identifier Display
+                TextField(
+                  controller: seqCtrl,
+                  readOnly: true,
+                  decoration: InputDecoration(
+                    labelText: 'Sequential Serial Identifier *',
+                    isDense: true,
+                    border: const OutlineInputBorder(),
+                    prefixText: '${master['serialNumber']}-${getSlaveLetter(selectedType)}-',
+                    prefixStyle: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primary),
+                    suffixIcon: isSyncing
+                        ? const Padding(
+                            padding: EdgeInsets.all(12),
+                            child: SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          )
+                        : null,
+                    helperText: 'Hardware wired unit under Master ${master['serialNumber']}',
+                  ),
+                ),
+                const SizedBox(height: 14),
+
+                // 3. Photo Upload Section
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.camera_alt_outlined, size: 16, color: Color(0xFF475569)),
+                          SizedBox(width: 6),
+                          Text('Installation Photo (Optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF334155))),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      if (slavePhoto == null) ...[
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () async {
+                                  try {
+                                    final img = await picker.pickImage(source: ImageSource.camera, imageQuality: 80);
+                                    if (img != null) {
+                                      setDialogState(() => slavePhoto = img);
+                                    }
+                                  } catch (e) {
+                                    debugPrint('Camera error: $e');
+                                  }
+                                },
+                                icon: const Icon(Icons.camera_alt, size: 16),
+                                label: const Text('Camera', style: TextStyle(fontSize: 12)),
+                                style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () async {
+                                  try {
+                                    final img = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
+                                    if (img != null) {
+                                      setDialogState(() => slavePhoto = img);
+                                    }
+                                  } catch (e) {
+                                    debugPrint('Gallery error: $e');
+                                  }
+                                },
+                                icon: const Icon(Icons.photo_library, size: 16),
+                                label: const Text('Gallery', style: TextStyle(fontSize: 12)),
+                                style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ] else ...[
+                        Row(
+                          children: [
+                            const Icon(Icons.check_circle, color: Color(0xFF059669), size: 18),
+                            const SizedBox(width: 6),
+                            const Expanded(
+                              child: Text('Photo attached', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF065F46))),
+                            ),
+                            TextButton(
+                              style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                              onPressed: () => setDialogState(() => slavePhoto = null),
+                              child: const Text('Remove', style: TextStyle(fontSize: 12, color: Colors.red)),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
@@ -700,7 +855,8 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
               onPressed: (isSyncing || seqCtrl.text.isEmpty)
                   ? null
                   : () => Navigator.pop(context, true),
-              child: const Text('Add Device'),
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+              child: const Text('Add Slave Unit'),
             ),
           ],
         ),
@@ -710,6 +866,12 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     if (add == true) {
       setState(() => _isLoading = true);
       try {
+        String? base64Img;
+        if (slavePhoto != null) {
+          final bytes = await slavePhoto!.readAsBytes();
+          base64Img = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+        }
+
         final res = await http.post(
           Uri.parse('$baseUrl/lcgate/masters/${master['id']}/devices'),
           headers: {
@@ -719,16 +881,17 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
           body: json.encode({
             'type': selectedType,
             'deviceSequence': int.tryParse(seqCtrl.text) ?? calcLocalSeq(selectedType),
+            if (base64Img != null) 'imageBase64': base64Img,
           }),
         );
         if (res.statusCode == 201) {
           await _refresh();
           await _markCacheStale();
           if (mounted) {
-            final typeLabel = selectedType == 'DEVICE_1' ? 'Device 1 (Hall Effect)' : 'Device 2 (Tilt Sensor)';
+            final typeLabel = getSlaveName(selectedType);
             AppFeedback.showSuccess(
               context,
-              'Slave device $typeLabel added successfully!',
+              'Slave device "$typeLabel" added successfully${base64Img != null ? ' with installation photo' : ''}!',
             );
           }
         } else {
@@ -1229,7 +1392,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                       ),
                                       title: Text(device['serialNumber'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                                       subtitle: Text(
-                                        device['type'] == 'DEVICE_1' ? 'Hall Effect + Limit Switch' : 'Tilt Sensor',
+                                        device['type'] == 'LIMIT_SWITCH' ? 'Limit Switch' : (device['type'] == 'HALL_EFFECT' ? 'Hall Effect Sensor' : (device['type'] == 'TILT_SENSOR' ? 'Tilt Sensor' : (device['type'] == 'DEVICE_1' ? 'Limit Switch & Hall Effect' : 'Tilt Sensor'))),
                                         style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                                       ),
                                       trailing: Row(
@@ -1243,7 +1406,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                               border: Border.all(color: const Color(0xFFBFDBFE)),
                                             ),
                                             child: Text(
-                                              device['type'] == 'DEVICE_1' ? 'TYPE A' : 'TYPE B',
+                                              device['type'] == 'LIMIT_SWITCH' || device['type'] == 'DEVICE_1' ? 'TYPE A' : (device['type'] == 'HALL_EFFECT' || device['type'] == 'DEVICE_2' ? 'TYPE B' : 'TYPE C'),
                                               style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF2563EB)),
                                             ),
                                           ),

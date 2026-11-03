@@ -201,7 +201,9 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
         }
 
         if (mounted) {
-          final identifier = chosenDevice['thingName'] ?? 'Master Unit';
+          final identifier = chosenDevice != null
+              ? (chosenDevice['thingName'] ?? 'Master Unit')
+              : '${widget.gate['lcNumber']}-${seqNum.toString().padLeft(2, '0')} (Virtual)';
           AppFeedback.showSuccess(context, 'Master Unit "$identifier" added successfully${_simImage != null ? ' with SIM photo' : ''}.');
           Navigator.pop(context, true);
         }
@@ -372,10 +374,10 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
                         helperText: _seqError ??
                             (chosenDevice != null
                                 ? 'Authoritative identifier strictly from AWS IoT Device Registry.'
-                                : 'Mandatory: Select a provisioned AWS IoT Master device above.'),
+                                : 'Virtual Master identifier. Hardware device can be linked at any time.'),
                         helperStyle: TextStyle(
-                          color: chosenDevice != null ? const Color(0xFF047857) : const Color(0xFFDC2626),
-                          fontWeight: chosenDevice != null ? FontWeight.normal : FontWeight.w500,
+                          color: const Color(0xFF047857),
+                          fontWeight: FontWeight.normal,
                         ),
                       ),
                     ),

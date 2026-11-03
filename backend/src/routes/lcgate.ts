@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import fs from 'fs';
+import path from 'path';
 import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
@@ -1397,6 +1399,21 @@ router.put('/masters/:id', authenticate, async (req, res, next) => {
   }
 });
 
+function getSlaveLetter(type: string): string {
+  switch (type) {
+    case 'LIMIT_SWITCH':
+    case 'DEVICE_1':
+      return 'A';
+    case 'HALL_EFFECT':
+    case 'DEVICE_2':
+      return 'B';
+    case 'TILT_SENSOR':
+      return 'C';
+    default:
+      return 'A';
+  }
+}
+
 // Get next available device sequence for a master
 router.get('/masters/:masterId/next-device-sequence', authenticate, async (req, res, next) => {
   try {
@@ -1406,8 +1423,8 @@ router.get('/masters/:masterId/next-device-sequence', authenticate, async (req, 
     const master = await prisma.masterUnit.findUnique({ where: { id: masterId } });
     if (!master) return res.status(404).json({ error: 'Master Unit not found' });
     
-    const type = (req.query.type as string) || 'DEVICE_1';
-    const letter = type === 'DEVICE_1' ? 'A' : 'B';
+    const type = (req.query.type as string) || 'LIMIT_SWITCH';
+    const letter = getSlaveLetter(type);
     const prefix = `${master.serialNumber}-${letter}`;
 
     const existing = await prisma.childDevice.findMany({
@@ -1446,7 +1463,7 @@ router.get('/masters/:masterId/next-device-sequence', authenticate, async (req, 
 });
 
 const createDeviceSchema = z.object({
-  type: z.enum(['DEVICE_1', 'DEVICE_2']),
+  type: z.enum(['LIMIT_SWITCH', 'HALL_EFFECT', 'TILT_SENSOR', 'DEVICE_1', 'DEVICE_2']),
   deviceSequence: z.preprocess(
     (val) => (val === '' || val === null || val === undefined ? undefined : Number(val)),
     z.number().int().min(1).max(999).optional()
@@ -1456,10 +1473,13 @@ const createDeviceSchema = z.object({
     (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
     z.number().int().optional().nullable()
   ),
+  imageBase64: z.string().optional().nullable(),
+  latitude: z.preprocess((v) => (v !== undefined && v !== null && v !== '' ? Number(v) : undefined), z.number().optional().nullable()),
+  longitude: z.preprocess((v) => (v !== undefined && v !== null && v !== '' ? Number(v) : undefined), z.number().optional().nullable()),
 });
 
 // Add a Child Device to a Master
-router.post('/masters/:masterId/devices', authenticate, async (req, res, next) => {
+router.post('/masters/:masterId/devices', authenticate, async (req: any, res, next) => {
   try {
     const masterId = parseInt(req.params.masterId);
     if (isNaN(masterId)) return res.status(400).json({ error: 'Invalid master ID' });
@@ -1471,7 +1491,7 @@ router.post('/masters/:masterId/devices', authenticate, async (req, res, next) =
       return res.status(404).json({ error: 'Master Unit not found' });
     }
 
-    const letter = data.type === 'DEVICE_1' ? 'A' : 'B';
+    const letter = getSlaveLetter(data.type);
     const prefix = `${master.serialNumber}-${letter}`;
 
     // Find all existing child devices for this master to inspect existing sequences
@@ -1541,6 +1561,34 @@ router.post('/masters/:masterId/devices', authenticate, async (req, res, next) =
         select: { scopeGroupId: true },
       });
       await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+
+      // Save installation evidence if image provided
+      if (data.imageBase64 && req.user?.id) {
+        try {
+          const uploadsDir = path.join(process.cwd(), 'uploads');
+          if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+          const matches = data.imageBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+          const buf = matches && matches[2] ? Buffer.from(matches[2], 'base64') : Buffer.from(data.imageBase64, 'base64');
+          const filename = `${crypto.randomUUID()}.jpg`;
+          const filepath = path.join(uploadsDir, filename);
+          fs.writeFileSync(filepath, buf);
+          const imageUrl = `/uploads/${filename}`;
+
+          await tx.installationEvidence.create({
+            data: {
+              category: data.type,
+              imageUrl,
+              latitude: data.latitude ?? null,
+              longitude: data.longitude ?? null,
+              userId: req.user.id,
+              masterId,
+              childDeviceId: created.id,
+            }
+          });
+        } catch (evErr) {
+          console.warn('Failed to save child device installation evidence in transaction:', evErr);
+        }
+      }
 
       return created;
     });
