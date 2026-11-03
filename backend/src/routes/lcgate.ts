@@ -283,7 +283,7 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       const isSolar = hasMasters && gate.masters.some(m => m.powerSource === 'SOLAR');
       const primaryMaster = hasMasters ? gate.masters[0]?.serialNumber : 'Unassigned';
       const slavesCount = gate.masters.reduce((acc, m) => acc + (m.childDevices?.length || 0), 0);
-      const assignedScope = gate.scopeGroups[0]?.scopeGroup;
+      const assignedScope: any = null;
 
       if (!hasMasters) {
         // Gate has NO master hardware attached! Cannot have live telemetry or cycles.
@@ -513,24 +513,8 @@ router.post('/', authenticate, async (req: any, res, next) => {
         }).catch(console.warn);
       }
 
-      // Auto-link to creator's assigned scope group so it immediately appears in their scope
-      if (req.user?.id) {
-        const userScopes = await tx.scopeGroupUser.findMany({
-          where: { userId: req.user.id },
-          select: { scopeGroupId: true }
-        });
-        for (const s of userScopes) {
-          await tx.scopeGroupGate.create({
-            data: {
-              gateId: created.id,
-              scopeGroupId: s.scopeGroupId,
-            }
-          }).catch(() => {});
-        }
-        await bumpDirectoryRevision(userScopes.map(s => s.scopeGroupId), false, tx);
-      } else {
-        await bumpDirectoryRevision([], true, tx);
-      }
+      // Bump global directory revision (scope groups removed)
+      await bumpDirectoryRevision([], true, tx);
 
       return created;
     });
@@ -616,11 +600,7 @@ router.put('/:id', authenticate, async (req: any, res, next) => {
         }
       });
 
-      const gateScopes = await tx.scopeGroupGate.findMany({
-        where: { gateId: id },
-        select: { scopeGroupId: true },
-      });
-      await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+            await bumpDirectoryRevision([], true, tx);
 
       return gate;
     });
@@ -668,7 +648,7 @@ router.post('/:id/assign-device', authenticate, async (req: any, res, next) => {
         where: { gateId },
         select: { scopeGroupId: true },
       });
-      await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+      await bumpDirectoryRevision([], true, tx);
 
       return devUpdated;
     });
@@ -705,7 +685,7 @@ router.post('/:id/unassign-device', authenticate, async (req: any, res, next) =>
         where: { gateId },
         select: { scopeGroupId: true },
       });
-      await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+      await bumpDirectoryRevision([], true, tx);
 
       return devUpdated;
     });
@@ -1218,7 +1198,7 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
         where: { gateId },
         select: { scopeGroupId: true },
       });
-      await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+      await bumpDirectoryRevision([], true, tx);
 
       return created;
     });
@@ -1300,11 +1280,7 @@ router.put('/masters/:id', authenticate, async (req, res, next) => {
         });
       }
 
-      const gateScopes = await tx.scopeGroupGate.findMany({
-        where: { gateId: existing.gateId },
-        select: { scopeGroupId: true },
-      });
-      await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+            await bumpDirectoryRevision([], true, tx);
 
       return m;
     });
@@ -1475,11 +1451,7 @@ router.post('/masters/:masterId/devices', authenticate, async (req: any, res, ne
       }
 
       // Bump revision for gate's assigned scope groups
-      const gateScopes = await tx.scopeGroupGate.findMany({
-        where: { gateId: master.gateId },
-        select: { scopeGroupId: true },
-      });
-      await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+            await bumpDirectoryRevision([], true, tx);
 
       // Save installation evidence if image provided
       if (data.imageBase64 && req.user?.id) {
@@ -1534,11 +1506,7 @@ router.delete('/masters/:id', authenticate, async (req, res, next) => {
       });
       await tx.masterUnit.delete({ where: { id } });
       if (targetMaster) {
-        const gateScopes = await tx.scopeGroupGate.findMany({
-          where: { gateId: targetMaster.gateId },
-          select: { scopeGroupId: true },
-        });
-        await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+                await bumpDirectoryRevision([], true, tx);
       } else {
         await bumpDirectoryRevision([], true, tx);
       }
@@ -1567,11 +1535,7 @@ router.delete('/devices/:id', authenticate, async (req, res, next) => {
       });
       await tx.childDevice.delete({ where: { id } });
       if (targetDevice?.master) {
-        const gateScopes = await tx.scopeGroupGate.findMany({
-          where: { gateId: targetDevice.master.gateId },
-          select: { scopeGroupId: true },
-        });
-        await bumpDirectoryRevision(gateScopes.map(s => s.scopeGroupId), gateScopes.length === 0, tx);
+                await bumpDirectoryRevision([], true, tx);
       } else {
         await bumpDirectoryRevision([], true, tx);
       }
@@ -1927,10 +1891,6 @@ router.delete('/:id', authenticate, async (req, res, next) => {
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid gate ID' });
     
     await prisma.$transaction(async (tx) => {
-      const targetGateScopes = await tx.scopeGroupGate.findMany({
-        where: { gateId: id },
-        select: { scopeGroupId: true },
-      });
 
       // 1. Capture and preserve all events belonging to this gate in Tombstones prior to cascade delete
       const eventsToDelete = await tx.lCGateEvent.findMany({
@@ -1964,11 +1924,7 @@ router.delete('/:id', authenticate, async (req, res, next) => {
       await tx.lCGate.delete({ where: { id } });
 
       // 5. Bump directory revisions for affected scopes
-      await bumpDirectoryRevision(
-        targetGateScopes.map(s => s.scopeGroupId),
-        targetGateScopes.length === 0,
-        tx
-      );
+      await bumpDirectoryRevision([], true, tx);
     }, { timeout: 120000, maxWait: 10000 });
     res.status(204).send();
   } catch (error) {

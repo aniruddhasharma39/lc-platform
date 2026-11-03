@@ -531,9 +531,7 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
       cursor,
       metrics: data.metrics,
       records: data.events.map(ev => {
-        const matchingGroup = ev.gate.scopeGroups.find(sg => data.targetScopeGroupIds.includes(sg.scopeGroup.id))?.scopeGroup
-          || ev.gate.scopeGroups[0]?.scopeGroup
-          || null;
+        const matchingGroup: any = null;
         return {
           id: ev.id,
           gateId: ev.gateId,

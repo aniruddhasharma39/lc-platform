@@ -7,7 +7,7 @@ import {
   FaChevronLeft,
   FaChevronRight,
   FaClock,
-  FaExternalLinkAlt,
+  FaInfoCircle,
   FaDoorOpen,
   FaDoorClosed,
   FaExclamationTriangle,

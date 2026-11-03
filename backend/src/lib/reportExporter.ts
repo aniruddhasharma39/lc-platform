@@ -121,9 +121,7 @@ function organizeCompleteLogData(data: CompleteLogReportData): GateCompleteLogSe
 
   for (const ev of data.events) {
     if (!gateMap.has(ev.gateId)) {
-      const matchingGroup = ev.gate.scopeGroups.find(sg => data.targetScopeGroupIds.includes(sg.scopeGroup.id))?.scopeGroup
-        || ev.gate.scopeGroups[0]?.scopeGroup
-        || null;
+      const matchingGroup: any = null;
 
       gateMap.set(ev.gateId, {
         gateInfo: {

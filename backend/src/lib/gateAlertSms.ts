@@ -228,84 +228,36 @@ export async function checkAndDispatchGateStateAlert(options: GateStateAlertOpti
   const effectiveLcNumber = gate?.lcNumber || (thingName.startsWith('LC-') ? thingName : `LC-${thingName}`);
   const dateTimeStr = formatIstDateTime(timestamp);
 
-  // 2. Find all Scope Groups mapped to this gate or device
-  const scopeGroupIds = new Set<number>();
+  // 2. Find all APPROVED users who have access to this gate (role-based, no scope groups)
+  const allUsers = await prisma.user.findMany({
+    where: { status: 'APPROVED' },
+    include: { role: { include: { roleModules: { include: { module: true } } } } }
+  });
 
-  if (effectiveGateId) {
-    const gateScopeRecords = await prisma.scopeGroupGate.findMany({
-      where: { gateId: effectiveGateId },
-      select: { scopeGroupId: true }
-    });
-    gateScopeRecords.forEach(r => scopeGroupIds.add(r.scopeGroupId));
-  }
-
-  if (deviceId) {
-    const deviceScopeRecords = await prisma.scopeGroupDevice.findMany({
-      where: { deviceId },
-      select: { scopeGroupId: true }
-    });
-    deviceScopeRecords.forEach(r => scopeGroupIds.add(r.scopeGroupId));
-  }
-
-  if (scopeGroupIds.size === 0) {
-    console.log(`ℹ️ [GATE STATE ALERT] No scope groups mapped to gate "${effectiveLcNumber}". SMS dispatch skipped.`);
-    return { dispatched: 0, reason: 'NO_MAPPED_SCOPE_GROUPS' };
-  }
-
-  // 3. Filter Scope Groups: MUST have allowSms === true
-  const eligibleScopeGroups = await prisma.scopeGroup.findMany({
-    where: {
-      id: { in: Array.from(scopeGroupIds) },
-      allowSms: true
-    },
-    include: {
-      users: {
-        include: {
-          user: {
-            select: {
-              id: true,
-              fullName: true,
-              mobile: true,
-              status: true,
-              role: { select: { name: true } }
-            }
-          }
-        }
-      }
+  const recipientsMap = new Map();
+  for (const u of allUsers) {
+    const hasModule = u.role && u.role.roleModules && u.role.roleModules.some((rm) => rm.module && (rm.module.slug === 'lc-gates' || rm.module.slug === 'reports'));
+    if (!hasModule) continue;
+    if (!u.mobile || !u.mobile.trim()) continue;
+    let canAccess = true;
+    try {
+      const { verifyGateAccess } = await import('./railwayHierarchy');
+      canAccess = await verifyGateAccess(u, effectiveGateId || 0, prisma);
+    } catch (_) { canAccess = true; }
+    if (!canAccess) continue;
+    const cleanPhone = formatPhoneNumber(u.mobile);
+    if (cleanPhone.length === 10 && !recipientsMap.has(cleanPhone)) {
+      recipientsMap.set(cleanPhone, { user: u });
     }
-  });
-
-  if (eligibleScopeGroups.length === 0) {
-    console.log(`ℹ️ [GATE STATE ALERT] Scope groups exist for gate "${effectiveLcNumber}", but NONE have SMS allowed (allowSms is false). SMS dispatch skipped.`);
-    return { dispatched: 0, reason: 'SMS_NOT_ALLOWED_IN_SCOPE_GROUPS' };
   }
-
-  // 4. Collect unique authorized users with valid mobile numbers
-  // Strictly only send to APPROVED users
-  const recipientsMap = new Map<string, { user: any; scopeGroupId: number; scopeGroupName: string }>();
-
-  eligibleScopeGroups.forEach(group => {
-    group.users.forEach(su => {
-      const u = su.user;
-      if (u.status === 'APPROVED' && u.mobile && u.mobile.trim()) {
-        const cleanPhone = formatPhoneNumber(u.mobile);
-        if (cleanPhone.length === 10 && !recipientsMap.has(cleanPhone)) {
-          recipientsMap.set(cleanPhone, {
-            user: u,
-            scopeGroupId: group.id,
-            scopeGroupName: group.name,
-          });
-        }
-      }
-    });
-  });
 
   if (recipientsMap.size === 0) {
-    console.log(`ℹ️ [GATE STATE ALERT] Eligible scope groups have SMS allowed, but no APPROVED users with valid mobile numbers were found.`);
+    console.log('No eligible APPROVED users with valid mobile numbers found.');
     return { dispatched: 0, reason: 'NO_ELIGIBLE_APPROVED_USERS' };
   }
 
-  console.log(`📢 [GATE STATE ALERT] Found ${recipientsMap.size} authorized recipient(s) across SMS-enabled scope group(s): ${eligibleScopeGroups.map(g => g.name).join(', ')}`);
+  console.log('Found ' + recipientsMap.size + ' authorized recipient(s).');
+
 
   // 5. Dispatch SMS and record audit trail for each recipient
   const results = [];
@@ -323,7 +275,7 @@ export async function checkAndDispatchGateStateAlert(options: GateStateAlertOpti
           status: newState,
           recipientMobile: phone,
           recipientName: info.user.fullName,
-          scopeGroupId: info.scopeGroupId,
+           scopeGroupId: null,
           message: messageText,
           provider: sendResult.provider,
           statusResult: sendResult.success ? 'SENT' : 'FAILED',
@@ -335,7 +287,7 @@ export async function checkAndDispatchGateStateAlert(options: GateStateAlertOpti
       results.push({
         user: info.user.fullName,
         mobile: phone,
-        scopeGroup: info.scopeGroupName,
+         scopeGroup: null,
         ...sendResult
       });
     } catch (err: any) {

@@ -67,8 +67,8 @@ export default function ClusterDashboard(_props: Props) {
 
   // Scope Groups State
   const [developerScopeId, setDeveloperScopeId] = useState('');
-  const [allScopeGroupsList, setAllScopeGroupsList] = useState<any[]>([]);
-  const [myScopeGroups, setMyScopeGroups] = useState<any[]>([]);
+  const [allScopeGroupsList, _setAllScopeGroupsList] = useState<any[]>([]);
+  const [myScopeGroups, _setMyScopeGroups] = useState<any[]>([]);
 
   // Intelligent Caching States
   const [isFromCache, setIsFromCache] = useState(false);

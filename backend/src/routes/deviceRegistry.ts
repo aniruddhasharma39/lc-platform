@@ -594,14 +594,6 @@ router.delete(['/:id', '/:thingName'], authenticate, async (req, res, next) => {
       },
     }).catch(console.warn);
 
-    // 2. Delete ScopeGroupDevice associations if table exists
-    try {
-      await (prisma as any).scopeGroupDevice?.deleteMany({
-        where: { thingName },
-      });
-    } catch {
-      // Table may not exist or not linked
-    }
 
     // 3. Delete from DeviceRegistry
     await prisma.deviceRegistry.delete({
@@ -812,15 +804,8 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
       let isGlobal = false;
       if (wasOffline) {
         if (dev.gateId) {
-          const scopes = await tx.scopeGroupGate.findMany({
-            where: { gateId: dev.gateId },
-            select: { scopeGroupId: true },
-          });
-          const scopeIds = Array.from(new Set(scopes.map((s: any) => s.scopeGroupId)));
-          const ancestors: number[] = [];
-          affectedScopeIds = Array.from(new Set([...scopeIds, ...ancestors]));
-          isGlobal = affectedScopeIds.length === 0;
-          await bumpDirectoryRevision(affectedScopeIds, isGlobal, tx);
+          isGlobal = false;
+          await bumpDirectoryRevision([], true, tx);
         } else {
           isGlobal = true;
           await bumpDirectoryRevision([], true, tx);
@@ -938,7 +923,7 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
       if (heartbeatResult.isGlobal || heartbeatResult.affectedScopeIds.length === 0) {
         clusterCacheManager.invalidateAll();
       } else {
-        clusterCacheManager.invalidateScopeGroups(heartbeatResult.affectedScopeIds);
+        clusterCacheManager.invalidateAll();
       }
     }
 
@@ -1294,12 +1279,7 @@ router.put('/:id', authenticate, async (req, res, next) => {
     // Invalidate Cluster cache if device assignment changed or belongs to a gate
     const affectedGateIds = [existing.gateId, updated.gateId].filter((gid): gid is number => typeof gid === 'number');
     if (affectedGateIds.length > 0) {
-      const scopes = await prisma.scopeGroupGate.findMany({
-        where: { gateId: { in: affectedGateIds } },
-        select: { scopeGroupId: true },
-      });
-      const scopeIds = Array.from(new Set(scopes.map(s => s.scopeGroupId)));
-      await bumpDirectoryRevision(scopeIds, scopeIds.length === 0);
+      await bumpDirectoryRevision([], true);
     }
 
     res.json({
@@ -1344,21 +1324,12 @@ router.delete('/:id', authenticate, async (req, res, next) => {
     }).catch(console.warn);
 
     // Clean up scope group device mappings
-    await prisma.scopeGroupDevice.deleteMany({
-      where: { deviceId: id }
-    }).catch(console.warn);
-
     // Delete device from registry
     await prisma.deviceRegistry.delete({ where: { id } });
 
     // Invalidate Cluster cache if deleted device was assigned to a gate
     if (device.gateId) {
-      const scopes = await prisma.scopeGroupGate.findMany({
-        where: { gateId: device.gateId },
-        select: { scopeGroupId: true },
-      });
-      const scopeIds = Array.from(new Set(scopes.map(s => s.scopeGroupId)));
-      await bumpDirectoryRevision(scopeIds, scopeIds.length === 0);
+      await bumpDirectoryRevision([], true);
     }
 
     res.status(200).json({

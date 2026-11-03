@@ -369,9 +369,7 @@ export async function getFullCycleAnalytics(params: {
   const overallOpeningIntervals: number[] = [];
 
   for (const g of gates) {
-    const scopeGroup = g.scopeGroups.find(sg => params.targetScopeGroupIds.includes(sg.scopeGroup.id))?.scopeGroup
-      || g.scopeGroups[0]?.scopeGroup
-      || null;
+    const scopeGroup: any = null;
 
     const gateMeta: GateMetadata = {
       id: g.id,

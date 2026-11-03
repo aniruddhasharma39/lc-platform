@@ -1164,8 +1164,8 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
               className={`lcg-tab-button ${clusterTab === 'telemetry' ? 'active' : ''}`}
               onClick={() => setClusterTab('telemetry')}
             >
-              <FaSlidersH size={14} />
-              <span>Live Telemetry & Inspector</span>
+              <FaHistory size={14} />
+              <span>Operational History</span>
             </button>
           </div>
 

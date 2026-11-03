@@ -566,7 +566,6 @@ router.delete('/:id', requireModule('manage-users'), async (req: any, res, next)
     }).catch(console.warn);
 
     // 3. Remove ScopeGroup memberships
-    await prisma.scopeGroupUser.deleteMany({ where: { userId: id } }).catch(console.warn);
 
     // 4. Delete associated installation evidences
     await prisma.installationEvidence.deleteMany({ where: { userId: id } }).catch(console.warn);

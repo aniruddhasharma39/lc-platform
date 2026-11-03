@@ -512,83 +512,33 @@ export async function checkAndDispatchGateStateEmailAlert(options: GateEmailAler
   const dateTimeStr = formatIstDateTime(timestamp);
 
   // 2. Find all Scope Groups mapped to this gate or device
-  const scopeGroupIds = new Set<number>();
-
-  if (effectiveGateId) {
-    const gateScopeRecords = await prisma.scopeGroupGate.findMany({
-      where: { gateId: effectiveGateId },
-      select: { scopeGroupId: true },
-    });
-    gateScopeRecords.forEach((r) => scopeGroupIds.add(r.scopeGroupId));
-  }
-
-  if (deviceId) {
-    const deviceScopeRecords = await prisma.scopeGroupDevice.findMany({
-      where: { deviceId },
-      select: { scopeGroupId: true },
-    });
-    deviceScopeRecords.forEach((r) => scopeGroupIds.add(r.scopeGroupId));
-  }
-
-  if (scopeGroupIds.size === 0) {
-    console.log(`ℹ️ [GATE STATE EMAIL ALERT] No scope groups mapped to gate "${effectiveLcNumber}". Email dispatch skipped.`);
-    return { dispatched: 0, reason: 'NO_MAPPED_SCOPE_GROUPS' };
-  }
-
-  // 3. Retrieve eligible Scope Groups (matching SMS-enabled policy or alert-enabled groups)
-  const eligibleScopeGroups = await prisma.scopeGroup.findMany({
-    where: {
-      id: { in: Array.from(scopeGroupIds) },
-      allowSms: true, // Scope groups enabled for real-time alerting
-    },
-    include: {
-      users: {
-        include: {
-          user: {
-            select: {
-              id: true,
-              fullName: true,
-              email: true,
-              mobile: true,
-              status: true,
-              role: { select: { name: true } },
-            },
-          },
-        },
-      },
-    },
+  const recipientsMap = new Map();
+  const allUsers = await prisma.user.findMany({
+    where: { status: 'APPROVED' },
+    include: { role: { include: { roleModules: { include: { module: true } } } } }
   });
-
-  if (eligibleScopeGroups.length === 0) {
-    console.log(`ℹ️ [GATE STATE EMAIL ALERT] Scope groups exist for gate "${effectiveLcNumber}", but alerting is disabled (allowSms is false).`);
-    return { dispatched: 0, reason: 'ALERTS_NOT_ALLOWED_IN_SCOPE_GROUPS' };
+  for (const u of allUsers) {
+    const hasModule = u.role && u.role.roleModules && u.role.roleModules.some((rm) => rm.module && (rm.module.slug === 'lc-gates' || rm.module.slug === 'reports'));
+    if (!hasModule) continue;
+    if (!u.email || !u.email.trim()) continue;
+    let canAccess = true;
+    try {
+      const { verifyGateAccess } = await import('./railwayHierarchy');
+      canAccess = await verifyGateAccess(u, effectiveGateId || 0, prisma);
+    } catch (_) { canAccess = true; }
+    if (!canAccess) continue;
+    if (!recipientsMap.has(u.email)) {
+      recipientsMap.set(u.email, { user: u });
+    }
   }
-
-  // 4. Collect unique authorized APPROVED users with valid email addresses
-  const recipientsMap = new Map<string, { user: any; scopeGroupId: number; scopeGroupName: string }>();
-
-  eligibleScopeGroups.forEach((group) => {
-    group.users.forEach((su) => {
-      const u = su.user;
-      if (u.status === 'APPROVED' && isValidEmail(u.email)) {
-        const cleanEmail = u.email.trim().toLowerCase();
-        if (!recipientsMap.has(cleanEmail)) {
-          recipientsMap.set(cleanEmail, {
-            user: u,
-            scopeGroupId: group.id,
-            scopeGroupName: group.name,
-          });
-        }
-      }
-    });
-  });
 
   if (recipientsMap.size === 0) {
-    console.log(`ℹ️ [GATE STATE EMAIL ALERT] Eligible scope groups found, but no APPROVED users have valid email addresses.`);
+    console.log('No eligible APPROVED users with valid email found.');
     return { dispatched: 0, reason: 'NO_ELIGIBLE_APPROVED_USERS' };
   }
 
-  console.log(`📢 [GATE STATE EMAIL ALERT] Found ${recipientsMap.size} authorized email recipient(s) across scope group(s): ${eligibleScopeGroups.map((g) => g.name).join(', ')}`);
+  console.log('Found ' + recipientsMap.size + ' authorized email recipient(s).');
+
 
   // 5. Dispatch email to each authorized recipient
   const results = [];
@@ -604,7 +554,7 @@ export async function checkAndDispatchGateStateEmailAlert(options: GateEmailAler
         division: gate?.division || 'Operations',
         status: newState,
         timestampStr: dateTimeStr,
-        scopeGroupName: info.scopeGroupName,
+        scopeGroupName: undefined,
       });
 
       // Record in GateStateAlertLog table for audit trail
@@ -616,7 +566,7 @@ export async function checkAndDispatchGateStateEmailAlert(options: GateEmailAler
             status: newState,
             recipientMobile: info.user.mobile || email,
             recipientName: info.user.fullName,
-            scopeGroupId: info.scopeGroupId,
+            scopeGroupId: null,
             message: `[BREVO EMAIL ALERT] Gate ${effectiveLcNumber} status changed to ${newState}`,
             provider: emailResult.provider || 'BREVO_API',
             statusResult: emailResult.success ? 'SENT' : 'FAILED',
@@ -629,7 +579,7 @@ export async function checkAndDispatchGateStateEmailAlert(options: GateEmailAler
       results.push({
         user: info.user.fullName,
         email,
-        scopeGroup: info.scopeGroupName,
+        scopeGroup: null,
         ...emailResult,
       });
     } catch (err: any) {
