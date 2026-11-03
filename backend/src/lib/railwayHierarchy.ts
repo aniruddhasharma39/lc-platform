@@ -491,6 +491,208 @@ export async function verifyGateAccess(user: any, gateId: number, prisma: Prisma
 }
 
 /**
+ * Normalizes jurisdiction strings (divisions, zones) for robust comparison.
+ * Trims whitespace, lowercases, and strips common suffixes like 'Division', 'Railway', 'Zone'.
+ */
+export function normalizeJurisdictionString(str?: string | null): string {
+  if (!str) return '';
+  return str
+    .trim()
+    .toLowerCase()
+    .replace(/\s+(division|div|railway|zone)$/i, '')
+    .trim();
+}
+
+export interface GateAlertRecipients {
+  gate: {
+    id: number;
+    lcNumber: string;
+    name: string | null;
+    locationName?: string | null;
+    division: string | null;
+    zone: string | null;
+    stationId: number | null;
+    stationName?: string | null;
+  };
+  smsRecipients: Array<{
+    userId: number;
+    fullName: string;
+    phone: string;
+    designation: string | null;
+    department: string | null;
+    reason: string;
+  }>;
+  emailRecipients: Array<{
+    userId: number;
+    fullName: string;
+    email: string;
+    designation: string | null;
+    department: string | null;
+    reason: string;
+  }>;
+  matchedUsers: any[];
+}
+
+/**
+ * Resolves all authorized SMS and Email alert recipients for a specific LC Gate based strictly on
+ * Indian Railways role hierarchy and jurisdiction (Gate, Station, Division, Zone, Developer).
+ * Executes a single batched query for zero N+1 overhead.
+ */
+export async function resolveGateAlertRecipients(
+  gateId: number,
+  prisma: PrismaClient
+): Promise<GateAlertRecipients | null> {
+  // 1. Fetch gate and its station
+  const gate = await prisma.lCGate.findUnique({
+    where: { id: gateId },
+    include: { station: true }
+  });
+
+  if (!gate) return null;
+
+  // 2. Fetch all APPROVED candidate users with assigned gates
+  const candidateUsers = await prisma.user.findMany({
+    where: { status: 'APPROVED' },
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      mobile: true,
+      department: true,
+      designation: true,
+      zone: true,
+      division: true,
+      stationId: true,
+      role: { select: { id: true, name: true } },
+      assignedGates: { select: { gateId: true } }
+    }
+  });
+
+  const matchedUsers: any[] = [];
+  const normGateDivision = normalizeJurisdictionString(gate.division);
+  const normGateZone = normalizeJurisdictionString(gate.zone);
+
+  for (const u of candidateUsers) {
+    // A. Developer / Global Administrator Governance override
+    if (u.role?.name === 'Developer' || u.id === 1) {
+      matchedUsers.push({ user: u, reason: 'Developer / System Governance Override' });
+      continue;
+    }
+
+    const cfg = getDesignationConfig(u.designation) || getDesignationConfig(u.role?.name);
+    const assignedGateIds = (u.assignedGates || []).map(ag => ag.gateId);
+    const level = cfg?.level;
+
+    // B. Gate-level role (Gateman): STRICTLY assigned gates
+    if (level === 'GATE') {
+      if (assignedGateIds.includes(gate.id)) {
+        matchedUsers.push({ user: u, reason: 'Directly Assigned Gate (Gateman)' });
+      }
+      continue;
+    }
+
+    // C. Station-level role (Station Master, Engineering Supervisor)
+    if (level === 'STATION') {
+      if (assignedGateIds.includes(gate.id)) {
+        matchedUsers.push({ user: u, reason: 'Assigned Gate (Station Level)' });
+      } else if (u.stationId && gate.stationId && u.stationId === gate.stationId) {
+        matchedUsers.push({ user: u, reason: 'Station Jurisdiction Match' });
+      }
+      continue;
+    }
+
+    // D. Divisional-level officers (Senior DOM, DOM, ADOM, Senior DEN, DEN, ADEN)
+    if (level === 'DIVISIONAL') {
+      if (u.division && normalizeJurisdictionString(u.division) === normGateDivision) {
+        matchedUsers.push({ user: u, reason: 'Divisional Jurisdiction Match' });
+      }
+      continue;
+    }
+
+    // E. Zonal-level officers
+    if (level === 'ZONE') {
+      if (u.zone && normalizeJurisdictionString(u.zone) === normGateZone) {
+        matchedUsers.push({ user: u, reason: 'Zonal Jurisdiction Match' });
+      }
+      continue;
+    }
+
+    // F. Fallback for legacy roles without designation config
+    if (assignedGateIds.includes(gate.id)) {
+      matchedUsers.push({ user: u, reason: 'Explicit Gate Assignment' });
+    } else if (u.stationId && gate.stationId && u.stationId === gate.stationId) {
+      matchedUsers.push({ user: u, reason: 'Station Fallback Match' });
+    } else if (u.division && normalizeJurisdictionString(u.division) === normGateDivision) {
+      matchedUsers.push({ user: u, reason: 'Division Fallback Match' });
+    }
+  }
+
+  // 3. Partition and deduplicate SMS and Email recipients
+  const smsRecipientsMap = new Map<string, any>();
+  const emailRecipientsMap = new Map<string, any>();
+
+  for (const item of matchedUsers) {
+    const u = item.user;
+
+    // Clean and validate 10-digit mobile
+    if (u.mobile) {
+      const rawDigits = u.mobile.replace(/\D/g, '');
+      let cleanPhone = '';
+      if (rawDigits.length === 10) {
+        cleanPhone = rawDigits;
+      } else if (rawDigits.length === 12 && rawDigits.startsWith('91')) {
+        cleanPhone = rawDigits.slice(2);
+      } else if (rawDigits.length > 10) {
+        cleanPhone = rawDigits.slice(-10);
+      }
+      if (cleanPhone.length === 10 && !smsRecipientsMap.has(cleanPhone)) {
+        smsRecipientsMap.set(cleanPhone, {
+          userId: u.id,
+          fullName: u.fullName,
+          phone: cleanPhone,
+          designation: u.designation || u.role?.name || null,
+          department: u.department || null,
+          reason: item.reason
+        });
+      }
+    }
+
+    // Clean and validate RFC email
+    if (u.email) {
+      const cleanEmail = u.email.trim().toLowerCase();
+      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail) && !emailRecipientsMap.has(cleanEmail)) {
+        emailRecipientsMap.set(cleanEmail, {
+          userId: u.id,
+          fullName: u.fullName,
+          email: cleanEmail,
+          designation: u.designation || u.role?.name || null,
+          department: u.department || null,
+          reason: item.reason
+        });
+      }
+    }
+  }
+
+  return {
+    gate: {
+      id: gate.id,
+      lcNumber: gate.lcNumber,
+      name: gate.name,
+      locationName: gate.locationName,
+      division: gate.division,
+      zone: gate.zone,
+      stationId: gate.stationId,
+      stationName: gate.station?.name || null
+    },
+    smsRecipients: Array.from(smsRecipientsMap.values()),
+    emailRecipients: Array.from(emailRecipientsMap.values()),
+    matchedUsers
+  };
+}
+
+
+
+/**
  * Seeds and synchronizes all designation roles and their module permissions in the database
  */
 export async function ensureDesignationRoles(prisma: PrismaClient) {

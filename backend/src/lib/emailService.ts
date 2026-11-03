@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import { prisma } from './prisma';
+import { resolveGateAlertRecipients } from './railwayHierarchy';
 
 export interface SendEmailResult {
   success: boolean;
@@ -511,43 +512,27 @@ export async function checkAndDispatchGateStateEmailAlert(options: GateEmailAler
   const effectiveLcNumber = gate?.lcNumber || (thingName.startsWith('LC-') ? thingName : `LC-${thingName}`);
   const dateTimeStr = formatIstDateTime(timestamp);
 
-  // 2. Find all Scope Groups mapped to this gate or device
-  const recipientsMap = new Map();
-  const allUsers = await prisma.user.findMany({
-    where: { status: 'APPROVED' },
-    include: { role: { include: { roleModules: { include: { module: true } } } } }
-  });
-  for (const u of allUsers) {
-    const hasModule = u.role && u.role.roleModules && u.role.roleModules.some((rm) => rm.module && (rm.module.slug === 'lc-gates' || rm.module.slug === 'reports'));
-    if (!hasModule) continue;
-    if (!u.email || !u.email.trim()) continue;
-    let canAccess = true;
-    try {
-      const { verifyGateAccess } = await import('./railwayHierarchy');
-      canAccess = await verifyGateAccess(u, effectiveGateId || 0, prisma);
-    } catch (_) { canAccess = true; }
-    if (!canAccess) continue;
-    if (!recipientsMap.has(u.email)) {
-      recipientsMap.set(u.email, { user: u });
-    }
-  }
+  // 2. Resolve authorized email recipients using Indian Railways hierarchy
+  const recipientsData = effectiveGateId
+    ? await resolveGateAlertRecipients(effectiveGateId, prisma)
+    : null;
 
-  if (recipientsMap.size === 0) {
-    console.log('No eligible APPROVED users with valid email found.');
+  const emailRecipients = recipientsData?.emailRecipients || [];
+
+  if (emailRecipients.length === 0) {
+    console.log(`⚠️ [GATE STATE EMAIL ALERT] No eligible APPROVED users with valid email found for gate ${effectiveLcNumber}.`);
     return { dispatched: 0, reason: 'NO_ELIGIBLE_APPROVED_USERS' };
   }
 
-  console.log('Found ' + recipientsMap.size + ' authorized email recipient(s).');
-
-
+  console.log(`🔔 [GATE STATE EMAIL ALERT] Found ${emailRecipients.length} authorized email recipient(s) across Railway Hierarchy.`);
   // 5. Dispatch email to each authorized recipient
   const results = [];
 
-  for (const [email, info] of recipientsMap.entries()) {
+  for (const recipient of emailRecipients) {
     try {
       const emailResult = await sendGateStateEmail({
-        toEmail: email,
-        toName: info.user.fullName,
+        toEmail: recipient.email,
+        toName: recipient.fullName,
         lcNumber: effectiveLcNumber,
         locationName: gate?.locationName || null,
         zone: gate?.zone || 'Indian Railways',
@@ -564,26 +549,29 @@ export async function checkAndDispatchGateStateEmailAlert(options: GateEmailAler
             gateId: effectiveGateId,
             lcNumber: effectiveLcNumber,
             status: newState,
-            recipientMobile: info.user.mobile || email,
-            recipientName: info.user.fullName,
+            recipientMobile: recipient.email,
+            recipientName: recipient.fullName,
             scopeGroupId: null,
             message: `[BREVO EMAIL ALERT] Gate ${effectiveLcNumber} status changed to ${newState}`,
             provider: emailResult.provider || 'BREVO_API',
             statusResult: emailResult.success ? 'SENT' : 'FAILED',
-            details: `Email: ${email} | Result: ${emailResult.messageId || emailResult.error || 'OK'}`,
+            details: `Email: ${recipient.email} | Result: ${emailResult.messageId || emailResult.error || 'OK'}`,
             sentAt: new Date(),
           },
         })
         .catch((err) => console.error('Failed to log gate state email alert to database:', err));
 
       results.push({
-        user: info.user.fullName,
-        email,
+        user: recipient.fullName,
+        email: recipient.email,
+        designation: recipient.designation,
+        department: recipient.department,
+        reason: recipient.reason,
         scopeGroup: null,
         ...emailResult,
       });
     } catch (err: any) {
-      console.error(`❌ [GATE STATE EMAIL ALERT] Failed dispatch to ${email}:`, err);
+      console.error(`❌ [GATE STATE EMAIL ALERT] Failed dispatch to ${recipient.email}:`, err);
     }
   }
 

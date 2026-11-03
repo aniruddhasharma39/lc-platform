@@ -1,4 +1,5 @@
 import { prisma } from './prisma';
+import { resolveGateAlertRecipients } from './railwayHierarchy';
 import { checkAndDispatchGateStateEmailAlert } from './emailService';
 
 export { checkAndDispatchGateStateEmailAlert };
@@ -228,44 +229,35 @@ export async function checkAndDispatchGateStateAlert(options: GateStateAlertOpti
   const effectiveLcNumber = gate?.lcNumber || (thingName.startsWith('LC-') ? thingName : `LC-${thingName}`);
   const dateTimeStr = formatIstDateTime(timestamp);
 
-  // 2. Find all APPROVED users who have access to this gate (role-based, no scope groups)
-  const allUsers = await prisma.user.findMany({
-    where: { status: 'APPROVED' },
-    include: { role: { include: { roleModules: { include: { module: true } } } } }
-  });
+  // 2. Resolve authorized recipients using Indian Railways hierarchy
+  const recipientsData = effectiveGateId
+    ? await resolveGateAlertRecipients(effectiveGateId, prisma)
+    : null;
 
-  const recipientsMap = new Map();
-  for (const u of allUsers) {
-    const hasModule = u.role && u.role.roleModules && u.role.roleModules.some((rm) => rm.module && (rm.module.slug === 'lc-gates' || rm.module.slug === 'reports'));
-    if (!hasModule) continue;
-    if (!u.mobile || !u.mobile.trim()) continue;
-    let canAccess = true;
-    try {
-      const { verifyGateAccess } = await import('./railwayHierarchy');
-      canAccess = await verifyGateAccess(u, effectiveGateId || 0, prisma);
-    } catch (_) { canAccess = true; }
-    if (!canAccess) continue;
-    const cleanPhone = formatPhoneNumber(u.mobile);
-    if (cleanPhone.length === 10 && !recipientsMap.has(cleanPhone)) {
-      recipientsMap.set(cleanPhone, { user: u });
-    }
+  const smsRecipients = recipientsData?.smsRecipients || [];
+
+  if (smsRecipients.length === 0) {
+    console.log(`⚠️ [GATE STATE ALERT] No eligible APPROVED users with valid mobile numbers found for gate ${effectiveLcNumber}.`);
+    const emailAlertResult = await checkAndDispatchGateStateEmailAlert(options).catch((err) => {
+      console.error("❌ [GATE STATE ALERT] Error dispatching email alerts:", err?.message || err);
+      return null;
+    });
+    return {
+      dispatched: 0,
+      dispatchedEmails: emailAlertResult?.dispatched || 0,
+      reason: 'NO_ELIGIBLE_APPROVED_USERS',
+      emailResults: emailAlertResult?.results || []
+    };
   }
 
-  if (recipientsMap.size === 0) {
-    console.log('No eligible APPROVED users with valid mobile numbers found.');
-    return { dispatched: 0, reason: 'NO_ELIGIBLE_APPROVED_USERS' };
-  }
-
-  console.log('Found ' + recipientsMap.size + ' authorized recipient(s).');
-
-
+  console.log(`🔔 [GATE STATE ALERT] Found ${smsRecipients.length} authorized SMS recipient(s) across Railway Hierarchy.`);
   // 5. Dispatch SMS and record audit trail for each recipient
   const results = [];
   const messageText = `Mirtha Technologies: Level Crossing ${effectiveLcNumber} status changed to ${newState} at ${dateTimeStr}. This is an automated monitoring alert.`;
 
-  for (const [phone, info] of recipientsMap.entries()) {
+  for (const recipient of smsRecipients) {
     try {
-      const sendResult = await sendGateStateSms(phone, effectiveLcNumber, newState, dateTimeStr);
+      const sendResult = await sendGateStateSms(recipient.phone, effectiveLcNumber, newState, dateTimeStr);
 
       // Record in GateStateAlertLog table
       await prisma.gateStateAlertLog.create({
@@ -273,8 +265,8 @@ export async function checkAndDispatchGateStateAlert(options: GateStateAlertOpti
           gateId: effectiveGateId,
           lcNumber: effectiveLcNumber,
           status: newState,
-          recipientMobile: phone,
-          recipientName: info.user.fullName,
+          recipientMobile: recipient.phone,
+          recipientName: recipient.fullName,
            scopeGroupId: null,
           message: messageText,
           provider: sendResult.provider,
@@ -285,13 +277,16 @@ export async function checkAndDispatchGateStateAlert(options: GateStateAlertOpti
       }).catch(err => console.error('Failed to log gate state alert to database:', err));
 
       results.push({
-        user: info.user.fullName,
-        mobile: phone,
+        user: recipient.fullName,
+        mobile: recipient.phone,
+        designation: recipient.designation,
+        department: recipient.department,
+        reason: recipient.reason,
          scopeGroup: null,
         ...sendResult
       });
     } catch (err: any) {
-      console.error(`❌ [GATE STATE ALERT] Failed to send SMS to ${phone}:`, err);
+      console.error(`❌ [GATE STATE ALERT] Failed to send SMS to ${recipient.phone}:`, err);
     }
   }
 
