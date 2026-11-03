@@ -1849,6 +1849,8 @@ router.delete('/:id', authenticate, async (req, res, next) => {
          select: { id: true, gateId: true, openedAt: true, closedAt: true, durationSeconds: true, status: true, openedBy: true, closedBy: true, trainNumber: true, remarks: true },
       });
 
+      const revision = await bumpReportRevisionInTx(tx, id);
+
       if (eventsToDelete.length > 0) {
         await tx.lCGateEventTombstone.createMany({
           data: eventsToDelete.map((e) => ({
@@ -1856,22 +1858,28 @@ router.delete('/:id', authenticate, async (req, res, next) => {
             gateId: e.gateId,
             openedAt: e.openedAt,
           })),
+          skipDuplicates: true,
         });
-        for (const e of eventsToDelete) {
-          await recordEventChangeInTx(tx, e, 'DELETE');
-        }
+
+        await tx.lCGateEventChangeLog.createMany({
+          data: eventsToDelete.map((e) => ({
+            eventId: e.id,
+            gateId: e.gateId,
+            opType: 'DELETE',
+            gateRevision: revision,
+            openedAt: e.openedAt ?? null,
+          })),
+          skipDuplicates: true,
+        });
       }
 
-      // 2. Bump report revision for this gate
-      await bumpReportRevisionInTx(tx, id);
-
-      // 3. Explicitly detach all hardware devices in DeviceRegistry back to unassigned inventory pool
+      // 2. Explicitly detach all hardware devices in DeviceRegistry back to unassigned inventory pool
       await tx.deviceRegistry.updateMany({
         where: { gateId: id },
         data: { gateId: null, masterId: null, childDeviceId: null }
       });
 
-      // 4. Delete the gate (cascades deletion of LCGateEvent)
+      // 3. Delete the gate (cascades deletion of LCGateEvent)
       await tx.lCGate.delete({ where: { id } });
 
       // 5. Bump directory revisions for affected scopes
