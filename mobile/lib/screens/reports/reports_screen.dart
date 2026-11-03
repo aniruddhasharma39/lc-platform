@@ -1,15 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:open_filex/open_filex.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
 import '../../services/reports_cache_service.dart';
+import '../../utils/file_download_helper.dart';
 
 Color parseHexColor(String? hexString) {
   if (hexString == null || hexString.isEmpty) return const Color(0xFF0B3C7A);
@@ -34,17 +32,23 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   bool _isDeveloper = false;
   String get _userId => widget.user['id']?.toString() ?? '0';
 
-  // 1. Clusters & Hierarchy Selection
+  // 1. Report Type Switcher
+  String _reportType = 'complete_log'; // 'complete_log' | 'cycle'
+  Map<String, dynamic>? _cycleAnalytics;
+  bool _isLoadingCycle = false;
+  int? _selectedCycleGateId;
+
+  // 2. Clusters & Hierarchy Selection
   List<dynamic> _clusters = [];
   bool _isLoadingClusters = true;
   final Set<int> _selectedClusterIds = {};
   final Set<int> _selectedGateIds = {};
 
-  // 2. Date Range (Default: Last 7 Days)
+  // 3. Date Range (Default: Last 7 Days)
   late DateTimeRange _dateRange;
   String _activePreset = '7days';
 
-  // 3. Operational Records, Caching & Sync State
+  // 4. Operational Records, Caching & Sync State
   List<dynamic> _records = [];
   Map<String, dynamic> _metrics = {
     'totalOperations': 0,
@@ -65,7 +69,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   DateTime? _lastSyncTime;
   AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
 
-  // 4. Filters & Sorting
+  // 5. Filters & Sorting
   String _filterStatus = 'ALL';
   String _filterShift = 'ALL';
   final String _sortBy = 'openedAt';
@@ -73,7 +77,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   final TextEditingController _searchCtrl = TextEditingController();
   String _searchQuery = '';
 
-  // 5. Generate Report Export State
+  // 6. Generate Report Export State
   bool _isExporting = false;
 
   final List<Map<String, String>> _reportColumns = [
@@ -115,7 +119,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _appLifecycleState = state;
     if (state == AppLifecycleState.resumed) {
-      // Catch-up synchronization when returning to app
       if (_shouldPoll()) {
         final lastSync = _lastSyncTime;
         if (lastSync == null || DateTime.now().difference(lastSync).inSeconds >= 45) {
@@ -148,32 +151,11 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
 
   bool _shouldPoll() {
     if (!mounted) return false;
+    if (_reportType != 'complete_log') return false;
     if (_appLifecycleState != AppLifecycleState.resumed) return false;
-    final isCurrent = ModalRoute.of(context)?.isCurrent ?? true;
-    if (!isCurrent) return false;
-
-    final now = DateTime.now();
-    final todayStr = _formatDate(now);
-    final startStr = _formatDate(_dateRange.start);
-    final endStr = _formatDate(_dateRange.end);
-
-    // Condition 1: Date range includes today
-    final includesToday = endStr.compareTo(todayStr) >= 0 && startStr.compareTo(todayStr) <= 0;
-
-    // Condition 2: Historical window has unclosed events (even if hidden by CLOSED filter)
-    final hasUnclosed = _cursor?.hasUnclosedEvents == true ||
-        (_metrics['currentlyOpenCount'] is int && (_metrics['currentlyOpenCount'] as int) > 0) ||
-        _records.any((r) => r['status'] == 'OPEN');
-
-    return includesToday || hasUnclosed;
-  }
-
-  Future<void> _loadTokenAndFetch() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('token') ?? '';
-    if (!mounted) return;
-    setState(() => _token = token);
-    await _fetchClusters();
+    if (_isSyncing || _isRevalidating) return false;
+    if (_selectedGateIds.isEmpty) return false;
+    return true;
   }
 
   Map<String, String> get _headers => {
@@ -181,8 +163,14 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         'Authorization': 'Bearer $_token',
       };
 
+  Future<void> _loadTokenAndFetch() async {
+    final prefs = await SharedPreferences.getInstance();
+    _token = prefs.getString('auth_token') ?? '';
+    await _fetchClusters();
+  }
+
   String _formatDate(DateTime d) {
-    final y = d.year.toString().padLeft(4, '0');
+    final y = d.year.toString();
     final m = d.month.toString().padLeft(2, '0');
     final day = d.day.toString().padLeft(2, '0');
     return '$y-$m-$day';
@@ -205,14 +193,60 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         _dateRange = DateTimeRange(start: DateTime(now.year, now.month, 1), end: now);
       }
     });
-    _fetchRecords();
+    if (_reportType == 'cycle') {
+      _fetchCycleAnalytics();
+    } else {
+      _fetchRecords();
+    }
+  }
+
+  // Fetch Cycle Analytics
+  Future<void> _fetchCycleAnalytics() async {
+    if (!mounted) return;
+    setState(() => _isLoadingCycle = true);
+
+    try {
+      final queryParams = <String, String>{
+        'startDate': _formatDate(_dateRange.start),
+        'endDate': _formatDate(_dateRange.end),
+      };
+
+      if (_selectedClusterIds.isNotEmpty) {
+        queryParams['scopeGroupIds'] = _selectedClusterIds.join(',');
+      } else if (_isDeveloper) {
+        queryParams['scopeGroupIds'] = 'all';
+      }
+
+      if (_selectedGateIds.isNotEmpty) {
+        queryParams['gateIds'] = _selectedGateIds.join(',');
+      } else if (_isDeveloper) {
+        queryParams['gateIds'] = 'all';
+      }
+
+      final uri = Uri.parse('$baseUrl/reports/cycle-analytics').replace(queryParameters: queryParams);
+      final res = await http.get(uri, headers: _headers);
+
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (mounted) {
+          setState(() {
+            _cycleAnalytics = data as Map<String, dynamic>;
+            _isLoadingCycle = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _isLoadingCycle = false);
+      }
+    } catch (e) {
+      debugPrint('[ReportsScreen] Cycle analytics fetch error: $e');
+      if (mounted) setState(() => _isLoadingCycle = false);
+    }
   }
 
   // 1. Fetch Clusters Tree with Online Authorization Scope Verification
   Future<void> _fetchClusters({bool forceReload = false}) async {
     final cachedHier = await ReportsCacheService.instance.getCachedHierarchy(_userId);
 
-    // Online verification: validate current authorization / scope revision before displaying cached data
     try {
       final headers = Map<String, String>.from(_headers);
       if (cachedHier?.etag != null && !forceReload) {
@@ -223,7 +257,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
           .get(Uri.parse('$baseUrl/reports/clusters'), headers: headers)
           .timeout(const Duration(seconds: 4));
 
-      // Handle HTTP 304 Not Modified: scope confirmed unchanged!
       if (res.statusCode == 304 && cachedHier != null) {
         await ReportsCacheService.instance.touchHierarchyVerified(_userId);
         if (mounted) {
@@ -243,7 +276,11 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
               }
             }
           });
-          _fetchRecords();
+          if (_reportType == 'cycle') {
+            _fetchCycleAnalytics();
+          } else {
+            _fetchRecords();
+          }
         }
         return;
       }
@@ -253,8 +290,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         final list = (data['clusters'] as List?) ?? [];
         final etag = res.headers['etag'] ?? data['directoryRevisionToken'] as String?;
 
-        // Permission Revocation Security Check:
-        // If cached hierarchy existed and etag differs or accessible gates shrunk:
         if (cachedHier != null) {
           final prevGateIds = <int>{};
           for (final c in cachedHier.clusters) {
@@ -306,7 +341,11 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
               }
             }
           });
-          _fetchRecords(forceReload: true);
+          if (_reportType == 'cycle') {
+            _fetchCycleAnalytics();
+          } else {
+            _fetchRecords(forceReload: true);
+          }
         }
         return;
       } else if (res.statusCode == 403 && mounted) {
@@ -314,7 +353,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       }
     } catch (e) {
       debugPrint('[ReportsScreen] Scope verification / hierarchy error (offline fallback): $e');
-      // Graceful offline fallback: if device is offline, allow cached hierarchy
       if (cachedHier != null && mounted) {
         setState(() {
           _clusters = cachedHier.clusters;
@@ -333,7 +371,11 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
             }
           }
         });
-        _fetchRecords();
+        if (_reportType == 'cycle') {
+          _fetchCycleAnalytics();
+        } else {
+          _fetchRecords();
+        }
       }
     } finally {
       if (mounted) setState(() => _isLoadingClusters = false);
@@ -355,13 +397,11 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
 
     final params = _currentFilterParams;
 
-    // Security check: When online, do not render cached records until scope is confirmed
     if (!_isScopeVerified) {
       if (mounted) setState(() => _isLoadingRecords = true);
       return;
     }
 
-    // A. Check Two-Level Cache (Level 1 Memory first, Level 2 Persistent Storage)
     final cached = await ReportsCacheService.instance.getCachedReport(_userId, params);
     if (cached != null) {
       if (mounted) {
@@ -374,7 +414,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         });
       }
 
-      // If cache is fresh and not force-reloading, skip network call entirely!
       if (cached.isFresh && !forceReload) {
         if (mounted) setState(() => _syncStatus = 'synced');
         return;
@@ -383,10 +422,8 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       if (mounted) setState(() => _isLoadingRecords = true);
     }
 
-    // B. Background Revalidation (Conditional HTTP 304 via ETag)
-    if (_isRevalidating) return;
     _isRevalidating = true;
-    if (mounted) setState(() => _syncStatus = 'updating');
+    if (mounted && cached != null) setState(() => _syncStatus = 'updating');
 
     try {
       final queryParams = <String, String>{
@@ -421,7 +458,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
 
       final res = await http.get(uri, headers: headers);
 
-      // Handle HTTP 304 Not Modified: Cache is authoritative!
       if (res.statusCode == 304 && cached != null) {
         await ReportsCacheService.instance.touchVerified(_userId, params, newEtag: res.headers['etag']);
         _lastSyncTime = DateTime.now();
@@ -429,7 +465,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         return;
       }
 
-      // Handle HTTP 200 OK: Cache Replacement
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         final rawRecords = (data['records'] as List?) ?? [];
@@ -521,7 +556,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         final data = json.decode(res.body);
         final payload = IncrementalChangesPayload.fromJson(data);
 
-        // 1. Full Synchronization Recovery trigger
         if (payload.requiresFullSync) {
           debugPrint('[ReportsScreen] Server requested full re-sync: ${payload.resyncReason}');
           keepDraining = false;
@@ -533,7 +567,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
           break;
         }
 
-        // 2. Process Delta Mutations
         final updated = await ReportsCacheService.instance.updateIncrementalChanges(_userId, params, payload);
         if (updated != null) {
           if (mounted) {
@@ -541,31 +574,29 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
               _records = updated.records.map((r) => r.toJson()).toList();
               _metrics = updated.authoritativeMetrics?.toJson() ?? _metrics;
               _cursor = updated.cursor;
-              currentGateRevisions = Map<String, String>.from(updated.cursor.gateRevisions);
+              _cachedEtag = updated.etag;
+              _syncStatus = 'synced';
             });
           }
         }
 
         keepDraining = payload.hasMoreEvents;
-      }
-
-      if (keepDraining) {
-        // Backlog exceeded 20 batches; refresh with full atomic snapshot
-        await _fetchRecords(forceReload: true);
-        return;
+        if (payload.gateRevisions != null) {
+          currentGateRevisions = Map<String, String>.from(payload.gateRevisions!);
+        }
       }
 
       _lastSyncTime = DateTime.now();
       if (mounted) setState(() => _syncStatus = 'synced');
     } catch (e) {
-      debugPrint('[ReportsScreen] Incremental polling error: $e');
+      debugPrint('[ReportsScreen] Incremental sync error: $e');
       if (mounted) setState(() => _syncStatus = 'outdated');
     } finally {
       _isSyncing = false;
     }
   }
 
-  // 3. Hierarchy Tree Bottom Sheet
+  // 3. Scope Groups & Gates Selection Modal Sheet
   void _showHierarchyTreeSheet() {
     showModalBottomSheet(
       context: context,
@@ -574,155 +605,164 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setSheetState) {
-            return Container(
-              height: MediaQuery.of(context).size.height * 0.78,
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-              ),
-              child: Column(
-                children: [
-                  // Handle & Header
-                  Container(
-                    margin: const EdgeInsets.only(top: 10, bottom: 6),
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('Scope Groups & Gates', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: AppColors.primary)),
-                        Row(
-                          children: [
-                            TextButton(
-                              onPressed: () {
+            return Material(
+              color: Colors.white,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+              clipBehavior: Clip.antiAlias,
+              child: SizedBox(
+                height: MediaQuery.of(context).size.height * 0.78,
+                child: Column(
+                  children: [
+                    Container(
+                      margin: const EdgeInsets.only(top: 10, bottom: 6),
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text('Scope Groups & Gates', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                          Row(
+                            children: [
+                              TextButton(
+                                onPressed: () {
+                                  setSheetState(() {
+                                    for (final c in _clusters) {
+                                      if (c['id'] != null) _selectedClusterIds.add(c['id'] as int);
+                                      for (final g in (c['gates'] as List? ?? [])) {
+                                        if (g['id'] != null) _selectedGateIds.add(g['id'] as int);
+                                      }
+                                    }
+                                  });
+                                },
+                                child: const Text('All', style: TextStyle(fontWeight: FontWeight.bold)),
+                              ),
+                              const Text('|', style: TextStyle(color: Colors.grey)),
+                              TextButton(
+                                onPressed: () {
+                                  setSheetState(() {
+                                    _selectedClusterIds.clear();
+                                    _selectedGateIds.clear();
+                                  });
+                                },
+                                child: const Text('Clear', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: ListView.builder(
+                        itemCount: _clusters.length,
+                        itemBuilder: (ctx, idx) {
+                          final cluster = _clusters[idx];
+                          final cId = cluster['id'] as int;
+                          final gates = (cluster['gates'] as List?) ?? [];
+                          final cColor = parseHexColor(cluster['color']);
+                          final isClusterChecked = _selectedClusterIds.contains(cId);
+
+                          return ExpansionTile(
+                            initiallyExpanded: true,
+                            leading: Checkbox(
+                              value: isClusterChecked,
+                              activeColor: AppColors.primary,
+                              onChanged: (val) {
                                 setSheetState(() {
-                                  for (final c in _clusters) {
-                                    if (c['id'] != null) _selectedClusterIds.add(c['id'] as int);
-                                    for (final g in (c['gates'] as List? ?? [])) {
+                                  if (val == true) {
+                                    _selectedClusterIds.add(cId);
+                                    for (final g in gates) {
                                       if (g['id'] != null) _selectedGateIds.add(g['id'] as int);
+                                    }
+                                  } else {
+                                    _selectedClusterIds.remove(cId);
+                                    for (final g in gates) {
+                                      if (g['id'] != null) _selectedGateIds.remove(g['id'] as int);
                                     }
                                   }
                                 });
                               },
-                              child: const Text('All', style: TextStyle(fontWeight: FontWeight.bold)),
                             ),
-                            const Text('|', style: TextStyle(color: Colors.grey)),
-                            TextButton(
-                              onPressed: () {
-                                setSheetState(() {
-                                  _selectedClusterIds.clear();
-                                  _selectedGateIds.clear();
-                                });
-                              },
-                              child: const Text('Clear', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+                            title: Row(
+                              children: [
+                                Container(
+                                  width: 10,
+                                  height: 10,
+                                  decoration: BoxDecoration(color: cColor, shape: BoxShape.circle),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    cluster['name'] ?? 'Cluster',
+                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                  decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(10)),
+                                  child: Text('${gates.length} gates', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                ),
+                              ],
                             ),
-                          ],
-                        ),
-                      ],
+                            children: gates.map((gate) {
+                              final gId = gate['id'] as int;
+                              final isGateChecked = _selectedGateIds.contains(gId);
+                              return CheckboxListTile(
+                                dense: true,
+                                contentPadding: const EdgeInsets.only(left: 48, right: 16),
+                                value: isGateChecked,
+                                activeColor: AppColors.primary,
+                                title: Text(gate['lcNumber'] ?? 'LC', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+                                subtitle: Text(gate['locationName'] ?? '', style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
+                                onChanged: (val) {
+                                  setSheetState(() {
+                                    if (val == true) {
+                                      _selectedGateIds.add(gId);
+                                      _selectedClusterIds.add(cId);
+                                    } else {
+                                      _selectedGateIds.remove(gId);
+                                      final anyLeft = gates.any((g) => _selectedGateIds.contains(g['id']));
+                                      if (!anyLeft) _selectedClusterIds.remove(cId);
+                                    }
+                                  });
+                                },
+                              );
+                            }).toList(),
+                          );
+                        },
+                      ),
                     ),
-                  ),
-                  const Divider(height: 1),
-                  // Scrollable Clusters and Gates Tree
-                  Expanded(
-                    child: ListView.builder(
-                      itemCount: _clusters.length,
-                      itemBuilder: (ctx, idx) {
-                        final cluster = _clusters[idx];
-                        final cId = cluster['id'] as int;
-                        final gates = (cluster['gates'] as List?) ?? [];
-                        final cColor = parseHexColor(cluster['color']);
-                        final isClusterChecked = _selectedClusterIds.contains(cId);
-
-                        return ExpansionTile(
-                          initiallyExpanded: true,
-                          leading: Checkbox(
-                            value: isClusterChecked,
-                            activeColor: AppColors.primary,
-                            onChanged: (val) {
-                              setSheetState(() {
-                                if (val == true) {
-                                  _selectedClusterIds.add(cId);
-                                  for (final g in gates) {
-                                    if (g['id'] != null) _selectedGateIds.add(g['id'] as int);
-                                  }
-                                } else {
-                                  _selectedClusterIds.remove(cId);
-                                  for (final g in gates) {
-                                    if (g['id'] != null) _selectedGateIds.remove(g['id'] as int);
-                                  }
-                                }
-                              });
+                    SafeArea(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: SizedBox(
+                          width: double.infinity,
+                          height: 48,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.primary,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                              setState(() {});
+                              if (_reportType == 'cycle') {
+                                _fetchCycleAnalytics();
+                              } else {
+                                _fetchRecords();
+                              }
                             },
+                            child: Text('Apply Selection (${_selectedGateIds.length} Gates)', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
                           ),
-                          title: Row(
-                            children: [
-                              Container(width: 8, height: 8, decoration: BoxDecoration(color: cColor, shape: BoxShape.circle)),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(cluster['name'] ?? 'Cluster', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(10)),
-                                child: Text('${gates.length}', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey)),
-                              ),
-                            ],
-                          ),
-                          children: gates.map((gate) {
-                            final gId = gate['id'] as int;
-                            final isGateChecked = _selectedGateIds.contains(gId);
-                            return CheckboxListTile(
-                              dense: true,
-                              contentPadding: const EdgeInsets.only(left: 48, right: 16),
-                              value: isGateChecked,
-                              activeColor: AppColors.primary,
-                              title: Text(gate['lcNumber'] ?? 'LC', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
-                              subtitle: Text(gate['locationName'] ?? '', style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
-                              onChanged: (val) {
-                                setSheetState(() {
-                                  if (val == true) {
-                                    _selectedGateIds.add(gId);
-                                    _selectedClusterIds.add(cId);
-                                  } else {
-                                    _selectedGateIds.remove(gId);
-                                    final anyLeft = gates.any((g) => _selectedGateIds.contains(g['id']));
-                                    if (!anyLeft) _selectedClusterIds.remove(cId);
-                                  }
-                                });
-                              },
-                            );
-                          }).toList(),
-                        );
-                      },
-                    ),
-                  ),
-                  // Bottom Button to Apply
-                  SafeArea(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: SizedBox(
-                        width: double.infinity,
-                        height: 48,
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.primary,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          ),
-                          onPressed: () {
-                            Navigator.pop(ctx);
-                            setState(() {});
-                            _fetchRecords();
-                          },
-                          child: Text('Apply Selection (${_selectedGateIds.length} Gates)', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
                         ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             );
           },
@@ -734,37 +774,37 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   // 3.5. Staged Progress Report Export Dialog
   void _startExportWithProgress({
     required BuildContext parentCtx,
+    required String selectedReportType,
     required String selectedFormat,
     required Set<String> selectedCols,
   }) async {
     Navigator.pop(parentCtx);
     setState(() => _isExporting = true);
 
-    double progress = 0.15;
-    String stage = 'Querying records from server...';
-    StateSetter? updateDialog;
+    double progress = 0.05;
+    String stage = 'Initiating export request...';
     Timer? progressTimer;
+    StateSetter? updateDialog;
 
-    // Show non-dismissible progress dialog
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (dialogCtx) => StatefulBuilder(
-        builder: (ctx, setDialogState) {
-          updateDialog = setDialogState;
-          return AlertDialog(
+      builder: (dCtx) => StatefulBuilder(
+        builder: (dCtx, setDlgState) {
+          updateDialog = setDlgState;
+          return Dialog(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            content: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Container(
-                    width: 52,
-                    height: 52,
+                    width: 54,
+                    height: 54,
                     decoration: BoxDecoration(
-                      color: selectedFormat == 'pdf' ? const Color(0xFFFFF1F2) : const Color(0xFFF0FDF4),
-                      borderRadius: BorderRadius.circular(12),
+                      color: (selectedFormat == 'pdf' ? const Color(0xFFE11D48) : const Color(0xFF107C41)).withValues(alpha: 0.1),
+                      shape: BoxShape.circle,
                     ),
                     child: Icon(
                       selectedFormat == 'pdf' ? Icons.picture_as_pdf_rounded : Icons.table_view_rounded,
@@ -779,7 +819,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Compiling operational logs & metrics...',
+                    selectedReportType == 'cycle' ? 'Compiling operating cycle analytics...' : 'Compiling operational logs & metrics...',
                     style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
                   ),
                   const SizedBox(height: 18),
@@ -823,7 +863,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       ),
     );
 
-    // Staged progress ticker
     progressTimer = Timer.periodic(const Duration(milliseconds: 300), (_) {
       if (updateDialog != null) {
         updateDialog!(() {
@@ -846,6 +885,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         'startDate': _formatDate(_dateRange.start),
         'endDate': _formatDate(_dateRange.end),
         'format': selectedFormat,
+        'reportType': selectedReportType,
         'columns': selectedCols.join(','),
         'sortBy': _sortBy,
         'sortOrder': _sortOrder,
@@ -869,26 +909,34 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         }
         await Future.delayed(const Duration(milliseconds: 350));
         if (mounted && Navigator.canPop(context)) {
-          Navigator.pop(context); // close progress dialog
+          Navigator.pop(context);
         }
 
         try {
-          final dir = await getApplicationDocumentsDirectory();
           final ext = selectedFormat == 'pdf' ? 'pdf' : 'xlsx';
+          final mimeType = selectedFormat == 'pdf'
+              ? 'application/pdf'
+              : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
           final timestamp = DateTime.now().millisecondsSinceEpoch;
-          final file = File('${dir.path}/LC_Gate_Report_$timestamp.$ext');
-          await file.writeAsBytes(res.bodyBytes, flush: true);
+          final filename = selectedReportType == 'cycle'
+              ? 'LC_Gate_Cycle_Report_$timestamp.$ext'
+              : 'LC_Gate_Complete_Log_$timestamp.$ext';
+
+          await downloadFileUniversal(
+            bytes: res.bodyBytes,
+            filename: filename,
+            mimeType: mimeType,
+          );
 
           if (mounted) {
-            AppFeedback.showSuccess(context, 'Report saved (${(res.bodyBytes.length / 1024).toStringAsFixed(1)} KB)! Opening...');
-            final openResult = await OpenFilex.open(file.path);
-            if (openResult.type != ResultType.done && mounted) {
-              AppFeedback.showInfo(context, 'Saved to ${file.path}');
-            }
+            AppFeedback.showSuccess(
+              context,
+              'Report exported successfully (${(res.bodyBytes.length / 1024).toStringAsFixed(1)} KB)!',
+            );
           }
         } catch (fileErr) {
           if (mounted) {
-            AppFeedback.showWarning(context, 'Report downloaded, but could not open viewer: $fileErr');
+            AppFeedback.showWarning(context, 'Report downloaded, but viewer error: $fileErr');
           }
         }
       } else {
@@ -907,6 +955,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
 
   // 4. Generate Report Modal (Excel & PDF)
   void _showGenerateModal() {
+    String selectedReportType = _reportType;
     String selectedFormat = 'xlsx';
     final Set<String> selectedCols = _reportColumns.map((c) => c['key']!).toSet();
 
@@ -917,181 +966,263 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
-            return Container(
-              height: MediaQuery.of(context).size.height * 0.82,
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-              ),
-              child: Column(
-                children: [
-                  Container(
-                    margin: const EdgeInsets.only(top: 10, bottom: 6),
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('Generate Operational Report', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: AppColors.primary)),
-                        IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx)),
-                      ],
+            return Material(
+              color: Colors.white,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+              clipBehavior: Clip.antiAlias,
+              child: SizedBox(
+                height: MediaQuery.of(context).size.height * 0.85,
+                child: Column(
+                  children: [
+                    Container(
+                      margin: const EdgeInsets.only(top: 10, bottom: 6),
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
                     ),
-                  ),
-                  const Divider(height: 1),
-                  Expanded(
-                    child: ListView(
-                      padding: const EdgeInsets.all(16),
-                      children: [
-                        // Filter Summary Card
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade50,
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: Colors.grey.shade200),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text('Generate Operational Report', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                          IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx)),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: ListView(
+                        padding: const EdgeInsets.all(16),
+                        children: [
+                          const Text('SELECT REPORT TYPE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                          const SizedBox(height: 8),
+                          Row(
                             children: [
-                              Text('Range: ${_formatDate(_dateRange.start)} to ${_formatDate(_dateRange.end)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                              const SizedBox(height: 4),
-                              Text('Selected: ${_selectedClusterIds.length} Clusters, ${_selectedGateIds.length} Gates', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
-                              Text('Events in range: ${_records.length}', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => setModalState(() => selectedReportType = 'complete_log'),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: selectedReportType == 'complete_log' ? AppColors.primary.withValues(alpha: 0.08) : Colors.white,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: selectedReportType == 'complete_log' ? AppColors.primary : Colors.grey.shade300,
+                                        width: 2,
+                                      ),
+                                    ),
+                                    child: Column(
+                                      children: const [
+                                        Icon(Icons.format_list_bulleted_rounded, color: AppColors.primary, size: 24),
+                                        SizedBox(height: 6),
+                                        Text('Complete Log', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                        Text('Chronological logs', style: TextStyle(fontSize: 10.5, color: Colors.grey)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => setModalState(() => selectedReportType = 'cycle'),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: selectedReportType == 'cycle' ? const Color(0xFF046A38).withValues(alpha: 0.08) : Colors.white,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: selectedReportType == 'cycle' ? const Color(0xFF046A38) : Colors.grey.shade300,
+                                        width: 2,
+                                      ),
+                                    ),
+                                    child: Column(
+                                      children: const [
+                                        Icon(Icons.insights_rounded, color: Color(0xFF046A38), size: 24),
+                                        SizedBox(height: 6),
+                                        Text('Cycle Report', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                        Text('Operating cycles audit', style: TextStyle(fontSize: 10.5, color: Colors.grey)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ],
                           ),
-                        ),
-                        const SizedBox(height: 16),
-                        const Text('SELECT DOCUMENT FORMAT', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            // Excel Card
-                            Expanded(
-                              child: InkWell(
-                                onTap: () => setModalState(() => selectedFormat = 'xlsx'),
-                                child: Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: selectedFormat == 'xlsx' ? const Color(0xFF107C41).withValues(alpha: 0.08) : Colors.white,
-                                    borderRadius: BorderRadius.circular(10),
-                                    border: Border.all(color: selectedFormat == 'xlsx' ? const Color(0xFF107C41) : Colors.grey.shade300, width: 2),
-                                  ),
-                                  child: Column(
-                                    children: const [
-                                      Icon(Icons.table_view_rounded, color: Color(0xFF107C41), size: 28),
-                                      SizedBox(height: 6),
-                                      Text('Excel (.xlsx)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
-                                      Text('Formatted sheet', style: TextStyle(fontSize: 10.5, color: Colors.grey)),
-                                    ],
-                                  ),
-                                ),
-                              ),
+                          const SizedBox(height: 16),
+
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade50,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: Colors.grey.shade200),
                             ),
-                            const SizedBox(width: 12),
-                            // PDF Card
-                            Expanded(
-                              child: InkWell(
-                                onTap: () => setModalState(() => selectedFormat = 'pdf'),
-                                child: Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: selectedFormat == 'pdf' ? const Color(0xFFE11D48).withValues(alpha: 0.08) : Colors.white,
-                                    borderRadius: BorderRadius.circular(10),
-                                    border: Border.all(color: selectedFormat == 'pdf' ? const Color(0xFFE11D48) : Colors.grey.shade300, width: 2),
-                                  ),
-                                  child: Column(
-                                    children: const [
-                                      Icon(Icons.picture_as_pdf_rounded, color: Color(0xFFE11D48), size: 28),
-                                      SizedBox(height: 6),
-                                      Text('PDF Document', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
-                                      Text('Printable logsheet', style: TextStyle(fontSize: 10.5, color: Colors.grey)),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 18),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('SELECT COLUMNS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
-                            Row(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                TextButton(
-                                  onPressed: () => setModalState(() => selectedCols.addAll(_reportColumns.map((c) => c['key']!))),
-                                  child: const Text('All', style: TextStyle(fontSize: 11)),
-                                ),
-                                TextButton(
-                                  onPressed: () => setModalState(() {
-                                    selectedCols.clear();
-                                    selectedCols.addAll(['lcNumber', 'locationName', 'openedDate', 'openedTime', 'durationFormatted', 'status']);
-                                  }),
-                                  child: const Text('Default', style: TextStyle(fontSize: 11)),
+                                Text('Range: ${_formatDate(_dateRange.start)} to ${_formatDate(_dateRange.end)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                const SizedBox(height: 4),
+                                Text('Selected: ${_selectedClusterIds.length} Clusters, ${_selectedGateIds.length} Gates', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                                Text(
+                                  selectedReportType == 'cycle' ? 'Scope: Analytical cycle audit & daily KPIs' : 'Events in range: ${_records.length}',
+                                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
                                 ),
                               ],
                             ),
-                          ],
-                        ),
-                        ..._reportColumns.map((col) {
-                          final k = col['key']!;
-                          final isChecked = selectedCols.contains(k);
-                          return CheckboxListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            title: Text(col['label']!, style: const TextStyle(fontSize: 13)),
-                            value: isChecked,
-                            activeColor: AppColors.primary,
-                            onChanged: (val) {
-                              setModalState(() {
-                                if (val == true) {
-                                  selectedCols.add(k);
-                                } else if (selectedCols.length > 1) {
-                                  selectedCols.remove(k);
-                                }
-                              });
-                            },
-                          );
-                        }),
-                      ],
-                    ),
-                  ),
-                  SafeArea(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: SizedBox(
-                        width: double.infinity,
-                        height: 48,
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: selectedFormat == 'xlsx' ? const Color(0xFF107C41) : const Color(0xFFE11D48),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                           ),
-                          icon: _isExporting ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) : const Icon(Icons.download, color: Colors.white),
-                          label: Text(_isExporting ? 'Generating...' : 'Download ${selectedFormat.toUpperCase()} Report', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-                          onPressed: _isExporting
-                              ? null
-                              : () {
-                                  if (_selectedGateIds.isEmpty) {
-                                    AppFeedback.showInfo(context, 'Please select at least one gate to export.');
-                                    return;
-                                  }
-                                  _startExportWithProgress(
-                                    parentCtx: ctx,
-                                    selectedFormat: selectedFormat,
-                                    selectedCols: selectedCols,
-                                  );
+                          const SizedBox(height: 16),
+                          const Text('SELECT DOCUMENT FORMAT', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => setModalState(() => selectedFormat = 'xlsx'),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: selectedFormat == 'xlsx' ? const Color(0xFF107C41).withValues(alpha: 0.08) : Colors.white,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: selectedFormat == 'xlsx' ? const Color(0xFF107C41) : Colors.grey.shade300, width: 2),
+                                    ),
+                                    child: Column(
+                                      children: const [
+                                        Icon(Icons.table_view_rounded, color: Color(0xFF107C41), size: 28),
+                                        SizedBox(height: 6),
+                                        Text('Excel (.xlsx)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+                                        Text('Formatted sheet', style: TextStyle(fontSize: 10.5, color: Colors.grey)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => setModalState(() => selectedFormat = 'pdf'),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: selectedFormat == 'pdf' ? const Color(0xFFE11D48).withValues(alpha: 0.08) : Colors.white,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: selectedFormat == 'pdf' ? const Color(0xFFE11D48) : Colors.grey.shade300, width: 2),
+                                    ),
+                                    child: Column(
+                                      children: const [
+                                        Icon(Icons.picture_as_pdf_rounded, color: Color(0xFFE11D48), size: 28),
+                                        SizedBox(height: 6),
+                                        Text('PDF Document', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+                                        Text('Printable logsheet', style: TextStyle(fontSize: 10.5, color: Colors.grey)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 18),
+                          if (selectedReportType == 'complete_log') ...[
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('SELECT COLUMNS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                                Row(
+                                  children: [
+                                    TextButton(
+                                      onPressed: () => setModalState(() => selectedCols.addAll(_reportColumns.map((c) => c['key']!))),
+                                      child: const Text('All', style: TextStyle(fontSize: 11)),
+                                    ),
+                                    TextButton(
+                                      onPressed: () => setModalState(() {
+                                        selectedCols.clear();
+                                        selectedCols.addAll(['lcNumber', 'locationName', 'openedDate', 'openedTime', 'durationFormatted', 'status']);
+                                      }),
+                                      child: const Text('Default', style: TextStyle(fontSize: 11)),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            ..._reportColumns.map((col) {
+                              final k = col['key']!;
+                              final isChecked = selectedCols.contains(k);
+                              return CheckboxListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                title: Text(col['label']!, style: const TextStyle(fontSize: 13)),
+                                value: isChecked,
+                                activeColor: AppColors.primary,
+                                onChanged: (val) {
+                                  setModalState(() {
+                                    if (val == true) {
+                                      selectedCols.add(k);
+                                    } else if (selectedCols.length > 1) {
+                                      selectedCols.remove(k);
+                                    }
+                                  });
                                 },
+                              );
+                            }),
+                          ] else ...[
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF046A38).withValues(alpha: 0.06),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: const Color(0xFF046A38).withValues(alpha: 0.2)),
+                              ),
+                              child: Row(
+                                children: const [
+                                  Icon(Icons.info_outline_rounded, color: Color(0xFF046A38), size: 20),
+                                  SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      'Cycle Report includes daily operating cycle counts, average opening/closing durations, and total operational window metrics.',
+                                      style: TextStyle(fontSize: 11.5, color: Color(0xFF046A38)),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    SafeArea(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: SizedBox(
+                          width: double.infinity,
+                          height: 48,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: selectedFormat == 'xlsx' ? const Color(0xFF107C41) : const Color(0xFFE11D48),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            icon: _isExporting ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) : const Icon(Icons.download, color: Colors.white),
+                            label: Text(_isExporting ? 'Generating...' : 'Download ${selectedFormat.toUpperCase()} Report', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                            onPressed: _isExporting
+                                ? null
+                                : () {
+                                    if (_selectedGateIds.isEmpty) {
+                                      AppFeedback.showInfo(context, 'Please select at least one gate to export.');
+                                      return;
+                                    }
+                                    _startExportWithProgress(
+                                      parentCtx: ctx,
+                                      selectedReportType: selectedReportType,
+                                      selectedFormat: selectedFormat,
+                                      selectedCols: selectedCols,
+                                    );
+                                  },
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             );
           },
@@ -1114,7 +1245,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Force Refresh',
-            onPressed: () => _fetchRecords(forceReload: true),
+            onPressed: () => _reportType == 'cycle' ? _fetchCycleAnalytics() : _fetchRecords(forceReload: true),
           ),
           IconButton(
             icon: const Icon(Icons.download, color: Color(0xFF10B981)),
@@ -1126,13 +1257,14 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       body: _isLoadingClusters
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
-              onRefresh: () => _fetchRecords(forceReload: true),
+              onRefresh: () => _reportType == 'cycle' ? _fetchCycleAnalytics() : _fetchRecords(forceReload: true),
               child: ListView(
                 padding: const EdgeInsets.all(12),
                 children: [
-                  _buildKpiSection(),
+                  // 1. Report Type Selector
+                  _buildReportTypeSelector(),
 
-                  // 1. Scope Groups & Gates Tree Trigger Card
+                  // 2. Scope Groups & Gates Tree Trigger Card
                   InkWell(
                     onTap: _showHierarchyTreeSheet,
                     child: Container(
@@ -1166,7 +1298,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                   ),
                   const SizedBox(height: 10),
 
-                  // 2. Date Range Picker Card & Presets
+                  // 3. Date Range Picker Card & Presets
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
@@ -1194,7 +1326,11 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                     _dateRange = picked;
                                     _activePreset = 'custom';
                                   });
-                                  _fetchRecords();
+                                  if (_reportType == 'cycle') {
+                                    _fetchCycleAnalytics();
+                                  } else {
+                                    _fetchRecords();
+                                  }
                                 }
                               },
                               child: Row(
@@ -1208,7 +1344,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                           ],
                         ),
                         const SizedBox(height: 8),
-                        // Presets Row
                         SingleChildScrollView(
                           scrollDirection: Axis.horizontal,
                           child: Row(
@@ -1231,139 +1366,640 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                   ),
                   const SizedBox(height: 10),
 
-                  // 3. Search Input
-                  Container(
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.grey.shade200),
-                    ),
-                    child: TextField(
-                      controller: _searchCtrl,
-                      decoration: const InputDecoration(
-                        hintText: 'Search LC#, location...',
-                        hintStyle: TextStyle(fontSize: 12.5),
-                        prefixIcon: Icon(Icons.search, size: 18),
-                        border: InputBorder.none,
-                        contentPadding: EdgeInsets.symmetric(vertical: 10),
-                      ),
-                      onSubmitted: (val) {
-                        setState(() => _searchQuery = val);
-                        _fetchRecords();
-                      },
-                    ),
-                  ),
-                  const SizedBox(height: 8),
+                  // 4. Report Body: Complete Log vs Cycle Report
+                  if (_reportType == 'complete_log') ...[
+                    _buildKpiSection(),
+                    const SizedBox(height: 10),
 
-                  // 4. Status and Operational Shift Filter Row
-                  Row(
-                    children: [
-                      // Status Filter Dropdown
-                      Expanded(
-                        child: Container(
-                          height: 42,
-                          padding: const EdgeInsets.symmetric(horizontal: 10),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: Colors.grey.shade200),
-                          ),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButton<String>(
-                              value: _filterStatus,
-                              isExpanded: true,
-                              items: const [
-                                DropdownMenuItem(value: 'ALL', child: Text('All Status', style: TextStyle(fontSize: 12))),
-                                DropdownMenuItem(value: 'CLOSED', child: Text('Closed', style: TextStyle(fontSize: 12))),
-                                DropdownMenuItem(value: 'EXTENDED_DELAY', child: Text('Delays (>15m)', style: TextStyle(fontSize: 12))),
-                                DropdownMenuItem(value: 'OPEN', child: Text('Open', style: TextStyle(fontSize: 12))),
-                              ],
-                              onChanged: (val) {
-                                if (val != null) {
-                                  setState(() => _filterStatus = val);
-                                  _fetchRecords();
-                                }
-                              },
-                            ),
-                          ),
-                        ),
+                    // Search Input
+                    Container(
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.grey.shade200),
                       ),
-                      const SizedBox(width: 8),
-                      // Shift Filter Dropdown
-                      Expanded(
-                        child: Container(
-                          height: 42,
-                          padding: const EdgeInsets.symmetric(horizontal: 10),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: Colors.grey.shade200),
-                          ),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButton<String>(
-                              value: _filterShift,
-                              isExpanded: true,
-                              items: const [
-                                DropdownMenuItem(value: 'ALL', child: Text('All Shifts', style: TextStyle(fontSize: 12))),
-                                DropdownMenuItem(value: 'MORNING', child: Text('Morning (06-14)', style: TextStyle(fontSize: 12))),
-                                DropdownMenuItem(value: 'EVENING', child: Text('Evening (14-22)', style: TextStyle(fontSize: 12))),
-                                DropdownMenuItem(value: 'NIGHT', child: Text('Night (22-06)', style: TextStyle(fontSize: 12))),
-                              ],
-                              onChanged: (val) {
-                                if (val != null) {
-                                  setState(() => _filterShift = val);
-                                  _fetchRecords();
-                                }
-                              },
-                            ),
-                          ),
+                      child: TextField(
+                        controller: _searchCtrl,
+                        decoration: const InputDecoration(
+                          hintText: 'Search LC#, location...',
+                          hintStyle: TextStyle(fontSize: 12.5),
+                          prefixIcon: Icon(Icons.search, size: 18),
+                          border: InputBorder.none,
+                          contentPadding: EdgeInsets.symmetric(vertical: 10),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-
-                  // 5. Operational Records Logsheet
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('Logsheet Records (${_records.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                      TextButton.icon(
-                        icon: const Icon(Icons.tune, size: 15),
-                        label: const Text('Sort Order', style: TextStyle(fontSize: 12)),
-                        onPressed: () {
-                          setState(() {
-                            _sortOrder = _sortOrder == 'asc' ? 'desc' : 'asc';
-                          });
+                        onSubmitted: (val) {
+                          setState(() => _searchQuery = val);
                           _fetchRecords();
                         },
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
+                    ),
+                    const SizedBox(height: 8),
 
-                  if (_isLoadingRecords)
-                    const Center(child: Padding(padding: EdgeInsets.all(32), child: CircularProgressIndicator()))
-                  else if (_records.isEmpty)
-                    Container(
-                      padding: const EdgeInsets.all(32),
-                      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
-                      child: Column(
-                        children: [
-                          Icon(Icons.meeting_room_outlined, size: 40, color: Colors.grey.shade400),
-                          const SizedBox(height: 8),
-                          const Text('No operational records found', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
-                          const SizedBox(height: 4),
-                          const Text('Try selecting more clusters/gates or widening the date range.', style: TextStyle(fontSize: 11.5, color: Colors.grey), textAlign: TextAlign.center),
-                        ],
-                      ),
-                    )
-                  else
-                    ..._records.map((rec) => _buildRecordCard(rec)),
+                    // Status and Operational Shift Filter Row
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Container(
+                            height: 42,
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: Colors.grey.shade200),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _filterStatus,
+                                isExpanded: true,
+                                items: const [
+                                  DropdownMenuItem(value: 'ALL', child: Text('All Status', style: TextStyle(fontSize: 12))),
+                                  DropdownMenuItem(value: 'CLOSED', child: Text('Closed', style: TextStyle(fontSize: 12))),
+                                  DropdownMenuItem(value: 'EXTENDED_DELAY', child: Text('Delays (>15m)', style: TextStyle(fontSize: 12))),
+                                  DropdownMenuItem(value: 'OPEN', child: Text('Open', style: TextStyle(fontSize: 12))),
+                                ],
+                                onChanged: (val) {
+                                  if (val != null) {
+                                    setState(() => _filterStatus = val);
+                                    _fetchRecords();
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Container(
+                            height: 42,
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: Colors.grey.shade200),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _filterShift,
+                                isExpanded: true,
+                                items: const [
+                                  DropdownMenuItem(value: 'ALL', child: Text('All Shifts', style: TextStyle(fontSize: 12))),
+                                  DropdownMenuItem(value: 'MORNING', child: Text('Morning (06-14)', style: TextStyle(fontSize: 12))),
+                                  DropdownMenuItem(value: 'EVENING', child: Text('Evening (14-22)', style: TextStyle(fontSize: 12))),
+                                  DropdownMenuItem(value: 'NIGHT', child: Text('Night (22-06)', style: TextStyle(fontSize: 12))),
+                                ],
+                                onChanged: (val) {
+                                  if (val != null) {
+                                    setState(() => _filterShift = val);
+                                    _fetchRecords();
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+
+                    _buildCompleteLogList(),
+                  ] else ...[
+                    _buildCycleAnalyticsView(),
+                  ],
                 ],
               ),
             ),
+    );
+  }
+
+  Widget _buildReportTypeSelector() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: InkWell(
+              onTap: () {
+                if (_reportType != 'complete_log') {
+                  setState(() => _reportType = 'complete_log');
+                  if (_records.isEmpty) {
+                    _fetchRecords();
+                  }
+                }
+              },
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 9),
+                decoration: BoxDecoration(
+                  color: _reportType == 'complete_log' ? AppColors.primary : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.format_list_bulleted_rounded,
+                      size: 16,
+                      color: _reportType == 'complete_log' ? Colors.white : Colors.grey.shade700,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Complete Log',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.bold,
+                        color: _reportType == 'complete_log' ? Colors.white : Colors.grey.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: InkWell(
+              onTap: () {
+                if (_reportType != 'cycle') {
+                  setState(() => _reportType = 'cycle');
+                  _fetchCycleAnalytics();
+                }
+              },
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 9),
+                decoration: BoxDecoration(
+                  color: _reportType == 'cycle' ? const Color(0xFF046A38) : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.insights_rounded,
+                      size: 16,
+                      color: _reportType == 'cycle' ? Colors.white : Colors.grey.shade700,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Cycle Report',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.bold,
+                        color: _reportType == 'cycle' ? Colors.white : Colors.grey.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCompleteLogList() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('Logsheet Records (${_records.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+            PopupMenuButton<String>(
+              tooltip: 'Sort order',
+              icon: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.sort_rounded, size: 16, color: AppColors.primary),
+                  const SizedBox(width: 4),
+                  Text(_sortOrder.toUpperCase(), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                ],
+              ),
+              onSelected: (val) {
+                setState(() {
+                  _sortOrder = val;
+                });
+                _fetchRecords();
+              },
+              itemBuilder: (ctx) => const [
+                PopupMenuItem(value: 'desc', child: Text('Newest First (DESC)', style: TextStyle(fontSize: 12))),
+                PopupMenuItem(value: 'asc', child: Text('Oldest First (ASC)', style: TextStyle(fontSize: 12))),
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        if (_isLoadingRecords)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 40),
+            child: Center(child: CircularProgressIndicator()),
+          )
+        else if (_records.isEmpty)
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 16),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: Column(
+              children: [
+                Icon(Icons.door_sliding_outlined, size: 48, color: Colors.grey.shade400),
+                const SizedBox(height: 12),
+                const Text('No operational records found', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                const SizedBox(height: 4),
+                Text(
+                  'Try selecting more clusters/gates or widening the date range.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+              ],
+            ),
+          )
+        else
+          ..._buildDatePartitionedLogCards(),
+      ],
+    );
+  }
+
+  List<Widget> _buildDatePartitionedLogCards() {
+    final Map<String, List<dynamic>> grouped = {};
+    for (final rec in _records) {
+      String dateKey = (rec['openedDate'] ?? '').toString();
+      if (dateKey.isEmpty && rec['openedAt'] != null) {
+        dateKey = rec['openedAt'].toString().split('T').first;
+      }
+      if (dateKey.isEmpty) dateKey = 'Other / Incomplete';
+      grouped.putIfAbsent(dateKey, () => []).add(rec);
+    }
+
+    final dateKeys = grouped.keys.toList();
+
+    return dateKeys.expand((dateKey) {
+      final recs = grouped[dateKey]!;
+      return [
+        Container(
+          margin: const EdgeInsets.only(top: 8, bottom: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: AppColors.primary.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppColors.primary.withValues(alpha: 0.2)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.calendar_today_rounded, size: 13, color: AppColors.primary),
+              const SizedBox(width: 6),
+              Text(dateKey, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5, color: AppColors.primary)),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text('${recs.length} ops', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary)),
+              ),
+            ],
+          ),
+        ),
+        ...recs.map((rec) => _buildRecordCard(rec)),
+      ];
+    }).toList();
+  }
+
+  Widget _buildCycleAnalyticsView() {
+    if (_isLoadingCycle) {
+      return Container(
+        padding: const EdgeInsets.symmetric(vertical: 48),
+        alignment: Alignment.center,
+        child: Column(
+          children: const [
+            CircularProgressIndicator(color: Color(0xFF046A38)),
+            SizedBox(height: 12),
+            Text('Calculating operational cycles & durations...', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          ],
+        ),
+      );
+    }
+
+    if (_cycleAnalytics == null) {
+      return Container(
+        padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey.shade200),
+        ),
+        child: Column(
+          children: [
+            Icon(Icons.insights_rounded, size: 40, color: Colors.grey.shade400),
+            const SizedBox(height: 10),
+            const Text('No cycle analytics loaded', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+            const SizedBox(height: 4),
+            Text('Tap refresh or select clusters to calculate cycle KPIs.', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+          ],
+        ),
+      );
+    }
+
+    final overall = (_cycleAnalytics!['overall'] as Map<String, dynamic>?) ?? {};
+    final gateReports = (_cycleAnalytics!['gateReports'] as List?) ?? [];
+
+    final totalCycles = overall['totalCycles'] ?? 0;
+    final avgClosingFormatted = overall['avgClosingFormatted'] ?? '—';
+    final avgOpeningFormatted = overall['avgOpeningFormatted'] ?? '—';
+    final totalClosedFormatted = overall['totalClosedFormatted'] ?? '0s';
+    final totalOpenFormatted = overall['totalOpenFormatted'] ?? '0s';
+    final reportingGatesCount = overall['reportingGatesCount'] ?? gateReports.length;
+
+    final displayedReports = _selectedCycleGateId == null
+        ? gateReports
+        : gateReports.where((gr) => gr['gate']?['id'] == _selectedCycleGateId).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: _buildCycleKpiCard(
+                'Completed Cycles',
+                '$totalCycles',
+                Icons.sync_rounded,
+                const Color(0xFF046A38),
+                'OPEN ➔ CLOSED ➔ OPEN',
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _buildCycleKpiCard(
+                'Avg Closing Time',
+                '$avgClosingFormatted',
+                Icons.hourglass_bottom_rounded,
+                const Color(0xFF2563EB),
+                'Mean closure duration',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: _buildCycleKpiCard(
+                'Avg Opening Time',
+                '$avgOpeningFormatted',
+                Icons.schedule_rounded,
+                const Color(0xFF059669),
+                'Road clearance interval',
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _buildCycleKpiCard(
+                'Total Road Closed',
+                '$totalClosedFormatted',
+                Icons.timer_outlined,
+                const Color(0xFFD97706),
+                'Cumulative restriction',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: _buildCycleKpiCard(
+                'Total Road Open',
+                '$totalOpenFormatted',
+                Icons.speed_rounded,
+                const Color(0xFF7C3AED),
+                'Cumulative clearance',
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _buildCycleKpiCard(
+                'Reporting Gates',
+                '$reportingGatesCount',
+                Icons.domain_rounded,
+                AppColors.primary,
+                'Active monitored gates',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+
+        if (gateReports.length > 1) ...[
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: ChoiceChip(
+                    label: Text('All (${gateReports.length} Gates)', style: TextStyle(fontSize: 11, fontWeight: _selectedCycleGateId == null ? FontWeight.bold : FontWeight.normal, color: _selectedCycleGateId == null ? Colors.white : Colors.black87)),
+                    selected: _selectedCycleGateId == null,
+                    selectedColor: const Color(0xFF046A38),
+                    backgroundColor: Colors.white,
+                    visualDensity: VisualDensity.compact,
+                    onSelected: (_) => setState(() => _selectedCycleGateId = null),
+                  ),
+                ),
+                ...gateReports.map((gr) {
+                  final g = gr['gate'] as Map<String, dynamic>? ?? {};
+                  final gId = g['id'] as int?;
+                  final kpis = gr['kpis'] as Map<String, dynamic>? ?? {};
+                  final isSelected = _selectedCycleGateId == gId;
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: ChoiceChip(
+                      label: Text('${g['lcNumber']} (${kpis['totalCycles'] ?? 0})', style: TextStyle(fontSize: 11, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, color: isSelected ? Colors.white : Colors.black87)),
+                      selected: isSelected,
+                      selectedColor: const Color(0xFF046A38),
+                      backgroundColor: Colors.white,
+                      visualDensity: VisualDensity.compact,
+                      onSelected: (_) => setState(() => _selectedCycleGateId = gId),
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
+
+        if (displayedReports.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(24),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10)),
+            child: const Text('No operational cycles found for selected gate(s).', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          )
+        else
+          ...displayedReports.map((gr) => _buildGateCycleSection(gr)),
+      ],
+    );
+  }
+
+  Widget _buildCycleKpiCard(String label, String value, IconData icon, Color color, String sub) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.grey.shade600), overflow: TextOverflow.ellipsis),
+              ),
+              Icon(icon, size: 15, color: color),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(value, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: color)),
+          const SizedBox(height: 2),
+          Text(sub, style: TextStyle(fontSize: 9.5, color: Colors.grey.shade500), overflow: TextOverflow.ellipsis),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGateCycleSection(dynamic gr) {
+    final gate = (gr['gate'] as Map<String, dynamic>?) ?? {};
+    final kpis = (gr['kpis'] as Map<String, dynamic>?) ?? {};
+    final days = (gr['dailyBreakdown'] as List?) ?? [];
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF046A38).withValues(alpha: 0.05),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+              border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(gate['lcNumber'] ?? 'LC', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF046A38))),
+                          if (gate['name'] != null && gate['name'].toString().isNotEmpty) ...[
+                            const SizedBox(width: 6),
+                            Text('• ${gate['name']}', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${gate['locationName'] ?? ''}${gate['division'] != null ? ' • ${gate['division']} Div' : ''}${gate['zone'] != null ? ' (${gate['zone']})' : ''}',
+                        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF046A38),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '${kpis['totalCycles'] ?? 0} Cycles',
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (days.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('No operating cycles recorded in this date range.', style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+            )
+          else
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: days.length,
+              separatorBuilder: (ctx, i) => const Divider(height: 1),
+              itemBuilder: (ctx, i) {
+                final d = days[i] as Map<String, dynamic>;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(d['dateFormatted'] ?? d['dateStr'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12)),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Closed: ${d['totalClosedFormatted'] ?? '0s'} • Open: ${d['totalOpenFormatted'] ?? '0s'}',
+                            style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600),
+                          ),
+                        ],
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF046A38).withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              '${d['completedCycles']} cycles',
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF046A38)),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Avg close: ${d['avgClosingFormatted'] ?? '—'}',
+                            style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+        ],
+      ),
     );
   }
 
