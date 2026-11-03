@@ -165,7 +165,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
 
   Future<void> _loadTokenAndFetch() async {
     final prefs = await SharedPreferences.getInstance();
-    _token = prefs.getString('auth_token') ?? '';
+    _token = prefs.getString('token') ?? prefs.getString('auth_token') ?? '';
     await _fetchClusters();
   }
 

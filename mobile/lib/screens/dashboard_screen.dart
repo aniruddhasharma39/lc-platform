@@ -872,6 +872,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  Future<void> _deleteUser(int id, String userName) async {
+    final token = await _getToken();
+    try {
+      final res = await http.delete(
+        Uri.parse('$baseUrl/users/$id'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+      );
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        _fetchAuxiliaryData(force: true);
+        if (mounted) {
+          AppFeedback.showSuccess(context, 'User "$userName" deleted permanently.');
+        }
+      } else {
+        String errMsg = 'Failed to delete user (HTTP ${res.statusCode})';
+        try {
+          final data = json.decode(res.body);
+          if (data is Map && (data['error'] != null || data['message'] != null)) {
+            errMsg = (data['error'] ?? data['message']).toString();
+          }
+        } catch (_) {}
+        if (mounted) {
+          AppFeedback.showError(context, errMsg);
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        AppFeedback.showError(context, 'Failed to delete user: $e');
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading && _systemModules.isEmpty) {
@@ -2575,37 +2609,89 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 ...metaWidgets
                               ],
                               const SizedBox(height: 12),
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: TextButton.icon(
-                                  style: TextButton.styleFrom(foregroundColor: u['status'] == 'DEACTIVATED' ? AppColors.success : AppColors.danger),
-                                  icon: Icon(u['status'] == 'DEACTIVATED' ? Icons.check_circle : Icons.block, size: 18),
-                                  label: Text(u['status'] == 'DEACTIVATED' ? 'Reactivate User' : 'Deactivate User'),
-                                  onPressed: () async {
-                                    final isDeactivated = u['status'] == 'DEACTIVATED';
-                                    final actionName = isDeactivated ? 'reactivate' : 'deactivate';
-                                    final userName = (u['fullName'] ?? 'User').toString();
-                                    
-                                    final confirm = await showDialog<bool>(
-                                      context: context,
-                                      builder: (context) => AlertDialog(
-                                        title: Text('Confirm ${isDeactivated ? 'Reactivation' : 'Deactivation'}'),
-                                        content: Text('Are you sure you want to $actionName user "$userName"?'),
-                                        actions: [
-                                          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-                                          ElevatedButton(
-                                            onPressed: () => Navigator.pop(context, true),
-                                            style: ElevatedButton.styleFrom(backgroundColor: isDeactivated ? AppColors.success : AppColors.danger),
-                                            child: const Text('Confirm', style: TextStyle(color: Colors.white)),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  TextButton.icon(
+                                    style: TextButton.styleFrom(foregroundColor: u['status'] == 'DEACTIVATED' ? AppColors.success : AppColors.danger),
+                                    icon: Icon(u['status'] == 'DEACTIVATED' ? Icons.check_circle : Icons.block, size: 16),
+                                    label: Text(u['status'] == 'DEACTIVATED' ? 'Reactivate' : 'Deactivate'),
+                                    onPressed: () async {
+                                      final isDeactivated = u['status'] == 'DEACTIVATED';
+                                      final actionName = isDeactivated ? 'reactivate' : 'deactivate';
+                                      final userName = (u['fullName'] ?? 'User').toString();
+                                      
+                                      final confirm = await showDialog<bool>(
+                                        context: context,
+                                        builder: (context) => AlertDialog(
+                                          title: Text('Confirm ${isDeactivated ? 'Reactivation' : 'Deactivation'}'),
+                                          content: Text('Are you sure you want to $actionName user "$userName"?'),
+                                          actions: [
+                                            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                                            ElevatedButton(
+                                              onPressed: () => Navigator.pop(context, true),
+                                              style: ElevatedButton.styleFrom(backgroundColor: isDeactivated ? AppColors.success : AppColors.danger),
+                                              child: const Text('Confirm', style: TextStyle(color: Colors.white)),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                      if (confirm == true) {
+                                        _actionUser(u['id'], actionName, null, false, userName);
+                                      }
+                                    },
+                                  ),
+                                  if (u['id'] != widget.user['id']) ...[
+                                    const SizedBox(width: 8),
+                                    TextButton.icon(
+                                      style: TextButton.styleFrom(foregroundColor: AppColors.danger),
+                                      icon: const Icon(Icons.delete_forever_rounded, size: 16, color: AppColors.danger),
+                                      label: const Text('Delete User', style: TextStyle(color: AppColors.danger, fontWeight: FontWeight.bold)),
+                                      onPressed: () async {
+                                        final userName = (u['fullName'] ?? 'User').toString();
+                                        final userRole = (u['role']?['name'] ?? 'User').toString();
+                                        
+                                        final confirm = await showDialog<bool>(
+                                          context: context,
+                                          builder: (context) => AlertDialog(
+                                            title: Row(
+                                              children: const [
+                                                Icon(Icons.delete_forever_rounded, color: AppColors.danger),
+                                                SizedBox(width: 8),
+                                                Text('Delete User Account'),
+                                              ],
+                                            ),
+                                            content: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Text('Are you sure you want to permanently delete user "$userName"?', style: const TextStyle(fontWeight: FontWeight.bold)),
+                                                const SizedBox(height: 6),
+                                                Text('Role: $userRole', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                                                const SizedBox(height: 8),
+                                                Text(
+                                                  'This will permanently delete their account credentials, scope group memberships, and revoke active sessions. This action cannot be undone.',
+                                                  style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600),
+                                                ),
+                                              ],
+                                            ),
+                                            actions: [
+                                              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                                              ElevatedButton(
+                                                onPressed: () => Navigator.pop(context, true),
+                                                style: ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
+                                                child: const Text('Delete Permanently', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                              ),
+                                            ],
                                           ),
-                                        ],
-                                      ),
-                                    );
-                                    if (confirm == true) {
-                                      _actionUser(u['id'], actionName, null, false, userName);
-                                    }
-                                  },
-                                ),
+                                        );
+                                        if (confirm == true) {
+                                          _deleteUser(u['id'], userName);
+                                        }
+                                      },
+                                    ),
+                                  ],
+                                ],
                               ),
                             ],
                           ),

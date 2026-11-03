@@ -212,15 +212,15 @@ async function runTestSuite() {
   // ─────────────────────────────────────────────────────────────────
   console.log('TEST 6: Real database multi-gate cycle analytics');
   const dbAnalytics = await getFullCycleAnalytics({
-    targetGateIds: [17],
+    targetGateIds: [((await prisma.lCGateEvent.findFirst({ select: { gateId: true } }))?.gateId ?? 186)],
     targetScopeGroupIds: [],
     startDateStr: '2026-10-25',
     endDateStr: '2026-10-31'
   });
-  assert(dbAnalytics.overall.totalCycles > 0, 'Database gate 17 has real completed cycles');
+  assert(dbAnalytics.overall.totalCycles > 0, 'Database real gate has real completed cycles');
   assert.strictEqual(dbAnalytics.gateReports.length, 1, '1 gate report returned');
   assert.strictEqual(dbAnalytics.gateReports[0].dailyBreakdown.length, 7, '7 days in daily breakdown');
-  console.log(`✔ TEST 6 PASSED: Verified ${dbAnalytics.overall.totalCycles} cycles in DB for gate 17.\n`);
+  console.log(`✔ TEST 6 PASSED: Verified ${dbAnalytics.overall.totalCycles} cycles in DB for real gate.\n`);
 
   // ─────────────────────────────────────────────────────────────────
   // TEST 7: Export formats: Excel and PDF document generation
@@ -241,7 +241,7 @@ async function runTestSuite() {
     startDateStr: '2026-10-25',
     endDateStr: '2026-10-31',
     targetScopeGroupIds: [],
-    targetGateIds: [17],
+    targetGateIds: [((await prisma.lCGateEvent.findFirst({ select: { gateId: true } }))?.gateId ?? 186)],
     metrics: {
       totalOperations: 2,
       totalDurationSeconds: 600,
@@ -307,3 +307,4 @@ runTestSuite().catch((err) => {
   console.error('Test suite failed:', err);
   process.exit(1);
 }).finally(() => prisma.$disconnect());
+

@@ -626,12 +626,33 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
 
     if (!confirm) return;
 
-    setState(() => _isLoading = true);
+    // Show a responsive progress indicator while the (potentially heavy) delete runs
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+        child: Card(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Deleting gate, please wait...'),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
     try {
       final res = await http.delete(
         Uri.parse('$baseUrl/lcgate/${gate['id']}'),
         headers: {'Authorization': 'Bearer $_token'},
       );
+      if (mounted) Navigator.of(context).pop(); // close spinner
       if (res.statusCode == 204 || res.statusCode == 200) {
         await LCGatesCacheService.instance.removeGateAcrossAllScopes(_userId, gate['id']);
         await _fetchGates();
@@ -646,14 +667,15 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
         } catch (_) {}
         if (mounted) {
           AppFeedback.showError(context, errMsg);
-          setState(() => _isLoading = false);
         }
       }
     } catch (e) {
       if (mounted) {
+        Navigator.of(context).pop();
         AppFeedback.showError(context, 'Network error deleting LC Gate: $e');
-        setState(() => _isLoading = false);
       }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
