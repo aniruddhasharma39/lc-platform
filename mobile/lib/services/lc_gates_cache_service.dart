@@ -51,6 +51,47 @@ class GateStatusItem {
   };
 }
 
+class LCReferenceDataCache {
+  final List<String> zones;
+  final Map<String, List<String>> divisionsByZone;
+  final String etag;
+  final DateTime lastSyncedAt;
+
+  LCReferenceDataCache({
+    required this.zones,
+    required this.divisionsByZone,
+    required this.etag,
+    required this.lastSyncedAt,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'zones': zones,
+    'divisionsByZone': divisionsByZone,
+    'etag': etag,
+    'lastSyncedAt': lastSyncedAt.toIso8601String(),
+  };
+
+  factory LCReferenceDataCache.fromJson(Map<String, dynamic> json) {
+    final zones = (json['zones'] as List?)?.whereType<String>().toList() ?? [];
+    final divMap = <String, List<String>>{};
+    if (json['divisionsByZone'] is Map) {
+      (json['divisionsByZone'] as Map).forEach((k, v) {
+        if (v is List) {
+          divMap[k.toString()] = v.whereType<String>().toList();
+        }
+      });
+    }
+    return LCReferenceDataCache(
+      zones: zones,
+      divisionsByZone: divMap,
+      etag: json['etag']?.toString() ?? '',
+      lastSyncedAt: json['lastSyncedAt'] != null
+          ? DateTime.tryParse(json['lastSyncedAt'].toString()) ?? DateTime.now()
+          : DateTime.now(),
+    );
+  }
+}
+
 class LCGatesCacheData {
   static const int currentSchemaVersion = 2;
   final int schemaVersion;
@@ -180,11 +221,162 @@ class LCGatesCacheService {
   final Map<int, GateStatusItem> _statusCache = {};
   DateTime? _lastStatusVerifiedAt;
 
+  // Reference Data Cache
+  static const String _refDataKey = 'lc_cluster_ref_v1';
+  LCReferenceDataCache? _memoryReferenceData;
+
   // Request deduplication maps
   final Map<String, Future<LCGatesSyncResult>> _inFlightSyncs = {};
   Future<Map<int, GateStatusItem>>? _inFlightStatusSync;
 
   String _cacheKey(String userId) => 'lc_gates_dir_v${schemaVersion}_${userId.trim()}';
+
+  String _canonicalClusterKey(String userId, {String? scopeGroupId, bool? directOnly}) {
+    final s = (scopeGroupId != null && scopeGroupId.trim().isNotEmpty) ? scopeGroupId.trim() : 'default';
+    final d = directOnly == true ? '1' : '0';
+    return 'lc_cluster_v${schemaVersion}_u${userId.trim()}_s${s}_d$d';
+  }
+
+  /// Synchronous instant read for Cluster screen from in-memory cache
+  LCGatesCacheData? getCachedGatesSync(String userId, {String? scopeGroupId, bool? directOnly}) {
+    final key = _canonicalClusterKey(userId, scopeGroupId: scopeGroupId, directOnly: directOnly);
+    return _memoryCache[key];
+  }
+
+  /// Asynchronous L1 + L2 read for Cluster screen with corruption protection
+  Future<LCGatesCacheData?> getCachedGates(String userId, {String? scopeGroupId, bool? directOnly}) async {
+    final key = _canonicalClusterKey(userId, scopeGroupId: scopeGroupId, directOnly: directOnly);
+    if (_memoryCache.containsKey(key)) {
+      return _memoryCache[key];
+    }
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(key);
+      if (raw != null && raw.isNotEmpty) {
+        final map = json.decode(raw);
+        if (map is Map<String, dynamic> && map['schemaVersion'] == schemaVersion) {
+          final cached = LCGatesCacheData.fromJson(map);
+          _memoryCache[key] = cached;
+          return cached;
+        }
+      }
+    } catch (e) {
+      debugPrint('[LCGatesCacheService] Corrupted cluster cache for $key: $e');
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(key);
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  /// Save Cluster gates to both L1 and L2
+  Future<void> saveGates(
+    String userId, {
+    required List<dynamic> gates,
+    String? etag,
+    String? scopeGroupId,
+    bool? directOnly,
+    List<dynamic>? scopeGroups,
+  }) async {
+    final key = _canonicalClusterKey(userId, scopeGroupId: scopeGroupId, directOnly: directOnly);
+    final now = DateTime.now();
+    final data = LCGatesCacheData(
+      schemaVersion: schemaVersion,
+      gates: gates,
+      scopeGroups: scopeGroups ?? _memoryCache[key]?.scopeGroups ?? [],
+      etag: etag,
+      lastSyncedAt: now,
+      gatesSyncedAt: now,
+      scopeGroupsSyncedAt: now,
+      hierarchySyncedAt: now,
+      isFromCache: false,
+      isOutdated: false,
+    );
+    _memoryCache[key] = data;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(key, json.encode(data.toJson()));
+      await _enforceStorageLimits(prefs);
+    } catch (e) {
+      debugPrint('[LCGatesCacheService] Failed persisting gates to $key: $e');
+    }
+  }
+
+  /// Touch verified timestamp on HTTP 304 without modifying gates
+  Future<void> touchVerified(String userId, {String? scopeGroupId, bool? directOnly}) async {
+    final key = _canonicalClusterKey(userId, scopeGroupId: scopeGroupId, directOnly: directOnly);
+    final current = _memoryCache[key] ?? await getCachedGates(userId, scopeGroupId: scopeGroupId, directOnly: directOnly);
+    if (current != null) {
+      final now = DateTime.now();
+      final updated = current.copyWith(
+        lastSyncedAt: now,
+        gatesSyncedAt: now,
+        isFromCache: false,
+        isOutdated: false,
+      );
+      _memoryCache[key] = updated;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(key, json.encode(updated.toJson()));
+      } catch (_) {}
+    }
+  }
+
+  /// Load cached reference data (zones & divisions)
+  Future<LCReferenceDataCache?> getCachedReferenceData() async {
+    if (_memoryReferenceData != null) return _memoryReferenceData;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_refDataKey);
+      if (raw != null && raw.isNotEmpty) {
+        final decoded = json.decode(raw);
+        if (decoded is Map<String, dynamic>) {
+          final obj = LCReferenceDataCache.fromJson(decoded);
+          _memoryReferenceData = obj;
+          return obj;
+        }
+      }
+    } catch (e) {
+      debugPrint('[LCGatesCacheService] Corrupted reference-data cache: $e');
+    }
+    return null;
+  }
+
+  /// Save cached reference data (zones & divisions)
+  Future<void> saveReferenceData({
+    required List<String> zones,
+    required Map<String, List<String>> divisionsByZone,
+    required String etag,
+  }) async {
+    final obj = LCReferenceDataCache(
+      zones: zones,
+      divisionsByZone: divisionsByZone,
+      etag: etag,
+      lastSyncedAt: DateTime.now(),
+    );
+    _memoryReferenceData = obj;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_refDataKey, json.encode(obj.toJson()));
+    } catch (e) {
+      debugPrint('[LCGatesCacheService] Failed persisting reference-data: $e');
+    }
+  }
+
+  /// Storage quota management: prevents unbounded cache keys in SharedPreferences
+  Future<void> _enforceStorageLimits(SharedPreferences prefs) async {
+    try {
+      final clusterKeys = prefs.getKeys().where((k) => k.startsWith('lc_cluster_v')).toList();
+      if (clusterKeys.length > 25) {
+        for (int i = 0; i < clusterKeys.length - 20; i++) {
+          await prefs.remove(clusterKeys[i]);
+          _memoryCache.remove(clusterKeys[i]);
+        }
+      }
+    } catch (_) {}
+  }
 
   /// Synchronous instant read from in-memory cache
   LCGatesCacheData? getMemoryCachedDirectory(String userId) => _memoryCache[userId];
@@ -473,34 +665,101 @@ class LCGatesCacheService {
   /// Invalidation Mode 1: Patch an individual gate record in-memory and on-disk
   Future<void> patchGate(String userId, Map<String, dynamic> updatedGate) async {
     final current = _memoryCache[userId];
-    if (current == null) return;
+    if (current != null) {
+      final targetId = updatedGate['id'];
+      final list = List<dynamic>.from(current.gates);
+      final idx = list.indexWhere((g) => g is Map && g['id'] == targetId);
 
-    final targetId = updatedGate['id'];
-    final list = List<dynamic>.from(current.gates);
-    final idx = list.indexWhere((g) => g is Map && g['id'] == targetId);
+      if (idx != -1) {
+        list[idx] = updatedGate;
+      } else {
+        list.insert(0, updatedGate);
+      }
 
-    if (idx != -1) {
-      list[idx] = updatedGate;
-    } else {
-      list.insert(0, updatedGate);
+      final updated = current.copyWith(gates: list);
+      _memoryCache[userId] = updated;
+      await _saveToDisk(userId, updated);
     }
 
-    final updated = current.copyWith(gates: list);
-    _memoryCache[userId] = updated;
-    await _saveToDisk(userId, updated);
+    await patchGateAcrossAllScopes(userId, updatedGate);
+  }
+
+  /// Patch gate across all cached scopes for the given user
+  Future<void> patchGateAcrossAllScopes(String userId, Map<String, dynamic> updatedGate) async {
+    final targetId = updatedGate['id'];
+    final prefix = 'lc_cluster_v${schemaVersion}_u${userId.trim()}_';
+    final matchingMemKeys = _memoryCache.keys.where((k) => k.startsWith(prefix)).toList();
+    for (final k in matchingMemKeys) {
+      final item = _memoryCache[k];
+      if (item != null) {
+        final list = List<dynamic>.from(item.gates);
+        final idx = list.indexWhere((g) => g is Map && g['id'] == targetId);
+        if (idx != -1) {
+          list[idx] = updatedGate;
+        } else {
+          list.insert(0, updatedGate);
+        }
+        final updated = item.copyWith(gates: list);
+        _memoryCache[k] = updated;
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(k, json.encode(updated.toJson()));
+        } catch (_) {}
+      }
+    }
   }
 
   /// Invalidation Mode 1: Remove an individual gate record
   Future<void> removeGate(String userId, int gateId) async {
     final current = _memoryCache[userId];
-    if (current == null) return;
+    if (current != null) {
+      final list = List<dynamic>.from(current.gates);
+      list.removeWhere((g) => g is Map && g['id'] == gateId);
 
-    final list = List<dynamic>.from(current.gates);
-    list.removeWhere((g) => g is Map && g['id'] == gateId);
+      final updated = current.copyWith(gates: list);
+      _memoryCache[userId] = updated;
+      await _saveToDisk(userId, updated);
+    }
 
-    final updated = current.copyWith(gates: list);
-    _memoryCache[userId] = updated;
-    await _saveToDisk(userId, updated);
+    await removeGateAcrossAllScopes(userId, gateId);
+  }
+
+  /// Remove gate across all cached scopes for the given user
+  Future<void> removeGateAcrossAllScopes(String userId, int gateId) async {
+    final prefix = 'lc_cluster_v${schemaVersion}_u${userId.trim()}_';
+    final matchingMemKeys = _memoryCache.keys.where((k) => k.startsWith(prefix)).toList();
+    for (final k in matchingMemKeys) {
+      final item = _memoryCache[k];
+      if (item != null) {
+        final list = List<dynamic>.from(item.gates);
+        list.removeWhere((g) => g is Map && g['id'] == gateId);
+        final updated = item.copyWith(gates: list);
+        _memoryCache[k] = updated;
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(k, json.encode(updated.toJson()));
+        } catch (_) {}
+      }
+    }
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final diskKeys = prefs.getKeys().where((k) => k.startsWith(prefix)).toList();
+      for (final dk in diskKeys) {
+        if (!matchingMemKeys.contains(dk)) {
+          final raw = prefs.getString(dk);
+          if (raw != null) {
+            final map = json.decode(raw);
+            if (map is Map<String, dynamic> && map['gates'] is List) {
+              final gates = List<dynamic>.from(map['gates']);
+              gates.removeWhere((g) => g is Map && g['id'] == gateId);
+              map['gates'] = gates;
+              await prefs.setString(dk, json.encode(map));
+            }
+          }
+        }
+      }
+    } catch (_) {}
   }
 
   /// Invalidation Mode 2: Mark directory stale (clears ETag and resets sync time to force revalidation)
@@ -515,27 +774,68 @@ class LCGatesCacheService {
       _memoryCache[userId] = stale;
       await _saveToDisk(userId, stale);
     }
+
+    await markAllStale(userId);
+  }
+
+  /// Mark all cluster keys stale for user
+  Future<void> markAllStale(String userId) async {
+    final prefix = 'lc_cluster_v${schemaVersion}_u${userId.trim()}_';
+    final matchingMemKeys = _memoryCache.keys.where((k) => k.startsWith(prefix)).toList();
+    for (final k in matchingMemKeys) {
+      final item = _memoryCache[k];
+      if (item != null) {
+        final stale = item.copyWith(
+          clearEtag: true,
+          lastSyncedAt: DateTime.fromMillisecondsSinceEpoch(0),
+        );
+        _memoryCache[k] = stale;
+      }
+    }
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final diskKeys = prefs.getKeys().where((k) => k.startsWith(prefix)).toList();
+      for (final dk in diskKeys) {
+        final raw = prefs.getString(dk);
+        if (raw != null) {
+          final map = json.decode(raw);
+          if (map is Map<String, dynamic>) {
+            map['etag'] = null;
+            map['lastSyncedAt'] = DateTime.fromMillisecondsSinceEpoch(0).toIso8601String();
+            await prefs.setString(dk, json.encode(map));
+          }
+        }
+      }
+    } catch (_) {}
   }
 
   /// Invalidation Mode 3: Hard Clear user-specific cache on logout or account switch
   Future<void> hardClear(String userId) async {
     _memoryCache.remove(userId);
+    final prefix = 'lc_cluster_v${schemaVersion}_u${userId.trim()}_';
+    _memoryCache.removeWhere((k, _) => k.startsWith(prefix));
     _statusCache.clear();
     _lastStatusVerifiedAt = null;
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_cacheKey(userId));
+      final clusterKeys = prefs.getKeys().where((k) => k.startsWith(prefix)).toList();
+      for (final ck in clusterKeys) {
+        await prefs.remove(ck);
+      }
     } catch (_) {}
   }
 
   /// Clear all LC Gate caches on user logout
   Future<void> clearAllUserCaches() async {
     _memoryCache.clear();
+    _memoryReferenceData = null;
     _statusCache.clear();
     _lastStatusVerifiedAt = null;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final keys = prefs.getKeys().where((k) => k.startsWith('lc_gates_dir_v'));
+      final keys = prefs.getKeys().where((k) => k.startsWith('lc_gates_dir_v') || k.startsWith('lc_cluster_v') || k == _refDataKey).toList();
       for (final k in keys) {
         await prefs.remove(k);
       }

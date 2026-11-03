@@ -6,6 +6,9 @@ import { publishMqttMessage } from '../lib/iotClient';
 import { checkAndDispatchGateStateAlert, checkAndDispatchGateStateEmailAlert } from '../lib/gateAlertSms';
 import { recordGateTelemetryTransition } from '../lib/telemetryMonitor';
 import { broadcastGateTelemetry } from '../lib/telemetryWs';
+import { bumpDirectoryRevision } from '../lib/revisionManager';
+import { clusterCacheManager } from '../lib/clusterCacheManager';
+import { getAllAncestorScopeGroupIds } from '../lib/scopeHierarchy';
 
 const router = Router();
 
@@ -39,7 +42,7 @@ const updateDeviceSchema = registerDeviceSchema.partial();
 /**
  * Helper to auto-link device to existing Gate, MasterUnit, or ChildDevice by Serial Number
  */
-async function resolveGateAssociations(serialNumber?: string | null, gateId?: number | null) {
+async function resolveGateAssociations(serialNumber?: string | null, gateId?: number | null, client: any = prisma) {
   if (!serialNumber && !gateId) return { gateId: null, masterId: null, childDeviceId: null };
 
   let resolvedGateId = gateId || null;
@@ -48,7 +51,7 @@ async function resolveGateAssociations(serialNumber?: string | null, gateId?: nu
 
   if (serialNumber) {
     // 1. Check if serial matches a Master Unit
-    const master = await prisma.masterUnit.findUnique({
+    const master = await client.masterUnit.findUnique({
       where: { serialNumber },
       select: { id: true, gateId: true },
     });
@@ -58,7 +61,7 @@ async function resolveGateAssociations(serialNumber?: string | null, gateId?: nu
     }
 
     // 2. Check if serial matches a Child Device
-    const child = await prisma.childDevice.findUnique({
+    const child = await client.childDevice.findUnique({
       where: { serialNumber },
       include: { master: { select: { id: true, gateId: true } } },
     });
@@ -70,7 +73,7 @@ async function resolveGateAssociations(serialNumber?: string | null, gateId?: nu
 
     // 3. Check if serial or prefix matches an LC Gate number (e.g., LC-0001)
     if (!resolvedGateId) {
-      const gateMatch = await prisma.lCGate.findFirst({
+      const gateMatch = await client.lCGate.findFirst({
         where: {
           lcNumber: {
             equals: serialNumber.split('-').slice(0, 2).join('-'), // "LC-0001"
@@ -83,7 +86,7 @@ async function resolveGateAssociations(serialNumber?: string | null, gateId?: nu
 
   // 4. If gateId is known (either provided or resolved) but master/child are not yet fully resolved:
   if (resolvedGateId) {
-    const gateMasters = await prisma.masterUnit.findMany({
+    const gateMasters = await client.masterUnit.findMany({
       where: { gateId: resolvedGateId },
       orderBy: { masterSequence: 'asc' },
     });
@@ -97,14 +100,14 @@ async function resolveGateAssociations(serialNumber?: string | null, gateId?: nu
 
         if (isSlave) {
           resolvedMasterId = primaryMaster.id;
-          let child = await prisma.childDevice.findUnique({
+          let child = await client.childDevice.findUnique({
             where: { serialNumber },
           });
 
           if (!child) {
             const type = (serialNumber.endsWith('-B') || serialNumber.includes('-B')) ? 'DEVICE_2' : 'DEVICE_1';
-            const count = await prisma.childDevice.count({ where: { masterId: primaryMaster.id, type } });
-            child = await prisma.childDevice.create({
+            const count = await client.childDevice.count({ where: { masterId: primaryMaster.id, type } });
+            child = await client.childDevice.create({
               data: {
                 serialNumber,
                 type,
@@ -730,124 +733,216 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
       }
     }
 
-    // Auto-resolve or find device
-    let device = await prisma.deviceRegistry.findFirst({
-      where: {
-        OR: [
-          { thingName },
-          { serialNumber: thingName }
-        ]
-      }
-    });
-
     const statusVal = payload.Status || 'ONLINE';
     const fwVersion = payload.FirmwareVersion || payload.firmwareVersion || undefined;
 
-    if (!device) {
-      // Ingestion Guard: Only auto-provision devices matching the LC Gate platform naming convention ('LC-')
-      if (!thingName.toUpperCase().startsWith('LC-')) {
-        return res.status(200).json({
-          message: `Foreign telemetry ignored: thingName "${thingName}" does not belong to LC Platform (must start with "LC-")`
-        });
-      }
-
-      const resolved = await resolveGateAssociations(thingName, null);
-      device = await prisma.deviceRegistry.create({
-        data: {
-          thingName,
-          serialNumber: thingName,
-          status: 'ONLINE',
-          gateId: resolved.gateId,
-          masterId: resolved.masterId,
-          childDeviceId: resolved.childDeviceId,
-          deviceType: payload.DeviceType || 'MASTER',
-          firmwareVersion: fwVersion,
-          lastSeenAt: new Date(),
-        }
-      });
-    } else {
-      await prisma.deviceRegistry.update({
-        where: { id: device.id },
-        data: {
-          lastSeenAt: new Date(),
-          status: 'ONLINE',
-          firmwareVersion: fwVersion || device.firmwareVersion,
-        }
-      });
-    }
-
-    // 1. Fetch previous telemetry to detect genuine gate state transitions (OPEN <-> CLOSED)
-    const previousTele = await prisma.deviceTelemetry.findFirst({
-      where: {
-        OR: [
-          { thingName: device.thingName },
-          { deviceRegistryId: device.id },
-        ],
-        topic: { contains: '/telemetry' },
-      },
-      orderBy: { receivedAt: 'desc' },
-    });
-
-    // 2. Parse current reported gate status
-    let currentState: 'OPEN' | 'CLOSED' | null = null;
-    if (payload.Status !== undefined) {
-      const s = String(payload.Status).trim().toUpperCase();
-      if (s === 'CLOSED') currentState = 'CLOSED';
-      else if (s === 'OPEN' || s === 'NOT_CLOSED') currentState = 'OPEN';
-    } else if (payload.LimitSwitchClosed !== undefined) {
-      currentState = payload.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
-    } else if (payload.status !== undefined) {
-      const s = String(payload.status).trim().toUpperCase();
-      if (s === 'CLOSED') currentState = 'CLOSED';
-      else if (s === 'OPEN' || s === 'NOT_CLOSED') currentState = 'OPEN';
-    }
-
-    // 3. Parse previous reported gate status
-    let previousState: 'OPEN' | 'CLOSED' | null = null;
-    if (previousTele && previousTele.payload && typeof previousTele.payload === 'object') {
-      const prevP = previousTele.payload as any;
-      if (prevP.Status !== undefined) {
-        const s = String(prevP.Status).trim().toUpperCase();
-        if (s === 'CLOSED') previousState = 'CLOSED';
-        else if (s === 'OPEN' || s === 'NOT_CLOSED') previousState = 'OPEN';
-      } else if (prevP.LimitSwitchClosed !== undefined) {
-        previousState = prevP.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
-      } else if (prevP.status !== undefined) {
-        const s = String(prevP.status).trim().toUpperCase();
-        if (s === 'CLOSED') previousState = 'CLOSED';
-        else if (s === 'OPEN' || s === 'NOT_CLOSED') previousState = 'OPEN';
-      }
-    }
-
-    // 4. Save into appropriate table (DeviceHealthCheck vs DeviceTelemetry)
+    // Check if this incoming message is a health diagnostic report
     const isHealthTopic = String(topic).includes('/health') || payload.action === 'HEALTH_CHECK_RESPONSE' || payload.healthstatus !== undefined;
     const isHealthResponse = isHealthTopic && (payload.healthstatus !== undefined || payload.action === 'HEALTH_CHECK_RESPONSE' || payload.BoomAngle !== undefined);
 
-    if (isHealthResponse) {
-      const healthCheck = await prisma.deviceHealthCheck.create({
-        data: {
-          thingName: device.thingName,
-          requestId: payload.requestId || null,
-          healthstatus: payload.healthstatus || 'HEALTHY',
-          gateStatus: (payload.Status === 'NOT_CLOSED' ? 'OPEN' : payload.Status) || (payload.LimitSwitchClosed !== undefined ? (payload.LimitSwitchClosed ? 'CLOSED' : 'OPEN') : null),
-          boomAngle: payload.BoomAngle !== undefined && payload.BoomAngle !== null ? parseFloat(payload.BoomAngle) : null,
-          mcuTempC: payload.McuTempC !== undefined && payload.McuTempC !== null ? parseFloat(payload.McuTempC) : null,
-          signalStrength: payload.SignalStrength !== undefined && payload.SignalStrength !== null ? parseInt(payload.SignalStrength) : null,
-          networkType: payload.NetworkType || '4G_LTE',
-          limitSwitchClosed: payload.LimitSwitchClosed !== undefined && payload.LimitSwitchClosed !== null ? Boolean(payload.LimitSwitchClosed) : null,
-          hallClosed: payload.HallClosed !== undefined && payload.HallClosed !== null ? Boolean(payload.HallClosed) : null,
-          batteryVoltage: payload.BatteryVoltage !== undefined && payload.BatteryVoltage !== null ? parseFloat(payload.BatteryVoltage) : null,
-          batteryPercentage: payload.BatteryPercentage !== undefined && payload.BatteryPercentage !== null ? parseInt(payload.BatteryPercentage) : null,
-          solarVoltage: payload.SolarVoltage !== undefined && payload.SolarVoltage !== null ? parseFloat(payload.SolarVoltage) : null,
-          solarCharging: payload.SolarCharging !== undefined && payload.SolarCharging !== null ? Boolean(payload.SolarCharging) : null,
-          uptimeSeconds: payload.UptimeSeconds !== undefined && payload.UptimeSeconds !== null ? parseInt(payload.UptimeSeconds) : null,
-          firmwareVersion: payload.FirmwareVersion || fwVersion || '1.0.6',
-          rawPayload: payload,
-          deviceRegistryId: device.id,
-          createdAt: raw.timestamp ? new Date(raw.timestamp) : new Date(),
+    // Complete Atomic Telemetry & Heartbeat Persistence:
+    // Wraps DeviceRegistry updates, atomic first-time provisioning, directory revision increments,
+    // and DeviceTelemetry / DeviceHealthCheck writes in a unified atomic transaction.
+    const heartbeatResult = await prisma.$transaction(async (tx) => {
+      // 1. Row-level lock on existing device row
+      // Deterministic priority ordering: exact thingName match takes precedence over serialNumber match,
+      // preventing arbitrary device selection under conflicting identity fields.
+      const lockedRows: any[] = await tx.$queryRaw`
+        SELECT id, "thingName", "serialNumber", "gateId", "lastSeenAt", "firmwareVersion", "status"
+        FROM "DeviceRegistry"
+        WHERE "thingName" = ${thingName} OR "serialNumber" = ${thingName}
+        ORDER BY CASE WHEN "thingName" = ${thingName} THEN 0 ELSE 1 END, id ASC
+        LIMIT 1
+        FOR UPDATE
+      `;
+      let dev = lockedRows.length > 0 ? lockedRows[0] : null;
+
+      // 2. Detect if device was previously OFFLINE (>65m or never seen) before this heartbeat
+      let wasOffline = false;
+
+      if (!dev) {
+        // Ingestion Guard: Only auto-provision devices matching the LC Gate platform naming convention ('LC-')
+        if (!thingName.toUpperCase().startsWith('LC-')) {
+          return { ignored: true, device: null, wasOffline: false, affectedScopeIds: [], isGlobal: false, telemetry: null, healthCheck: null, isHealthResponse: false, currentState: null, previousState: null };
         }
+
+        const resolved = await resolveGateAssociations(thingName, null, tx);
+
+        // Deterministic transaction-safe native upsert using PostgreSQL (xmax = 0)
+        // (xmax = 0) evaluates to true if and only if PostgreSQL executed a fresh INSERT.
+        // If a concurrent request already inserted the row, (xmax = 0) evaluates to false on conflict update.
+        const insertedRows: any[] = await tx.$queryRaw`
+          INSERT INTO "DeviceRegistry" (
+            "thingName", "serialNumber", "status", "gateId", "masterId", "childDeviceId", "deviceType", "firmwareVersion", "lastSeenAt", "createdAt", "updatedAt"
+          )
+          VALUES (
+            ${thingName}, ${thingName}, 'ONLINE', ${resolved.gateId}, ${resolved.masterId}, ${resolved.childDeviceId},
+            ${payload.DeviceType || 'MASTER'}, ${fwVersion || null}, NOW(), NOW(), NOW()
+          )
+          ON CONFLICT ("thingName") DO UPDATE
+          SET "lastSeenAt" = NOW(),
+              "status" = 'ONLINE',
+              "firmwareVersion" = COALESCE(${fwVersion || null}, "DeviceRegistry"."firmwareVersion"),
+              "updatedAt" = NOW()
+          RETURNING id, "thingName", "serialNumber", "gateId", "lastSeenAt", "firmwareVersion", "status", (xmax = 0) AS is_inserted
+        `;
+        dev = insertedRows[0];
+        // Deterministic check: only genuine first-time insertion triggers OFFLINE->ONLINE directory invalidation
+        wasOffline = Boolean(dev.is_inserted);
+      } else {
+        wasOffline = !dev.lastSeenAt || (Date.now() - new Date(dev.lastSeenAt).getTime() > 65 * 60 * 1000);
+        let gateIdToUpdate = dev.gateId;
+        if (!gateIdToUpdate) {
+          const resolved = await resolveGateAssociations(dev.serialNumber || dev.thingName, null, tx);
+          gateIdToUpdate = resolved.gateId;
+        }
+        dev = await tx.deviceRegistry.update({
+          where: { id: dev.id },
+          data: {
+            lastSeenAt: new Date(),
+            status: 'ONLINE',
+            firmwareVersion: fwVersion || dev.firmwareVersion,
+            gateId: gateIdToUpdate || undefined,
+          }
+        });
+      }
+
+      // 3. If transition from OFFLINE to ONLINE occurred, atomically increment directory revisions within tx
+      let affectedScopeIds: number[] = [];
+      let isGlobal = false;
+      if (wasOffline) {
+        if (dev.gateId) {
+          const scopes = await tx.scopeGroupGate.findMany({
+            where: { gateId: dev.gateId },
+            select: { scopeGroupId: true },
+          });
+          const scopeIds = Array.from(new Set(scopes.map((s: any) => s.scopeGroupId)));
+          const ancestors = await getAllAncestorScopeGroupIds(scopeIds, tx);
+          affectedScopeIds = Array.from(new Set([...scopeIds, ...ancestors]));
+          isGlobal = affectedScopeIds.length === 0;
+          await bumpDirectoryRevision(affectedScopeIds, isGlobal, tx);
+        } else {
+          isGlobal = true;
+          await bumpDirectoryRevision([], true, tx);
+        }
+      }
+
+      // 4. Fetch previous telemetry within transaction to detect genuine gate state transitions (OPEN <-> CLOSED)
+      const previousTele = await tx.deviceTelemetry.findFirst({
+        where: {
+          OR: [
+            { thingName: dev.thingName },
+            { deviceRegistryId: dev.id },
+          ],
+          topic: { contains: '/telemetry' },
+        },
+        orderBy: { receivedAt: 'desc' },
       });
 
+      // 5. Parse current and previous reported gate status
+      let currentState: 'OPEN' | 'CLOSED' | null = null;
+      if (payload.Status !== undefined) {
+        const s = String(payload.Status).trim().toUpperCase();
+        if (s === 'CLOSED') currentState = 'CLOSED';
+        else if (s === 'OPEN' || s === 'NOT_CLOSED') currentState = 'OPEN';
+      } else if (payload.LimitSwitchClosed !== undefined) {
+        currentState = payload.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
+      } else if (payload.status !== undefined) {
+        const s = String(payload.status).trim().toUpperCase();
+        if (s === 'CLOSED') currentState = 'CLOSED';
+        else if (s === 'OPEN' || s === 'NOT_CLOSED') currentState = 'OPEN';
+      }
+
+      let previousState: 'OPEN' | 'CLOSED' | null = null;
+      if (previousTele && previousTele.payload && typeof previousTele.payload === 'object') {
+        const prevP = previousTele.payload as any;
+        if (prevP.Status !== undefined) {
+          const s = String(prevP.Status).trim().toUpperCase();
+          if (s === 'CLOSED') previousState = 'CLOSED';
+          else if (s === 'OPEN' || s === 'NOT_CLOSED') previousState = 'OPEN';
+        } else if (prevP.LimitSwitchClosed !== undefined) {
+          previousState = prevP.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
+        } else if (prevP.status !== undefined) {
+          const s = String(prevP.status).trim().toUpperCase();
+          if (s === 'CLOSED') previousState = 'CLOSED';
+          else if (s === 'OPEN' || s === 'NOT_CLOSED') previousState = 'OPEN';
+        }
+      }
+
+      // 6. Save telemetry record into DB within the SAME transaction
+      let createdHealth: any = null;
+      let createdTele: any = null;
+
+      if (isHealthResponse) {
+        createdHealth = await tx.deviceHealthCheck.create({
+          data: {
+            thingName: dev.thingName,
+            requestId: payload.requestId || null,
+            healthstatus: payload.healthstatus || 'HEALTHY',
+            gateStatus: (payload.Status === 'NOT_CLOSED' ? 'OPEN' : payload.Status) || (payload.LimitSwitchClosed !== undefined ? (payload.LimitSwitchClosed ? 'CLOSED' : 'OPEN') : null),
+            boomAngle: payload.BoomAngle !== undefined && payload.BoomAngle !== null ? parseFloat(payload.BoomAngle) : null,
+            mcuTempC: payload.McuTempC !== undefined && payload.McuTempC !== null ? parseFloat(payload.McuTempC) : null,
+            signalStrength: payload.SignalStrength !== undefined && payload.SignalStrength !== null ? parseInt(payload.SignalStrength) : null,
+            networkType: payload.NetworkType || '4G_LTE',
+            limitSwitchClosed: payload.LimitSwitchClosed !== undefined && payload.LimitSwitchClosed !== null ? Boolean(payload.LimitSwitchClosed) : null,
+            hallClosed: payload.HallClosed !== undefined && payload.HallClosed !== null ? Boolean(payload.HallClosed) : null,
+            batteryVoltage: payload.BatteryVoltage !== undefined && payload.BatteryVoltage !== null ? parseFloat(payload.BatteryVoltage) : null,
+            batteryPercentage: payload.BatteryPercentage !== undefined && payload.BatteryPercentage !== null ? parseInt(payload.BatteryPercentage) : null,
+            solarVoltage: payload.SolarVoltage !== undefined && payload.SolarVoltage !== null ? parseFloat(payload.SolarVoltage) : null,
+            solarCharging: payload.SolarCharging !== undefined && payload.SolarCharging !== null ? Boolean(payload.SolarCharging) : null,
+            uptimeSeconds: payload.UptimeSeconds !== undefined && payload.UptimeSeconds !== null ? parseInt(payload.UptimeSeconds) : null,
+            firmwareVersion: payload.FirmwareVersion || fwVersion || '1.0.6',
+            rawPayload: payload,
+            deviceRegistryId: dev.id,
+            createdAt: raw.timestamp ? new Date(raw.timestamp) : new Date(),
+          }
+        });
+      } else {
+        createdTele = await tx.deviceTelemetry.create({
+          data: {
+            thingName: dev.thingName,
+            topic,
+            payload,
+            status: 'ONLINE',
+            deviceRegistryId: dev.id,
+            receivedAt: raw.timestamp ? new Date(raw.timestamp) : new Date(),
+          }
+        });
+      }
+
+      return {
+        ignored: false,
+        device: dev,
+        wasOffline,
+        affectedScopeIds,
+        isGlobal,
+        telemetry: createdTele,
+        healthCheck: createdHealth,
+        isHealthResponse,
+        currentState,
+        previousState,
+      };
+    });
+
+    if (heartbeatResult.ignored) {
+      return res.status(200).json({
+        message: `Foreign telemetry ignored: thingName "${thingName}" does not belong to LC Platform (must start with "LC-")`
+      });
+    }
+
+    const device = heartbeatResult.device!;
+    const { telemetry, healthCheck, currentState, previousState } = heartbeatResult;
+
+    // Invalidate local in-memory L1 cache after transaction commits
+    if (heartbeatResult.wasOffline) {
+      if (heartbeatResult.isGlobal || heartbeatResult.affectedScopeIds.length === 0) {
+        clusterCacheManager.invalidateAll();
+      } else {
+        clusterCacheManager.invalidateScopeGroups(heartbeatResult.affectedScopeIds);
+      }
+    }
+
+    if (heartbeatResult.isHealthResponse) {
       return res.status(201).json({
         message: 'Health diagnostic report recorded in DeviceHealthCheck table',
         healthCheck,
@@ -855,22 +950,8 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
       });
     }
 
-    // Strictly Gate State Telemetry
-    // Device status is ONLINE on any incoming packet; gate barrier position is in currentState
-    const effectiveStatus = currentState || statusVal || 'ONLINE';
-    const telemetry = await prisma.deviceTelemetry.create({
-      data: {
-        thingName: device.thingName,
-        topic,
-        payload,
-        status: 'ONLINE',
-        deviceRegistryId: device.id,
-        receivedAt: raw.timestamp ? new Date(raw.timestamp) : new Date(),
-      }
-    });
-
-    // 5. Trigger DLT SMS dispatch if state genuinely transitioned between OPEN and CLOSED
-    if (currentState && previousState && currentState !== previousState) {
+    // Trigger DLT SMS dispatch if state genuinely transitioned between OPEN and CLOSED
+    if (currentState && previousState && currentState !== previousState && telemetry) {
       console.log(`⚡ [STATE TRANSITION DETECTED] Gate "${device.thingName}": ${previousState} ➔ ${currentState}`);
       checkAndDispatchGateStateAlert({
         deviceId: device.id,
@@ -909,6 +990,8 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
         lastSeenAt: new Date(),
       }
     });
+
+
   } catch (error) {
     next(error);
   }
@@ -1208,6 +1291,17 @@ router.put('/:id', authenticate, async (req, res, next) => {
       },
     });
 
+    // Invalidate Cluster cache if device assignment changed or belongs to a gate
+    const affectedGateIds = [existing.gateId, updated.gateId].filter((gid): gid is number => typeof gid === 'number');
+    if (affectedGateIds.length > 0) {
+      const scopes = await prisma.scopeGroupGate.findMany({
+        where: { gateId: { in: affectedGateIds } },
+        select: { scopeGroupId: true },
+      });
+      const scopeIds = Array.from(new Set(scopes.map(s => s.scopeGroupId)));
+      await bumpDirectoryRevision(scopeIds, scopeIds.length === 0);
+    }
+
     res.json({
       message: 'Device registry updated successfully',
       device: updated,
@@ -1231,7 +1325,7 @@ router.delete('/:id', authenticate, async (req, res, next) => {
         id,
         thingName: { startsWith: 'LC-', mode: 'insensitive' },
       },
-      select: { id: true, thingName: true, serialNumber: true }
+      select: { id: true, thingName: true, serialNumber: true, gateId: true }
     });
 
     if (!device) {
@@ -1256,6 +1350,16 @@ router.delete('/:id', authenticate, async (req, res, next) => {
 
     // Delete device from registry
     await prisma.deviceRegistry.delete({ where: { id } });
+
+    // Invalidate Cluster cache if deleted device was assigned to a gate
+    if (device.gateId) {
+      const scopes = await prisma.scopeGroupGate.findMany({
+        where: { gateId: device.gateId },
+        select: { scopeGroupId: true },
+      });
+      const scopeIds = Array.from(new Set(scopes.map(s => s.scopeGroupId)));
+      await bumpDirectoryRevision(scopeIds, scopeIds.length === 0);
+    }
 
     res.status(200).json({
       success: true,

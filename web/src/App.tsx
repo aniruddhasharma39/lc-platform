@@ -7,6 +7,7 @@ import { API_URL } from './config';
 import { useToast } from './context/ToastContext';
 import { lcGatesCacheService } from './services/lcGatesCacheService';
 import { reportsCacheService } from './services/reportsCacheService';
+import { clusterCacheService } from './services/clusterCacheService';
 
 function App() {
   const [currentScreen, setCurrentScreen] = useState<'login' | 'register' | 'dashboard'>('login');
@@ -18,6 +19,7 @@ function App() {
     try {
       lcGatesCacheService.clearAllUserCaches();
       reportsCacheService.clearAllUserCaches();
+      clusterCacheService.clearAll();
       Object.keys(localStorage).forEach((key) => {
         if (key.startsWith('home_dashboard_cache_')) {
           localStorage.removeItem(key);

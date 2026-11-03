@@ -243,5 +243,118 @@ void main() {
       expect(statusItem.hasMaster, isTrue);
       expect(statusItem.mastersCount, equals(1));
     });
+
+    test('8. Cluster Scope-Isolated Caching: Scope A vs Scope B vs Default vs All', () async {
+      final cacheService = LCGatesCacheService.instance;
+      await cacheService.hardClear(testUserId);
+
+      final gatesDefault = [{'id': 1, 'lcNumber': 'LC-DEFAULT'}];
+      final gatesScope1 = [{'id': 2, 'lcNumber': 'LC-SCOPE-1'}];
+      final gatesAll = [{'id': 1, 'lcNumber': 'LC-DEFAULT'}, {'id': 2, 'lcNumber': 'LC-SCOPE-1'}];
+
+      await cacheService.saveGates(testUserId, gates: gatesDefault, etag: 'W/"etag-def"');
+      await cacheService.saveGates(testUserId, gates: gatesScope1, etag: 'W/"etag-s1"', scopeGroupId: 'scope-1');
+      await cacheService.saveGates(testUserId, gates: gatesAll, etag: 'W/"etag-all"', scopeGroupId: 'all');
+
+      // Instant synchronous read verification
+      final syncDef = cacheService.getCachedGatesSync(testUserId);
+      final syncS1 = cacheService.getCachedGatesSync(testUserId, scopeGroupId: 'scope-1');
+      final syncAll = cacheService.getCachedGatesSync(testUserId, scopeGroupId: 'all');
+
+      expect(syncDef, isNotNull);
+      expect(syncS1, isNotNull);
+      expect(syncAll, isNotNull);
+
+      expect((syncDef!.gates.first as Map)['lcNumber'], equals('LC-DEFAULT'));
+      expect((syncS1!.gates.first as Map)['lcNumber'], equals('LC-SCOPE-1'));
+      expect(syncAll!.gates.length, equals(2));
+      expect(syncDef.etag, equals('W/"etag-def"'));
+      expect(syncS1.etag, equals('W/"etag-s1"'));
+      expect(syncAll.etag, equals('W/"etag-all"'));
+    });
+
+    test('9. HTTP 304 Touch Verification: touchVerified updates timestamp without modifying gates', () async {
+      final cacheService = LCGatesCacheService.instance;
+      await cacheService.hardClear(testUserId);
+
+      final pastTime = DateTime.now().subtract(const Duration(minutes: 10));
+      final initialData = LCGatesCacheData(
+        schemaVersion: 2,
+        gates: [{'id': 42, 'lcNumber': 'LC-42'}],
+        scopeGroups: [],
+        etag: 'W/"etag-304"',
+        lastSyncedAt: pastTime,
+        gatesSyncedAt: pastTime,
+      );
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('lc_cluster_v2_u${testUserId}_sdefault_d0', json.encode(initialData.toJson()));
+
+      // Load into memory
+      final loaded = await cacheService.getCachedGates(testUserId);
+      expect(loaded, isNotNull);
+      expect(loaded!.lastSyncedAt.isBefore(DateTime.now().subtract(const Duration(minutes: 9))), isTrue);
+
+      // Touch verified on 304
+      await cacheService.touchVerified(testUserId);
+
+      final touched = cacheService.getCachedGatesSync(testUserId);
+      expect(touched, isNotNull);
+      expect(touched!.lastSyncedAt.difference(DateTime.now()).inSeconds.abs() < 2, isTrue);
+      expect((touched.gates.first as Map)['id'], equals(42));
+      expect(touched.etag, equals('W/"etag-304"'));
+    });
+
+    test('10. Cross-Scope Gate Mutation Removal: deletes gate from all active cached scopes', () async {
+      final cacheService = LCGatesCacheService.instance;
+      await cacheService.hardClear(testUserId);
+
+      final gateA = {'id': 100, 'lcNumber': 'LC-SHARED-100'};
+      final gateB = {'id': 200, 'lcNumber': 'LC-OTHER-200'};
+
+      await cacheService.saveGates(testUserId, gates: [gateA, gateB]);
+      await cacheService.saveGates(testUserId, gates: [gateA], scopeGroupId: 'scope-special');
+
+      // Remove gate 100 across all scopes
+      await cacheService.removeGateAcrossAllScopes(testUserId, 100);
+
+      final defUpdated = cacheService.getCachedGatesSync(testUserId);
+      final specialUpdated = cacheService.getCachedGatesSync(testUserId, scopeGroupId: 'scope-special');
+
+      expect(defUpdated!.gates.length, equals(1));
+      expect((defUpdated.gates.first as Map)['id'], equals(200));
+      expect(specialUpdated!.gates, isEmpty);
+    });
+
+    test('11. Reference Data Caching: railway zones & divisions with versioned ETag', () async {
+      final cacheService = LCGatesCacheService.instance;
+
+      final zones = ['CENTRAL RAILWAY', 'WESTERN RAILWAY'];
+      final divisions = {
+        'CENTRAL RAILWAY': ['MUMBAI CST', 'BHUSAWAL'],
+        'WESTERN RAILWAY': ['MUMBAI CENTRAL', 'VADODARA'],
+      };
+
+      await cacheService.saveReferenceData(
+        zones: zones,
+        divisionsByZone: divisions,
+        etag: 'W/"railway-ref-v1"',
+      );
+
+      final cached = await cacheService.getCachedReferenceData();
+      expect(cached, isNotNull);
+      expect(cached!.zones.length, equals(2));
+      expect(cached.divisionsByZone['CENTRAL RAILWAY']!.contains('MUMBAI CST'), isTrue);
+      expect(cached.etag, equals('W/"railway-ref-v1"'));
+    });
+
+    test('12. Corrupted Disk JSON Resilience: safely falls back to null without crashing', () async {
+      final cacheService = LCGatesCacheService.instance;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('lc_cluster_v2_u${testUserId}_scorrupted_d0', '{"corrupted: true, invalid json');
+
+      final result = await cacheService.getCachedGates(testUserId, scopeGroupId: 'corrupted');
+      expect(result, isNull);
+    });
   });
 }

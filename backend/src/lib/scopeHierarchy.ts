@@ -3,12 +3,12 @@ import { prisma } from './prisma';
 /**
  * Given a list of scope group IDs, recursively fetches all descendant scope group IDs.
  */
-export async function getAllDescendantScopeGroupIds(groupIds: number[]): Promise<number[]> {
+export async function getAllDescendantScopeGroupIds(groupIds: number[], client: any = prisma): Promise<number[]> {
   const allIds = new Set<number>(groupIds);
   let currentLevelIds = [...groupIds];
 
   while (currentLevelIds.length > 0) {
-    const children = await prisma.scopeGroup.findMany({
+    const children = await client.scopeGroup.findMany({
       where: { parentId: { in: currentLevelIds } },
       select: { id: true }
     });
@@ -24,6 +24,32 @@ export async function getAllDescendantScopeGroupIds(groupIds: number[]): Promise
   }
 
   return Array.from(allIds);
+}
+
+/**
+ * Given a list of scope group IDs, recursively fetches all ancestor (parent) scope group IDs up the hierarchy tree.
+ */
+export async function getAllAncestorScopeGroupIds(groupIds: number[], client: any = prisma): Promise<number[]> {
+  const ancestorIds = new Set<number>();
+  let currentIds = [...groupIds.filter((id) => id && !isNaN(id))];
+
+  while (currentIds.length > 0) {
+    const parents: Array<{ parentId: number | null }> = await client.scopeGroup.findMany({
+      where: { id: { in: currentIds } },
+      select: { parentId: true }
+    });
+
+    const nextIds: number[] = [];
+    for (const p of parents) {
+      if (p.parentId && !ancestorIds.has(p.parentId)) {
+        ancestorIds.add(p.parentId);
+        nextIds.push(p.parentId);
+      }
+    }
+    currentIds = nextIds;
+  }
+
+  return Array.from(ancestorIds);
 }
 
 /**

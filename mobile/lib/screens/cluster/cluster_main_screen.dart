@@ -22,6 +22,9 @@ class ClusterMainScreen extends StatefulWidget {
 class _ClusterMainScreenState extends State<ClusterMainScreen> {
   List<dynamic> _gates = [];
   bool _isLoading = true;
+  bool _isFromCache = false;
+  bool _isSyncing = false;
+  DateTime? _lastSyncedAt;
   String? _errorMessage;
   String _token = '';
   String _userId = 'user';
@@ -52,6 +55,15 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
     {'value': 'location_asc', 'label': 'Location (A–Z)'},
   ];
 
+  String _formattedLastSync() {
+    if (_lastSyncedAt == null) return '';
+    final dt = _lastSyncedAt!;
+    final hour = dt.hour.toString().padLeft(2, '0');
+    final min = dt.minute.toString().padLeft(2, '0');
+    final sec = dt.second.toString().padLeft(2, '0');
+    return '$hour:$min:$sec';
+  }
+
   bool get _isDeveloper =>
       widget.user?['role'] == 'Developer' ||
       ((widget.user?['allowedModules'] as List?)?.contains('cluster') ?? false);
@@ -71,10 +83,33 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
       _token = token;
       _userId = userId;
     });
-    await _fetchGates();
-    await _fetchReferenceData();
-    await _fetchMyScope();
-    await _fetchScopeGroupsForDeveloper();
+
+    // 1. Instantly load cached reference data without waiting for network
+    await _loadCachedReferenceData();
+
+    // 2. Fetch/revalidate gates with Stale-While-Revalidate
+    _fetchGates();
+
+    // 3. Fetch reference data in background (with If-None-Match conditional header)
+    _fetchReferenceData();
+
+    // 4. Fetch scope hierarchy
+    _fetchMyScope();
+    if (_isDeveloper) {
+      _fetchScopeGroupsForDeveloper();
+    }
+  }
+
+  Future<void> _loadCachedReferenceData() async {
+    try {
+      final cached = await LCGatesCacheService.instance.getCachedReferenceData();
+      if (cached != null && cached.zones.isNotEmpty && mounted) {
+        setState(() {
+          _zones = cached.zones;
+          _divisionsByZone = cached.divisionsByZone;
+        });
+      }
+    } catch (_) {}
   }
 
   Future<void> _fetchScopeGroupsForDeveloper() async {
@@ -115,24 +150,51 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
 
   Future<void> _fetchReferenceData() async {
     try {
+      final cached = await LCGatesCacheService.instance.getCachedReferenceData();
+      final headers = <String, String>{
+        'Authorization': 'Bearer $_token',
+      };
+      if (cached != null && cached.etag.isNotEmpty) {
+        headers['If-None-Match'] = cached.etag;
+      }
+
       final res = await http.get(
         Uri.parse('$baseUrl/lcgate/reference-data'),
-        headers: {'Authorization': 'Bearer $_token'},
+        headers: headers,
       );
+
+      // HTTP 304 Not Modified: Cached reference data is completely up-to-date
+      if (res.statusCode == 304) {
+        return;
+      }
+
+      // HTTP 200 OK: New or updated reference data
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         if (data is Map) {
           final zones = (data['zones'] as List?)?.whereType<String>().toList() ?? [];
           final divisionsRaw = data['divisionsByZone'];
-          if (zones.isNotEmpty && mounted) {
-            setState(() {
-              _zones = zones;
-              if (divisionsRaw is Map) {
-                _divisionsByZone = divisionsRaw.map(
-                  (k, v) => MapEntry(k.toString(), (v as List).whereType<String>().toList()),
-                );
+          final divMap = <String, List<String>>{};
+          if (divisionsRaw is Map) {
+            divisionsRaw.forEach((k, v) {
+              if (v is List) {
+                divMap[k.toString()] = v.whereType<String>().toList();
               }
             });
+          }
+          if (zones.isNotEmpty) {
+            final etag = res.headers['etag'] ?? 'W/"railway-ref-v1"';
+            await LCGatesCacheService.instance.saveReferenceData(
+              zones: zones,
+              divisionsByZone: divMap,
+              etag: etag,
+            );
+            if (mounted) {
+              setState(() {
+                _zones = zones;
+                _divisionsByZone = divMap;
+              });
+            }
           }
         }
       }
@@ -142,24 +204,68 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
   }
 
   Future<void> _fetchGates({bool isManualRefresh = false, String? overrideScopeId}) async {
-    if (!isManualRefresh) {
-      setState(() {
-        _isLoading = true;
-        _errorMessage = null;
-      });
+    final activeScope = overrideScopeId ?? _developerScopeId;
+
+    // Step 1: Check L1 Memory / L2 Disk cache for instant rendering
+    final cached = LCGatesCacheService.instance.getCachedGatesSync(_userId, scopeGroupId: activeScope) ??
+        await LCGatesCacheService.instance.getCachedGates(_userId, scopeGroupId: activeScope);
+
+    if (cached != null && cached.gates.isNotEmpty && !isManualRefresh) {
+      if (mounted) {
+        setState(() {
+          _gates = cached.gates;
+          _isLoading = false;
+          _isFromCache = true;
+          _isSyncing = true;
+          _lastSyncedAt = cached.lastSyncedAt;
+          _errorMessage = null;
+        });
+      }
+    } else {
+      if (!isManualRefresh && mounted) {
+        setState(() {
+          _isLoading = true;
+          _isSyncing = true;
+          _errorMessage = null;
+        });
+      }
     }
+
     try {
-      final activeScope = overrideScopeId ?? _developerScopeId;
       final query = activeScope.isNotEmpty ? '?scopeGroupId=${Uri.encodeComponent(activeScope)}' : '';
+      final headers = <String, String>{
+        'Authorization': 'Bearer $_token',
+      };
+      if (cached != null && cached.etag != null && !isManualRefresh) {
+        headers['If-None-Match'] = cached.etag!;
+      }
 
       final res = await http.get(
         Uri.parse('$baseUrl/lcgate$query'),
-        headers: {'Authorization': 'Bearer $_token'},
+        headers: headers,
       ).timeout(const Duration(seconds: 12));
 
+      // HTTP 304 Not Modified: Server confirms representation has not changed
+      if (res.statusCode == 304) {
+        await LCGatesCacheService.instance.touchVerified(_userId, scopeGroupId: activeScope);
+        if (mounted) {
+          setState(() {
+            _isSyncing = false;
+            _isFromCache = false;
+            _lastSyncedAt = DateTime.now();
+            _isLoading = false;
+            _errorMessage = null;
+          });
+          if (isManualRefresh) {
+            AppFeedback.showSuccess(context, 'LC Gates and clusters up to date.');
+          }
+        }
+        return;
+      }
+
+      // HTTP 200 OK: Fresh gate directory data returned
       if (res.statusCode == 200) {
         final List raw = json.decode(res.body);
-        // Deduplicate gates by ID to prevent duplicate cards in UI
         final seenIds = <int>{};
         final uniqueGates = <dynamic>[];
         for (final g in raw) {
@@ -169,9 +275,21 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           }
         }
 
+        final serverEtag = res.headers['etag'];
+        await LCGatesCacheService.instance.saveGates(
+          _userId,
+          gates: uniqueGates,
+          etag: serverEtag,
+          scopeGroupId: activeScope,
+        );
+
         if (mounted) {
           setState(() {
             _gates = uniqueGates;
+            _isSyncing = false;
+            _isFromCache = false;
+            _lastSyncedAt = DateTime.now();
+            _isLoading = false;
             _errorMessage = null;
           });
           if (isManualRefresh) {
@@ -188,13 +306,27 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           MaterialPageRoute(builder: (_) => const AuthWrapper()),
           (route) => false,
         );
+      } else if (res.statusCode == 403) {
+        if (mounted) {
+          setState(() {
+            _gates = [];
+            _isSyncing = false;
+            _isLoading = false;
+            _errorMessage = 'Access denied: You do not have permission for this scope.';
+          });
+        }
       } else {
         String msg = 'Failed to load clusters (HTTP ${res.statusCode}).';
         if (res.statusCode >= 500) {
           msg = 'Server temporarily unavailable (HTTP ${res.statusCode}). Please retry.';
         }
         if (mounted) {
-          setState(() => _errorMessage = msg);
+          setState(() {
+            _isSyncing = false;
+            if (_gates.isEmpty) {
+              _errorMessage = msg;
+            }
+          });
           if (_gates.isNotEmpty) AppFeedback.showError(context, msg);
         }
       }
@@ -208,13 +340,23 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
       }
 
       if (mounted) {
-        setState(() => _errorMessage = friendlyMsg);
+        setState(() {
+          _isSyncing = false;
+          if (_gates.isEmpty) {
+            _errorMessage = friendlyMsg;
+          }
+        });
         if (_gates.isNotEmpty) {
-          AppFeedback.showError(context, friendlyMsg);
+          AppFeedback.showInfo(context, 'Offline: Displaying cached LC Gates.');
         }
       }
     } finally {
-      if (mounted && !isManualRefresh) setState(() => _isLoading = false);
+      if (mounted && !isManualRefresh) {
+        setState(() {
+          _isLoading = false;
+          _isSyncing = false;
+        });
+      }
     }
   }
 
@@ -491,7 +633,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
         headers: {'Authorization': 'Bearer $_token'},
       );
       if (res.statusCode == 204 || res.statusCode == 200) {
-        LCGatesCacheService.instance.removeGate(_userId, gate['id']);
+        await LCGatesCacheService.instance.removeGateAcrossAllScopes(_userId, gate['id']);
         await _fetchGates();
         if (mounted) {
           AppFeedback.showSuccess(context, 'LC Gate "$targetName" permanently deleted.');
@@ -522,7 +664,34 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
-        title: const Text('LC Gate Clusters', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('LC Gate Clusters', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            Row(
+              children: [
+                if (_isSyncing) ...[
+                  const SizedBox(
+                    width: 7,
+                    height: 7,
+                    child: CircularProgressIndicator(strokeWidth: 1.5, color: AppColors.primary),
+                  ),
+                  const SizedBox(width: 5),
+                  const Text('Syncing...', style: TextStyle(fontSize: 10, color: AppColors.primary, fontWeight: FontWeight.w600)),
+                ] else if (_isFromCache) ...[
+                  const Icon(Icons.inventory_2_outlined, size: 10, color: Color(0xFFD97706)),
+                  const SizedBox(width: 4),
+                  Text('Cached (${_formattedLastSync()})', style: const TextStyle(fontSize: 10, color: Color(0xFFD97706), fontWeight: FontWeight.w600)),
+                ] else ...[
+                  const Icon(Icons.check_circle_outline, size: 10, color: Color(0xFF16A34A)),
+                  const SizedBox(width: 4),
+                  Text('Up to date${_lastSyncedAt != null ? " (${_formattedLastSync()})" : ""}', style: const TextStyle(fontSize: 10, color: Color(0xFF16A34A), fontWeight: FontWeight.w600)),
+                ],
+              ],
+            ),
+          ],
+        ),
         elevation: 1,
         backgroundColor: Colors.white,
         actions: [
@@ -556,9 +725,9 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           );
           if (!mounted) return;
           if (result == true) {
-            LCGatesCacheService.instance.markStale(_userId);
-            _fetchGates();
-            if (mounted) {
+            await LCGatesCacheService.instance.markAllStale(_userId);
+            await _fetchGates();
+            if (context.mounted) {
               AppFeedback.showSuccess(context, 'New LC Gate created and added to cluster list.');
             }
           }
@@ -852,8 +1021,8 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                                           );
                                           if (!mounted) return;
                                           if (result == true) {
-                                            _fetchGates();
-                                            if (mounted) {
+                                            await _fetchGates();
+                                            if (context.mounted) {
                                               AppFeedback.showSuccess(context, 'LC Gate details refreshed.');
                                             }
                                           }

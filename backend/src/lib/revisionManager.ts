@@ -1,4 +1,5 @@
 import { prisma } from './prisma';
+import { clusterCacheManager } from './clusterCacheManager';
 
 /**
  * Atomic Monotonic Directory Revision Manager
@@ -39,40 +40,72 @@ export async function bumpDirectoryRevision(
     for (const sgId of validScopeIds) {
       await atomicIncrement(client, `DIRECTORY_SCOPE_REVISION_${sgId}`);
     }
+
+    // Invalidate local in-memory cluster L1 cache
+    if (isGlobalChange || validScopeIds.length === 0) {
+      clusterCacheManager.invalidateAll();
+    } else {
+      clusterCacheManager.invalidateScopeGroups(validScopeIds);
+    }
   } catch (error) {
     console.error('[RevisionManager] Error bumping directory revision:', error);
+    if (txClient) throw error;
   }
 }
 
 /**
  * Calculates a lightweight, deterministic revision token for a user based on
  * their assigned scope hierarchy + global directory state.
- * Runs in ~1-2ms using indexed AppSetting lookups.
+ * Runs in ~1-2ms using indexed AppSetting lookups (or 0ms if preloaded concurrently).
  */
 export async function getDirectoryRevisionToken(
   userId: number,
   assignedScopeGroupIds: number[] = [],
-  isDeveloper = false
+  isDeveloper = false,
+  preloadedSettings?: Array<{ key: string; value: string }>
 ): Promise<string> {
   try {
-    const keys = ['DIRECTORY_GLOBAL_REVISION'];
-    for (const sgId of assignedScopeGroupIds) {
-      keys.push(`DIRECTORY_SCOPE_REVISION_${sgId}`);
-    }
+    let settings: Array<{ key: string; value: string }> = [];
 
-    const settings = await prisma.appSetting.findMany({
-      where: { key: { in: keys } },
-      select: { key: true, value: true },
-    });
+    if (preloadedSettings) {
+      if (isDeveloper && assignedScopeGroupIds.length === 0) {
+        settings = preloadedSettings;
+      } else {
+        const allowedKeys = new Set([
+          'DIRECTORY_GLOBAL_REVISION',
+          ...assignedScopeGroupIds.map((sgId) => `DIRECTORY_SCOPE_REVISION_${sgId}`),
+        ]);
+        settings = preloadedSettings.filter((s) => allowedKeys.has(s.key));
+      }
+    } else if (isDeveloper && assignedScopeGroupIds.length === 0) {
+      // Global Developer view: monitors all directory scope revisions across the platform
+      settings = await prisma.appSetting.findMany({
+        where: { key: { startsWith: 'DIRECTORY_' } },
+        select: { key: true, value: true },
+      });
+    } else {
+      // Scoped user: monitors global revision + assigned scope group IDs
+      const keys = ['DIRECTORY_GLOBAL_REVISION'];
+      for (const sgId of assignedScopeGroupIds) {
+        keys.push(`DIRECTORY_SCOPE_REVISION_${sgId}`);
+      }
+
+      settings = await prisma.appSetting.findMany({
+        where: { key: { in: keys } },
+        select: { key: true, value: true },
+      });
+    }
 
     const settingMap = new Map(settings.map((s) => [s.key, s.value]));
     const globalRev = settingMap.get('DIRECTORY_GLOBAL_REVISION') || '1';
-    const sortedScopes = [...assignedScopeGroupIds].sort((a, b) => a - b);
-    const scopeRevs = sortedScopes
-      .map((id) => `${id}:${settingMap.get(`DIRECTORY_SCOPE_REVISION_${id}`) || '0'}`)
+
+    const sortedEntries = settings
+      .filter((s) => s.key !== 'DIRECTORY_GLOBAL_REVISION')
+      .sort((a, b) => a.key.localeCompare(b.key))
+      .map((s) => `${s.key.replace('DIRECTORY_SCOPE_REVISION_', '')}:${s.value}`)
       .join(';');
 
-    return `W/"rev-u${userId}-dev${isDeveloper ? 1 : 0}-g${globalRev}-s[${scopeRevs}]"`;
+    return `W/"rev-u${userId}-dev${isDeveloper ? 1 : 0}-g${globalRev}-s[${sortedEntries}]"`;
   } catch (error) {
     console.error('[RevisionManager] Error reading revision token, fallback generated:', error);
     return `W/"rev-u${userId}-${Date.now()}"`;

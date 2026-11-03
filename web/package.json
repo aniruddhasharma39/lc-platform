@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "npx --yes tsx test/reports_cache_phase2.test.ts",
+    "test": "npx --yes tsx test/reports_cache_phase2.test.ts && npx --yes tsx test/cluster_cache_phase2.test.ts",
+    "test:cluster": "npx --yes tsx test/cluster_cache_phase2.test.ts",
     "lint": "oxlint",
     "preview": "vite preview"
   },

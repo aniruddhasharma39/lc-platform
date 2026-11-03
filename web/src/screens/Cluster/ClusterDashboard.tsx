@@ -12,6 +12,7 @@ import { RAILWAY_ZONES, RAILWAY_DATA } from './railwayData';
 import { useToast } from '../../context/ToastContext';
 import DeviceInfoModal from '../../components/DeviceInfoModal';
 import { lcGatesCacheService } from '../../services/lcGatesCacheService';
+import { clusterCacheService } from '../../services/clusterCacheService';
 
 type Props = {
   user: User;
@@ -67,13 +68,35 @@ export default function ClusterDashboard(_props: Props) {
   const [allScopeGroupsList, setAllScopeGroupsList] = useState<any[]>([]);
   const [myScopeGroups, setMyScopeGroups] = useState<any[]>([]);
 
+  // Intelligent Caching States
+  const [isFromCache, setIsFromCache] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isStaleData, setIsStaleData] = useState(false);
+
   const fetchReferenceData = async () => {
+    // 1. Read from client-side cache
+    const cachedRef = clusterCacheService.getReferenceData();
+    if (cachedRef) {
+      if (Array.isArray(cachedRef.zones) && cachedRef.zones.length > 0) setRefZones(cachedRef.zones);
+      if (cachedRef.divisionsByZone && Object.keys(cachedRef.divisionsByZone).length > 0) setRefDivisions(cachedRef.divisionsByZone);
+    }
+
     try {
-      const res = await fetch(`${API_URL}/api/v1/lcgate/reference-data`, { headers: authHeaders() });
+      const headers: any = authHeaders();
+      if (cachedRef?.etag) {
+        headers['If-None-Match'] = cachedRef.etag;
+      }
+      const res = await fetch(`${API_URL}/api/v1/lcgate/reference-data`, { headers });
+      if (res.status === 304) {
+        // Authoritative cached reference data confirmed
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
+        const etag = res.headers.get('etag');
         if (Array.isArray(data.zones) && data.zones.length > 0) setRefZones(data.zones);
         if (data.divisionsByZone && Object.keys(data.divisionsByZone).length > 0) setRefDivisions(data.divisionsByZone);
+        clusterCacheService.setReferenceData(data.zones || [], data.divisionsByZone || {}, etag);
       }
     } catch (e) {
       console.warn('Failed to fetch zone/division reference data', e);
@@ -102,33 +125,83 @@ export default function ClusterDashboard(_props: Props) {
     }
   };
 
-  const fetchGates = async (overrideScopeId?: string) => {
-    setLoading(true);
+  const fetchGates = async (overrideScopeId?: string, forceRefresh = false) => {
+    const activeScope = overrideScopeId !== undefined ? overrideScopeId : developerScopeId;
+    const scopeKey = activeScope || 'ALL';
+    const userId = getCacheUserId(_props.user);
+
+    // 1. Stale-While-Revalidate: Instant render from L1/L2 cache
+    const cached = !forceRefresh ? clusterCacheService.get(userId, scopeKey) : null;
+    let storedETag: string | null = null;
+
+    if (cached && Array.isArray(cached.gates)) {
+      setGates(cached.gates);
+      storedETag = cached.etag;
+      setIsFromCache(true);
+      setIsStaleData(clusterCacheService.isStale(cached));
+      setLoading(false); // Do not block UI with full page loader!
+      setIsSyncing(true); // Non-blocking background sync indicator
+      if (selectedGate) {
+        const updated = cached.gates.find((g: any) => g.id === selectedGate.id);
+        if (updated) setSelectedGate(updated);
+      }
+    } else {
+      setLoading(true);
+      setIsSyncing(false);
+      setIsFromCache(false);
+    }
+
     setFetchError(null);
     try {
-      const activeScope = overrideScopeId !== undefined ? overrideScopeId : developerScopeId;
       const query = activeScope ? `?scopeGroupId=${encodeURIComponent(activeScope)}` : '';
-      const res = await fetch(`${API_URL}/api/v1/lcgate${query}`, {
-        headers: authHeaders()
-      });
+      const headers: any = authHeaders();
+      if (storedETag) {
+        headers['If-None-Match'] = storedETag;
+      }
+
+      const res = await fetch(`${API_URL}/api/v1/lcgate${query}`, { headers });
+
+      if (res.status === 304) {
+        // Fast-path: Server confirms cache is completely up to date!
+        clusterCacheService.touchVerified(userId, scopeKey, storedETag || undefined);
+        setIsFromCache(true);
+        setIsStaleData(false);
+        setIsSyncing(false);
+        return;
+      }
+
       if (res.ok) {
         const data = await res.json();
+        const newEtag = res.headers.get('etag');
         setGates(data);
+        clusterCacheService.set(userId, scopeKey, data, newEtag);
+        setIsFromCache(false);
+        setIsStaleData(false);
         if (selectedGate) {
           const updated = data.find((g: any) => g.id === selectedGate.id);
           if (updated) setSelectedGate(updated);
         }
       } else if (res.status === 401) {
         setFetchError('Your session has expired. Please log in again.');
+      } else if (res.status === 403) {
+        // Permission revoked: immediately clear cached data
+        clusterCacheService.invalidate(userId, scopeKey);
+        setGates([]);
+        setFetchError('Access denied: You do not have permission to view this scope.');
       } else {
         const err = await res.json().catch(() => ({}));
         setFetchError(err.error || `Server responded with status ${res.status}`);
       }
     } catch (e: any) {
       console.error(e);
-      setFetchError(e.message || 'Network error while loading gates');
+      if (!cached) {
+        setFetchError(e.message || 'Network error while loading gates');
+      } else {
+        setIsStaleData(true);
+      }
     } finally {
       setLoading(false);
+      setIsSyncing(false);
     }
   };
 
@@ -210,12 +283,13 @@ export default function ClusterDashboard(_props: Props) {
         headers: authHeaders()
       });
       if (res.ok) {
+        clusterCacheService.invalidate(getCacheUserId(_props.user));
         lcGatesCacheService.removeGate(getCacheUserId(_props.user), selectedGate.id);
         setShowDeleteModal(false);
         setDeleteConfirmText('');
         setSelectedGate(null);
         setView('list');
-        fetchGates();
+        fetchGates(undefined, true);
         toastSuccess(`Gate "${gateLabel}" deleted successfully.`, "Gate Deleted");
       } else {
         const err = await res.json().catch(() => ({}));
@@ -271,6 +345,19 @@ export default function ClusterDashboard(_props: Props) {
                     ))}
                   </select>
                 </div>
+              )}
+
+              {/* Intelligent Cache Sync Indicator */}
+              {isSyncing && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 12px', fontSize: '11px', background: '#e0f2fe', color: '#0369a1', borderRadius: '6px', fontWeight: 600 }}>
+                  <span className="spinner-border spinner-border-sm" role="status" style={{ width: '10px', height: '10px', borderWidth: '1.5px' }} />
+                  Syncing...
+                </span>
+              )}
+              {!isSyncing && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 12px', fontSize: '11px', background: isStaleData ? '#fef3c7' : '#ecfdf5', color: isStaleData ? '#b45309' : '#047857', borderRadius: '6px', fontWeight: 600 }}>
+                  {isStaleData ? '● Cached (revalidating)' : (isFromCache ? '● Cached' : '● Up to date')}
+                </span>
               )}
 
               {/* Filter Toggle Button */}
@@ -537,7 +624,7 @@ export default function ClusterDashboard(_props: Props) {
           zones={refZones}
           divisionsByZone={refDivisions}
           onCancel={() => setView('list')} 
-          onSuccess={() => { setView('list'); fetchGates(); }} 
+          onSuccess={() => { setView('list'); clusterCacheService.invalidate(getCacheUserId(_props.user)); fetchGates(undefined, true); }} 
         />
       )}
 
@@ -545,7 +632,7 @@ export default function ClusterDashboard(_props: Props) {
         <GateDetailView 
           gate={selectedGate} 
           onBack={() => { setView('list'); setSelectedGate(null); }} 
-          onUpdate={fetchGates}
+          onUpdate={() => { clusterCacheService.invalidate(getCacheUserId(_props.user)); fetchGates(undefined, true); }}
           onOpenDeviceInfo={setDeviceInfoModalTarget}
         />
       )}

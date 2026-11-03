@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { authenticate, requireModule } from '../middleware/auth';
 import { extractRegistrationUserFields } from '../lib/userExtract';
+import { bumpDirectoryRevision } from '../lib/revisionManager';
+import { clusterCacheManager } from '../lib/clusterCacheManager';
 
 const router = Router();
 
@@ -258,6 +260,9 @@ router.put('/:id/deactivate', requireModule('manage-users'), async (req: any, re
       },
     });
 
+    clusterCacheManager.invalidateUser(id);
+    await bumpDirectoryRevision([], true);
+
     await prisma.auditLog.create({
       data: {
         userId: req.user.id,
@@ -282,6 +287,9 @@ router.put('/:id/reactivate', requireModule('manage-users'), async (req: any, re
         status: 'APPROVED',
       },
     });
+
+    clusterCacheManager.invalidateUser(id);
+    await bumpDirectoryRevision([], true);
 
     await prisma.auditLog.create({
       data: {
@@ -331,6 +339,9 @@ router.delete('/:id', requireModule('manage-users'), async (req: any, res, next)
 
     // 5. Delete User
     await prisma.user.delete({ where: { id } });
+
+    clusterCacheManager.invalidateUser(id);
+    await bumpDirectoryRevision([], true);
 
     // 6. Record in Audit Log
     await prisma.auditLog.create({

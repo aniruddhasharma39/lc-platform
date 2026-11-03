@@ -2,8 +2,9 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { authenticate, requireModule, AuthRequest } from '../middleware/auth';
-import { getAllDescendantScopeGroupIds, wouldCreateCycle, getScopeGroupBreadcrumbs } from '../lib/scopeHierarchy';
+import { getAllDescendantScopeGroupIds, getAllAncestorScopeGroupIds, wouldCreateCycle, getScopeGroupBreadcrumbs } from '../lib/scopeHierarchy';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
+import { clusterCacheManager } from '../lib/clusterCacheManager';
 
 const router = Router();
 
@@ -405,7 +406,11 @@ router.post('/', requireScopeAdmin, async (req: AuthRequest, res, next) => {
         }
       }
 
-      await bumpDirectoryRevision(created.id ? [created.id] : [], false, tx);
+      const baseScopeIds = created.id ? (data.parentId ? [created.id, data.parentId] : [created.id]) : [];
+      const ancestors = await getAllAncestorScopeGroupIds(baseScopeIds, tx);
+      const descendants = await getAllDescendantScopeGroupIds(baseScopeIds, tx);
+      const allAffected = Array.from(new Set([...baseScopeIds, ...ancestors, ...descendants]));
+      await bumpDirectoryRevision(allAffected, true, tx);
       return tx.scopeGroup.findUnique({
         where: { id: created.id },
         include: {
@@ -495,6 +500,12 @@ router.put('/:id', requireScopeAdmin, async (req: AuthRequest, res, next) => {
     const userIds = data.userIds ? Array.from(new Set(data.userIds)) : undefined;
     const subGroupNames = (data.subGroupNames || []).map(s => s.trim()).filter(Boolean);
 
+    const baseScopeIds = [id];
+    if (existing.parentId) baseScopeIds.push(existing.parentId);
+    if (data.parentId !== undefined && data.parentId !== null) baseScopeIds.push(data.parentId);
+
+    let allAffectedScopeIds: number[] = [id];
+
     const updated = await prisma.$transaction(async (tx) => {
       // Update basic fields
       await tx.scopeGroup.update({
@@ -548,7 +559,10 @@ router.put('/:id', requireScopeAdmin, async (req: AuthRequest, res, next) => {
         }
       }
 
-      await bumpDirectoryRevision([id], false, tx);
+      const ancestors = await getAllAncestorScopeGroupIds(baseScopeIds, tx);
+      const descendants = await getAllDescendantScopeGroupIds(baseScopeIds, tx);
+      allAffectedScopeIds = Array.from(new Set([...baseScopeIds, ...ancestors, ...descendants]));
+      await bumpDirectoryRevision(allAffectedScopeIds, false, tx);
       return tx.scopeGroup.findUnique({
         where: { id },
         include: {
@@ -592,7 +606,7 @@ router.put('/:id', requireScopeAdmin, async (req: AuthRequest, res, next) => {
       }
     });
 
-    await bumpDirectoryRevision([id]);
+    await bumpDirectoryRevision(allAffectedScopeIds);
     res.json(updated);
   } catch (error) {
     next(error);
@@ -608,8 +622,14 @@ router.delete('/:id', requireScopeAdmin, async (req: AuthRequest, res, next) => 
     const existing = await prisma.scopeGroup.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ error: 'Scope Group not found' });
 
+    const baseScopeIds = [id];
+    if (existing.parentId) baseScopeIds.push(existing.parentId);
+    const ancestors = await getAllAncestorScopeGroupIds(baseScopeIds);
+    const descendants = await getAllDescendantScopeGroupIds(baseScopeIds);
+    const allAffected = Array.from(new Set([...baseScopeIds, ...ancestors, ...descendants]));
+
     await prisma.scopeGroup.delete({ where: { id } });
-    await bumpDirectoryRevision([id]);
+    await bumpDirectoryRevision(allAffected, true);
 
     await prisma.auditLog.create({
       data: {
@@ -641,6 +661,10 @@ router.put('/:id/gates', requireScopeAdmin, async (req: AuthRequest, res, next) 
 
     const cleanGateIds = Array.from(new Set(gateIds));
 
+    const baseScopeIds = [id];
+    if (group.parentId) baseScopeIds.push(group.parentId);
+    let allAffectedScopeIds: number[] = [id];
+
     const updated = await prisma.$transaction(async (tx) => {
       await tx.scopeGroupGate.deleteMany({ where: { scopeGroupId: id } });
       if (cleanGateIds.length > 0) {
@@ -649,7 +673,10 @@ router.put('/:id/gates', requireScopeAdmin, async (req: AuthRequest, res, next) 
         });
       }
 
-      await bumpDirectoryRevision([id], false, tx);
+      const ancestors = await getAllAncestorScopeGroupIds(baseScopeIds, tx);
+      const descendants = await getAllDescendantScopeGroupIds(baseScopeIds, tx);
+      allAffectedScopeIds = Array.from(new Set([...baseScopeIds, ...ancestors, ...descendants]));
+      await bumpDirectoryRevision(allAffectedScopeIds, false, tx);
       return tx.scopeGroup.findUnique({
         where: { id },
         include: {
@@ -710,7 +737,7 @@ router.put('/:id/gates', requireScopeAdmin, async (req: AuthRequest, res, next) 
       }
     });
 
-    await bumpDirectoryRevision([id]);
+    await bumpDirectoryRevision(allAffectedScopeIds);
     res.json(updated);
   } catch (error) {
     next(error);
@@ -733,6 +760,15 @@ router.put('/user/:userId', requireScopeAdmin, async (req: AuthRequest, res, nex
 
     const cleanScopeIds = Array.from(new Set(scopeGroupIds));
 
+    const oldUserScopes = await prisma.scopeGroupUser.findMany({
+      where: { userId },
+      select: { scopeGroupId: true }
+    });
+    const allAffectedScopeIds = Array.from(new Set([
+      ...oldUserScopes.map(s => s.scopeGroupId),
+      ...cleanScopeIds
+    ]));
+
     await prisma.$transaction(async (tx) => {
       await tx.scopeGroupUser.deleteMany({ where: { userId } });
       if (cleanScopeIds.length > 0) {
@@ -740,7 +776,10 @@ router.put('/user/:userId', requireScopeAdmin, async (req: AuthRequest, res, nex
           data: cleanScopeIds.map(scopeGroupId => ({ userId, scopeGroupId }))
         });
       }
+      await bumpDirectoryRevision(allAffectedScopeIds, false, tx);
     });
+
+    clusterCacheManager.invalidateUser(userId);
 
     const updatedUserScopes = await prisma.scopeGroupUser.findMany({
       where: { userId },
@@ -755,7 +794,6 @@ router.put('/user/:userId', requireScopeAdmin, async (req: AuthRequest, res, nex
       }
     });
 
-    await bumpDirectoryRevision(cleanScopeIds);
     res.json({
       userId,
       scopeGroups: updatedUserScopes.map(s => s.scopeGroup)

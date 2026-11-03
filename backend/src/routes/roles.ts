@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { authenticate, requireModule } from '../middleware/auth';
+import { bumpDirectoryRevision } from '../lib/revisionManager';
+import { clusterCacheManager } from '../lib/clusterCacheManager';
 
 const router = Router();
 
@@ -53,6 +55,9 @@ router.post('/', async (req, res, next) => {
       }
     });
 
+    await bumpDirectoryRevision([], true);
+    clusterCacheManager.invalidateAll();
+
     res.status(201).json(role);
   } catch (error) {
     next(error);
@@ -92,6 +97,9 @@ router.put('/:id', async (req, res, next) => {
       }
     });
 
+    await bumpDirectoryRevision([], true);
+    clusterCacheManager.invalidateAll();
+
     res.json(updatedRole);
   } catch (error) {
     next(error);
@@ -120,6 +128,8 @@ router.delete('/:id', async (req, res, next) => {
     }
 
     await prisma.role.delete({ where: { id } });
+    await bumpDirectoryRevision([], true);
+    clusterCacheManager.invalidateAll();
     res.json({ success: true });
   } catch (error) {
     next(error);

@@ -1,16 +1,31 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import crypto from 'crypto';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { RAILWAY_DATA, RAILWAY_ZONES, divisionsForZone } from '../lib/railwayData';
-import { getAllDescendantScopeGroupIds } from '../lib/scopeHierarchy';
+import { getAllDescendantScopeGroupIds, getAllAncestorScopeGroupIds } from '../lib/scopeHierarchy';
 import { publishMqttMessage } from '../lib/iotClient';
 import { broadcastGateTelemetry, getGateTelemetryPayload } from '../lib/telemetryWs';
 import { bumpDirectoryRevision, getDirectoryRevisionToken } from '../lib/revisionManager';
 import { bumpReportRevisionInTx, recordEventChangeInTx } from '../lib/reportRevisionManager';
+import { clusterCacheManager } from '../lib/clusterCacheManager';
 
 const router = Router();
+
+/**
+ * Standard ETag matching helper compliant with RFC 7232
+ * Handles weak tags (W/), quotes, comma-separated lists, and wildcard (*)
+ */
+function matchesETag(headerValue: string | undefined, expectedEtag: string): boolean {
+  if (!headerValue) return false;
+  const trimmed = headerValue.trim();
+  if (trimmed === '*') return true;
+  const cleanExpected = expectedEtag.replace(/^W\//, '').replace(/"/g, '').trim();
+  const tags = trimmed.split(',').map((t) => t.replace(/^W\//, '').replace(/"/g, '').trim());
+  return tags.includes(cleanExpected);
+}
 
 const createGateSchema = z.object({
   name: z.string().nullable().optional(),
@@ -31,7 +46,19 @@ const createGateSchema = z.object({
 });
 
 // Zone/Division reference data (shared source of truth for web + mobile)
-router.get('/reference-data', authenticate, async (_req, res) => {
+// Static railway division topology versioned by REFERENCE_DATA_ETAG
+const REFERENCE_DATA_ETAG = 'W/"railway-ref-v1"';
+
+router.get('/reference-data', authenticate, async (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+  res.setHeader('ETag', REFERENCE_DATA_ETAG);
+  res.setHeader('Vary', 'Accept-Encoding, If-None-Match');
+
+  const ifNoneMatch = req.headers['if-none-match'];
+  if (ifNoneMatch && matchesETag(ifNoneMatch, REFERENCE_DATA_ETAG)) {
+    return res.status(304).end();
+  }
+
   res.json({
     zones: RAILWAY_ZONES,
     divisionsByZone: RAILWAY_DATA,
@@ -41,6 +68,7 @@ router.get('/reference-data', authenticate, async (_req, res) => {
 // Divisions for a zone (convenience; case-insensitive)
 router.get('/divisions', authenticate, async (req, res) => {
   const zone = typeof req.query.zone === 'string' ? req.query.zone : '';
+  res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
   res.json({ zone, divisions: divisionsForZone(zone) });
 });
 
@@ -49,11 +77,17 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
   try {
     const isDeveloper = req.user?.role === 'Developer';
 
-    // 1. Fetch user's assigned scope groups
-    const userScopes = await prisma.scopeGroupUser.findMany({
-      where: { userId: req.user.id },
-      select: { scopeGroupId: true }
-    });
+    // 1. Concurrently fetch user assigned scopes and directory revision settings in a single network round-trip
+    const [userScopes, directorySettings] = await Promise.all([
+      prisma.scopeGroupUser.findMany({
+        where: { userId: req.user.id },
+        select: { scopeGroupId: true }
+      }),
+      prisma.appSetting.findMany({
+        where: { key: { startsWith: 'DIRECTORY_' } },
+        select: { key: true, value: true }
+      }),
+    ]);
     const assignedScopeGroupIds = userScopes.map(s => s.scopeGroupId);
 
     let whereClause: any = {};
@@ -371,11 +405,17 @@ router.get('/status-summary', authenticate, async (req: any, res, next) => {
   try {
     const isDeveloper = req.user?.role === 'Developer';
 
-    // 1. Fetch user's assigned scope groups
-    const userScopes = await prisma.scopeGroupUser.findMany({
-      where: { userId: req.user.id },
-      select: { scopeGroupId: true }
-    });
+    // 1. Concurrently fetch user assigned scopes and directory revision settings in a single network round-trip
+    const [userScopes, directorySettings] = await Promise.all([
+      prisma.scopeGroupUser.findMany({
+        where: { userId: req.user.id },
+        select: { scopeGroupId: true }
+      }),
+      prisma.appSetting.findMany({
+        where: { key: { startsWith: 'DIRECTORY_' } },
+        select: { key: true, value: true }
+      }),
+    ]);
     const assignedScopeGroupIds = userScopes.map(s => s.scopeGroupId);
 
     let whereClause: any = {};
@@ -474,83 +514,189 @@ router.get('/status-summary', authenticate, async (req: any, res, next) => {
 // Get all LC Gates with their masters (strictly scoped to assigned scope groups and child hierarchy)
 router.get('/', authenticate, async (req: any, res, next) => {
   try {
-    const isDeveloper = req.user?.role === 'Developer';
+    // 1. Consistent Database Read via RepeatableRead Transaction
+    // Ensures live user status, server-side role/permissions, user scope assignments,
+    // directory revisions, and gate queries represent the identical PostgreSQL database snapshot.
+    const snapshot = await prisma.$transaction(
+      async (tx) => {
+        // Read live user record, role, and module permissions within snapshot
+        const currentUser = await tx.user.findUnique({
+          where: { id: req.user.id },
+          include: {
+            role: {
+              include: {
+                roleModules: {
+                  include: { module: true },
+                },
+              },
+            },
+          },
+        });
 
-    // 1. Fetch user's assigned scope groups
-    const userScopes = await prisma.scopeGroupUser.findMany({
-      where: { userId: req.user.id },
-      select: { scopeGroupId: true }
-    });
-    const assignedScopeGroupIds = userScopes.map(s => s.scopeGroupId);
-
-    let whereClause: any = {};
-
-    if (assignedScopeGroupIds.length > 0) {
-      // User is explicitly assigned to Scope Group(s)!
-      // Recursively resolve all accessible child scope groups
-      const accessibleScopeGroupIds = await getAllDescendantScopeGroupIds(assignedScopeGroupIds);
-      let targetScopeIds = accessibleScopeGroupIds;
-
-      // Scoping filter if requested in query
-      if (req.query.scopeGroupId) {
-        if (req.query.scopeGroupId === 'all') {
-          targetScopeIds = isDeveloper ? [] : accessibleScopeGroupIds;
-        } else {
-          const paramId = parseInt(req.query.scopeGroupId as string, 10);
-          if (!isNaN(paramId)) {
-            if (!isDeveloper && !accessibleScopeGroupIds.includes(paramId)) {
-              // Forbidden: User does not have access to this scope group
-              return res.json([]);
-            }
-            if (req.query.directOnly === 'true') {
-              targetScopeIds = [paramId];
-            } else {
-              targetScopeIds = await getAllDescendantScopeGroupIds([paramId]);
-            }
-          }
+        // 1. Authoritative check: User active / deactivated status
+        if (!currentUser || currentUser.status !== 'APPROVED') {
+          return { isDeactivated: true };
         }
-      }
 
-      if (targetScopeIds.length > 0) {
-        whereClause.scopeGroups = {
-          some: {
-            scopeGroupId: { in: targetScopeIds }
+        // 2. Authoritative check: Live role & developer privilege (never relies on stale JWT)
+        const liveRoleName = currentUser.role?.name || '';
+        const isDeveloper = liveRoleName === 'Developer';
+        const allowedModules = currentUser.role?.roleModules.map((rm: any) => rm.module.slug) || [];
+
+        // 3. Permission check: Developer or explicit cluster module permission
+        const hasClusterAccess = isDeveloper || allowedModules.includes('cluster') || allowedModules.includes('lc-gates');
+        if (!hasClusterAccess) {
+          return { isRoleForbidden: true, liveRoleName };
+        }
+
+        // Read effective user scope assignments within snapshot
+        const userScopes = await tx.scopeGroupUser.findMany({
+          where: { userId: req.user.id },
+          select: { scopeGroupId: true },
+        });
+        const assignedScopeGroupIds = userScopes.map((s) => s.scopeGroupId);
+
+        // Derive effective accessible gate set / where clause from the same snapshot
+        let whereClause: any = {};
+        let isForbidden = false;
+        let isNoScope = false;
+        let relevantScopeGroupIds: number[] = [];
+
+        if (assignedScopeGroupIds.length > 0) {
+          const descendantScopeIds = await getAllDescendantScopeGroupIds(assignedScopeGroupIds, tx);
+          const ancestorScopeIds = await getAllAncestorScopeGroupIds(assignedScopeGroupIds, tx);
+          relevantScopeGroupIds = Array.from(new Set([...assignedScopeGroupIds, ...descendantScopeIds, ...ancestorScopeIds]));
+
+          let targetScopeIds = descendantScopeIds;
+
+          if (req.query.scopeGroupId) {
+            if (req.query.scopeGroupId === 'all') {
+              targetScopeIds = isDeveloper ? [] : descendantScopeIds;
+            } else {
+              const paramId = parseInt(req.query.scopeGroupId as string, 10);
+              if (!isNaN(paramId)) {
+                if (!isDeveloper && !descendantScopeIds.includes(paramId)) {
+                  isForbidden = true;
+                }
+                if (req.query.directOnly === 'true') {
+                  targetScopeIds = [paramId];
+                } else {
+                  targetScopeIds = await getAllDescendantScopeGroupIds([paramId], tx);
+                }
+              }
+            }
           }
-        };
-      }
-    } else {
-      // User has NO scope groups assigned
-      if (isDeveloper) {
-        // Developer with no specific scope assigned has global access
-        if (req.query.scopeGroupId && req.query.scopeGroupId !== 'all') {
-          const paramId = parseInt(req.query.scopeGroupId as string, 10);
-          if (!isNaN(paramId)) {
-            const ids = req.query.directOnly === 'true' 
-              ? [paramId] 
-              : await getAllDescendantScopeGroupIds([paramId]);
+
+          if (targetScopeIds.length > 0) {
             whereClause.scopeGroups = {
-              some: { scopeGroupId: { in: ids } }
+              some: {
+                scopeGroupId: { in: targetScopeIds },
+              },
             };
           }
+        } else {
+          if (isDeveloper) {
+            if (req.query.scopeGroupId && req.query.scopeGroupId !== 'all') {
+              const paramId = parseInt(req.query.scopeGroupId as string, 10);
+              if (!isNaN(paramId)) {
+                const ids =
+                  req.query.directOnly === 'true'
+                    ? [paramId]
+                    : await getAllDescendantScopeGroupIds([paramId], tx);
+                whereClause.scopeGroups = {
+                  some: { scopeGroupId: { in: ids } },
+                };
+                const ancestors = await getAllAncestorScopeGroupIds([paramId], tx);
+                relevantScopeGroupIds = Array.from(new Set([paramId, ...ids, ...ancestors]));
+              }
+            }
+          } else {
+            isNoScope = true;
+          }
         }
-      } else {
-        // Non-developer with no scope assigned sees NO gates
-        return res.json([]);
+
+        // Read all relevant directory revisions within the same snapshot
+        const directorySettings = await tx.appSetting.findMany({
+          where: { key: { startsWith: 'DIRECTORY_' } },
+          select: { key: true, value: true },
+        });
+
+        // Derive revision token from this consistent settings snapshot monitoring all relevant scopes
+        const revisionToken = await getDirectoryRevisionToken(
+          req.user.id,
+          relevantScopeGroupIds,
+          isDeveloper,
+          directorySettings
+        );
+
+        return {
+          assignedScopeGroupIds,
+          relevantScopeGroupIds,
+          directorySettings,
+          revisionToken,
+          whereClause,
+          isForbidden,
+          isNoScope,
+          isDeactivated: false,
+          isRoleForbidden: false,
+          liveRoleName,
+          isDeveloper,
+        };
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
       }
+    );
+
+    if (snapshot.isDeactivated) {
+      return res.status(401).json({ error: 'User account is deactivated or not approved' });
     }
 
-    // Fast-path Conditional HTTP Revision Check (ETag / 304 Not Modified)
-    const revisionToken = await getDirectoryRevisionToken(req.user.id, assignedScopeGroupIds, isDeveloper);
-    res.setHeader('ETag', revisionToken);
-    res.setHeader('Cache-Control', 'private, no-cache');
+    if (snapshot.isRoleForbidden) {
+      return res.status(403).json({ error: 'Forbidden: Access to cluster is not permitted for your role' });
+    }
 
+    if (snapshot.isForbidden) {
+      const paramId = parseInt(req.query.scopeGroupId as string, 10);
+      res.setHeader('ETag', `W/"cl-u${req.user.id}-forbidden-${paramId}"`);
+      res.setHeader('Cache-Control', 'private, no-cache');
+      return res.json([]);
+    }
+
+    if (snapshot.isNoScope) {
+      res.setHeader('ETag', `W/"cl-u${req.user.id}-no-scope"`);
+      res.setHeader('Cache-Control', 'private, no-cache');
+      return res.json([]);
+    }
+
+    const canonicalParams = {
+      userId: req.user.id,
+      userRole: snapshot.liveRoleName || 'User',
+      directoryRevision: snapshot.revisionToken || '1',
+      scopeGroupId: typeof req.query.scopeGroupId === 'string' ? req.query.scopeGroupId : null,
+      directOnly: typeof req.query.directOnly === 'string' ? req.query.directOnly : null,
+    };
+
+    const cacheKey = clusterCacheManager.generateKey(canonicalParams);
     const clientIfNoneMatch = req.headers['if-none-match'];
-    if (clientIfNoneMatch && clientIfNoneMatch === revisionToken) {
-      return res.status(304).end();
+
+    // Check L1 In-Memory Response Cache
+    const cached = clusterCacheManager.get<any[]>(cacheKey);
+    if (cached) {
+      res.setHeader('ETag', cached.etag);
+      res.setHeader('Cache-Control', 'private, no-cache');
+      res.setHeader('Vary', 'Authorization, If-None-Match');
+
+      if (clientIfNoneMatch && matchesETag(clientIfNoneMatch, cached.etag)) {
+        return res.status(304).end();
+      }
+
+      res.setHeader('X-Cluster-Cache', 'HIT');
+      return res.json(cached.data);
     }
 
     const gates = await prisma.lCGate.findMany({
-      where: whereClause,
+      where: snapshot.whereClause,
       orderBy: { createdAt: 'desc' },
       include: {
         deviceRegistries: true,
@@ -643,6 +789,46 @@ router.get('/', authenticate, async (req: any, res, next) => {
 
     // Ensure gate list is strictly unique by ID
     const uniqueGates = Array.from(new Map(enrichedGates.map(g => [g.id, g])).values());
+
+    // Transition-Aware TTL Calculation:
+    // Determine the exact timestamp when the earliest currently-online device crosses 65 minutes
+    const onlineExpirations: number[] = [];
+    enrichedGates.forEach(g => {
+      if (g.isOnline && g.lastSeenAt) {
+        const lastSeenMs = new Date(g.lastSeenAt).getTime();
+        onlineExpirations.push(lastSeenMs + ONLINE_CUTOFF_MS);
+      }
+    });
+
+    // Default max TTL is 15 minutes if no devices are online or all are fresh
+    let ttlMs = 15 * 60 * 1000;
+    if (onlineExpirations.length > 0) {
+      const earliestTransitionMs = Math.min(...onlineExpirations);
+      const remainingMs = earliestTransitionMs - nowMs;
+      // Exact millisecond boundary freshness:
+      // - If positive: ttlMs is remainingMs (capped at 15m)
+      // - If at or past 65-min expiry (remainingMs <= 0): ttlMs = 0 (prevents caching so next request is immediately re-evaluated as OFFLINE)
+      ttlMs = remainingMs > 0 ? Math.min(15 * 60 * 1000, remainingMs) : 0;
+    }
+
+    const canonicalETag = clusterCacheManager.generateETag(canonicalParams);
+    res.setHeader('ETag', canonicalETag);
+    res.setHeader('Cache-Control', 'private, no-cache');
+    res.setHeader('Vary', 'Authorization, If-None-Match');
+
+    // Store in L1 In-Memory Cache with Transition-Aware TTL
+    clusterCacheManager.set(cacheKey, uniqueGates, canonicalETag, {
+      userId: req.user.id,
+      scopeGroupIds: snapshot.relevantScopeGroupIds || snapshot.assignedScopeGroupIds,
+      isDeveloper: snapshot.isDeveloper || false,
+      ttlMs,
+    });
+
+    if (clientIfNoneMatch && matchesETag(clientIfNoneMatch, canonicalETag)) {
+      return res.status(304).end();
+    }
+
+    res.setHeader('X-Cluster-Cache', 'MISS');
     res.json(uniqueGates);
   } catch (error) {
     next(error);
@@ -994,10 +1180,33 @@ router.delete('/devices/:id', authenticate, async (req, res, next) => {
 });
 
 // Get single LC Gate with masters, childDevices, and evidences
-router.get('/:id', authenticate, async (req, res, next) => {
+router.get('/:id', authenticate, async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid gate ID' });
+
+    const isDeveloper = req.user?.role === 'Developer';
+    if (!isDeveloper) {
+      // Authorization check: Verify if this gate is accessible within user's assigned scope groups
+      const userScopes = await prisma.scopeGroupUser.findMany({
+        where: { userId: req.user.id },
+        select: { scopeGroupId: true },
+      });
+      const assignedScopeGroupIds = userScopes.map((s) => s.scopeGroupId);
+      if (assignedScopeGroupIds.length === 0) {
+        return res.status(403).json({ error: 'Access denied: No scope groups assigned' });
+      }
+      const accessibleScopeGroupIds = await getAllDescendantScopeGroupIds(assignedScopeGroupIds);
+      const isGateInScope = await prisma.scopeGroupGate.findFirst({
+        where: {
+          gateId: id,
+          scopeGroupId: { in: accessibleScopeGroupIds },
+        },
+      });
+      if (!isGateInScope) {
+        return res.status(403).json({ error: 'Access denied: Gate is outside your assigned scope' });
+      }
+    }
 
     const gate = await prisma.lCGate.findUnique({
       where: { id },
@@ -1024,6 +1233,26 @@ router.get('/:id', authenticate, async (req, res, next) => {
     });
 
     if (!gate) return res.status(404).json({ error: 'Gate not found' });
+
+    // Single-gate composite revision token
+    const timestamps = [
+      gate.updatedAt ? new Date(gate.updatedAt).getTime() : 0,
+      ...gate.masters.map((m: any) => (m.updatedAt ? new Date(m.updatedAt).getTime() : (m.createdAt ? new Date(m.createdAt).getTime() : 0))),
+      ...gate.masters.flatMap((m: any) =>
+        (m.childDevices || []).map((c: any) => (c.updatedAt ? new Date(c.updatedAt).getTime() : (c.createdAt ? new Date(c.createdAt).getTime() : 0)))
+      ),
+    ];
+    const maxTimestamp = Math.max(0, ...timestamps);
+    const gateETag = `W/"gate-${id}-rev-${maxTimestamp}"`;
+
+    res.setHeader('ETag', gateETag);
+    res.setHeader('Cache-Control', 'private, no-cache');
+    res.setHeader('Vary', 'Authorization, If-None-Match');
+
+    const ifNoneMatch = req.headers['if-none-match'];
+    if (ifNoneMatch && matchesETag(ifNoneMatch, gateETag)) {
+      return res.status(304).end();
+    }
 
     const basePayload = await getGateTelemetryPayload(id);
     if (!basePayload) return res.status(404).json({ error: 'Gate telemetry not available' });
@@ -1244,6 +1473,53 @@ router.post('/:id/health-check', authenticate, async (req, res, next) => {
     });
   } catch (err) {
     next(err);
+  }
+});
+
+// Update gate location and metadata
+router.put('/:id', authenticate, async (req: any, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid gate ID' });
+
+    const gate = await prisma.lCGate.findUnique({
+      where: { id },
+      include: { scopeGroups: true }
+    });
+    if (!gate) return res.status(404).json({ error: 'LC Gate not found' });
+
+    const updateSchema = z.object({
+      name: z.string().nullable().optional(),
+      locationName: z.string().optional(),
+      zone: z.string().optional(),
+      division: z.string().optional(),
+      latitude: z.preprocess((val) => (val === undefined || val === '' || val === null ? val : Number(val)), z.number().nullable().optional()),
+      longitude: z.preprocess((val) => (val === undefined || val === '' || val === null ? val : Number(val)), z.number().nullable().optional()),
+    });
+
+    const data = updateSchema.parse(req.body);
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const g = await tx.lCGate.update({
+        where: { id },
+        data: {
+          name: data.name !== undefined ? data.name : gate.name,
+          locationName: data.locationName !== undefined ? data.locationName : gate.locationName,
+          zone: data.zone !== undefined ? data.zone : gate.zone,
+          division: data.division !== undefined ? data.division : gate.division,
+          latitude: data.latitude !== undefined ? data.latitude : gate.latitude,
+          longitude: data.longitude !== undefined ? data.longitude : gate.longitude,
+        }
+      });
+
+      const gateScopes = gate.scopeGroups.map(s => s.scopeGroupId);
+      await bumpDirectoryRevision(gateScopes, gateScopes.length === 0, tx);
+      return g;
+    });
+
+    res.json(updated);
+  } catch (error) {
+    next(error);
   }
 });
 
