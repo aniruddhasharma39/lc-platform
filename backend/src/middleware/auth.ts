@@ -7,6 +7,11 @@ export interface AuthRequest extends Request {
     id: number;
     role: string;
     allowedModules: string[];
+    department?: string | null;
+    designation?: string | null;
+    zone?: string | null;
+    division?: string | null;
+    stationId?: number | null;
   };
 }
 
@@ -60,7 +65,12 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
     req.user = {
       id: user.id,
       role: user.role?.name || '',
-      allowedModules
+      allowedModules,
+      department: user.department,
+      designation: user.designation || user.role?.name || '',
+      zone: user.zone || '',
+      division: user.division || '',
+      stationId: user.stationId || null
     };
     next();
   } catch (error: any) {

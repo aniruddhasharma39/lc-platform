@@ -240,8 +240,19 @@ export function canApproveRequest(approver: any, request: any, approverGateIds: 
  * Build Prisma where clause for filtering gates accessible to a user
  */
 export async function buildUserGateWhereClause(user: any, prisma: PrismaClient): Promise<any> {
-  const isDeveloper = user.role?.name === 'Developer' || user.roleId === 1;
+  const isDeveloper = user.role?.name === 'Developer' || user.role === 'Developer' || user.roleId === 1;
   if (isDeveloper) return {};
+
+  let effectiveUser = user;
+  if (user.id && (user.division === undefined || user.designation === undefined)) {
+    const fetched = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: { id: true, designation: true, zone: true, division: true, stationId: true, role: { select: { name: true } } }
+    });
+    if (fetched) {
+      effectiveUser = { ...user, ...fetched };
+    }
+  }
 
   const userGates = await prisma.userGate.findMany({
     where: { userId: user.id },
@@ -249,7 +260,7 @@ export async function buildUserGateWhereClause(user: any, prisma: PrismaClient):
   });
   const assignedGateIds = userGates.map(ug => ug.gateId);
 
-  const desig = getDesignationConfig(user.designation);
+  const desig = getDesignationConfig(effectiveUser.designation) || getDesignationConfig(effectiveUser.role?.name || effectiveUser.role);
 
   // 1. Gate-level role (Gateman): STRICTLY their assigned gate(s)
   if (desig?.level === 'GATE') {
@@ -262,19 +273,19 @@ export async function buildUserGateWhereClause(user: any, prisma: PrismaClient):
     if (assignedGateIds.length > 0) {
       return { id: { in: assignedGateIds } };
     }
-    if (user.stationId) {
-      return { stationId: user.stationId };
+    if (effectiveUser.stationId) {
+      return { stationId: effectiveUser.stationId };
     }
     return { id: -1 };
   }
 
   // 3. Divisional officers (Senior DOM, DOM, ADOM, Senior DEN, DEN, ADEN):
   if (desig?.level === 'DIVISIONAL') {
-    if (user.division) {
-      return { division: { equals: user.division, mode: 'insensitive' } };
+    if (effectiveUser.division) {
+      return { division: { equals: effectiveUser.division, mode: 'insensitive' } };
     }
-    if (user.zone) {
-      return { zone: { equals: user.zone, mode: 'insensitive' } };
+    if (effectiveUser.zone) {
+      return { zone: { equals: effectiveUser.zone, mode: 'insensitive' } };
     }
     return { id: -1 };
   }
@@ -283,14 +294,14 @@ export async function buildUserGateWhereClause(user: any, prisma: PrismaClient):
   if (assignedGateIds.length > 0) {
     return { id: { in: assignedGateIds } };
   }
-  if (user.stationId) {
-    return { stationId: user.stationId };
+  if (effectiveUser.stationId) {
+    return { stationId: effectiveUser.stationId };
   }
-  if (user.division) {
-    return { division: { equals: user.division, mode: 'insensitive' } };
+  if (effectiveUser.division) {
+    return { division: { equals: effectiveUser.division, mode: 'insensitive' } };
   }
-  if (user.zone) {
-    return { zone: { equals: user.zone, mode: 'insensitive' } };
+  if (effectiveUser.zone) {
+    return { zone: { equals: effectiveUser.zone, mode: 'insensitive' } };
   }
 
   return { id: -1 };
