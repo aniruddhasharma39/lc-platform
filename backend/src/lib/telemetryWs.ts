@@ -58,10 +58,10 @@ export async function getGateTelemetryPayload(gateId: number) {
       deviceStatus: 'UNCONFIGURED',
       isDeviceOnline: false,
       lastSeenAt: null,
-      currentStatus: 'CLOSED',
+      currentStatus: 'UNCONFIGURED',
       currentOperationalState: {
         isCurrentlyOpen: false,
-        currentStatus: 'CLOSED',
+        currentStatus: 'UNCONFIGURED',
         rawReportedStatus: 'NO_MASTER',
         currentStateStartedAt: null,
         timeInCurrentStateSeconds: 0,
@@ -215,9 +215,14 @@ export async function getGateTelemetryPayload(gateId: number) {
   }
   deduplicatedPayloads.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
 
+  const hasHardware = gate.masters.length > 0 && (
+    gate.deviceRegistries.some(d => d.masterId !== null) ||
+    gate.masters.some(m => ((m as any).deviceRegistries?.length > 0) || (m.serialNumber && !m.serialNumber.includes('(Virtual Master)')))
+  );
+
   const latestTele = telemetryRecords[0]?.payload as any;
   const rawStatus = latestTele?.Status ? String(latestTele.Status).trim().toUpperCase() : null;
-  let resolvedGateState: 'OPEN' | 'CLOSED' = 'CLOSED';
+  let resolvedGateState: 'OPEN' | 'CLOSED' | 'UNCONFIGURED' = hasHardware ? 'CLOSED' : 'UNCONFIGURED';
 
   if (rawStatus === 'CLOSED') {
     resolvedGateState = 'CLOSED';
@@ -266,8 +271,8 @@ export async function getGateTelemetryPayload(gateId: number) {
   // 5-Minute strict heartbeat rule: determine live device connectivity from actual telemetry
   const ONLINE_CUTOFF_MS = 5 * 60 * 1000;
   const latestPacketTime = deduplicatedPayloads[0]?.receivedAt ? new Date(deduplicatedPayloads[0].receivedAt).getTime() : 0;
-  const isDeviceOnline = latestPacketTime > 0 && (nowMs - latestPacketTime <= ONLINE_CUTOFF_MS);
-  const deviceStatus: 'ONLINE' | 'OFFLINE' = isDeviceOnline ? 'ONLINE' : 'OFFLINE';
+  const isDeviceOnline = hasHardware && latestPacketTime > 0 && (nowMs - latestPacketTime <= ONLINE_CUTOFF_MS);
+  const deviceStatus: 'ONLINE' | 'OFFLINE' | 'UNCONFIGURED' = hasHardware ? (isDeviceOnline ? 'ONLINE' : 'OFFLINE') : 'UNCONFIGURED';
 
   return {
     success: true,

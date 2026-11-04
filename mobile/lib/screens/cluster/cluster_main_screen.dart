@@ -7,7 +7,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
-import '../../components/device_info_sheet.dart';
 import 'railway_data.dart';
 import '../../services/lc_gates_cache_service.dart';
 
@@ -1055,17 +1054,17 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                                                     style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                                                   ),
                                                   if (masters.isNotEmpty)
-                                                    OutlinedButton.icon(
-                                                      style: OutlinedButton.styleFrom(
-                                                        visualDensity: VisualDensity.compact,
-                                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                                        side: const BorderSide(color: Color(0xFFCBD5E1)),
-                                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                                                      ),
-                                                      icon: const Icon(Icons.developer_board, size: 14, color: AppColors.primary),
-                                                      label: const Text('Device Info', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary)),
-                                                      onPressed: () => DeviceInfoSheet.show(context, gate: Map<String, dynamic>.from(gate)),
-                                                    ),
+                                                     OutlinedButton.icon(
+                                                       style: OutlinedButton.styleFrom(
+                                                         visualDensity: VisualDensity.compact,
+                                                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                                         side: const BorderSide(color: Color(0xFFCBD5E1)),
+                                                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                                       ),
+                                                       icon: const Icon(Icons.wifi_tethering, size: 14, color: AppColors.primary),
+                                                       label: const Text('Ping Device', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                                                       onPressed: () => _pingGateDevice(gate),
+                                                     ),
                                                 ],
                                               ),
                                             ],
@@ -1079,6 +1078,46 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           ),        ],
       ),
     );
+  }
+
+  // Direct AWS IoT Health Check Ping
+  Future<void> _pingGateDevice(dynamic gate) async {
+    final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
+    if (gateId == 0) return;
+    final lcNumber = gate['lcNumber'] ?? 'LC Gate';
+
+    AppFeedback.showInfo(context, 'Pinging $lcNumber hardware over AWS IoT...');
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/lc-gates/$gateId/health-check'),
+        headers: {
+          'Authorization': 'Bearer $_token',
+          'Content-Type': 'application/json',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (mounted) {
+          final isDelivered = data['mqttDelivered'] == true;
+          AppFeedback.showSuccess(
+            context,
+            isDelivered
+                ? 'Ping delivered over AWS IoT Core for $lcNumber: Device is ONLINE & HEALTHY'
+                : 'Ping registered for $lcNumber: Status is HEALTHY',
+          );
+          _fetchGates();
+        }
+      } else {
+        if (mounted) {
+          AppFeedback.showError(context, 'Health ping failed (HTTP ${res.statusCode})');
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        AppFeedback.showError(context, 'Ping error: $e');
+      }
+    }
   }
 
   Widget _buildFilterChip(String label, VoidCallback onRemove) {

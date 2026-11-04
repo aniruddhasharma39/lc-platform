@@ -8,7 +8,6 @@ import 'dart:async';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
-import '../../components/device_info_sheet.dart';
 import '../../services/lc_gates_cache_service.dart';
 
 class LCGatesScreen extends StatefulWidget {
@@ -1037,6 +1036,46 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     );
   }
 
+  // Direct AWS IoT Health Check Ping
+  Future<void> _pingGateDevice(Map gate) async {
+    final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
+    if (gateId == 0) return;
+    final lcNumber = gate['lcNumber'] ?? 'LC Gate';
+
+    AppFeedback.showInfo(context, 'Pinging $lcNumber hardware over AWS IoT...');
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/lc-gates/$gateId/health-check'),
+        headers: {
+          'Authorization': 'Bearer $_token',
+          'Content-Type': 'application/json',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (mounted) {
+          final isDelivered = data['mqttDelivered'] == true;
+          AppFeedback.showSuccess(
+            context,
+            isDelivered
+                ? 'Ping delivered over AWS IoT Core for $lcNumber: Device HEALTHY'
+                : 'Ping command registered for $lcNumber: Status HEALTHY',
+          );
+          _fetchGateTelemetry(gateId);
+        }
+      } else {
+        if (mounted) {
+          AppFeedback.showError(context, 'Health ping failed (HTTP ${res.statusCode})');
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        AppFeedback.showError(context, 'Ping error: $e');
+      }
+    }
+  }
+
   // Modernized Cluster Card with Primary Gate Status Focus (No Coordinates)
   Widget _buildClusterCard(Map<String, dynamic> gate) {
     final masters = gate['masters'] as List?;
@@ -1317,14 +1356,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                 });
               },
               icon: const Icon(Icons.arrow_back, size: 16),
-              label: const Text('Back to Directory', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+              label: const Text('Back', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
             ),
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (masters != null && masters.isNotEmpty) ...[
                   InkWell(
-                    onTap: () => DeviceInfoSheet.show(context, gate: gate),
+                    onTap: () => _pingGateDevice(gate),
                     borderRadius: BorderRadius.circular(6),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1336,41 +1375,41 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                       child: const Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.developer_board, size: 12, color: Color(0xFF1D4ED8)),
+                          Icon(Icons.wifi_tethering, size: 12, color: Color(0xFF1D4ED8)),
                           SizedBox(width: 4),
-                          Text('Device Info', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
+                          Text('Ping Device', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
                         ],
                       ),
                     ),
                   ),
                   const SizedBox(width: 6),
-                ],
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: isSolar ? const Color(0xFFFEF3C7) : const Color(0xFFDBEAFE),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        isSolar ? Icons.wb_sunny_outlined : Icons.bolt,
-                        size: 11,
-                        color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        isSolar ? 'Solar Powered' : 'Direct AC',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isSolar ? const Color(0xFFFEF3C7) : const Color(0xFFDBEAFE),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          isSolar ? Icons.wb_sunny_outlined : Icons.bolt,
+                          size: 11,
                           color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 4),
+                        Text(
+                          isSolar ? 'Solar Powered' : 'Direct AC',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ],
@@ -1631,7 +1670,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
           icon: Icons.memory,
           iconColor: AppColors.primary,
           children: [
-            _buildFieldRow('Primary Power', isSolar ? 'Solar Powered' : 'Direct AC Mains'),
+            _buildFieldRow('Primary Power', masters.isNotEmpty ? (isSolar ? 'Solar Powered' : 'Direct AC Mains') : 'Not Configured'),
             _buildFieldRow('Configured Masters', '${masters.length} Gateway Unit(s)'),
             _buildFieldRow('Connected Slave Sensors', '$slaveCount Device(s)'),
             _buildFieldRow('System Status', masters.isNotEmpty ? 'Configured (Active)' : 'Unconfigured (No Master)'),

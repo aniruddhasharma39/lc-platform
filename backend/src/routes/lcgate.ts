@@ -343,7 +343,12 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
 
       const activeEvent = gate.events.find(e => e.status === 'OPEN' || !e.closedAt);
 
-      let status: 'OPEN' | 'CLOSED' = 'CLOSED';
+      const hasHardware = hasMasters && (
+        gate.deviceRegistries.some(d => d.masterId !== null) ||
+        gate.masters.some(m => ((m as any).deviceRegistries?.length > 0) || (m.serialNumber && !m.serialNumber.includes('(Virtual Master)')))
+      );
+
+      let status: 'OPEN' | 'CLOSED' | 'UNCONFIGURED' = hasHardware ? 'CLOSED' : 'UNCONFIGURED';
       if (rawTeleStatus === 'OPEN' || rawTeleStatus === 'NOT_CLOSED') {
         status = 'OPEN';
       } else if (rawTeleStatus === 'CLOSED') {
@@ -355,11 +360,13 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       } else if (gate.deviceRegistries[0]?.status && gate.deviceRegistries[0]?.masterId !== null) {
         const devStatus = gate.deviceRegistries[0].status.toUpperCase();
         status = (devStatus === 'OPEN' || devStatus === 'NOT_CLOSED') ? 'OPEN' : 'CLOSED';
+      } else if (!hasHardware) {
+        status = 'UNCONFIGURED';
       }
 
       if (status === 'OPEN') {
         totalOpenGates++;
-      } else {
+      } else if (status === 'CLOSED') {
         totalClosedGates++;
       }
 
@@ -714,7 +721,7 @@ router.get('/status-summary', authenticate, async (req: any, res, next) => {
           select: { id: true, serialNumber: true }
         },
         deviceRegistries: {
-          select: { id: true, thingName: true, serialNumber: true, lastSeenAt: true, status: true }
+          select: { id: true, thingName: true, serialNumber: true, lastSeenAt: true, status: true, masterId: true }
         }
       }
     });
@@ -751,8 +758,24 @@ router.get('/status-summary', authenticate, async (req: any, res, next) => {
       : [];
 
     const statuses = gates.map(gate => {
+      const hasHardware = gate.masters.length > 0 && (
+        gate.deviceRegistries.some(d => d.masterId !== null) ||
+        gate.masters.some(m => ((m as any).deviceRegistries?.length > 0) || (m.serialNumber && !m.serialNumber.includes('(Virtual Master)')))
+      );
+
+      if (!hasHardware) {
+        return {
+          gateId: gate.id,
+          lcNumber: gate.lcNumber,
+          isOnline: false,
+          deviceStatus: null,
+          lastSeenAt: null,
+          hasMaster: gate.masters.length > 0,
+          mastersCount: gate.masters.length,
+        };
+      }
+
       const gateThingNames = new Set([
-        gate.lcNumber,
         ...gate.masters.map(m => m.serialNumber),
         ...gate.deviceRegistries.map(d => d.thingName),
         ...gate.deviceRegistries.map(d => d.serialNumber).filter(Boolean) as string[],
@@ -973,8 +996,21 @@ router.get('/', authenticate, async (req: any, res, next) => {
       : [];
 
     const enrichedGates = gates.map(gate => {
+      const hasHardware = gate.masters.length > 0 && (
+        gate.deviceRegistries.some((d: any) => d.masterId !== null) ||
+        gate.masters.some((m: any) => ((m as any).deviceRegistries?.length > 0) || (m.serialNumber && !m.serialNumber.includes('(Virtual Master)')))
+      );
+
+      if (!hasHardware) {
+        return {
+          ...gate,
+          isOnline: false,
+          deviceStatus: null,
+          lastSeenAt: null,
+        };
+      }
+
       const gateThingNames = new Set([
-        gate.lcNumber,
         ...gate.masters.map(m => m.serialNumber),
         ...gate.deviceRegistries.map(d => d.thingName),
         ...gate.deviceRegistries.map(d => d.serialNumber).filter(Boolean) as string[],
