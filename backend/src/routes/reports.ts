@@ -78,7 +78,7 @@ async function resolveUserAccess(req: AuthRequest) {
   // Present as a single virtual cluster so existing frontend keeps working
   const pseudoGroup: any = {
     id: 0,
-    name: 'All Gates',
+    name: 'Assigned LC Gates',
     color: '#0B3C7A',
     parentId: null,
     parent: null,

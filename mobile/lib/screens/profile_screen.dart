@@ -316,66 +316,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(height: 16),
 
-              // Assigned Scope Groups Section
-              Card(
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  side: BorderSide(color: Colors.grey.shade300),
-                ),
-                color: Colors.white,
-                child: Padding(
-                  padding: const EdgeInsets.all(18),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: const [
-                          Icon(Icons.layers_outlined, color: AppColors.primary, size: 20),
-                          SizedBox(width: 8),
-                          Text(
-                            'Assigned Scope Groups',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppColors.primary),
-                          ),
-                        ],
-                      ),
-                      if ((_profile['scopeGroups'] as List?)?.isNotEmpty ?? false)
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: (_profile['scopeGroups'] as List).map((sg) {
-                            final name = (sg['name'] ?? '').toString();
-                            return Chip(
-                              label: Text(name, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
-                              backgroundColor: AppColors.primary,
-                              padding: const EdgeInsets.symmetric(horizontal: 6),
-                              visualDensity: VisualDensity.compact,
-                            );
-                          }).toList(),
-                        )
-                      else if (roleName == 'Developer')
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: AppColors.primary.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Text(
-                            'Full Unrestricted Access (Developer Mode)',
-                            style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: AppColors.primary),
-                          ),
-                        )
-                      else
-                        const Text(
-                          'No scope groups assigned to this account.',
-                          style: TextStyle(color: Colors.grey, fontSize: 13, fontStyle: FontStyle.italic),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-
               // Registration Metadata Section
               Card(
                 elevation: 0,

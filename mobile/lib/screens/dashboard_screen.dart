@@ -1146,6 +1146,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             ..._systemModules.where((m) {
               if (m['slug'] == 'scope-groups') return false;
+              // Device Registry is strictly exclusive to Developer / System Admin
+              if (m['slug'] == 'devices' || m['slug'] == 'device-registry') {
+                final r = (widget.user['role'] ?? '').toString().toLowerCase();
+                return r == 'developer' || r == 'system admin';
+              }
               if (widget.user['role'] == 'Developer') return true;
               final allowed = widget.user['allowedModules'];
               return allowed is List && allowed.contains(m['slug']);

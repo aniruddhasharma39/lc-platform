@@ -423,7 +423,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         }
         return;
       } else if (res.statusCode == 403 && mounted) {
-        AppFeedback.showError(context, 'No clusters are assigned to your user account.');
+        AppFeedback.showError(context, 'No LC gates are assigned to your user account.');
       }
     } catch (e) {
       debugPrint('[ReportsScreen] Scope verification / hierarchy error (offline fallback): $e');
@@ -775,7 +775,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Text(
-                                    cluster['name'] ?? 'Cluster',
+                                    cluster['name'] == 'All Gates' || cluster['name'] == 'Assigned LC Gates' || cluster['name'] == 'Cluster' ? 'Assigned LC Gates' : (cluster['name'] ?? 'Assigned LC Gates'),
                                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                                   ),
                                 ),
@@ -1196,7 +1196,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                               children: [
                                 Text('Range: ${_formatDate(_dateRange.start)} to ${_formatDate(_dateRange.end)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                                 const SizedBox(height: 4),
-                                Text('Selected: ${_selectedClusterIds.length} Clusters, ${_selectedGateIds.length} Gates', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                                Text('Selected: ${_selectedGateIds.length} LC Gate${_selectedGateIds.length == 1 ? "" : "s"}', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
                                 Text(
                                   selectedReportType == 'cycle' ? 'Scope: Analytical cycle audit & daily KPIs' : 'Events in range: ${_records.length}',
                                   style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
@@ -1746,7 +1746,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                 const Text('No operational records found', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                 const SizedBox(height: 4),
                 Text(
-                  'Try selecting more clusters/gates or widening the date range.',
+                  'Try selecting more LC gates or widening the date range.',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                 ),
@@ -1834,7 +1834,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
             const SizedBox(height: 10),
             const Text('No cycle analytics loaded', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
             const SizedBox(height: 4),
-            Text('Tap refresh or select clusters to calculate cycle KPIs.', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+            Text('Tap refresh or select LC gates to calculate cycle KPIs.', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
           ],
         ),
       );
