@@ -1076,10 +1076,12 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     }
   }
 
-  // Modernized Cluster Card with Primary Gate Status Focus (No Coordinates)
+    // Modernized Cluster Card with Primary Gate Status Focus (No Coordinates)
   Widget _buildClusterCard(Map<String, dynamic> gate) {
     final masters = gate['masters'] as List?;
-    final masterCount = masters?.length ?? 0;
+    final int rawMastersCount = (gate['mastersCount'] as int?) ?? (masters?.length ?? 0);
+    final bool hasMaster = (gate['hasMaster'] as bool?) ?? (rawMastersCount > 0);
+    final masterCount = rawMastersCount;
     int slaveCount = 0;
     bool isSolar = false;
     if (masters != null) {
@@ -1091,9 +1093,19 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         }
       }
     }
+    final deviceRegistries = (gate['deviceRegistries'] as List?) ?? [];
+    final bool hasHardware = hasMaster && (
+      deviceRegistries.any((d) => d is Map && d['masterId'] != null) ||
+      (masters != null && masters.any((m) => m is Map && (
+        (m['deviceRegistries'] as List?)?.isNotEmpty == true ||
+        (m['awsThingName'] != null && m['awsThingName'].toString().isNotEmpty) ||
+        (m['serialNumber'] != null && !m['serialNumber'].toString().contains('(Virtual Master)') && m['isVirtual'] == false)
+      )))
+    );
 
     final gateStatus = _getGateStatus(gate);
     final isGateOpen = gateStatus == 'OPEN';
+    final isUnconfigured = !hasMaster || !hasHardware || gateStatus == 'UNCONFIGURED';
 
     return Container(
       decoration: BoxDecoration(
@@ -1112,7 +1124,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Top Row: Gate Title (Single, No Duplication) + Power Source Pill
+                // Top Row: Gate Title + Status / Power Pills
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   crossAxisAlignment: CrossAxisAlignment.center,
@@ -1131,69 +1143,72 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Builder(
-                          builder: (context) {
-                            final isOnline = gate['deviceStatus'] == 'ONLINE' || gate['isOnline'] == true;
-                            return Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3.5),
-                              decoration: BoxDecoration(
-                                color: isOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(color: isOnline ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA)),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Container(
-                                    width: 6,
-                                    height: 6,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: isOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                        if (hasHardware) ...[
+                          Builder(
+                            builder: (context) {
+                              final isOnline = gate['deviceStatus'] == 'ONLINE' || gate['isOnline'] == true;
+                              return Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3.5),
+                                decoration: BoxDecoration(
+                                  color: isOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: isOnline ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA)),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Container(
+                                      width: 6,
+                                      height: 6,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: isOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                                      ),
                                     ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    isOnline ? 'ONLINE' : 'OFFLINE',
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      letterSpacing: 0.3,
-                                      color: isOnline ? const Color(0xFF047857) : const Color(0xFFB91C1C),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      isOnline ? 'ONLINE' : 'OFFLINE',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 0.3,
+                                        color: isOnline ? const Color(0xFF047857) : const Color(0xFFB91C1C),
+                                      ),
                                     ),
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
-                        ),
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: isSolar ? const Color(0xFFFEF3C7) : const Color(0xFFDBEAFE),
-                            borderRadius: BorderRadius.circular(6),
+                                  ],
+                                ),
+                              );
+                            },
                           ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                isSolar ? Icons.wb_sunny_outlined : Icons.bolt,
-                                size: 11,
-                                color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                isSolar ? 'Solar' : 'Direct',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
+                          const SizedBox(width: 6),
+                        ],
+                        if (hasMaster)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: isSolar ? const Color(0xFFFEF3C7) : const Color(0xFFDBEAFE),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  isSolar ? Icons.wb_sunny_outlined : Icons.bolt,
+                                  size: 11,
                                   color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
                                 ),
-                              ),
-                            ],
+                                const SizedBox(width: 4),
+                                Text(
+                                  isSolar ? 'Solar' : 'Direct',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: isSolar ? const Color(0xFFD97706) : const Color(0xFF2563EB),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
                       ],
                     ),
                   ],
@@ -1230,38 +1245,71 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                 ),
                 const SizedBox(height: 8),
 
-                // PRIMARY GATE STATUS: Strictly OPENED or CLOSE (No extra text)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: isGateOpen ? const Color(0xFFFEE2E2) : const Color(0xFFDCFCE7),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: isGateOpen ? const Color(0xFFFCA5A5) : const Color(0xFF86EFAC)),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 7,
-                        height: 7,
-                        decoration: BoxDecoration(
-                          color: isGateOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D),
-                          shape: BoxShape.circle,
+                // PRIMARY GATE STATUS: Strictly UNCONFIGURED, OPENED or CLOSE
+                if (isUnconfigured)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFCBD5E1)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 7,
+                          height: 7,
+                          decoration: const BoxDecoration(
+                            color: Color(0xFF64748B),
+                            shape: BoxShape.circle,
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        isGateOpen ? 'OPENED' : 'CLOSE',
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w800,
-                          color: isGateOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D),
-                          letterSpacing: 0.5,
+                        const SizedBox(width: 6),
+                        const Text(
+                          'UNCONFIGURED',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF475569),
+                            letterSpacing: 0.5,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
+                  )
+                else
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: isGateOpen ? const Color(0xFFFEE2E2) : const Color(0xFFDCFCE7),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: isGateOpen ? const Color(0xFFFCA5A5) : const Color(0xFF86EFAC)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 7,
+                          height: 7,
+                          decoration: BoxDecoration(
+                            color: isGateOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D),
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          isGateOpen ? 'OPENED' : 'CLOSE',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w800,
+                            color: isGateOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D),
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
                 const SizedBox(height: 8),
 
                 // Secondary Details: Device Summary in a single minimal line
@@ -1326,7 +1374,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   }
 
   // ==========================================================
-  // CLUSTER DRILLDOWN (DETAIL VIEW)
+  // CLUSTER DRILLDOWN (DETAIL VIEW)ER DRILLDOWN (DETAIL VIEW)
   // ==========================================================
   Widget _buildDetailView() {
     final gate = _selectedGate!;
@@ -2227,14 +2275,28 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   // ==========================================================
   Widget _buildOperationalHistoryTab(Map<String, dynamic> gate) {
     final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
+    final masters = (gate['masters'] as List?) ?? [];
+    final int rawMastersCount = (gate['mastersCount'] as int?) ?? masters.length;
+    final bool hasMaster = (gate['hasMaster'] as bool?) ?? ((_gateTelemetry?['hasMaster'] as bool?) ?? (rawMastersCount > 0));
+    final devs = (gate['deviceRegistries'] as List?) ?? [];
+    final bool hasHardware = hasMaster && (
+      devs.any((d) => d is Map && d['masterId'] != null) ||
+      masters.any((m) => m is Map && (
+        (m['deviceRegistries'] as List?)?.isNotEmpty == true ||
+        (m['awsThingName'] != null && m['awsThingName'].toString().isNotEmpty) ||
+        (m['serialNumber'] != null && !m['serialNumber'].toString().contains('(Virtual Master)') && m['isVirtual'] == false)
+      ))
+    );
+
     final currentStatus = _gateTelemetry?['currentStatus']?.toString().toUpperCase() ?? 'UNKNOWN';
     final gateOperationalStatus = _getGateStatus(gate);
-    final isOpen = gateOperationalStatus == 'OPEN' || currentStatus == 'OPEN';
+    final isUnconfigured = !hasMaster || !hasHardware || currentStatus == 'UNCONFIGURED' || gateOperationalStatus == 'UNCONFIGURED';
+    final isOpen = !isUnconfigured && (gateOperationalStatus == 'OPEN' || currentStatus == 'OPEN');
 
-    final isDeviceOnline = _gateTelemetry?['isDeviceOnline'] == true ||
+    final isDeviceOnline = hasHardware && (_gateTelemetry?['isDeviceOnline'] == true ||
         _gateTelemetry?['deviceStatus'] == 'ONLINE' ||
         gate['deviceStatus'] == 'ONLINE' ||
-        gate['isOnline'] == true;
+        gate['isOnline'] == true);
 
     final operationalCycles = (_gateTelemetry?['operationalCycles'] as List?) ??
         (gate['events'] as List?) ??
@@ -2266,10 +2328,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                   decoration: BoxDecoration(
-                    color: isOpen ? const Color(0xFFFEE2E2) : const Color(0xFFDCFCE7),
+                    color: isUnconfigured
+                        ? const Color(0xFFF1F5F9)
+                        : (isOpen ? const Color(0xFFFEE2E2) : const Color(0xFFDCFCE7)),
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                      color: isOpen ? const Color(0xFFFCA5A5) : const Color(0xFF86EFAC),
+                      color: isUnconfigured
+                          ? const Color(0xFFCBD5E1)
+                          : (isOpen ? const Color(0xFFFCA5A5) : const Color(0xFF86EFAC)),
                     ),
                   ),
                   child: Row(
@@ -2279,17 +2345,23 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                         width: 9,
                         height: 9,
                         decoration: BoxDecoration(
-                          color: isOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D),
+                          color: isUnconfigured
+                              ? const Color(0xFF64748B)
+                              : (isOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D)),
                           shape: BoxShape.circle,
                         ),
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        isOpen ? 'GATE: OPEN' : 'GATE: CLOSED',
+                        isUnconfigured
+                            ? 'GATE: UNCONFIGURED'
+                            : (isOpen ? 'GATE: OPEN' : 'GATE: CLOSED'),
                         style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w800,
-                          color: isOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D),
+                          color: isUnconfigured
+                              ? const Color(0xFF475569)
+                              : (isOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D)),
                           letterSpacing: 0.5,
                         ),
                       ),
@@ -2297,42 +2369,43 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                   ),
                 ),
               ),
-              const SizedBox(width: 10),
-
-              // Hardware Online/Offline Status Pill
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                decoration: BoxDecoration(
-                  color: isDeviceOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    color: isDeviceOnline ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA),
+              if (hasHardware) ...[
+                const SizedBox(width: 10),
+                // Hardware Online/Offline Status Pill (Only shown if physical hardware is mapped)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: isDeviceOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: isDeviceOnline ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: isDeviceOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        isDeviceOnline ? 'ONLINE' : 'OFFLINE',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w800,
+                          color: isDeviceOnline ? const Color(0xFF047857) : const Color(0xFFB91C1C),
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: isDeviceOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      isDeviceOnline ? 'ONLINE' : 'OFFLINE',
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w800,
-                        color: isDeviceOnline ? const Color(0xFF047857) : const Color(0xFFB91C1C),
-                        letterSpacing: 0.3,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              ],
               const SizedBox(width: 8),
 
               // Refresh Button
