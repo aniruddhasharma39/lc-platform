@@ -1057,6 +1057,7 @@ router.get('/:gateId/next-master-sequence', authenticate, async (req, res, next)
     if (!gate) return res.status(404).json({ error: 'LC Gate not found' });
 
     const existingMasters = await prisma.masterUnit.findMany({
+      where: { gateId },
       orderBy: { masterSequence: 'asc' }
     });
 
@@ -1116,6 +1117,7 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
     }
 
     const existingMasters = await prisma.masterUnit.findMany({
+      where: { gateId },
       select: { masterSequence: true }
     });
     const takenSequences = new Set(existingMasters.map(m => m.masterSequence));
@@ -1130,11 +1132,10 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
     }
 
     const seqStr = targetSequence.toString().padStart(2, '0');
-    let serialNumber = data.serialNumber ? data.serialNumber.trim() : '';
-    if (dev) {
-      serialNumber = serialNumber || dev.thingName || dev.serialNumber || `${gate.lcNumber}-${seqStr}`;
-    } else if (!serialNumber || serialNumber === `${gate.lcNumber}-${seqStr}`) {
-      serialNumber = `${gate.lcNumber}-${seqStr} (Virtual Master)`;
+    const defaultSerial = `${gate.lcNumber}-${seqStr}`;
+    let serialNumber = data.serialNumber ? data.serialNumber.trim() : defaultSerial;
+    if (!serialNumber || serialNumber.endsWith('(Virtual Master)')) {
+      serialNumber = defaultSerial;
     }
 
     const existing = await prisma.masterUnit.findUnique({ where: { serialNumber } });
@@ -1245,9 +1246,7 @@ router.put('/masters/:id', authenticate, async (req, res, next) => {
         });
 
         // If current serial is virtual or unmodified, adopt the linked device thingName
-        if (!data.serialNumber || serialNumber.includes('(Virtual Master)')) {
-          serialNumber = linkedDev.thingName || linkedDev.serialNumber || serialNumber;
-        }
+        // Preserve clean gate sequential identifier; do not overwrite with AWS IoT thingName
       }
 
       if (serialNumber !== existing.serialNumber) {
@@ -1611,7 +1610,7 @@ function buildGateTelemetry(gate: any) {
   });
 
   const mastersWithRegistry = masterList.map((m: any) => {
-    const reg = regMap.get(m.serialNumber);
+    const reg = registeredDevices.find((d: any) => d.masterId === m.id) || regMap.get(m.serialNumber);
     const isVirtual = !reg || (m.serialNumber && m.serialNumber.includes('(Virtual Master)'));
     return {
       ...m,

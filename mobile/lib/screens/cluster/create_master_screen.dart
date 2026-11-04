@@ -19,6 +19,7 @@ class CreateMasterScreen extends StatefulWidget {
 
 class _CreateMasterScreenState extends State<CreateMasterScreen> {
   final _seqCtrl = TextEditingController();
+  final _serialCtrl = TextEditingController();
   String _powerSource = 'SOLAR';
   bool _isLoading = false;
   String? _seqError;
@@ -53,6 +54,7 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
   @override
   void dispose() {
     _seqCtrl.dispose();
+    _serialCtrl.dispose();
     super.dispose();
   }
 
@@ -94,10 +96,14 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         final nextSeq = data['formattedSequence'] ?? data['nextSequence']?.toString().padLeft(2, '0');
+        final nextSerial = data['nextSerialNumber']?.toString() ?? '${widget.gate['lcNumber']}-$nextSeq';
         if (nextSeq != null) {
           if (mounted) {
             setState(() {
               _seqCtrl.text = nextSeq.toString();
+              if (_serialCtrl.text.isEmpty || _serialCtrl.text.contains('(Virtual Master)')) {
+                _serialCtrl.text = nextSerial;
+              }
             });
             if (isManualRetry) {
               AppFeedback.showSuccess(
@@ -141,9 +147,9 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
     try {
       final seqNum = int.tryParse(_seqCtrl.text) ?? 1;
       final seqStr = seqNum.toString().padLeft(2, '0');
-      final serialNumber = chosenDevice != null
-          ? (chosenDevice['thingName'] ?? chosenDevice['serialNumber'] ?? '').toString()
-          : '${widget.gate['lcNumber']}-$seqStr (Virtual Master)';
+      final serialNumber = _serialCtrl.text.trim().isNotEmpty
+          ? _serialCtrl.text.trim()
+          : '${widget.gate['lcNumber']}-$seqStr';
 
       final body = <String, dynamic>{
         'masterSequence': seqNum,
@@ -238,9 +244,9 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
         : null;
 
     final fallbackSerial = '${widget.gate['lcNumber']}-${_seqCtrl.text.isEmpty ? '01' : _seqCtrl.text.padLeft(2, '0')}';
-    final serialPreview = chosenDevice != null
-        ? (chosenDevice['thingName'] ?? 'Selected Device').toString()
-        : '$fallbackSerial (Virtual Master)';
+    if (_serialCtrl.text.isEmpty) {
+      _serialCtrl.text = fallbackSerial;
+    }
 
     return Scaffold(
       appBar: AppBar(title: const Text('Add Master Unit', style: TextStyle(fontWeight: FontWeight.bold)), elevation: 0),
@@ -324,7 +330,7 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               );
-                            }).toList(),
+                            }),
                             ],
                             onChanged: (val) {
                               setState(() {
@@ -367,21 +373,20 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
 
                     // 2. Master Serial Identifier Display
                     TextField(
-                      readOnly: true,
-                      controller: TextEditingController(text: serialPreview),
+                      controller: _serialCtrl,
                       decoration: InputDecoration(
                         labelText: 'Master Serial Identifier *',
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                         prefixIcon: const Icon(Icons.confirmation_number_outlined),
                         filled: true,
                         fillColor: const Color(0xFFF8FAFC),
-                        hintText: 'Select an AWS IoT device above',
+                        hintText: 'e.g. ${widget.gate['lcNumber']}-01',
                         helperText: _seqError ??
                             (chosenDevice != null
-                                ? 'Authoritative identifier strictly from AWS IoT Device Registry.'
-                                : 'Virtual Master identifier. Hardware device can be linked at any time.'),
+                                ? 'Hardware Mapped: ${chosenDevice['thingName']} (AWS IoT Core)'
+                                : 'Gate sequential identifier. AWS IoT hardware can be linked at any time.'),
                         helperStyle: TextStyle(
-                          color: const Color(0xFF047857),
+                          color: chosenDevice != null ? const Color(0xFF047857) : const Color(0xFF64748B),
                           fontWeight: FontWeight.normal,
                         ),
                       ),

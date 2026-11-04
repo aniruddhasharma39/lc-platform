@@ -1888,7 +1888,12 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
     })
       .then(r => r.json())
       .then(data => {
-        if (data.nextSequence) setMasterSequence(data.nextSequence.toString());
+        if (data.nextSequence) {
+          const seq = data.formattedSequence || data.nextSequence.toString().padStart(2, '0');
+          setMasterSequence(seq);
+          const defaultSerial = data.nextSerialNumber || `${gate.lcNumber}-${seq}`;
+          setCustomSerial(defaultSerial);
+        }
       })
       .catch(console.error);
 
@@ -1916,8 +1921,8 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const chosen = selectedDeviceId ? deviceList.find(d => d.id.toString() === selectedDeviceId) : null;
-    const autoSerial = chosen ? chosen.thingName : `${gate.lcNumber}-${masterSequence.padStart(2, '0')} (Virtual Master)`;
-    const serialToUse = (customSerial.trim() || autoSerial).trim();
+    const defaultSerial = `${gate.lcNumber}-${masterSequence.padStart(2, '0')}`;
+    const serialToUse = (customSerial.trim() || defaultSerial).trim();
 
     setSubmitting(true);
     try {
@@ -2020,13 +2025,13 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
             <input 
               className="glass-input flex-1 font-bold font-mono" 
               type="text" 
-              value={customSerial !== '' ? customSerial : (chosenDevice ? chosenDevice.thingName : `${gate.lcNumber}-${masterSequence.padStart(2, '0')} (Virtual Master)`)} 
+              value={customSerial !== '' ? customSerial : `${gate.lcNumber}-${masterSequence.padStart(2, '0')}`} 
               onChange={e => setCustomSerial(e.target.value)}
-              placeholder="e.g. LC-0001-01"
+              placeholder={`e.g. ${gate.lcNumber}-01`}
             />
           </div>
           <small className="mt-1 block text-muted">
-            {chosenDevice ? `Physical hardware linked: ${chosenDevice.thingName}` : 'Auto-generated virtual master identifier. Physical hardware can be assigned at any time.'}
+            {chosenDevice ? `Physical hardware mapped: ${chosenDevice.thingName} (AWS IoT Core)` : 'Gate sequential identifier. AWS IoT hardware can be linked at any time.'}
           </small>
         </div>
         <div className="form-group">
