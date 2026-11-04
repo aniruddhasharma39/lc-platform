@@ -350,11 +350,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
               }
             }
           });
-          if (_reportType == 'cycle') {
-            _fetchCycleAnalytics();
-          } else {
-            _fetchRecords();
-          }
+          _triggerReportFetch();
         }
         return;
       }
@@ -415,11 +411,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
               }
             }
           });
-          if (_reportType == 'cycle') {
-            _fetchCycleAnalytics();
-          } else {
-            _fetchRecords(forceReload: true);
-          }
+          _triggerReportFetch(forceReload: true);
         }
         return;
       } else if (res.statusCode == 403 && mounted) {
