@@ -655,18 +655,27 @@ router.delete(['/:id', '/:thingName'], authenticate, async (req, res, next) => {
 
     const thingName = device.thingName;
 
-    // 1. Delete associated telemetry records
-    await prisma.deviceTelemetry.deleteMany({
-      where: {
-        OR: [
-          { thingName },
-          { deviceRegistryId: device.id },
-        ],
-      },
-    }).catch(console.warn);
+    // 1. Delete associated telemetry and health check records
+    await Promise.all([
+      prisma.deviceTelemetry.deleteMany({
+        where: {
+          OR: [
+            { thingName },
+            { deviceRegistryId: device.id },
+          ],
+        },
+      }).catch(console.warn),
+      prisma.deviceHealthCheck.deleteMany({
+        where: {
+          OR: [
+            { thingName },
+            { deviceRegistryId: device.id },
+          ],
+        },
+      }).catch(console.warn),
+    ]);
 
-
-    // 3. Delete from DeviceRegistry
+    // 2. Delete from DeviceRegistry
     await prisma.deviceRegistry.delete({
       where: { id: device.id },
     });

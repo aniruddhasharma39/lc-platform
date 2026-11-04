@@ -772,28 +772,42 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                     ],
                   ),
                 ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: statusColor.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: statusColor.withOpacity(0.3)),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 6,
-                        height: 6,
-                        decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: statusColor.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: statusColor.withOpacity(0.3)),
                       ),
-                      const SizedBox(width: 5),
-                      Text(
-                        status,
-                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: statusColor),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            status,
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: statusColor),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(width: 6),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline, size: 18, color: Color(0xFFEF4444)),
+                      tooltip: 'Delete Device (GitHub Style Confirmation)',
+                      onPressed: () => _confirmDeleteDeviceGitHubStyle(Map<String, dynamic>.from(device)),
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -937,45 +951,32 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
             ),
             const SizedBox(height: 10),
 
-            // Actions row: SIM Details & Recharge
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      backgroundColor: const Color(0xFFF1F5F9),
-                      foregroundColor: const Color(0xFF1E293B),
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        side: const BorderSide(color: Color(0xFFCBD5E1)),
-                      ),
-                    ),
-                    onPressed: () => _openSimManagementSheet(Map<String, dynamic>.from(device)),
-                    icon: const Icon(Icons.sim_card_outlined, size: 14, color: AppColors.primary),
-                    label: const Text('SIM Details', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+            // Unified Action: SIM Details & Recharge
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 9),
+                  backgroundColor: const Color(0xFFF8FAFC),
+                  foregroundColor: const Color(0xFF0F172A),
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    side: const BorderSide(color: Color(0xFFCBD5E1)),
                   ),
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      backgroundColor: const Color(0xFFFFFBEB),
-                      foregroundColor: const Color(0xFFB45309),
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        side: const BorderSide(color: Color(0xFFFDE68A)),
-                      ),
-                    ),
-                    onPressed: () => _openQuickRechargeDialog(Map<String, dynamic>.from(device)),
-                    icon: const Icon(Icons.bolt, size: 14, color: Colors.amber),
-                    label: const Text('Recharge', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                  ),
+                onPressed: () => _openSimManagementSheet(Map<String, dynamic>.from(device)),
+                icon: const Icon(Icons.sim_card_outlined, size: 16, color: AppColors.primary),
+                label: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('SIM Details & Recharge', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+                    SizedBox(width: 6),
+                    Icon(Icons.bolt, size: 15, color: Colors.amber),
+                  ],
                 ),
-              ],
+              ),
             ),
             const SizedBox(height: 8),
 
@@ -1117,6 +1118,233 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
     } catch (e) {
       if (mounted) AppFeedback.showError(context, 'Download error: $e');
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // GITHUB STYLE: DELETE AWS IOT THING CONFIRMATION MODAL
+  // ─────────────────────────────────────────────────────────────
+  void _confirmDeleteDeviceGitHubStyle(Map<String, dynamic> device) {
+    final thingName = (device['thingName'] ?? '').toString();
+    final deviceId = device['id'];
+    final confirmController = TextEditingController();
+    bool isDeleting = false;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dCtx) {
+        return StatefulBuilder(
+          builder: (dCtx, setDlgState) {
+            final matches = confirmController.text.trim() == thingName;
+
+            return Dialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              backgroundColor: Colors.white,
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 480),
+                padding: const EdgeInsets.all(22),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Header with red warning badge
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFEE2E2),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(Icons.warning_amber_rounded, color: Color(0xFFDC2626), size: 24),
+                        ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Delete AWS IoT Thing',
+                                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                              ),
+                              Text(
+                                'Permanent database & registry cleanup',
+                                style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 20),
+                          onPressed: isDeleting ? null : () => Navigator.pop(dCtx),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // GitHub Warning Callout
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF1F2),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFFECDD3)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Row(
+                            children: [
+                              Icon(Icons.shield_outlined, size: 16, color: Color(0xFFBE123C)),
+                              SizedBox(width: 6),
+                              Text(
+                                'Unexpected bad things will happen if you don’t read this!',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11.5, color: Color(0xFFBE123C)),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          RichText(
+                            text: TextSpan(
+                              style: const TextStyle(fontSize: 12, color: Color(0xFF4C0519), height: 1.4),
+                              children: [
+                                const TextSpan(text: 'This action '),
+                                const TextSpan(text: 'cannot be undone. ', style: TextStyle(fontWeight: FontWeight.bold)),
+                                const TextSpan(text: 'This will permanently delete the '),
+                                TextSpan(text: thingName, style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace')),
+                                const TextSpan(text: ' AWS IoT Thing record from the database, purge all associated telemetries, and disconnect it from any assigned LC Gate.'),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+
+                    // Confirmation Prompt
+                    RichText(
+                      text: TextSpan(
+                        style: const TextStyle(fontSize: 13, color: Color(0xFF334155)),
+                        children: [
+                          const TextSpan(text: 'Please type '),
+                          TextSpan(
+                            text: thingName,
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace', color: Color(0xFF0F172A)),
+                          ),
+                          const TextSpan(text: ' to confirm:'),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // Monospace text field
+                    TextField(
+                      controller: confirmController,
+                      enabled: !isDeleting,
+                      autofocus: true,
+                      style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 14),
+                      decoration: InputDecoration(
+                        hintText: thingName,
+                        hintStyle: TextStyle(color: Colors.grey.shade400, fontFamily: 'monospace'),
+                        filled: true,
+                        fillColor: const Color(0xFFF8FAFC),
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(
+                            color: matches ? const Color(0xFFDC2626) : const Color(0xFFCBD5E1),
+                            width: matches ? 1.5 : 1.0,
+                          ),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(color: Color(0xFFDC2626), width: 2),
+                        ),
+                      ),
+                      onChanged: (_) => setDlgState(() {}),
+                    ),
+                    const SizedBox(height: 20),
+
+                    // Action Button (GitHub Red or Disabled Grey)
+                    SizedBox(
+                      width: double.infinity,
+                      height: 44,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: matches ? const Color(0xFFDC2626) : const Color(0xFFF1F5F9),
+                          disabledBackgroundColor: const Color(0xFFF1F5F9),
+                          foregroundColor: matches ? Colors.white : const Color(0xFF94A3B8),
+                          disabledForegroundColor: const Color(0xFF94A3B8),
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            side: BorderSide(
+                              color: matches ? const Color(0xFFB91C1C) : const Color(0xFFE2E8F0),
+                            ),
+                          ),
+                        ),
+                        onPressed: (!matches || isDeleting)
+                            ? null
+                            : () async {
+                                setDlgState(() => isDeleting = true);
+                                try {
+                                  final token = await _getToken();
+                                  final uri = Uri.parse('$baseUrl/devices/$deviceId');
+                                  final res = await http.delete(uri, headers: {
+                                    'Authorization': 'Bearer $token',
+                                    'Content-Type': 'application/json',
+                                  }).timeout(const Duration(seconds: 15));
+
+                                  if (res.statusCode == 200) {
+                                    Navigator.pop(dCtx);
+                                    if (mounted) {
+                                      AppFeedback.showSuccess(context, 'Device $thingName deleted from database');
+                                      _fetchDevices(silent: false);
+                                    }
+                                  } else {
+                                    final err = json.decode(res.body);
+                                    if (mounted) {
+                                      AppFeedback.showError(context, err['error'] ?? 'Failed to delete device');
+                                    }
+                                    setDlgState(() => isDeleting = false);
+                                  }
+                                } catch (e) {
+                                  if (mounted) AppFeedback.showError(context, 'Delete error: $e');
+                                  setDlgState(() => isDeleting = false);
+                                }
+                              },
+                        child: isDeleting
+                            ? const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                  ),
+                                  SizedBox(width: 10),
+                                  Text('Deleting Thing...', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
+                                ],
+                              )
+                            : const Text(
+                                'I understand the consequences, delete this thing',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5),
+                              ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 }
 
@@ -1619,6 +1847,40 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
             child: ListView(
               padding: const EdgeInsets.all(18),
               children: [
+                // ─────────────────────────────────────────────────────────
+                // SECTION 1: SIM CARD & IDENTITY
+                // ─────────────────────────────────────────────────────────
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.sim_card, size: 18, color: AppColors.primary),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'SECTION 1: SIM CARD & OPERATOR IDENTITY',
+                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primary),
+                            ),
+                            Text(
+                              'Physical SIM photograph, telecom provider, ICCID serial & mobile number',
+                              style: TextStyle(fontSize: 10.5, color: Color(0xFF64748B)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+
                 // 1. Mandatory SIM Photo Card
                 Container(
                   padding: const EdgeInsets.all(14),
@@ -1773,7 +2035,7 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
 
                 // 2. Telecom Operator & SIM Type (Optional)
                 Row(
@@ -1829,25 +2091,6 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('SIM Mobile Number (Optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569))),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: _phoneCtrl,
-                      keyboardType: TextInputType.phone,
-                      decoration: InputDecoration(
-                        hintText: 'e.g. 9876543210',
-                        prefixIcon: const Icon(Icons.phone_android, size: 18),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 14),
-
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
                     const Text('ICCID / Barcode Digits (Optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569))),
                     const SizedBox(height: 6),
                     TextField(
@@ -1863,7 +2106,60 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                 ),
                 const SizedBox(height: 14),
 
-                // 4. Validity Expiry Date & Last Recharge Date (Optional)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('SIM Mobile Number (Optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569))),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: _phoneCtrl,
+                      keyboardType: TextInputType.phone,
+                      decoration: InputDecoration(
+                        hintText: 'e.g. 9876543210',
+                        prefixIcon: const Icon(Icons.phone_android, size: 18),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 24),
+
+                // ─────────────────────────────────────────────────────────
+                // SECTION 2: RECHARGE & VALIDITY MANAGEMENT
+                // ─────────────────────────────────────────────────────────
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFFBEB),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFFDE68A)),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.bolt, size: 18, color: Color(0xFFD97706)),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'SECTION 2: RECHARGE & PLAN VALIDITY',
+                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFFB45309)),
+                            ),
+                            Text(
+                              'Service expiry schedule, quick renewal presets & recharge payment logs',
+                              style: TextStyle(fontSize: 10.5, color: Color(0xFF92400E)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+
+                // 4. Validity Expiry Date & Presets
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -1943,6 +2239,7 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                 ),
                 const SizedBox(height: 14),
 
+                // 5. Last Recharge Date
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -2023,7 +2320,7 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                               ),
                               SizedBox(width: 10),
                               Text(
-                                'Saving SIM Record...',
+                                'Saving SIM & Recharge Details...',
                                 style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
                               ),
                             ],
@@ -2034,7 +2331,7 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                               Icon(Icons.check_circle_outline, size: 18, color: Colors.white),
                               SizedBox(width: 8),
                               Text(
-                                'Save SIM & Connectivity Record',
+                                'Save SIM & Recharge Details',
                                 style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
                               ),
                             ],
