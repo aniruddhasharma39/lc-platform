@@ -1,5 +1,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
+import { v2 as cloudinary } from 'cloudinary';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { publishMqttMessage } from '../lib/iotClient';
@@ -8,6 +12,52 @@ import { recordGateTelemetryTransition } from '../lib/telemetryMonitor';
 import { broadcastGateTelemetry } from '../lib/telemetryWs';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+async function uploadSimImage(base64Str: string): Promise<string> {
+  const uploadsDir = path.join(process.cwd(), 'uploads');
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+
+  const matches = base64Str.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+  const buffer = (matches && matches.length === 3)
+    ? Buffer.from(matches[2], 'base64')
+    : Buffer.from(base64Str, 'base64');
+
+  const filename = `${crypto.randomUUID()}.jpg`;
+  const filepath = path.join(uploadsDir, filename);
+  try {
+    fs.writeFileSync(filepath, buffer);
+  } catch (e) {
+    console.warn('Local fs write failed for SIM photo:', e);
+  }
+
+  let imageUrl = `/uploads/${filename}`;
+  try {
+    const uploadResult = await new Promise<any>((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'lc-platform-evidence', resource_type: 'image' },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        }
+      );
+      stream.end(buffer);
+    });
+    if (uploadResult?.secure_url) {
+      imageUrl = uploadResult.secure_url;
+    }
+  } catch (cldErr) {
+    console.warn('Cloudinary upload failed, falling back to local file URL:', cldErr);
+  }
+  return imageUrl;
+}
 
 
 const router = Router();
@@ -35,6 +85,14 @@ const registerDeviceSchema = z.object({
   components: z.any().optional().nullable(),
   attributes: z.any().optional().nullable(),
   metadata: z.any().optional().nullable(),
+  // SIM & Connectivity fields
+  simPhotoUrl: z.string().optional().nullable(),
+  simProvider: z.string().optional().nullable(),
+  simNumber: z.string().optional().nullable(),
+  iccid: z.string().optional().nullable(),
+  simType: z.string().optional().nullable(),
+  lastRechargeDate: z.preprocess((val) => (val ? new Date(val as string) : null), z.date().optional().nullable()),
+  validityExpiryDate: z.preprocess((val) => (val ? new Date(val as string) : null), z.date().optional().nullable()),
 });
 
 const updateDeviceSchema = registerDeviceSchema.partial();
@@ -333,8 +391,21 @@ router.get('/', authenticate, async (req, res, next) => {
         device.status !== 'INACTIVE'
       );
 
+      let simPhotoUrl = device.simPhotoUrl;
+      if (!simPhotoUrl && device.masterId) {
+        const simEvidence = await prisma.installationEvidence.findFirst({
+          where: { masterId: device.masterId, category: 'SIM_CARD' },
+          orderBy: { createdAt: 'desc' },
+          select: { imageUrl: true },
+        }).catch(() => null);
+        if (simEvidence?.imageUrl) {
+          simPhotoUrl = simEvidence.imageUrl;
+        }
+      }
+
       return {
         ...device,
+        simPhotoUrl,
         computedStatus: isOnline ? 'ONLINE' : 'OFFLINE',
         latestPayloadSent: lastTimestamp ? lastTimestamp.toISOString() : null,
         latestTopic: latestTele?.topic || `lc-gate/${device.thingName}/telemetry`,
@@ -1137,7 +1208,22 @@ router.get('/:id', authenticate, async (req, res, next) => {
       return res.status(404).json({ error: 'Device not found in registry' });
     }
 
-    res.json(device);
+    let simPhotoUrl = device.simPhotoUrl;
+    if (!simPhotoUrl && device.masterId) {
+      const simEvidence = await prisma.installationEvidence.findFirst({
+        where: { masterId: device.masterId, category: 'SIM_CARD' },
+        orderBy: { createdAt: 'desc' },
+        select: { imageUrl: true },
+      }).catch(() => null);
+      if (simEvidence?.imageUrl) {
+        simPhotoUrl = simEvidence.imageUrl;
+      }
+    }
+
+    res.json({
+      ...device,
+      simPhotoUrl,
+    });
   } catch (error) {
     next(error);
   }
@@ -1284,6 +1370,160 @@ router.put('/:id', authenticate, async (req, res, next) => {
 
     res.json({
       message: 'Device registry updated successfully',
+      device: updated,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const simUpdateSchema = z.object({
+  imageBase64: z.string().optional().nullable(),
+  simPhotoUrl: z.string().optional().nullable(),
+  simProvider: z.string().optional().nullable(),
+  simNumber: z.string().optional().nullable(),
+  iccid: z.string().optional().nullable(),
+  simType: z.string().optional().nullable(),
+  lastRechargeDate: z.preprocess((val) => (val ? new Date(val as string) : null), z.date().optional().nullable()),
+  validityExpiryDate: z.preprocess((val) => (val ? new Date(val as string) : null), z.date().optional().nullable()),
+});
+
+/**
+ * PUT /api/v1/devices/:id/sim
+ * Dedicated endpoint for SIM & Connectivity details.
+ * SIM Card photograph is strictly mandatory.
+ */
+router.put('/:id/sim', authenticate, async (req: any, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid device ID' });
+
+    const existing = await prisma.deviceRegistry.findUnique({
+      where: { id },
+      include: { master: true },
+    });
+    if (!existing) return res.status(404).json({ error: 'Device not found' });
+
+    const data = simUpdateSchema.parse(req.body);
+
+    let finalPhotoUrl = data.simPhotoUrl || null;
+
+    if (data.imageBase64 && data.imageBase64.trim() !== '') {
+      finalPhotoUrl = await uploadSimImage(data.imageBase64);
+    }
+
+    if (!finalPhotoUrl) {
+      finalPhotoUrl = existing.simPhotoUrl || null;
+    }
+
+    if (!finalPhotoUrl && existing.masterId) {
+      const evidence = await prisma.installationEvidence.findFirst({
+        where: { masterId: existing.masterId, category: 'SIM_CARD' },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (evidence?.imageUrl) {
+        finalPhotoUrl = evidence.imageUrl;
+      }
+    }
+
+    if (!finalPhotoUrl || finalPhotoUrl.trim() === '') {
+      return res.status(400).json({
+        error: 'SIM Card photograph is mandatory. Please capture or upload a clear photo of the SIM card.',
+      });
+    }
+
+    const updated = await prisma.deviceRegistry.update({
+      where: { id },
+      data: {
+        simPhotoUrl: finalPhotoUrl,
+        simProvider: data.simProvider !== undefined ? data.simProvider : existing.simProvider,
+        simNumber: data.simNumber !== undefined ? data.simNumber : existing.simNumber,
+        iccid: data.iccid !== undefined ? data.iccid : existing.iccid,
+        simType: data.simType !== undefined ? data.simType : (existing.simType || 'M2M'),
+        lastRechargeDate: data.lastRechargeDate !== undefined ? data.lastRechargeDate : existing.lastRechargeDate,
+        validityExpiryDate: data.validityExpiryDate !== undefined ? data.validityExpiryDate : existing.validityExpiryDate,
+      },
+      include: {
+        gate: true,
+        master: true,
+        childDevice: true,
+      },
+    });
+
+    // Also sync to InstallationEvidence if device is linked to a MasterUnit
+    if (existing.masterId && (data.imageBase64 || data.simPhotoUrl)) {
+      try {
+        const existingEv = await prisma.installationEvidence.findFirst({
+          where: { masterId: existing.masterId, category: 'SIM_CARD' },
+        });
+        if (existingEv) {
+          await prisma.installationEvidence.update({
+            where: { id: existingEv.id },
+            data: { imageUrl: finalPhotoUrl },
+          });
+        } else {
+          await prisma.installationEvidence.create({
+            data: {
+              category: 'SIM_CARD',
+              imageUrl: finalPhotoUrl,
+              userId: req.user?.id || 1,
+              masterId: existing.masterId,
+            },
+          });
+        }
+      } catch (evErr) {
+        console.warn('Syncing SIM photo to installation evidence non-critical warning:', evErr);
+      }
+    }
+
+    res.json({
+      message: 'SIM details updated successfully',
+      device: updated,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const rechargeSchema = z.object({
+  lastRechargeDate: z.preprocess((val) => (val ? new Date(val as string) : new Date()), z.date()),
+  validityExpiryDate: z.preprocess((val) => (val ? new Date(val as string) : null), z.date({
+    required_error: 'Validity expiry date is required',
+    invalid_type_error: 'Valid expiry date is required',
+  })),
+  amount: z.number().optional().nullable(),
+  notes: z.string().optional().nullable(),
+});
+
+/**
+ * POST /api/v1/devices/:id/recharge
+ * Quick action to record a SIM plan recharge and extend validity.
+ */
+router.post('/:id/recharge', authenticate, async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid device ID' });
+
+    const existing = await prisma.deviceRegistry.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ error: 'Device not found' });
+
+    const data = rechargeSchema.parse(req.body);
+
+    const updated = await prisma.deviceRegistry.update({
+      where: { id },
+      data: {
+        lastRechargeDate: data.lastRechargeDate,
+        validityExpiryDate: data.validityExpiryDate,
+      },
+      include: {
+        gate: true,
+        master: true,
+        childDevice: true,
+      },
+    });
+
+    res.json({
+      message: 'SIM recharge logged successfully',
       device: updated,
     });
   } catch (error) {

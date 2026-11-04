@@ -80,6 +80,13 @@ const uploadSchema = z.object({
       invalid_type_error: 'Valid GPS Longitude is required.',
     })
   ),
+  // Optional SIM details when category is SIM_CARD
+  simProvider: z.string().optional().nullable(),
+  simNumber: z.string().optional().nullable(),
+  iccid: z.string().optional().nullable(),
+  simType: z.string().optional().nullable(),
+  lastRechargeDate: z.preprocess((val) => (val ? new Date(val as string) : null), z.date().optional().nullable()),
+  validityExpiryDate: z.preprocess((val) => (val ? new Date(val as string) : null), z.date().optional().nullable()),
 });
 
 // Upload evidence
@@ -205,6 +212,25 @@ router.post('/', authenticate, async (req: any, res, next) => {
         childDeviceId: data.childDeviceId ?? null,
       },
     });
+
+    if (data.category === 'SIM_CARD') {
+      try {
+        await prisma.deviceRegistry.updateMany({
+          where: { masterId: data.masterId },
+          data: {
+            simPhotoUrl: imageUrl,
+            ...(data.simProvider ? { simProvider: data.simProvider } : {}),
+            ...(data.simNumber ? { simNumber: data.simNumber } : {}),
+            ...(data.iccid ? { iccid: data.iccid } : {}),
+            ...(data.simType ? { simType: data.simType } : {}),
+            ...(data.lastRechargeDate ? { lastRechargeDate: data.lastRechargeDate } : {}),
+            ...(data.validityExpiryDate ? { validityExpiryDate: data.validityExpiryDate } : {}),
+          },
+        });
+      } catch (e) {
+        console.warn('Failed to sync SIM evidence into DeviceRegistry:', e);
+      }
+    }
 
     res.status(201).json(evidence);
   } catch (error) {

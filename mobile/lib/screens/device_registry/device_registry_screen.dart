@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../config.dart';
@@ -152,6 +154,209 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
       builder: (ctx) => _DeviceInspectSheet(
         device: device,
         onHealthCheck: () => _pingHealthCheck(device['id'] as int, device['thingName'] ?? ''),
+      ),
+    );
+  }
+
+  // Open SIM Management Modal
+  void _openSimManagementSheet(Map<String, dynamic> device) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _DeviceSimManagementSheet(
+        device: device,
+        onSaved: () => _fetchDevices(silent: false),
+      ),
+    );
+  }
+
+  // Open Quick Recharge Dialog
+  void _openQuickRechargeDialog(Map<String, dynamic> device) {
+    DateTime? selectedExpiry = DateTime.now().add(const Duration(days: 28));
+    DateTime selectedRechargeDate = DateTime.now();
+    bool isSubmitting = false;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final thingName = (device['thingName'] ?? 'Device').toString();
+          final provider = (device['simProvider'] ?? 'SIM').toString();
+          final phone = (device['simNumber'] ?? '').toString();
+
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
+              children: [
+                Icon(Icons.bolt, color: Colors.amber),
+                SizedBox(width: 8),
+                Text('Log SIM Recharge', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '$thingName • $provider ${phone.isNotEmpty ? "($phone)" : ""}',
+                  style: const TextStyle(fontSize: 13, color: Color(0xFF64748B)),
+                ),
+                const SizedBox(height: 16),
+                const Text('Quick Extend Validity:', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    ActionChip(
+                      label: const Text('+28 Days'),
+                      backgroundColor: const Color(0xFFF1F5F9),
+                      onPressed: () {
+                        setDialogState(() {
+                          selectedExpiry = DateTime.now().add(const Duration(days: 28));
+                        });
+                      },
+                    ),
+                    ActionChip(
+                      label: const Text('+84 Days'),
+                      backgroundColor: const Color(0xFFF1F5F9),
+                      onPressed: () {
+                        setDialogState(() {
+                          selectedExpiry = DateTime.now().add(const Duration(days: 84));
+                        });
+                      },
+                    ),
+                    ActionChip(
+                      label: const Text('+365 Days'),
+                      backgroundColor: const Color(0xFFF1F5F9),
+                      onPressed: () {
+                        setDialogState(() {
+                          selectedExpiry = DateTime.now().add(const Duration(days: 365));
+                        });
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                InkWell(
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: selectedExpiry ?? DateTime.now().add(const Duration(days: 28)),
+                      firstDate: DateTime.now().subtract(const Duration(days: 30)),
+                      lastDate: DateTime.now().add(const Duration(days: 1000)),
+                    );
+                    if (picked != null) {
+                      setDialogState(() => selectedExpiry = picked);
+                    }
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey.shade300),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          selectedExpiry != null
+                              ? 'New Expiry: ${selectedExpiry!.day}/${selectedExpiry!.month}/${selectedExpiry!.year}'
+                              : 'Select Expiry Date',
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                        ),
+                        const Icon(Icons.calendar_today, size: 18, color: AppColors.primary),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                onPressed: isSubmitting || selectedExpiry == null
+                    ? null
+                    : () async {
+                        setDialogState(() => isSubmitting = true);
+                        try {
+                          final token = await _getToken();
+                          final res = await http.post(
+                            Uri.parse('$baseUrl/devices/${device['id']}/recharge'),
+                            headers: {
+                              'Authorization': 'Bearer $token',
+                              'Content-Type': 'application/json',
+                            },
+                            body: json.encode({
+                              'lastRechargeDate': selectedRechargeDate.toIso8601String(),
+                              'validityExpiryDate': selectedExpiry!.toIso8601String(),
+                            }),
+                          );
+                          if (res.statusCode == 200) {
+                            if (mounted) {
+                              AppFeedback.showSuccess(context, 'Recharge logged and validity extended!');
+                              _fetchDevices(silent: false);
+                            }
+                            Navigator.pop(ctx);
+                          } else {
+                            final err = json.decode(res.body);
+                            if (mounted) {
+                              AppFeedback.showError(context, err['error'] ?? 'Failed to log recharge');
+                            }
+                          }
+                        } catch (e) {
+                          if (mounted) AppFeedback.showError(context, 'Network error: $e');
+                        }
+                      },
+                child: isSubmitting
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                    : const Text('Confirm Recharge', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // Full-screen image preview
+  void _viewPhoto(BuildContext context, String rawUrl) {
+    final fullUrl = rawUrl.startsWith('http') ? rawUrl : '$baseUrl$rawUrl';
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(12),
+        child: Stack(
+          alignment: Alignment.topRight,
+          children: [
+            InteractiveViewer(
+              child: Center(
+                child: Image.network(
+                  fullUrl,
+                  fit: BoxFit.contain,
+                  loadingBuilder: (_, child, prog) => prog == null
+                      ? child
+                      : const Center(child: CircularProgressIndicator(color: Colors.white)),
+                  errorBuilder: (_, __, ___) => const Center(
+                    child: Text('Failed to load image', style: TextStyle(color: Colors.white)),
+                  ),
+                ),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close, color: Colors.white, size: 28),
+              onPressed: () => Navigator.pop(ctx),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -406,6 +611,39 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
     final isClosed = (device['latestPayload']?['status'] ?? '').toString().toUpperCase() == 'CLOSED';
     final hasTelemetry = device['latestPayload'] != null;
 
+    final simProvider = (device['simProvider'] ?? '').toString().trim();
+    final simNumber = (device['simNumber'] ?? '').toString().trim();
+    final simPhotoUrl = (device['simPhotoUrl'] ?? '').toString().trim();
+    final validityExpiryStr = device['validityExpiryDate']?.toString();
+    DateTime? validityExpiry;
+    if (validityExpiryStr != null && validityExpiryStr.isNotEmpty) {
+      try {
+        validityExpiry = DateTime.parse(validityExpiryStr);
+      } catch (_) {}
+    }
+
+    Color simBadgeBg = const Color(0xFFF1F5F9);
+    Color simBadgeText = const Color(0xFF64748B);
+    String simStatusLabel = 'No Expiry';
+
+    if (validityExpiry != null) {
+      final now = DateTime.now();
+      final diff = validityExpiry.difference(DateTime(now.year, now.month, now.day)).inDays;
+      if (diff > 15) {
+        simBadgeBg = const Color(0xFFDCFCE7);
+        simBadgeText = const Color(0xFF15803D);
+        simStatusLabel = '$diff d left';
+      } else if (diff >= 0) {
+        simBadgeBg = const Color(0xFFFEF3C7);
+        simBadgeText = const Color(0xFFD97706);
+        simStatusLabel = diff == 0 ? 'Today' : '$diff d left';
+      } else {
+        simBadgeBg = const Color(0xFFFEE2E2);
+        simBadgeText = const Color(0xFFDC2626);
+        simStatusLabel = 'Expired';
+      }
+    }
+
     Color statusColor;
     switch (status) {
       case 'ACTIVE': statusColor = const Color(0xFF16A34A); break;
@@ -524,7 +762,153 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                 ],
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
+
+            // SIM & Connectivity Information Preview Box
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: Row(
+                children: [
+                  if (simPhotoUrl.isNotEmpty) ...[
+                    GestureDetector(
+                      onTap: () => _viewPhoto(context, simPhotoUrl),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: Image.network(
+                          simPhotoUrl.startsWith('http') ? simPhotoUrl : '$baseUrl$simPhotoUrl',
+                          width: 38,
+                          height: 38,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Container(
+                            width: 38,
+                            height: 38,
+                            color: Colors.grey.shade200,
+                            child: const Icon(Icons.sim_card, size: 20, color: Color(0xFF64748B)),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                  ] else ...[
+                    GestureDetector(
+                      onTap: () => _openSimManagementSheet(Map<String, dynamic>.from(device)),
+                      child: Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: Colors.amber.shade50,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: Colors.amber.shade300),
+                        ),
+                        child: const Icon(Icons.add_a_photo_outlined, size: 18, color: Colors.amber),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                  ],
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.sim_card_outlined, size: 13, color: AppColors.primary),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                simProvider.isNotEmpty ? simProvider : 'SIM Not Configured',
+                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (simNumber.isNotEmpty) ...[
+                              const SizedBox(width: 5),
+                              Flexible(
+                                child: Text('• $simNumber', style: const TextStyle(fontSize: 12, color: Color(0xFF475569)), overflow: TextOverflow.ellipsis),
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          simPhotoUrl.isEmpty
+                              ? '⚠️ Photo missing (Mandatory)'
+                              : (validityExpiry != null
+                                  ? 'Valid until ${validityExpiry.day}/${validityExpiry.month}/${validityExpiry.year}'
+                                  : 'SIM photo recorded • No expiry date'),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: simPhotoUrl.isEmpty ? const Color(0xFFB45309) : const Color(0xFF64748B),
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (validityExpiry != null) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: simBadgeBg,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        simStatusLabel,
+                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: simBadgeText),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            // Actions row: SIM Details & Recharge
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      backgroundColor: const Color(0xFFF1F5F9),
+                      foregroundColor: const Color(0xFF1E293B),
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        side: const BorderSide(color: Color(0xFFCBD5E1)),
+                      ),
+                    ),
+                    onPressed: () => _openSimManagementSheet(Map<String, dynamic>.from(device)),
+                    icon: const Icon(Icons.sim_card_outlined, size: 14, color: AppColors.primary),
+                    label: const Text('SIM Details', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      backgroundColor: const Color(0xFFFFFBEB),
+                      foregroundColor: const Color(0xFFB45309),
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        side: const BorderSide(color: Color(0xFFFDE68A)),
+                      ),
+                    ),
+                    onPressed: () => _openQuickRechargeDialog(Map<String, dynamic>.from(device)),
+                    icon: const Icon(Icons.bolt, size: 14, color: Colors.amber),
+                    label: const Text('Recharge', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
 
             // Actions row: Inspect & Ping
             Row(
@@ -789,6 +1173,616 @@ class _DeviceInspectSheetState extends State<_DeviceInspectSheet> {
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SIM & CONNECTIVITY MANAGEMENT BOTTOM SHEET (OPTION A)
+// ─────────────────────────────────────────────────────────────────────────────
+class _DeviceSimManagementSheet extends StatefulWidget {
+  final Map<String, dynamic> device;
+  final VoidCallback onSaved;
+
+  const _DeviceSimManagementSheet({required this.device, required this.onSaved});
+
+  @override
+  State<_DeviceSimManagementSheet> createState() => _DeviceSimManagementSheetState();
+}
+
+class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
+  final ImagePicker _picker = ImagePicker();
+  Uint8List? _imageBytes;
+  String? _existingPhotoUrl;
+
+  late TextEditingController _phoneCtrl;
+  late TextEditingController _iccidCtrl;
+
+  String _provider = 'Airtel';
+  String _simType = 'M2M';
+  DateTime? _lastRechargeDate;
+  DateTime? _validityExpiryDate;
+
+  bool _isSaving = false;
+
+  final List<String> _providerOptions = ['Airtel', 'Jio', 'Vodafone Idea (Vi)', 'BSNL', 'Other'];
+  final List<String> _typeOptions = ['M2M', 'Regular', 'eSIM'];
+
+  @override
+  void initState() {
+    super.initState();
+    _existingPhotoUrl = (widget.device['simPhotoUrl'] ?? '').toString().trim();
+    if (_existingPhotoUrl!.isEmpty) _existingPhotoUrl = null;
+
+    _phoneCtrl = TextEditingController(text: widget.device['simNumber'] ?? '');
+    _iccidCtrl = TextEditingController(text: widget.device['iccid'] ?? '');
+
+    final devProvider = (widget.device['simProvider'] ?? '').toString().trim();
+    if (_providerOptions.contains(devProvider)) {
+      _provider = devProvider;
+    } else if (devProvider.isNotEmpty) {
+      _provider = 'Other';
+    }
+
+    final devType = (widget.device['simType'] ?? '').toString().trim();
+    if (_typeOptions.contains(devType)) {
+      _simType = devType;
+    }
+
+    if (widget.device['lastRechargeDate'] != null) {
+      try {
+        _lastRechargeDate = DateTime.parse(widget.device['lastRechargeDate'].toString());
+      } catch (_) {}
+    }
+
+    if (widget.device['validityExpiryDate'] != null) {
+      try {
+        _validityExpiryDate = DateTime.parse(widget.device['validityExpiryDate'].toString());
+      } catch (_) {}
+    }
+  }
+
+  @override
+  void dispose() {
+    _phoneCtrl.dispose();
+    _iccidCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    try {
+      final photo = await _picker.pickImage(source: source, imageQuality: 70);
+      if (photo != null) {
+        final bytes = await photo.readAsBytes();
+        setState(() {
+          _imageBytes = bytes;
+        });
+        if (mounted) {
+          AppFeedback.showSuccess(context, 'SIM Card photo captured!');
+        }
+      }
+    } catch (e) {
+      if (mounted) AppFeedback.showError(context, 'Failed to pick image: $e');
+    }
+  }
+
+  Future<void> _save() async {
+    final hasPhoto = _imageBytes != null || (_existingPhotoUrl != null && _existingPhotoUrl!.isNotEmpty);
+    if (!hasPhoto) {
+      AppFeedback.showError(context, 'SIM Card photograph is mandatory. Please capture or select a photo.');
+      return;
+    }
+
+    setState(() => _isSaving = true);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('token') ?? '';
+
+      final body = <String, dynamic>{
+        'simProvider': _provider,
+        'simNumber': _phoneCtrl.text.trim(),
+        'iccid': _iccidCtrl.text.trim(),
+        'simType': _simType,
+        if (_imageBytes != null)
+          'imageBase64': 'data:image/jpeg;base64,${base64Encode(_imageBytes!)}',
+        if (_existingPhotoUrl != null && _imageBytes == null)
+          'simPhotoUrl': _existingPhotoUrl,
+        if (_lastRechargeDate != null)
+          'lastRechargeDate': _lastRechargeDate!.toIso8601String(),
+        if (_validityExpiryDate != null)
+          'validityExpiryDate': _validityExpiryDate!.toIso8601String(),
+      };
+
+      final res = await http.put(
+        Uri.parse('$baseUrl/devices/${widget.device['id']}/sim'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: json.encode(body),
+      );
+
+      if (res.statusCode == 200) {
+        if (mounted) {
+          AppFeedback.showSuccess(context, 'SIM details and connectivity record updated!');
+          widget.onSaved();
+          Navigator.pop(context);
+        }
+      } else {
+        final err = json.decode(res.body);
+        if (mounted) {
+          AppFeedback.showError(context, err['error'] ?? 'Failed to save SIM details');
+        }
+      }
+    } catch (e) {
+      if (mounted) AppFeedback.showError(context, 'Network error: $e');
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final thingName = (widget.device['thingName'] ?? 'Device').toString();
+    final hasPhoto = _imageBytes != null || (_existingPhotoUrl != null && _existingPhotoUrl!.isNotEmpty);
+
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.90,
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        children: [
+          // Drag handle
+          Container(
+            width: 40,
+            height: 4,
+            margin: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
+          ),
+
+          // Header
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.sim_card, color: AppColors.primary, size: 22),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'SIM & Connectivity Registry',
+                        style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                      ),
+                      Text(
+                        'Device: $thingName • LC Gate Physical Controller',
+                        style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.all(18),
+              children: [
+                // 1. Mandatory SIM Photo Card
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: hasPhoto ? const Color(0xFFF8FAFC) : const Color(0xFFFFFBEB),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: hasPhoto ? const Color(0xFFE2E8F0) : const Color(0xFFFDE68A),
+                      width: 1.5,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.photo_camera_outlined, size: 18, color: AppColors.primary),
+                          const SizedBox(width: 6),
+                          const Text(
+                            'SIM Card Photograph',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+                          ),
+                          const SizedBox(width: 4),
+                          const Text(
+                            '* Mandatory',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFFDC2626)),
+                          ),
+                          const Spacer(),
+                          if (hasPhoto)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFDCFCE7),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Text(
+                                'Photo Attached',
+                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF15803D)),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      const Text(
+                        'Upload a clear picture of the installed SIM showing barcode or printed ICCID digits.',
+                        style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                      ),
+                      const SizedBox(height: 12),
+
+                      // Image Preview Box
+                      if (_imageBytes != null) ...[
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: Stack(
+                            alignment: Alignment.topRight,
+                            children: [
+                              Image.memory(_imageBytes!, height: 180, width: double.infinity, fit: BoxFit.cover),
+                              Container(
+                                margin: const EdgeInsets.all(8),
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withOpacity(0.6),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Text('New Photo', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ] else if (_existingPhotoUrl != null && _existingPhotoUrl!.isNotEmpty) ...[
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: Stack(
+                            alignment: Alignment.topRight,
+                            children: [
+                              Image.network(
+                                _existingPhotoUrl!.startsWith('http') ? _existingPhotoUrl! : '$baseUrl$_existingPhotoUrl',
+                                height: 180,
+                                width: double.infinity,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => Container(
+                                  height: 120,
+                                  color: Colors.grey.shade100,
+                                  alignment: Alignment.center,
+                                  child: const Text('Failed to load image preview'),
+                                ),
+                              ),
+                              Container(
+                                margin: const EdgeInsets.all(8),
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withOpacity(0.6),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Text('Current Photo', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ] else ...[
+                        Container(
+                          height: 110,
+                          width: double.infinity,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: Colors.amber.shade200, style: BorderStyle.solid),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.add_a_photo_outlined, size: 36, color: Colors.amber.shade600),
+                              const SizedBox(height: 6),
+                              const Text('No photo uploaded yet', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFFB45309))),
+                              const Text('Take camera snapshot or choose from gallery', style: TextStyle(fontSize: 11, color: Color(0xFF92400E))),
+                            ],
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+
+                      // Camera / Gallery Buttons
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                side: const BorderSide(color: AppColors.primary),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                              onPressed: () => _pickImage(ImageSource.camera),
+                              icon: const Icon(Icons.camera_alt, size: 16, color: AppColors.primary),
+                              label: const Text('Live Camera', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                side: const BorderSide(color: Color(0xFFCBD5E1)),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                              onPressed: () => _pickImage(ImageSource.gallery),
+                              icon: const Icon(Icons.photo_library, size: 16, color: Color(0xFF475569)),
+                              label: const Text('Gallery', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569))),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                // 2. Telecom Operator & SIM Type (Optional)
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Telecom Provider (Optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569))),
+                          const SizedBox(height: 6),
+                          DropdownButtonFormField<String>(
+                            value: _provider,
+                            decoration: InputDecoration(
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            items: _providerOptions
+                                .map((p) => DropdownMenuItem(value: p, child: Text(p, style: const TextStyle(fontSize: 13))))
+                                .toList(),
+                            onChanged: (val) => setState(() => _provider = val ?? 'Airtel'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('SIM Type', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569))),
+                          const SizedBox(height: 6),
+                          DropdownButtonFormField<String>(
+                            value: _simType,
+                            decoration: InputDecoration(
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            items: _typeOptions
+                                .map((t) => DropdownMenuItem(value: t, child: Text(t, style: const TextStyle(fontSize: 13))))
+                                .toList(),
+                            onChanged: (val) => setState(() => _simType = val ?? 'M2M'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+
+                // 3. Mobile Number & ICCID (Optional)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('SIM Mobile Number (Optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569))),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: _phoneCtrl,
+                      keyboardType: TextInputType.phone,
+                      decoration: InputDecoration(
+                        hintText: 'e.g. 9876543210',
+                        prefixIcon: const Icon(Icons.phone_android, size: 18),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('ICCID / Barcode Digits (Optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569))),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: _iccidCtrl,
+                      decoration: InputDecoration(
+                        hintText: 'e.g. 89910009238472910',
+                        prefixIcon: const Icon(Icons.qr_code, size: 18),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+
+                // 4. Validity Expiry Date & Last Recharge Date (Optional)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Validity Expiry Date (Optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569))),
+                        if (_validityExpiryDate != null)
+                          GestureDetector(
+                            onTap: () => setState(() => _validityExpiryDate = null),
+                            child: const Text('Clear', style: TextStyle(fontSize: 11, color: Colors.red)),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    InkWell(
+                      onTap: () async {
+                        final picked = await showDatePicker(
+                          context: context,
+                          initialDate: _validityExpiryDate ?? DateTime.now().add(const Duration(days: 28)),
+                          firstDate: DateTime.now().subtract(const Duration(days: 365)),
+                          lastDate: DateTime.now().add(const Duration(days: 1500)),
+                        );
+                        if (picked != null) {
+                          setState(() => _validityExpiryDate = picked);
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade400),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              _validityExpiryDate != null
+                                  ? '${_validityExpiryDate!.day}/${_validityExpiryDate!.month}/${_validityExpiryDate!.year}'
+                                  : 'Select Expiry Date',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: _validityExpiryDate != null ? const Color(0xFF0F172A) : Colors.grey.shade500,
+                              ),
+                            ),
+                            const Icon(Icons.event, size: 18, color: AppColors.primary),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    // Quick duration presets
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        ActionChip(
+                          label: const Text('+28d', style: TextStyle(fontSize: 11)),
+                          backgroundColor: const Color(0xFFF1F5F9),
+                          onPressed: () => setState(() => _validityExpiryDate = DateTime.now().add(const Duration(days: 28))),
+                        ),
+                        ActionChip(
+                          label: const Text('+84d', style: TextStyle(fontSize: 11)),
+                          backgroundColor: const Color(0xFFF1F5F9),
+                          onPressed: () => setState(() => _validityExpiryDate = DateTime.now().add(const Duration(days: 84))),
+                        ),
+                        ActionChip(
+                          label: const Text('+365d (1 Yr)', style: TextStyle(fontSize: 11)),
+                          backgroundColor: const Color(0xFFF1F5F9),
+                          onPressed: () => setState(() => _validityExpiryDate = DateTime.now().add(const Duration(days: 365))),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Last Recharge Date (Optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569))),
+                        if (_lastRechargeDate != null)
+                          GestureDetector(
+                            onTap: () => setState(() => _lastRechargeDate = null),
+                            child: const Text('Clear', style: TextStyle(fontSize: 11, color: Colors.red)),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    InkWell(
+                      onTap: () async {
+                        final picked = await showDatePicker(
+                          context: context,
+                          initialDate: _lastRechargeDate ?? DateTime.now(),
+                          firstDate: DateTime.now().subtract(const Duration(days: 730)),
+                          lastDate: DateTime.now(),
+                        );
+                        if (picked != null) {
+                          setState(() => _lastRechargeDate = picked);
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade400),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              _lastRechargeDate != null
+                                  ? '${_lastRechargeDate!.day}/${_lastRechargeDate!.month}/${_lastRechargeDate!.year}'
+                                  : 'Select Recharge Date',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: _lastRechargeDate != null ? const Color(0xFF0F172A) : Colors.grey.shade500,
+                              ),
+                            ),
+                            const Icon(Icons.history, size: 18, color: AppColors.primary),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 24),
+
+                // Save Action Button
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    onPressed: _isSaving ? null : _save,
+                    child: _isSaving
+                        ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 2)
+                        : const Text(
+                            'Save SIM & Connectivity Record',
+                            style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

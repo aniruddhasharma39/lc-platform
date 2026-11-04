@@ -234,6 +234,15 @@ model DeviceRegistry {
   modelNumber     String?
   batchNumber     String?
 
+  // SIM & Connectivity specifications
+  simPhotoUrl         String?
+  simProvider         String?      // Airtel, Jio, Vodafone Idea, BSNL, etc.
+  simNumber           String?      // 10-digit mobile number
+  iccid               String?      // Integrated Circuit Card Identifier
+  simType             String?      // M2M, Regular, eSIM, etc.
+  lastRechargeDate    DateTime?
+  validityExpiryDate  DateTime?
+
   // Hardware device metadata requested
   sensors         Json?        // List or map of sensors within (e.g. solar voltage, inclinometer, radar, etc.)
   components      Json?        // List or map of internal hardware components (MCU, modem, relays, batteries)

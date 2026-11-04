@@ -43,6 +43,11 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
   bool _isLocationServiceEnabled = true;
   String? _locationStatusMessage;
 
+  String _simProvider = 'Airtel';
+  final TextEditingController _simPhoneCtrl = TextEditingController();
+  final TextEditingController _simIccidCtrl = TextEditingController();
+  final List<String> _simProviders = ['Airtel', 'Jio', 'Vodafone Idea (Vi)', 'BSNL', 'Other'];
+
   @override
   void initState() {
     super.initState();
@@ -54,6 +59,8 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _progressTimer?.cancel();
+    _simPhoneCtrl.dispose();
+    _simIccidCtrl.dispose();
     super.dispose();
   }
 
@@ -320,6 +327,11 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
         'imageBase64': base64Image,
         'latitude': position.latitude,
         'longitude': position.longitude,
+        if (widget.category == 'SIM_CARD') ...{
+          'simProvider': _simProvider,
+          if (_simPhoneCtrl.text.trim().isNotEmpty) 'simNumber': _simPhoneCtrl.text.trim(),
+          if (_simIccidCtrl.text.trim().isNotEmpty) 'iccid': _simIccidCtrl.text.trim(),
+        },
       };
       if (widget.childDeviceId != null) {
         body['childDeviceId'] = widget.childDeviceId;
@@ -601,6 +613,68 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
                           minHeight: 10,
                           backgroundColor: Colors.blue.shade100,
                           valueColor: AlwaysStoppedAnimation<Color>(Colors.blue.shade700),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+
+              if (widget.category == 'SIM_CARD') ...[
+                Container(
+                  constraints: const BoxConstraints(maxWidth: 360),
+                  padding: const EdgeInsets.all(14),
+                  margin: const EdgeInsets.only(bottom: 20),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.sim_card, size: 18, color: Color(0xFF0B3C7A)),
+                          SizedBox(width: 8),
+                          Text(
+                            'SIM Card Details (Optional)',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        value: _simProvider,
+                        decoration: InputDecoration(
+                          labelText: 'Telecom Operator',
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                        items: _simProviders
+                            .map((p) => DropdownMenuItem(value: p, child: Text(p, style: const TextStyle(fontSize: 13))))
+                            .toList(),
+                        onChanged: (val) => setState(() => _simProvider = val ?? 'Airtel'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _simPhoneCtrl,
+                        keyboardType: TextInputType.phone,
+                        decoration: InputDecoration(
+                          labelText: 'Mobile Number (10 digits)',
+                          hintText: 'e.g. 9876543210',
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _simIccidCtrl,
+                        decoration: InputDecoration(
+                          labelText: 'ICCID / Barcode (Optional)',
+                          hintText: 'e.g. 89910009238472910',
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                         ),
                       ),
                     ],
