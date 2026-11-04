@@ -173,6 +173,7 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
 
   // Open Quick Recharge Dialog
   void _openQuickRechargeDialog(Map<String, dynamic> device) {
+    int? selectedPreset = 28;
     DateTime? selectedExpiry = DateTime.now().add(const Duration(days: 28));
     DateTime selectedRechargeDate = DateTime.now();
     bool isSubmitting = false;
@@ -185,11 +186,64 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
           final provider = (device['simProvider'] ?? 'SIM').toString();
           final phone = (device['simNumber'] ?? '').toString();
 
+          Widget buildDialogPresetChip(int days, String label) {
+            final isSelected = selectedPreset == days;
+            return InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: () {
+                setDialogState(() {
+                  selectedPreset = days;
+                  selectedExpiry = DateTime.now().add(Duration(days: days));
+                });
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: isSelected ? AppColors.primary : Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: isSelected ? AppColors.primary : const Color(0xFFCBD5E1),
+                    width: isSelected ? 1.8 : 1.0,
+                  ),
+                  boxShadow: isSelected
+                      ? [
+                          BoxShadow(
+                            color: AppColors.primary.withOpacity(0.3),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2),
+                          )
+                        ]
+                      : null,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isSelected ? Icons.check_circle : Icons.add_circle_outline,
+                      size: 14,
+                      color: isSelected ? Colors.white : const Color(0xFF64748B),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                        color: isSelected ? Colors.white : const Color(0xFF334155),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
           return AlertDialog(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             title: const Row(
               children: [
-                Icon(Icons.bolt, color: Colors.amber),
+                Icon(Icons.bolt, color: Colors.amber, size: 22),
                 SizedBox(width: 8),
                 Text('Log SIM Recharge', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               ],
@@ -207,38 +261,16 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                 const SizedBox(height: 8),
                 Wrap(
                   spacing: 8,
+                  runSpacing: 8,
                   children: [
-                    ActionChip(
-                      label: const Text('+28 Days'),
-                      backgroundColor: const Color(0xFFF1F5F9),
-                      onPressed: () {
-                        setDialogState(() {
-                          selectedExpiry = DateTime.now().add(const Duration(days: 28));
-                        });
-                      },
-                    ),
-                    ActionChip(
-                      label: const Text('+84 Days'),
-                      backgroundColor: const Color(0xFFF1F5F9),
-                      onPressed: () {
-                        setDialogState(() {
-                          selectedExpiry = DateTime.now().add(const Duration(days: 84));
-                        });
-                      },
-                    ),
-                    ActionChip(
-                      label: const Text('+365 Days'),
-                      backgroundColor: const Color(0xFFF1F5F9),
-                      onPressed: () {
-                        setDialogState(() {
-                          selectedExpiry = DateTime.now().add(const Duration(days: 365));
-                        });
-                      },
-                    ),
+                    buildDialogPresetChip(28, '+28 Days'),
+                    buildDialogPresetChip(84, '+84 Days'),
+                    buildDialogPresetChip(365, '+365 Days'),
                   ],
                 ),
                 const SizedBox(height: 16),
                 InkWell(
+                  borderRadius: BorderRadius.circular(8),
                   onTap: () async {
                     final picked = await showDatePicker(
                       context: context,
@@ -247,13 +279,22 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                       lastDate: DateTime.now().add(const Duration(days: 1000)),
                     );
                     if (picked != null) {
-                      setDialogState(() => selectedExpiry = picked);
+                      final diff = picked.difference(DateTime.now()).inDays;
+                      setDialogState(() {
+                        selectedExpiry = picked;
+                        if (diff == 28 || diff == 84 || diff == 365) {
+                          selectedPreset = diff;
+                        } else {
+                          selectedPreset = null;
+                        }
+                      });
                     }
                   },
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                     decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey.shade300),
+                      color: const Color(0xFFF8FAFC),
+                      border: Border.all(color: const Color(0xFFCBD5E1)),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Row(
@@ -263,7 +304,7 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                           selectedExpiry != null
                               ? 'New Expiry: ${selectedExpiry!.day}/${selectedExpiry!.month}/${selectedExpiry!.year}'
                               : 'Select Expiry Date',
-                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
                         ),
                         const Icon(Icons.calendar_today, size: 18, color: AppColors.primary),
                       ],
@@ -273,13 +314,19 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
               ],
             ),
             actions: [
-              TextButton(
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFFCBD5E1)),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
                 onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel'),
+                child: const Text('Cancel', style: TextStyle(color: Color(0xFF475569))),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.primary,
+                  disabledBackgroundColor: AppColors.primary,
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
                 onPressed: isSubmitting || selectedExpiry == null
@@ -313,11 +360,27 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                           }
                         } catch (e) {
                           if (mounted) AppFeedback.showError(context, 'Network error: $e');
+                        } finally {
+                          if (mounted) setDialogState(() => isSubmitting = false);
                         }
                       },
                 child: isSubmitting
-                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                    : const Text('Confirm Recharge', style: TextStyle(color: Colors.white)),
+                    ? const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(width: 14, height: 14, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)),
+                          SizedBox(width: 8),
+                          Text('Saving...', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                        ],
+                      )
+                    : const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.check, size: 16, color: Colors.white),
+                          SizedBox(width: 6),
+                          Text('Confirm Recharge', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
               ),
             ],
           );
@@ -1203,6 +1266,7 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
   String _simType = 'M2M';
   DateTime? _lastRechargeDate;
   DateTime? _validityExpiryDate;
+  int? _selectedPresetDays;
 
   bool _isSaving = false;
 
@@ -1239,6 +1303,10 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
     if (widget.device['validityExpiryDate'] != null) {
       try {
         _validityExpiryDate = DateTime.parse(widget.device['validityExpiryDate'].toString());
+        final diff = _validityExpiryDate!.difference(DateTime.now()).inDays;
+        if (diff == 28 || diff == 84 || diff == 365) {
+          _selectedPresetDays = diff;
+        }
       } catch (_) {}
     }
   }
@@ -1265,6 +1333,59 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
     } catch (e) {
       if (mounted) AppFeedback.showError(context, 'Failed to pick image: $e');
     }
+  }
+
+  Widget _buildPresetChip(int days, String label) {
+    final isSelected = _selectedPresetDays == days;
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: () {
+        setState(() {
+          _selectedPresetDays = days;
+          _validityExpiryDate = DateTime.now().add(Duration(days: days));
+        });
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? AppColors.primary : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isSelected ? AppColors.primary : const Color(0xFFCBD5E1),
+            width: isSelected ? 1.8 : 1.0,
+          ),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: AppColors.primary.withOpacity(0.3),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  )
+                ]
+              : null,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isSelected ? Icons.check_circle : Icons.add_circle_outline,
+              size: 14,
+              color: isSelected ? Colors.white : const Color(0xFF64748B),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                color: isSelected ? Colors.white : const Color(0xFF334155),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _save() async {
@@ -1639,13 +1760,17 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                         const Text('Validity Expiry Date (Optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569))),
                         if (_validityExpiryDate != null)
                           GestureDetector(
-                            onTap: () => setState(() => _validityExpiryDate = null),
-                            child: const Text('Clear', style: TextStyle(fontSize: 11, color: Colors.red)),
+                            onTap: () => setState(() {
+                              _validityExpiryDate = null;
+                              _selectedPresetDays = null;
+                            }),
+                            child: const Text('Clear', style: TextStyle(fontSize: 11, color: Colors.red, fontWeight: FontWeight.bold)),
                           ),
                       ],
                     ),
                     const SizedBox(height: 6),
                     InkWell(
+                      borderRadius: BorderRadius.circular(8),
                       onTap: () async {
                         final picked = await showDatePicker(
                           context: context,
@@ -1654,13 +1779,22 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                           lastDate: DateTime.now().add(const Duration(days: 1500)),
                         );
                         if (picked != null) {
-                          setState(() => _validityExpiryDate = picked);
+                          final diff = picked.difference(DateTime.now()).inDays;
+                          setState(() {
+                            _validityExpiryDate = picked;
+                            if (diff == 28 || diff == 84 || diff == 365) {
+                              _selectedPresetDays = diff;
+                            } else {
+                              _selectedPresetDays = null;
+                            }
+                          });
                         }
                       },
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                         decoration: BoxDecoration(
-                          border: Border.all(color: Colors.grey.shade400),
+                          color: const Color(0xFFF8FAFC),
+                          border: Border.all(color: const Color(0xFFCBD5E1)),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Row(
@@ -1672,6 +1806,7 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                                   : 'Select Expiry Date',
                               style: TextStyle(
                                 fontSize: 13,
+                                fontWeight: FontWeight.bold,
                                 color: _validityExpiryDate != null ? const Color(0xFF0F172A) : Colors.grey.shade500,
                               ),
                             ),
@@ -1681,25 +1816,14 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    // Quick duration presets
+                    // Quick duration presets with active selection color changes
                     Wrap(
                       spacing: 8,
+                      runSpacing: 8,
                       children: [
-                        ActionChip(
-                          label: const Text('+28d', style: TextStyle(fontSize: 11)),
-                          backgroundColor: const Color(0xFFF1F5F9),
-                          onPressed: () => setState(() => _validityExpiryDate = DateTime.now().add(const Duration(days: 28))),
-                        ),
-                        ActionChip(
-                          label: const Text('+84d', style: TextStyle(fontSize: 11)),
-                          backgroundColor: const Color(0xFFF1F5F9),
-                          onPressed: () => setState(() => _validityExpiryDate = DateTime.now().add(const Duration(days: 84))),
-                        ),
-                        ActionChip(
-                          label: const Text('+365d (1 Yr)', style: TextStyle(fontSize: 11)),
-                          backgroundColor: const Color(0xFFF1F5F9),
-                          onPressed: () => setState(() => _validityExpiryDate = DateTime.now().add(const Duration(days: 365))),
-                        ),
+                        _buildPresetChip(28, '+28d'),
+                        _buildPresetChip(84, '+84d'),
+                        _buildPresetChip(365, '+365d (1 Yr)'),
                       ],
                     ),
                   ],
@@ -1716,12 +1840,13 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                         if (_lastRechargeDate != null)
                           GestureDetector(
                             onTap: () => setState(() => _lastRechargeDate = null),
-                            child: const Text('Clear', style: TextStyle(fontSize: 11, color: Colors.red)),
+                            child: const Text('Clear', style: TextStyle(fontSize: 11, color: Colors.red, fontWeight: FontWeight.bold)),
                           ),
                       ],
                     ),
                     const SizedBox(height: 6),
                     InkWell(
+                      borderRadius: BorderRadius.circular(8),
                       onTap: () async {
                         final picked = await showDatePicker(
                           context: context,
@@ -1736,7 +1861,8 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                         decoration: BoxDecoration(
-                          border: Border.all(color: Colors.grey.shade400),
+                          color: const Color(0xFFF8FAFC),
+                          border: Border.all(color: const Color(0xFFCBD5E1)),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Row(
@@ -1748,6 +1874,7 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                                   : 'Select Recharge Date',
                               style: TextStyle(
                                 fontSize: 13,
+                                fontWeight: FontWeight.bold,
                                 color: _lastRechargeDate != null ? const Color(0xFF0F172A) : Colors.grey.shade500,
                               ),
                             ),
@@ -1760,21 +1887,44 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                 ),
                 const SizedBox(height: 24),
 
-                // Save Action Button
+                // Save Action Button with clear active acknowledgement
                 SizedBox(
                   width: double.infinity,
-                  height: 48,
+                  height: 50,
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
+                      disabledBackgroundColor: AppColors.primary,
+                      elevation: _isSaving ? 0 : 2,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                     ),
                     onPressed: _isSaving ? null : _save,
                     child: _isSaving
-                        ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 2)
-                        : const Text(
-                            'Save SIM & Connectivity Record',
-                            style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                        ? const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
+                              ),
+                              SizedBox(width: 10),
+                              Text(
+                                'Saving SIM Record...',
+                                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                              ),
+                            ],
+                          )
+                        : const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.check_circle_outline, size: 18, color: Colors.white),
+                              SizedBox(width: 8),
+                              Text(
+                                'Save SIM & Connectivity Record',
+                                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                              ),
+                            ],
                           ),
                   ),
                 ),
