@@ -4,6 +4,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'dart:io' as io;
 import '../../config.dart';
@@ -351,11 +352,16 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
         });
       });
 
+      final prefs = await SharedPreferences.getInstance();
+      final effectiveToken = widget.token.trim().isNotEmpty
+          ? widget.token.trim()
+          : (prefs.getString('token') ?? '');
+
       final res = await http.post(
         Uri.parse('$baseUrl/evidence'),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer ${widget.token}',
+          'Authorization': 'Bearer $effectiveToken',
         },
         body: json.encode(body),
       );

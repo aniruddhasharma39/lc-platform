@@ -5,7 +5,8 @@ import 'package:flutter/foundation.dart';
 /// In production or mobile builds, falls back to the production URL.
 String get baseUrl {
   if (kIsWeb) {
-    return 'http://localhost:5001/api/v1';
+    final host = (Uri.base.host.isNotEmpty && Uri.base.host != '0.0.0.0') ? Uri.base.host : 'localhost';
+    return 'http://$host:5001/api/v1';
   }
   if (kDebugMode && defaultTargetPlatform == TargetPlatform.android) {
     return 'http://10.0.2.2:5001/api/v1';

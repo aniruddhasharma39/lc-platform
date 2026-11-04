@@ -94,6 +94,17 @@ router.post('/', authenticate, async (req: any, res, next) => {
   try {
     const data = uploadSchema.parse(req.body);
 
+    // Verify master unit exists to prevent foreign key errors
+    const masterExists = await prisma.masterUnit.findUnique({
+      where: { id: data.masterId },
+    });
+    if (!masterExists) {
+      return res.status(404).json({
+        error: 'Master Unit Not Found',
+        message: `Master unit ID ${data.masterId} does not exist in the system.`,
+      });
+    }
+
     // Ensure uploads directory exists for local fallback
     const uploadsDir = path.join(process.cwd(), 'uploads');
     if (!fs.existsSync(uploadsDir)) {
