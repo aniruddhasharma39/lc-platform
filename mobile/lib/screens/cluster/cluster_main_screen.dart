@@ -623,7 +623,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('LC Gate Clusters', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            const Text('Gate Management', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
             Row(
               children: [
                 if (_isSyncing) ...[
@@ -735,7 +735,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                       children: [
                         CircularProgressIndicator(),
                         SizedBox(height: 14),
-                        Text('Loading LC Gate Clusters...', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                        Text('Loading Gate Management...', style: TextStyle(color: Colors.grey, fontSize: 13)),
                       ],
                     ),
                   )
@@ -924,6 +924,46 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                                                           children: [
                                                             Builder(
                                                               builder: (context) {
+                                                                final hasMaster = (gate['masters'] is List && (gate['masters'] as List).isNotEmpty) ||
+                                                                    (gate['configuredMasters'] is int && (gate['configuredMasters'] as int) > 0);
+                                                                final hasHardware = (gate['deviceRegistries'] is List && (gate['deviceRegistries'] as List).isNotEmpty) ||
+                                                                    gate['linkedHardwareSerialNumber'] != null ||
+                                                                    gate['hardwareThingName'] != null;
+                                                                final isUnconfigured = !hasMaster || !hasHardware;
+
+                                                                if (isUnconfigured) {
+                                                                  return Container(
+                                                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                                    decoration: BoxDecoration(
+                                                                      color: const Color(0xFFF1F5F9),
+                                                                      borderRadius: BorderRadius.circular(4),
+                                                                      border: Border.all(color: const Color(0xFFCBD5E1)),
+                                                                    ),
+                                                                    child: Row(
+                                                                      mainAxisSize: MainAxisSize.min,
+                                                                      children: [
+                                                                        Container(
+                                                                          width: 5,
+                                                                          height: 5,
+                                                                          decoration: const BoxDecoration(
+                                                                            shape: BoxShape.circle,
+                                                                            color: Color(0xFF64748B),
+                                                                          ),
+                                                                        ),
+                                                                        const SizedBox(width: 4),
+                                                                        const Text(
+                                                                          'UNCONFIGURED',
+                                                                          style: TextStyle(
+                                                                            fontSize: 9.5,
+                                                                            fontWeight: FontWeight.bold,
+                                                                            color: Color(0xFF475569),
+                                                                          ),
+                                                                        ),
+                                                                      ],
+                                                                    ),
+                                                                  );
+                                                                }
+
                                                                 final isOnline = gate['deviceStatus'] == 'ONLINE' || gate['isOnline'] == true;
                                                                 return Container(
                                                                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),

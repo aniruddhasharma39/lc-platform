@@ -1313,29 +1313,60 @@ export async function exportCountExcel(
   r3.alignment = { horizontal: 'center', vertical: 'middle' };
   sheet.getRow(3).height = 22;
 
-  // Row 5-6: KPI Cards
-  sheet.getCell('A5').value = 'Total Operations';
-  sheet.getCell('A6').value = data.kpis.totalOperations;
-  sheet.getCell('C5').value = 'Total Open Count';
-  sheet.getCell('C6').value = data.kpis.totalOpenCount;
-  sheet.getCell('E5').value = 'Total Close Count';
-  sheet.getCell('E6').value = data.kpis.totalCloseCount;
-  sheet.getCell('G5').value = 'Peak Activity Gate';
-  sheet.getCell('G6').value = data.kpis.peakOperationGate ? `${data.kpis.peakOperationGate.lcNumber} (${data.kpis.peakOperationGate.operations})` : '—';
+  // Tricolor Ribbons (Rows 4, 5, 6)
+  sheet.mergeCells(`A4:${lastColLetter}4`);
+  sheet.getCell('A4').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6600' } };
+  sheet.getRow(4).height = 4;
+
+  sheet.mergeCells(`A5:${lastColLetter}5`);
+  sheet.getCell('A5').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+  sheet.getRow(5).height = 3;
+
+  sheet.mergeCells(`A6:${lastColLetter}6`);
+  sheet.getCell('A6').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF046A38' } };
+  sheet.getRow(6).height = 4;
+
+  // Metadata (Row 8)
+  sheet.getRow(7).height = 6;
+  sheet.getCell('A8').value = 'Date Range:';
+  sheet.getCell('B8').value = `${data.startDate} to ${data.endDate}`;
+  sheet.getCell('C8').value = 'Generated At:';
+  sheet.getCell('D8').value = `${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`;
+  sheet.getCell('E8').value = 'Reporting Gates:';
+  sheet.getCell('F8').value = `${data.gates.length} Gates`;
+  sheet.getCell('G8').value = 'Total Operations:';
+  sheet.getCell('H8').value = data.kpis.totalOperations;
+
+  ['A8', 'C8', 'E8', 'G8'].forEach(cell => {
+    sheet.getCell(cell).font = { bold: true, color: { argb: 'FF003580' } };
+  });
+  sheet.getRow(8).height = 20;
+
+  // Row 10-11: KPI Cards
+  sheet.getCell('A10').value = 'Total Operations';
+  sheet.getCell('A11').value = data.kpis.totalOperations;
+  sheet.getCell('C10').value = 'Total Open Count';
+  sheet.getCell('C11').value = data.kpis.totalOpenCount;
+  sheet.getCell('E10').value = 'Total Close Count';
+  sheet.getCell('E11').value = data.kpis.totalCloseCount;
+  sheet.getCell('G10').value = 'Peak Activity Gate';
+  sheet.getCell('G11').value = data.kpis.peakOperationGate ? `${data.kpis.peakOperationGate.lcNumber} (${data.kpis.peakOperationGate.operations})` : '—';
 
   for (const col of ['A', 'C', 'E', 'G']) {
-    sheet.getCell(`${col}5`).font = { bold: true, size: 9, color: { argb: 'FF64748B' } };
-    sheet.getCell(`${col}6`).font = { bold: true, size: 14, color: { argb: 'FF003580' } };
+    sheet.getCell(`${col}10`).font = { bold: true, size: 9, color: { argb: 'FF64748B' } };
+    sheet.getCell(`${col}11`).font = { bold: true, size: 14, color: { argb: 'FF003580' } };
   }
+  sheet.getRow(10).height = 16;
+  sheet.getRow(11).height = 22;
 
-  // Row 8: Table Header
+  // Row 13: Table Header
   const headers = ['Zone', 'Division', 'Station', 'Code', 'LC Gate #', 'Location / Landmark', 'Open Count', 'Close Count', 'Total Operations'];
-  sheet.getRow(8).values = headers;
-  sheet.getRow(8).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  sheet.getRow(8).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B3C7A' } };
-  sheet.getRow(8).height = 26;
+  sheet.getRow(13).values = headers;
+  sheet.getRow(13).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  sheet.getRow(13).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B3C7A' } };
+  sheet.getRow(13).height = 26;
 
-  let rowIdx = 9;
+  let rowIdx = 14;
   for (const g of data.gates) {
     const row = sheet.getRow(rowIdx);
     row.values = [
@@ -1372,50 +1403,124 @@ export async function exportCountPdf(
   data: CountReportResponse,
   options: { filenameBase: string }
 ) {
-  const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+  const doc = new PDFDocument({ margin: 36, size: 'A4', layout: 'landscape' });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.pdf"`);
   doc.pipe(res);
 
-  // Header
-  doc.rect(30, 25, 782, 35).fill('#003580');
-  doc.fillColor('#FFFFFF').fontSize(14).font('Helvetica-Bold').text('INDIAN RAILWAYS — LEVEL CROSSING COUNT REPORT', 35, 36, { align: 'center', width: 772 });
+  const { irLogoPath, azadiLogoPath } = resolveLogos();
 
-  doc.fillColor('#334155').fontSize(10).font('Helvetica').text(`Audit Period: ${data.startDate} to ${data.endDate} | Total Operations: ${data.kpis.totalOperations} (Open: ${data.kpis.totalOpenCount}, Close: ${data.kpis.totalCloseCount})`, 35, 70);
+  function drawCountHeader(docInstance: typeof doc, isFirstPage: boolean) {
+    if (isFirstPage) {
+      docInstance.rect(0, 0, docInstance.page.width, 90).fill(NAVY_BLUE);
 
-  // Table
-  let y = 95;
-  doc.rect(30, y, 782, 20).fill('#0B3C7A');
-  doc.fillColor('#FFFFFF').fontSize(9).font('Helvetica-Bold');
-  doc.text('Zone', 35, y + 5, { width: 80 });
-  doc.text('Division', 120, y + 5, { width: 80 });
-  doc.text('Station', 205, y + 5, { width: 90 });
-  doc.text('LC Gate #', 300, y + 5, { width: 80 });
-  doc.text('Location', 385, y + 5, { width: 150 });
-  doc.text('Open Count', 540, y + 5, { width: 70, align: 'right' });
-  doc.text('Close Count', 620, y + 5, { width: 70, align: 'right' });
-  doc.text('Total Operations', 700, y + 5, { width: 90, align: 'right' });
+      if (irLogoPath) {
+        try { docInstance.image(irLogoPath, 16, 11, { fit: [72, 68], align: 'center', valign: 'center' }); } catch (_) {}
+      }
+      if (azadiLogoPath) {
+        try { docInstance.image(azadiLogoPath, docInstance.page.width - 100, 11, { fit: [84, 68], align: 'center', valign: 'center' }); } catch (_) {}
+      }
 
-  y += 20;
-  doc.font('Helvetica').fontSize(9);
+      docInstance.fillColor('white').fontSize(9.5).font('Helvetica')
+        .text('Government of India', 0, 11, { align: 'center' })
+        .text('Ministry of Railways', 0, 24, { align: 'center' });
+
+      docInstance.fillColor('white').fontSize(18).font('Helvetica-Bold')
+        .text('INDIAN RAILWAYS', 0, 37, { align: 'center' });
+
+      docInstance.fillColor(GOLDEN_SAND).fontSize(10.5).font('Helvetica')
+        .text('Level Crossing Operations Volume & Count Audit Report', 0, 59, { align: 'center' });
+
+      docInstance.rect(0, 75, docInstance.page.width, 5).fill(SAFFRON);
+      docInstance.rect(0, 80, docInstance.page.width, 5).fill('white');
+      docInstance.rect(0, 85, docInstance.page.width, 5).fill(DEEP_GREEN);
+    } else {
+      docInstance.rect(0, 0, docInstance.page.width, 24).fill(NAVY_BLUE);
+      docInstance.fillColor('white').fontSize(9).font('Helvetica-Bold')
+        .text('INDIAN RAILWAYS — Level Crossing Count Report (Continued)', 0, 7, { align: 'center' });
+      docInstance.rect(0, 24, docInstance.page.width, 2).fill(SAFFRON);
+    }
+  }
+
+  drawCountHeader(doc, true);
+
+  // Global Metadata Box
+  let yPos = 98;
+  doc.rect(36, yPos, doc.page.width - 72, 34).strokeColor('#CCCCCC').lineWidth(1).stroke();
+  const mY = yPos + 6;
+  doc.fillColor('#334155').fontSize(8.5).font('Helvetica');
+  doc.text(`Audit Period: ${data.startDate}  —  ${data.endDate}`, 46, mY);
+  doc.text(`Generated At: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`, doc.page.width * 0.38, mY);
+  doc.text(`Reporting Gates: ${data.gates.length} LC Gates`, doc.page.width * 0.72, mY);
+
+  yPos += 42;
+
+  // KPI Summary Cards
+  const kpiWidth = (doc.page.width - 72 - 30) / 4;
+  const countKpis = [
+    { label: 'TOTAL OPERATIONS', val: `${data.kpis.totalOperations}` },
+    { label: 'BARRIER OPENINGS', val: `${data.kpis.totalOpenCount}` },
+    { label: 'BARRIER CLOSINGS', val: `${data.kpis.totalCloseCount}` },
+    { label: 'PEAK ACTIVITY GATE', val: data.kpis.peakOperationGate ? `${data.kpis.peakOperationGate.lcNumber} (${data.kpis.peakOperationGate.operations})` : '—' },
+  ];
+
+  countKpis.forEach((kpi, i) => {
+    const xPos = 36 + i * (kpiWidth + 10);
+    doc.rect(xPos, yPos, kpiWidth, 32).fillAndStroke('#F1F5F9', '#CBD5E1');
+    doc.fillColor('#475569').fontSize(7.5).font('Helvetica-Bold').text(kpi.label, xPos + 8, yPos + 5);
+    doc.fillColor(NAVY_BLUE).fontSize(10.5).font('Helvetica-Bold').text(kpi.val, xPos + 8, yPos + 16);
+  });
+
+  yPos += 42;
+
+  // Table Header
+  const tableX = 36;
+  const tableWidth = doc.page.width - 72;
+  doc.rect(tableX, yPos, tableWidth, 20).fill('#0B3C7A');
+  doc.fillColor('#FFFFFF').fontSize(8.5).font('Helvetica-Bold');
+  doc.text('Zone', tableX + 6, yPos + 5, { width: 75 });
+  doc.text('Division', tableX + 85, yPos + 5, { width: 75 });
+  doc.text('Station', tableX + 165, yPos + 5, { width: 95 });
+  doc.text('LC Gate #', tableX + 265, yPos + 5, { width: 75 });
+  doc.text('Location / Landmark', tableX + 345, yPos + 5, { width: 190 });
+  doc.text('Open Count', tableX + 540, yPos + 5, { width: 65, align: 'right' });
+  doc.text('Close Count', tableX + 610, yPos + 5, { width: 65, align: 'right' });
+  doc.text('Total Operations', tableX + 680, yPos + 5, { width: 85, align: 'right' });
+
+  yPos += 20;
+  doc.font('Helvetica').fontSize(8.5);
 
   for (const g of data.gates) {
-    if (y > 540) {
-      doc.addPage({ margin: 30, size: 'A4', layout: 'landscape' });
-      y = 35;
+    if (yPos > doc.page.height - 50) {
+      doc.addPage({ margin: 36, size: 'A4', layout: 'landscape' });
+      drawCountHeader(doc, false);
+      yPos = 36;
+      doc.rect(tableX, yPos, tableWidth, 18).fill('#0B3C7A');
+      doc.fillColor('#FFFFFF').fontSize(8.5).font('Helvetica-Bold');
+      doc.text('Zone', tableX + 6, yPos + 4, { width: 75 });
+      doc.text('Division', tableX + 85, yPos + 4, { width: 75 });
+      doc.text('Station', tableX + 165, yPos + 4, { width: 95 });
+      doc.text('LC Gate #', tableX + 265, yPos + 4, { width: 75 });
+      doc.text('Location / Landmark', tableX + 345, yPos + 4, { width: 190 });
+      doc.text('Open Count', tableX + 540, yPos + 4, { width: 65, align: 'right' });
+      doc.text('Close Count', tableX + 610, yPos + 4, { width: 65, align: 'right' });
+      doc.text('Total Operations', tableX + 680, yPos + 4, { width: 85, align: 'right' });
+      yPos += 18;
+      doc.font('Helvetica').fontSize(8.5);
     }
-    doc.fillColor('#0F172A');
-    doc.text(g.zone || '-', 35, y + 4, { width: 80 });
-    doc.text(g.division || '-', 120, y + 4, { width: 80 });
-    doc.text(g.stationName || '-', 205, y + 4, { width: 90 });
-    doc.text(g.lcNumber, 300, y + 4, { width: 80 });
-    doc.text(g.locationName, 385, y + 4, { width: 150 });
-    doc.text(String(g.openCount), 540, y + 4, { width: 70, align: 'right' });
-    doc.text(String(g.closeCount), 620, y + 4, { width: 70, align: 'right' });
-    doc.text(String(g.totalOperations), 700, y + 4, { width: 90, align: 'right' });
 
-    doc.strokeColor('#E2E8F0').lineWidth(0.5).moveTo(30, y + 18).lineTo(812, y + 18).stroke();
-    y += 18;
+    doc.fillColor('#0F172A');
+    doc.text(g.zone || '-', tableX + 6, yPos + 4, { width: 75 });
+    doc.text(g.division || '-', tableX + 85, yPos + 4, { width: 75 });
+    doc.text(g.stationName || '-', tableX + 165, yPos + 4, { width: 95 });
+    doc.text(g.lcNumber, tableX + 265, yPos + 4, { width: 75 });
+    doc.text(g.locationName, tableX + 345, yPos + 4, { width: 190 });
+    doc.text(String(g.openCount), tableX + 540, yPos + 4, { width: 65, align: 'right' });
+    doc.text(String(g.closeCount), tableX + 610, yPos + 4, { width: 65, align: 'right' });
+    doc.text(String(g.totalOperations), tableX + 680, yPos + 4, { width: 85, align: 'right' });
+
+    doc.strokeColor('#E2E8F0').lineWidth(0.5).moveTo(tableX, yPos + 17).lineTo(tableX + tableWidth, yPos + 17).stroke();
+    yPos += 18;
   }
 
   doc.end();
@@ -1492,20 +1597,87 @@ export async function exportHolisticExcel(
     pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 }
   });
 
-  sheet1.mergeCells('A1:I1');
+  const lastColLetter = 'I';
+
+  // Row 1: Government Header
+  sheet1.mergeCells(`A1:${lastColLetter}1`);
   const r1 = sheet1.getCell('A1');
-  r1.value = 'INDIAN RAILWAYS — HOLISTIC LEVEL CROSSING MANAGEMENT SUMMARY';
-  r1.font = { name: 'Calibri', size: 14, bold: true, color: { argb: 'FFFFFFFF' } };
+  r1.value = 'GOVERNMENT OF INDIA — MINISTRY OF RAILWAYS';
+  r1.font = { name: 'Calibri', size: 12, bold: true, color: { argb: 'FFFFFFFF' } };
   r1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
   r1.alignment = { horizontal: 'center', vertical: 'middle' };
-  sheet1.getRow(1).height = 30;
+  sheet1.getRow(1).height = 24;
 
-  sheet1.getRow(3).values = ['Jurisdiction Level', 'Name', 'Total Gates', 'Operations', 'Open Count', 'Close Count', 'Total Open Time', 'Avg Open Time', 'Delays (>10m)'];
-  sheet1.getRow(3).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  sheet1.getRow(3).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B3C7A' } };
-  sheet1.getRow(3).height = 24;
+  // Row 2: Title
+  sheet1.mergeCells(`A2:${lastColLetter}2`);
+  const r2 = sheet1.getCell('A2');
+  r2.value = 'INDIAN RAILWAYS — HOLISTIC LEVEL CROSSING MANAGEMENT SUMMARY';
+  r2.font = { name: 'Calibri', size: 15, bold: true, color: { argb: 'FFFFFFFF' } };
+  r2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
+  r2.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet1.getRow(2).height = 32;
 
-  let rIdx = 4;
+  // Row 3: Subtitle
+  sheet1.mergeCells(`A3:${lastColLetter}3`);
+  const r3 = sheet1.getCell('A3');
+  r3.value = `Hierarchical Operational Performance Audit (${data.startDate} to ${data.endDate})`;
+  r3.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF003580' } };
+  r3.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8D5A3' } };
+  r3.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet1.getRow(3).height = 22;
+
+  // Tricolor Ribbons (Rows 4, 5, 6)
+  sheet1.mergeCells(`A4:${lastColLetter}4`);
+  sheet1.getCell('A4').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6600' } };
+  sheet1.getRow(4).height = 4;
+
+  sheet1.mergeCells(`A5:${lastColLetter}5`);
+  sheet1.getCell('A5').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+  sheet1.getRow(5).height = 3;
+
+  sheet1.mergeCells(`A6:${lastColLetter}6`);
+  sheet1.getCell('A6').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF046A38' } };
+  sheet1.getRow(6).height = 4;
+
+  // Metadata Row 8
+  sheet1.getRow(7).height = 6;
+  sheet1.getCell('A8').value = 'Date Range:';
+  sheet1.getCell('B8').value = `${data.startDate} to ${data.endDate}`;
+  sheet1.getCell('C8').value = 'Generated At:';
+  sheet1.getCell('D8').value = `${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`;
+  sheet1.getCell('E8').value = 'Total Gates:';
+  sheet1.getCell('F8').value = `${data.kpis.totalGates} Gates`;
+  sheet1.getCell('G8').value = 'Total Operations:';
+  sheet1.getCell('H8').value = data.kpis.totalOperations;
+
+  ['A8', 'C8', 'E8', 'G8'].forEach(cell => {
+    sheet1.getCell(cell).font = { bold: true, color: { argb: 'FF003580' } };
+  });
+  sheet1.getRow(8).height = 20;
+
+  // KPI Row 10-11
+  sheet1.getCell('A10').value = 'Total Operations';
+  sheet1.getCell('A11').value = data.kpis.totalOperations;
+  sheet1.getCell('C10').value = 'Total Open Time';
+  sheet1.getCell('C11').value = data.kpis.totalOpenFormatted;
+  sheet1.getCell('E10').value = 'Average Open Duration';
+  sheet1.getCell('E11').value = data.kpis.avgOpenFormatted;
+  sheet1.getCell('G10').value = 'Extended Delays (>10m)';
+  sheet1.getCell('G11').value = data.kpis.totalExtendedDelays;
+
+  for (const col of ['A', 'C', 'E', 'G']) {
+    sheet1.getCell(`${col}10`).font = { bold: true, size: 9, color: { argb: 'FF64748B' } };
+    sheet1.getCell(`${col}11`).font = { bold: true, size: 14, color: { argb: 'FF003580' } };
+  }
+  sheet1.getRow(10).height = 16;
+  sheet1.getRow(11).height = 22;
+
+  sheet1.getRow(13).values = ['Jurisdiction Level', 'Name', 'Total Gates', 'Operations', 'Open Count', 'Close Count', 'Total Open Time', 'Avg Open Time', 'Delays (>10m)'];
+  sheet1.getRow(13).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  sheet1.getRow(13).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B3C7A' } };
+  sheet1.getRow(13).height = 24;
+
+  let rIdx = 14;
   for (const zn of data.hierarchy) {
     const zRow = sheet1.getRow(rIdx++);
     zRow.values = ['ZONE', zn.zone, zn.gatesCount, zn.totalOperations, zn.openCount, zn.closeCount, zn.totalOpenFormatted, zn.avgOpenFormatted, zn.extendedDelaysCount];
@@ -1545,73 +1717,164 @@ export async function exportHolisticPdf(
   data: HolisticReportResponse,
   options: { filenameBase: string }
 ) {
-  const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+  const doc = new PDFDocument({ margin: 36, size: 'A4', layout: 'landscape' });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.pdf"`);
   doc.pipe(res);
 
-  doc.rect(30, 25, 782, 35).fill('#003580');
-  doc.fillColor('#FFFFFF').fontSize(14).font('Helvetica-Bold').text('INDIAN RAILWAYS — HOLISTIC MANAGEMENT REPORT', 35, 36, { align: 'center', width: 772 });
+  const { irLogoPath, azadiLogoPath } = resolveLogos();
 
-  doc.fillColor('#334155').fontSize(10).font('Helvetica').text(`Audit Period: ${data.startDate} to ${data.endDate} | Total Gates: ${data.kpis.totalGates} | Total Operations: ${data.kpis.totalOperations} | Total Open Time: ${data.kpis.totalOpenFormatted}`, 35, 70);
+  function drawHolisticHeader(docInstance: typeof doc, isFirstPage: boolean) {
+    if (isFirstPage) {
+      docInstance.rect(0, 0, docInstance.page.width, 90).fill(NAVY_BLUE);
 
-  let y = 95;
-  doc.rect(30, y, 782, 20).fill('#0B3C7A');
-  doc.fillColor('#FFFFFF').fontSize(9).font('Helvetica-Bold');
-  doc.text('Jurisdiction', 35, y + 5, { width: 120 });
-  doc.text('Station / LC Gate', 160, y + 5, { width: 140 });
-  doc.text('Gates', 305, y + 5, { width: 45, align: 'center' });
-  doc.text('Operations', 355, y + 5, { width: 65, align: 'right' });
-  doc.text('Open Count', 425, y + 5, { width: 65, align: 'right' });
-  doc.text('Close Count', 495, y + 5, { width: 65, align: 'right' });
-  doc.text('Total Open Time', 565, y + 5, { width: 85, align: 'right' });
-  doc.text('Avg Open', 655, y + 5, { width: 65, align: 'right' });
-  doc.text('Delays (>10m)', 725, y + 5, { width: 80, align: 'right' });
+      if (irLogoPath) {
+        try { docInstance.image(irLogoPath, 16, 11, { fit: [72, 68], align: 'center', valign: 'center' }); } catch (_) {}
+      }
+      if (azadiLogoPath) {
+        try { docInstance.image(azadiLogoPath, docInstance.page.width - 100, 11, { fit: [84, 68], align: 'center', valign: 'center' }); } catch (_) {}
+      }
 
-  y += 20;
+      docInstance.fillColor('white').fontSize(9.5).font('Helvetica')
+        .text('Government of India', 0, 11, { align: 'center' })
+        .text('Ministry of Railways', 0, 24, { align: 'center' });
+
+      docInstance.fillColor('white').fontSize(18).font('Helvetica-Bold')
+        .text('INDIAN RAILWAYS', 0, 37, { align: 'center' });
+
+      docInstance.fillColor(GOLDEN_SAND).fontSize(10.5).font('Helvetica')
+        .text('Level Crossing Holistic Management & Hierarchy Summary Report', 0, 59, { align: 'center' });
+
+      docInstance.rect(0, 75, docInstance.page.width, 5).fill(SAFFRON);
+      docInstance.rect(0, 80, docInstance.page.width, 5).fill('white');
+      docInstance.rect(0, 85, docInstance.page.width, 5).fill(DEEP_GREEN);
+    } else {
+      docInstance.rect(0, 0, docInstance.page.width, 24).fill(NAVY_BLUE);
+      docInstance.fillColor('white').fontSize(9).font('Helvetica-Bold')
+        .text('INDIAN RAILWAYS — Holistic Management Report (Continued)', 0, 7, { align: 'center' });
+      docInstance.rect(0, 24, docInstance.page.width, 2).fill(SAFFRON);
+    }
+  }
+
+  drawHolisticHeader(doc, true);
+
+  // Global Metadata Box
+  let yPos = 98;
+  doc.rect(36, yPos, doc.page.width - 72, 34).strokeColor('#CCCCCC').lineWidth(1).stroke();
+  const mY = yPos + 6;
+  doc.fillColor('#334155').fontSize(8.5).font('Helvetica');
+  doc.text(`Audit Period: ${data.startDate}  —  ${data.endDate}`, 46, mY);
+  doc.text(`Generated At: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`, doc.page.width * 0.38, mY);
+  doc.text(`Total Gates Monitored: ${data.kpis.totalGates} Gates`, doc.page.width * 0.72, mY);
+
+  yPos += 42;
+
+  // KPI Summary Cards
+  const kpiWidth = (doc.page.width - 72 - 30) / 4;
+  const holisticKpis = [
+    { label: 'TOTAL OPERATIONS', val: `${data.kpis.totalOperations}` },
+    { label: 'TOTAL OPEN TIME', val: data.kpis.totalOpenFormatted },
+    { label: 'AVERAGE OPEN DURATION', val: data.kpis.avgOpenFormatted },
+    { label: 'EXTENDED DELAYS (>10m)', val: `${data.kpis.totalExtendedDelays}` },
+  ];
+
+  holisticKpis.forEach((kpi, i) => {
+    const xPos = 36 + i * (kpiWidth + 10);
+    doc.rect(xPos, yPos, kpiWidth, 32).fillAndStroke('#F1F5F9', '#CBD5E1');
+    doc.fillColor('#475569').fontSize(7.5).font('Helvetica-Bold').text(kpi.label, xPos + 8, yPos + 5);
+    doc.fillColor(NAVY_BLUE).fontSize(10.5).font('Helvetica-Bold').text(kpi.val, xPos + 8, yPos + 16);
+  });
+
+  yPos += 42;
+
+  const tableX = 36;
+  const tableWidth = doc.page.width - 72;
+  doc.rect(tableX, yPos, tableWidth, 20).fill('#0B3C7A');
+  doc.fillColor('#FFFFFF').fontSize(8.5).font('Helvetica-Bold');
+  doc.text('Jurisdiction', tableX + 6, yPos + 5, { width: 110 });
+  doc.text('Station / LC Gate', tableX + 120, yPos + 5, { width: 140 });
+  doc.text('Gates', tableX + 265, yPos + 5, { width: 45, align: 'center' });
+  doc.text('Operations', tableX + 315, yPos + 5, { width: 65, align: 'right' });
+  doc.text('Open Count', tableX + 385, yPos + 5, { width: 65, align: 'right' });
+  doc.text('Close Count', tableX + 455, yPos + 5, { width: 65, align: 'right' });
+  doc.text('Total Open Time', tableX + 525, yPos + 5, { width: 85, align: 'right' });
+  doc.text('Avg Open', tableX + 615, yPos + 5, { width: 65, align: 'right' });
+  doc.text('Delays (>10m)', tableX + 685, yPos + 5, { width: 80, align: 'right' });
+
+  yPos += 20;
 
   for (const zn of data.hierarchy) {
-    if (y > 540) { doc.addPage({ margin: 30, size: 'A4', layout: 'landscape' }); y = 35; }
-    doc.rect(30, y, 782, 16).fill('#E0F2FE');
-    doc.fillColor('#0369A1').fontSize(9).font('Helvetica-Bold');
-    doc.text(`Zone: ${zn.zone}`, 35, y + 3, { width: 260 });
-    doc.text(String(zn.gatesCount), 305, y + 3, { width: 45, align: 'center' });
-    doc.text(String(zn.totalOperations), 355, y + 3, { width: 65, align: 'right' });
-    doc.text(String(zn.openCount), 425, y + 3, { width: 65, align: 'right' });
-    doc.text(String(zn.closeCount), 495, y + 3, { width: 65, align: 'right' });
-    doc.text(zn.totalOpenFormatted, 565, y + 3, { width: 85, align: 'right' });
-    doc.text(zn.avgOpenFormatted, 655, y + 3, { width: 65, align: 'right' });
-    doc.text(String(zn.extendedDelaysCount), 725, y + 3, { width: 80, align: 'right' });
-    y += 17;
+    if (yPos > doc.page.height - 50) {
+      doc.addPage({ margin: 36, size: 'A4', layout: 'landscape' });
+      drawHolisticHeader(doc, false);
+      yPos = 36;
+    }
+    doc.rect(tableX, yPos, tableWidth, 16).fill('#E0F2FE');
+    doc.fillColor('#0369A1').fontSize(8.5).font('Helvetica-Bold');
+    doc.text(`Zone: ${zn.zone}`, tableX + 6, yPos + 3, { width: 255 });
+    doc.text(String(zn.gatesCount), tableX + 265, yPos + 3, { width: 45, align: 'center' });
+    doc.text(String(zn.totalOperations), tableX + 315, yPos + 3, { width: 65, align: 'right' });
+    doc.text(String(zn.openCount), tableX + 385, yPos + 3, { width: 65, align: 'right' });
+    doc.text(String(zn.closeCount), tableX + 455, yPos + 3, { width: 65, align: 'right' });
+    doc.text(zn.totalOpenFormatted, tableX + 525, yPos + 3, { width: 85, align: 'right' });
+    doc.text(zn.avgOpenFormatted, tableX + 615, yPos + 3, { width: 65, align: 'right' });
+    doc.text(String(zn.extendedDelaysCount), tableX + 685, yPos + 3, { width: 80, align: 'right' });
+    yPos += 17;
 
     for (const div of zn.divisions) {
-      if (y > 540) { doc.addPage({ margin: 30, size: 'A4', layout: 'landscape' }); y = 35; }
-      doc.rect(30, y, 782, 16).fill('#F1F5F9');
-      doc.fillColor('#334155').fontSize(9).font('Helvetica-Bold');
-      doc.text(`  Division: ${div.division}`, 45, y + 3, { width: 250 });
-      doc.text(String(div.gatesCount), 305, y + 3, { width: 45, align: 'center' });
-      doc.text(String(div.totalOperations), 355, y + 3, { width: 65, align: 'right' });
-      doc.text(String(div.openCount), 425, y + 3, { width: 65, align: 'right' });
-      doc.text(String(div.closeCount), 495, y + 3, { width: 65, align: 'right' });
-      doc.text(div.totalOpenFormatted, 565, y + 3, { width: 85, align: 'right' });
-      doc.text(div.avgOpenFormatted, 655, y + 3, { width: 65, align: 'right' });
-      doc.text(String(div.extendedDelaysCount), 725, y + 3, { width: 80, align: 'right' });
-      y += 17;
+      if (yPos > doc.page.height - 50) {
+        doc.addPage({ margin: 36, size: 'A4', layout: 'landscape' });
+        drawHolisticHeader(doc, false);
+        yPos = 36;
+      }
+      doc.rect(tableX, yPos, tableWidth, 16).fill('#F1F5F9');
+      doc.fillColor('#334155').fontSize(8.5).font('Helvetica-Bold');
+      doc.text(`  Division: ${div.division}`, tableX + 16, yPos + 3, { width: 245 });
+      doc.text(String(div.gatesCount), tableX + 265, yPos + 3, { width: 45, align: 'center' });
+      doc.text(String(div.totalOperations), tableX + 315, yPos + 3, { width: 65, align: 'right' });
+      doc.text(String(div.openCount), tableX + 385, yPos + 3, { width: 65, align: 'right' });
+      doc.text(String(div.closeCount), tableX + 455, yPos + 3, { width: 65, align: 'right' });
+      doc.text(div.totalOpenFormatted, tableX + 525, yPos + 3, { width: 85, align: 'right' });
+      doc.text(div.avgOpenFormatted, tableX + 615, yPos + 3, { width: 65, align: 'right' });
+      doc.text(String(div.extendedDelaysCount), tableX + 685, yPos + 3, { width: 80, align: 'right' });
+      yPos += 17;
 
       for (const st of div.stations) {
-        if (y > 540) { doc.addPage({ margin: 30, size: 'A4', layout: 'landscape' }); y = 35; }
-        doc.fillColor('#0F172A').font('Helvetica');
-        doc.text(`    ${st.stationName} (${st.stationCode})`, 55, y + 3, { width: 240 });
-        doc.text(String(st.gatesCount), 305, y + 3, { width: 45, align: 'center' });
-        doc.text(String(st.totalOperations), 355, y + 3, { width: 65, align: 'right' });
-        doc.text(String(st.openCount), 425, y + 3, { width: 65, align: 'right' });
-        doc.text(String(st.closeCount), 495, y + 3, { width: 65, align: 'right' });
-        doc.text(st.totalOpenFormatted, 565, y + 3, { width: 85, align: 'right' });
-        doc.text(st.avgOpenFormatted, 655, y + 3, { width: 65, align: 'right' });
-        doc.text(String(st.extendedDelaysCount), 725, y + 3, { width: 80, align: 'right' });
+        if (yPos > doc.page.height - 50) {
+          doc.addPage({ margin: 36, size: 'A4', layout: 'landscape' });
+          drawHolisticHeader(doc, false);
+          yPos = 36;
+        }
+        doc.fillColor('#475569').fontSize(8.5).font('Helvetica-Bold');
+        doc.text(`    Station: ${st.stationName} (${st.stationCode})`, tableX + 24, yPos + 3, { width: 235 });
+        doc.text(String(st.gatesCount), tableX + 265, yPos + 3, { width: 45, align: 'center' });
+        doc.text(String(st.totalOperations), tableX + 315, yPos + 3, { width: 65, align: 'right' });
+        doc.text(String(st.openCount), tableX + 385, yPos + 3, { width: 65, align: 'right' });
+        doc.text(String(st.closeCount), tableX + 455, yPos + 3, { width: 65, align: 'right' });
+        doc.text(st.totalOpenFormatted, tableX + 525, yPos + 3, { width: 85, align: 'right' });
+        doc.text(st.avgOpenFormatted, tableX + 615, yPos + 3, { width: 65, align: 'right' });
+        doc.text(String(st.extendedDelaysCount), tableX + 685, yPos + 3, { width: 80, align: 'right' });
+        yPos += 16;
 
-        doc.strokeColor('#E2E8F0').lineWidth(0.5).moveTo(30, y + 16).lineTo(812, y + 16).stroke();
-        y += 17;
+        for (const g of st.gates) {
+          if (yPos > doc.page.height - 50) {
+            doc.addPage({ margin: 36, size: 'A4', layout: 'landscape' });
+            drawHolisticHeader(doc, false);
+            yPos = 36;
+          }
+          doc.fillColor('#0F172A').fontSize(8).font('Helvetica');
+          doc.text(`      ${g.lcNumber} - ${g.locationName}`, tableX + 34, yPos + 2, { width: 225 });
+          doc.text('1', tableX + 265, yPos + 2, { width: 45, align: 'center' });
+          doc.text(String(g.totalOperations), tableX + 315, yPos + 2, { width: 65, align: 'right' });
+          doc.text(String(g.openCount), tableX + 385, yPos + 2, { width: 65, align: 'right' });
+          doc.text(String(g.closeCount), tableX + 455, yPos + 2, { width: 65, align: 'right' });
+          doc.text(g.totalOpenFormatted, tableX + 525, yPos + 2, { width: 85, align: 'right' });
+          doc.text(g.avgOpenFormatted, tableX + 615, yPos + 2, { width: 65, align: 'right' });
+          doc.text(String(g.extendedDelaysCount), tableX + 685, yPos + 2, { width: 80, align: 'right' });
+
+          doc.strokeColor('#E2E8F0').lineWidth(0.5).moveTo(tableX + 24, yPos + 14).lineTo(tableX + tableWidth, yPos + 14).stroke();
+          yPos += 15;
+        }
       }
     }
   }

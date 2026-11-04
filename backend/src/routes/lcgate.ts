@@ -1867,14 +1867,21 @@ router.post('/:id/health-check', authenticate, async (req, res, next) => {
     const gate = await prisma.lCGate.findUnique({
       where: { id },
       include: {
-        masters: { orderBy: { masterSequence: 'asc' } },
+        masters: {
+          orderBy: { masterSequence: 'asc' },
+          include: { deviceRegistries: true },
+        },
         deviceRegistries: true,
       }
     });
 
     if (!gate) return res.status(404).json({ error: 'Gate not found' });
 
-    const primaryThingName = gate.masters[0]?.serialNumber || gate.deviceRegistries[0]?.thingName || gate.lcNumber;
+    const primaryThingName =
+      gate.deviceRegistries[0]?.thingName ||
+      gate.masters[0]?.deviceRegistries?.[0]?.thingName ||
+      gate.masters[0]?.serialNumber ||
+      gate.lcNumber;
     const topic = `lc-gate/${primaryThingName}/health/request`;
     const requestId = `hc_${Date.now()}`;
     const commandPayload = {

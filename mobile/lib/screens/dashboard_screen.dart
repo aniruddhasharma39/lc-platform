@@ -1118,26 +1118,63 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
             const Divider(height: 1, thickness: 1, color: Color(0xFFE5E7EB)),
-            ListTile(
-              title: const Text('Home'),
-              leading: const Icon(Icons.home),
-              onTap: () {
-                setState(() { _currentView = 'home'; });
-                Navigator.pop(context);
-              },
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+              child: ListTile(
+                selected: _currentView == 'home',
+                selectedTileColor: AppColors.primary.withOpacity(0.12),
+                selectedColor: AppColors.primary,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                dense: true,
+                title: Text(
+                  'Home',
+                  style: TextStyle(
+                    fontWeight: _currentView == 'home' ? FontWeight.bold : FontWeight.w500,
+                    color: _currentView == 'home' ? AppColors.primary : const Color(0xFF1E293B),
+                    fontSize: 13.5,
+                  ),
+                ),
+                leading: Icon(
+                  Icons.home,
+                  color: _currentView == 'home' ? AppColors.primary : const Color(0xFF64748B),
+                ),
+                onTap: () {
+                  setState(() { _currentView = 'home'; });
+                  Navigator.pop(context);
+                },
+              ),
             ),
             ..._systemModules.where((m) {
               if (widget.user['role'] == 'Developer') return true;
               final allowed = widget.user['allowedModules'];
               return allowed is List && allowed.contains(m['slug']);
             }).map((m) {
-              return ListTile(
-                title: Text(_getModuleTitle(m)),
-                leading: Icon(getIconForModule(m['slug'])),
-                onTap: () {
-                  setState(() { _currentView = m['slug']; });
-                  Navigator.pop(context);
-                }
+              final isSelected = _currentView == m['slug'];
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                child: ListTile(
+                  selected: isSelected,
+                  selectedTileColor: AppColors.primary.withOpacity(0.12),
+                  selectedColor: AppColors.primary,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  dense: true,
+                  title: Text(
+                    _getModuleTitle(m),
+                    style: TextStyle(
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                      color: isSelected ? AppColors.primary : const Color(0xFF1E293B),
+                      fontSize: 13.5,
+                    ),
+                  ),
+                  leading: Icon(
+                    getIconForModule(m['slug']),
+                    color: isSelected ? AppColors.primary : const Color(0xFF64748B),
+                  ),
+                  onTap: () {
+                    setState(() { _currentView = m['slug']; });
+                    Navigator.pop(context);
+                  },
+                ),
               );
             }),
 
