@@ -266,6 +266,109 @@ export function canApproveRequest(approver: any, request: any, approverGateIds: 
 }
 
 /**
+ * Validates whether an approver has the hierarchical authority to assign a given role to an applicant upon approval.
+ *
+ * Rules:
+ * 1. Developer role can ONLY be assigned if approver is an existing Developer. Non-developers are strictly forbidden.
+ * 2. Developer has full governance authority to assign any role.
+ * 3. Non-developers can NEVER assign upper-body roles (roles with seniority <= approver's seniority).
+ *    An approver can ONLY assign roles strictly subordinate to them (targetSeniority > approverSeniority).
+ * 4. Non-developers can only assign roles within their own department.
+ */
+export function canAssignRole(
+  approver: any,
+  targetRoleId: number,
+  targetRoleName?: string
+): { allowed: boolean; reason?: string } {
+  const isDeveloper = approver.role === 'Developer' || approver.role?.name === 'Developer' || approver.roleId === 1;
+
+  const roleName = targetRoleName || '';
+  const isTargetDeveloper = targetRoleId === 1 || roleName.toLowerCase() === 'developer';
+
+  // Rule 1: Developer role can ONLY be assigned by Developer
+  if (isTargetDeveloper) {
+    if (!isDeveloper) {
+      return {
+        allowed: false,
+        reason: 'Security violation: Only an existing Developer can grant the Developer role.'
+      };
+    }
+    return { allowed: true };
+  }
+
+  // Developer has full governance authority
+  if (isDeveloper) {
+    return { allowed: true };
+  }
+
+  // Umbrella roles like Zone Officer and Division Officer cannot be assigned by station/supervisory officers
+  if (roleName === 'Zone Officer' || roleName === 'Division Officer') {
+    return {
+      allowed: false,
+      reason: 'Zone and Division administrative roles require governance-level approval.'
+    };
+  }
+
+  // Identify approver's designation and seniority
+  const approverDesigName = approver.designation || (typeof approver.role === 'string' ? approver.role : approver.role?.name);
+  const approverCfg = getDesignationConfig(approverDesigName);
+
+  if (!approverCfg) {
+    return {
+      allowed: false,
+      reason: 'Your account does not have a recognized railway designation to assign roles.'
+    };
+  }
+
+  // Find target designation config matching the target role
+  const targetCfg = getDesignationConfig(roleName) || 
+    Object.values(DESIGNATIONS).find(d => d.defaultRoleName.toLowerCase() === roleName.toLowerCase());
+
+  if (!targetCfg) {
+    return {
+      allowed: false,
+      reason: `Unknown or unconfigured role "${roleName}".`
+    };
+  }
+
+  // Department check: Approver cannot assign roles in another department
+  if (approverCfg.department !== targetCfg.department) {
+    return {
+      allowed: false,
+      reason: `Department violation: You belong to ${approverCfg.department} and cannot assign roles in ${targetCfg.department}.`
+    };
+  }
+
+  // Seniority check: Subordinate only! (target.seniority must be strictly GREATER than approver.seniority)
+  if (targetCfg.seniority <= approverCfg.seniority) {
+    return {
+      allowed: false,
+      reason: `Hierarchy violation: You (${approverCfg.name}) cannot assign an upper-level or peer role (${targetCfg.name}). You may only assign subordinate roles.`
+    };
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * Returns the list of role names that the given approver is hierarchically authorized to assign.
+ */
+export function getAllowedRoleNamesForApprover(approver: any): string[] {
+  const isDeveloper = approver.role === 'Developer' || approver.role?.name === 'Developer' || approver.roleId === 1;
+  if (isDeveloper) {
+    return ['Developer', 'Zone Officer', 'Division Officer', ...Object.keys(DESIGNATIONS)];
+  }
+
+  const approverDesigName = approver.designation || (typeof approver.role === 'string' ? approver.role : approver.role?.name);
+  const approverCfg = getDesignationConfig(approverDesigName);
+  if (!approverCfg) return [];
+
+  return Object.values(DESIGNATIONS)
+    .filter(d => d.department === approverCfg.department && d.seniority > approverCfg.seniority)
+    .map(d => d.defaultRoleName);
+}
+
+/**
  * Build Prisma where clause for filtering existing users visible to a viewer in User Management.
  * Enforces strict downward role hierarchy:
  * 1. Developer sees all users.

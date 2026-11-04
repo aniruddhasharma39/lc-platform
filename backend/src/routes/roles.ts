@@ -10,9 +10,12 @@ const router = Router();
 router.use(authenticate);
 
 // List roles and their module access
-router.get('/', async (req, res, next) => {
+router.get('/', async (req: any, res, next) => {
   try {
+    const isDeveloper = req.user?.role === 'Developer' || req.user?.role?.name === 'Developer' || req.user?.roleId === 1;
+
     const roles = await prisma.role.findMany({
+      where: isDeveloper ? {} : { name: { not: 'Developer' }, id: { not: 1 } },
       include: {
         roleModules: {
           include: { module: true }

@@ -6,7 +6,7 @@ import { authenticate, requireModule } from '../middleware/auth';
 import { extractRegistrationUserFields } from '../lib/userExtract';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
-import { canApproveRequest, getDesignationConfig, DESIGNATIONS, buildUserManagementWhereClause, verifyUserManagementAccess } from '../lib/railwayHierarchy';
+import { canApproveRequest, canAssignRole, getAllowedRoleNamesForApprover, getDesignationConfig, DESIGNATIONS, buildUserManagementWhereClause, verifyUserManagementAccess } from '../lib/railwayHierarchy';
 
 const router = Router();
 
@@ -145,6 +145,7 @@ router.get('/', requireModule('manage-users'), async (req: any, res, next) => {
         notAllowedReason: authCheck.reason,
         hasConflict: conflictReasons.length > 0,
         conflictReasons,
+        allowedRoleNames: getAllowedRoleNamesForApprover(viewer),
       });
     }
     
@@ -188,6 +189,19 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
     if (!authCheck.allowed) {
       return res.status(403).json({
         error: authCheck.reason || 'You are not authorized to approve this registration request.'
+      });
+    }
+
+    // Verify target role authorization (Subordinate-only, Developer restricted to Developer)
+    const targetRole = await prisma.role.findUnique({ where: { id: data.roleId } });
+    if (!targetRole) {
+      return res.status(400).json({ error: 'Selected role does not exist.' });
+    }
+
+    const roleCheck = canAssignRole(req.user, targetRole.id, targetRole.name);
+    if (!roleCheck.allowed) {
+      return res.status(403).json({
+        error: roleCheck.reason || 'You do not have hierarchical authority to assign this role.'
       });
     }
 

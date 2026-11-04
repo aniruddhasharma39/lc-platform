@@ -125,6 +125,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       widget.user['role'] == 'Developer' ||
       ((widget.user['allowedModules'] as List?)?.contains('manage-users') ?? false);
 
+  bool get _isDeveloper =>
+      widget.user['role'] == 'Developer' || widget.user['roleId'] == 1;
+
   @override
   void initState() {
     super.initState();
@@ -777,10 +780,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 else if (d['requestedRoleId'] != null) rId = int.tryParse(d['requestedRoleId'].toString());
               } catch (_) {}
             }
-            if (rId != null && _roles.any((r) => r['id'] == rId)) {
+            final allowedRoles = _getAllowedAssignableRoles(req);
+            if (rId != null && allowedRoles.any((r) => r['id'] == rId)) {
               _pendingRoleSelections[reqId] = rId;
-            } else if (_roles.isNotEmpty) {
-              _pendingRoleSelections[reqId] = _roles[0]['id'];
+            } else if (allowedRoles.isNotEmpty) {
+              _pendingRoleSelections[reqId] = allowedRoles[0]['id'];
             }
           }
         }
@@ -1946,6 +1950,82 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  List<dynamic> _getAllowedAssignableRoles(Map<String, dynamic> req) {
+    if (_isDeveloper) {
+      return _roles;
+    }
+
+    // Backend provides authorized role names explicitly in req['allowedRoleNames'] if available
+    final rawAllowedNames = req['allowedRoleNames'];
+    if (rawAllowedNames is List && rawAllowedNames.isNotEmpty) {
+      final allowedSet = rawAllowedNames.map((e) => e.toString().toLowerCase().trim()).toSet();
+      return _roles.where((r) {
+        final rName = (r['name'] ?? '').toString().toLowerCase().trim();
+        if (rName == 'developer' || r['id'] == 1) return false;
+        return allowedSet.contains(rName);
+      }).toList();
+    }
+
+    // Fallback: Railway hierarchy seniority matrix
+    final viewerRole = (widget.user['role'] ?? '').toString();
+    final seniorityMap = <String, int>{
+      'Senior DOM': 1,
+      'Senior DEN': 1,
+      'DOM': 2,
+      'DEN': 2,
+      'ADOM/AOM': 3,
+      'ADEN': 3,
+      'Station Master': 4,
+      'Engineering Supervisor': 4,
+      'Supervisor': 4,
+      'Gateman': 5,
+    };
+
+    final deptMap = <String, String>{
+      'Senior DOM': 'Operations',
+      'DOM': 'Operations',
+      'ADOM/AOM': 'Operations',
+      'Station Master': 'Operations',
+      'Senior DEN': 'Engineering',
+      'DEN': 'Engineering',
+      'ADEN': 'Engineering',
+      'Engineering Supervisor': 'Engineering',
+      'Supervisor': 'Engineering',
+      'Gateman': 'Engineering',
+    };
+
+    final viewerSeniority = seniorityMap[viewerRole] ?? 99;
+    final viewerDept = deptMap[viewerRole] ?? (widget.user['department'] ?? '').toString();
+
+    return _roles.where((r) {
+      final rName = (r['name'] ?? '').toString();
+
+      // Rule 1: Developer role can only be assigned by Developer
+      if (rName.toLowerCase() == 'developer' || r['id'] == 1) {
+        return false;
+      }
+
+      // Exclude umbrella administrative roles
+      if (rName == 'Zone Officer' || rName == 'Division Officer') {
+        return false;
+      }
+
+      // Rule 2: Subordinates only (strictly lower authority = higher seniority number)
+      final targetSeniority = seniorityMap[rName];
+      if (targetSeniority == null || targetSeniority <= viewerSeniority) {
+        return false;
+      }
+
+      // Rule 3: Department match
+      final targetDept = deptMap[rName];
+      if (targetDept != null && viewerDept.isNotEmpty && targetDept.toLowerCase() != viewerDept.toLowerCase()) {
+        return false;
+      }
+
+      return true;
+    }).toList();
+  }
+
   Widget _buildPendingUsersTab(List<dynamic> pending) {
     if (_isLoading) return const Center(child: CircularProgressIndicator());
     if (pending.isEmpty) return const Center(child: Text('No pending requests.'));
@@ -1979,13 +2059,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
           }
         }
 
-        // Determine currently selected role: use tracked selection, or default to requested role, or first role
+        // Resolve allowed assignable roles for the current viewer
+        final allowedRoles = _getAllowedAssignableRoles(req);
+
+        // Determine currently selected role: use tracked selection, or default to requested role if allowed, or first allowed role
         int? selectedRole = _pendingRoleSelections[req['id']];
-        if (selectedRole == null || !_roles.any((r) => r['id'] == selectedRole)) {
-          if (reqRoleId != null && _roles.any((r) => r['id'] == reqRoleId)) {
+        if (selectedRole == null || !allowedRoles.any((r) => r['id'] == selectedRole)) {
+          if (reqRoleId != null && allowedRoles.any((r) => r['id'] == reqRoleId)) {
             selectedRole = reqRoleId;
-          } else if (_roles.isNotEmpty) {
-            selectedRole = _roles[0]['id'];
+          } else if (allowedRoles.isNotEmpty) {
+            selectedRole = allowedRoles[0]['id'];
+          } else {
+            selectedRole = null;
           }
           if (selectedRole != null) {
             _pendingRoleSelections[req['id']] = selectedRole;
@@ -2113,35 +2198,65 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   const SizedBox(height: 14),
                 ],
-                DropdownButtonFormField<int>(
-                  value: selectedRole,
-                  decoration: InputDecoration(
-                    labelText: 'Assign Role',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8)
+                if (allowedRoles.isNotEmpty) ...[
+                  DropdownButtonFormField<int>(
+                    value: selectedRole,
+                    decoration: InputDecoration(
+                      labelText: 'Assign Role',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8)
+                    ),
+                    items: allowedRoles.map((e) => DropdownMenuItem<int>(
+                      value: e['id'], 
+                      child: Text('${e['name']}${e['id'] == reqRoleId ? ' (Requested)' : ''}'),
+                    )).toList(),
+                    onChanged: (v) {
+                      if (v != null) {
+                        setState(() {
+                          _pendingRoleSelections[req['id']] = v;
+                        });
+                      }
+                    },
                   ),
-                  items: _roles.map((e) => DropdownMenuItem<int>(
-                    value: e['id'], 
-                    child: Text('${e['name']}${e['id'] == reqRoleId ? ' (Requested)' : ''}'),
-                  )).toList(),
-                  onChanged: (v) {
-                    if (v != null) {
-                      setState(() {
-                        _pendingRoleSelections[req['id']] = v;
-                      });
-                    }
-                  },
-                ),
+                ] else ...[
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.amber.shade300),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.info_outline, color: Colors.amber.shade900, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'You do not have hierarchical authority to assign roles for this request.',
+                            style: TextStyle(color: Colors.amber.shade900, fontSize: 12),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 20),
                 Row(
                   children: [
                     Expanded(child: ElevatedButton(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: req['hasConflict'] == true ? Colors.grey : AppColors.success, 
+                        backgroundColor: (req['hasConflict'] == true || allowedRoles.isEmpty) ? Colors.grey : AppColors.success, 
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)), 
                         padding: const EdgeInsets.symmetric(vertical: 12)
                       ),
                       onPressed: () {
+                        if (allowedRoles.isEmpty || selectedRole == null) {
+                          AppFeedback.showError(
+                            context,
+                            'Cannot approve: You do not have hierarchical authority to assign a subordinate role.',
+                          );
+                          return;
+                        }
                         if (req['hasConflict'] == true) {
                           final reasons = ((req['conflictReasons'] as List?) ?? []).join('; ');
                           AppFeedback.showError(
@@ -2151,7 +2266,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           return;
                         }
                         String assignedRoleName = 'Selected Role';
-                        final matchedRole = _roles.firstWhere((r) => r['id'] == selectedRole, orElse: () => null);
+                        final matchedRole = allowedRoles.firstWhere((r) => r['id'] == selectedRole, orElse: () => null);
                         if (matchedRole != null && matchedRole['name'] != null) {
                           assignedRoleName = matchedRole['name'];
                         }
