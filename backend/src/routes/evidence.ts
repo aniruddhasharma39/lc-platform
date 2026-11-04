@@ -231,17 +231,19 @@ router.post('/', authenticate, async (req: any, res, next) => {
 
     if (data.category === 'SIM_CARD') {
       try {
+        const updateData: Record<string, any> = {
+          simPhotoUrl: imageUrl,
+        };
+        if (data.simProvider) updateData.simProvider = data.simProvider;
+        if (data.simNumber) updateData.simNumber = data.simNumber;
+        if (data.iccid) updateData.iccid = data.iccid;
+        if (data.simType) updateData.simType = data.simType;
+        if (data.lastRechargeDate) updateData.lastRechargeDate = data.lastRechargeDate;
+        if (data.validityExpiryDate) updateData.validityExpiryDate = data.validityExpiryDate;
+
         await prisma.deviceRegistry.updateMany({
           where: { masterId: data.masterId },
-          data: {
-            simPhotoUrl: imageUrl,
-            ...(data.simProvider ? { simProvider: data.simProvider } : {}),
-            ...(data.simNumber ? { simNumber: data.simNumber } : {}),
-            ...(data.iccid ? { iccid: data.iccid } : {}),
-            ...(data.simType ? { simType: data.simType } : {}),
-            ...(data.lastRechargeDate ? { lastRechargeDate: data.lastRechargeDate } : {}),
-            ...(data.validityExpiryDate ? { validityExpiryDate: data.validityExpiryDate } : {}),
-          },
+          data: updateData,
         });
       } catch (e) {
         console.warn('Failed to sync SIM evidence into DeviceRegistry:', e);
