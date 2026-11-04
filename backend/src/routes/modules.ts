@@ -11,7 +11,6 @@ const CANONICAL_ORDER = [
   'reports',
   'cluster',
   'devices',
-  'scope-groups',
   'manage-users',
   'registration',
   'roles',
@@ -23,7 +22,6 @@ const REQUIRED_MODULES = [
   { name: 'Reports', slug: 'reports' },
   { name: 'Gate Management', slug: 'cluster' },
   { name: 'Device Registry', slug: 'devices' },
-  { name: 'Scope Groups', slug: 'scope-groups' },
   { name: 'Manage Users', slug: 'manage-users' },
   { name: 'Registration Builder', slug: 'registration' },
   { name: 'Roles', slug: 'roles' },
@@ -41,7 +39,7 @@ router.get('/', async (req, res, next) => {
       });
     }
 
-    const modules = await prisma.module.findMany();
+    const modules = (await prisma.module.findMany()).filter(m => m.slug !== 'scope-groups');
     modules.sort((a, b) => {
       let idxA = CANONICAL_ORDER.indexOf(a.slug);
       let idxB = CANONICAL_ORDER.indexOf(b.slug);

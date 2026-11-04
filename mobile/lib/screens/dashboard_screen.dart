@@ -1145,6 +1145,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
             ..._systemModules.where((m) {
+              if (m['slug'] == 'scope-groups') return false;
               if (widget.user['role'] == 'Developer') return true;
               final allowed = widget.user['allowedModules'];
               return allowed is List && allowed.contains(m['slug']);
