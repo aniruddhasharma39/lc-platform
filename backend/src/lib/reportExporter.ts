@@ -1912,3 +1912,382 @@ export async function exportHolisticPdf(
   doc.end();
 }
 
+export interface DeviceMappingReportRow {
+  sNo: number;
+  lcGateNumber: string;
+  locationName: string;
+  division: string;
+  zone: string;
+  masterSerialNumber: string;
+  masterId: number | null;
+  awsIotThingName: string;
+  simDetails: string;
+  iccid: string;
+}
+
+export interface DeviceMappingReportData {
+  generatedAt: Date;
+  totalDevices: number;
+  rows: DeviceMappingReportRow[];
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────
+ * EXPORT GATE & DEVICE MAPPING REPORT: EXCEL (.xlsx)
+ * ─────────────────────────────────────────────────────────────
+ */
+export async function exportDeviceMappingExcel(
+  res: Response,
+  data: DeviceMappingReportData,
+  options: { filenameBase: string }
+) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Indian Railways - Level Crossing Safety Platform';
+  workbook.created = new Date();
+
+  const sheet = workbook.addWorksheet('Gate & Device Mapping', {
+    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 }
+  });
+
+  const lastColLetter = 'G'; // 7 columns (A to G)
+
+  // Row 1: Government Header
+  sheet.mergeCells(`A1:${lastColLetter}1`);
+  const r1 = sheet.getCell('A1');
+  r1.value = 'GOVERNMENT OF INDIA — MINISTRY OF RAILWAYS';
+  r1.font = { name: 'Calibri', size: 12, bold: true, color: { argb: 'FFFFFFFF' } };
+  r1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
+  r1.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(1).height = 24;
+
+  // Row 2: Title
+  sheet.mergeCells(`A2:${lastColLetter}2`);
+  const r2 = sheet.getCell('A2');
+  r2.value = 'INDIAN RAILWAYS — GATE & IOT CONTROLLER MAPPING REGISTRY';
+  r2.font = { name: 'Calibri', size: 15, bold: true, color: { argb: 'FFFFFFFF' } };
+  r2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
+  r2.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(2).height = 30;
+
+  // Row 3: Subtitle
+  sheet.mergeCells(`A3:${lastColLetter}3`);
+  const r3 = sheet.getCell('A3');
+  r3.value = 'Physical Master Controller · AWS IoT Thing · SIM ICCID Linkage (Developer Inventory)';
+  r3.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF003580' } };
+  r3.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8D5A3' } };
+  r3.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(3).height = 20;
+
+  // Tricolor Ribbons
+  sheet.mergeCells(`A4:${lastColLetter}4`);
+  sheet.getCell('A4').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6600' } };
+  sheet.getRow(4).height = 4;
+
+  sheet.mergeCells(`A5:${lastColLetter}5`);
+  sheet.getCell('A5').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+  sheet.getRow(5).height = 2;
+
+  sheet.mergeCells(`A6:${lastColLetter}6`);
+  sheet.getCell('A6').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF046A38' } };
+  sheet.getRow(6).height = 4;
+
+  // Row 7: Metadata row
+  sheet.mergeCells(`A7:${lastColLetter}7`);
+  const r7 = sheet.getCell('A7');
+  const genStr = new Date(data.generatedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+  r7.value = `Generated On: ${genStr} IST   |   Target Role: Developer (Technical Inventory)   |   Total Controller Mappings: ${data.totalDevices}`;
+  r7.font = { name: 'Calibri', size: 10, italic: true, color: { argb: 'FF475569' } };
+  r7.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+  r7.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(7).height = 20;
+
+  // Row 8: Table Header
+  const headers = [
+    { label: 'S.No.', width: 8, align: 'center' },
+    { label: 'LC Gate', width: 26, align: 'left' },
+    { label: 'Division / Zone', width: 24, align: 'left' },
+    { label: 'Master Unit Serial (ID)', width: 24, align: 'center' },
+    { label: 'AWS IoT Thing Name', width: 22, align: 'center' },
+    { label: 'SIM Details', width: 18, align: 'center' },
+    { label: 'SIM ICCID', width: 26, align: 'center' }
+  ];
+
+  const headerRow = sheet.getRow(8);
+  headerRow.values = headers.map(h => h.label);
+  headerRow.height = 24;
+  headerRow.eachCell((cell, colNum) => {
+    cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+    cell.alignment = { horizontal: (headers[colNum - 1]?.align as any) || 'center', vertical: 'middle' };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      bottom: { style: 'medium', color: { argb: 'FF003580' } },
+      left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      right: { style: 'thin', color: { argb: 'FFCBD5E1' } }
+    };
+  });
+
+  // Data rows
+  let curRow = 9;
+  for (let i = 0; i < data.rows.length; i++) {
+    const r = data.rows[i];
+    const dRow = sheet.getRow(curRow);
+    dRow.values = [
+      r.sNo,
+      r.lcGateNumber,
+      r.division && r.zone ? `${r.division} · ${r.zone}` : (r.division || r.zone || '-'),
+      r.masterSerialNumber,
+      r.awsIotThingName,
+      r.simDetails,
+      r.iccid
+    ];
+    dRow.height = 20;
+
+    const isEven = i % 2 === 0;
+    dRow.eachCell((cell, colNum) => {
+      cell.font = { name: 'Calibri', size: 10 };
+      cell.alignment = { horizontal: (headers[colNum - 1]?.align as any) || 'left', vertical: 'middle' };
+      cell.border = {
+        bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        right: { style: 'thin', color: { argb: 'FFE2E8F0' } }
+      };
+      if (!isEven) {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+      }
+      if (colNum === 4 || colNum === 5) {
+        cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF0B3C7A' } };
+      }
+      if (colNum === 6) {
+        cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF046A38' } };
+      }
+      if (colNum === 7) {
+        cell.font = { name: 'Consolas', size: 9.5, color: { argb: 'FF334155' } };
+      }
+    });
+    curRow++;
+  }
+
+  // Set widths
+  headers.forEach((h, idx) => {
+    sheet.getColumn(idx + 1).width = h.width;
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.xlsx"`);
+  res.setHeader('Content-Length', buffer.byteLength.toString());
+  return res.status(200).send(Buffer.from(buffer));
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────
+ * EXPORT GATE & DEVICE MAPPING REPORT: PDF (.pdf)
+ * ─────────────────────────────────────────────────────────────
+ */
+export async function exportDeviceMappingPdf(
+  res: Response,
+  data: DeviceMappingReportData,
+  options: { filenameBase: string }
+) {
+  const doc = new PDFDocument({
+    bufferPages: true,
+    layout: 'landscape',
+    size: 'A4',
+    margin: 36,
+    info: {
+      Title: 'LC Gate · Master Unit · AWS IoT Thing Mapping Report',
+      Author: 'Indian Railways - Level Crossing Safety Platform',
+    }
+  });
+
+  const chunks: Buffer[] = [];
+  doc.on('data', chunk => chunks.push(chunk));
+  doc.on('end', () => {
+    const pdfBuffer = Buffer.concat(chunks);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.pdf"`);
+    res.setHeader('Content-Length', pdfBuffer.length.toString());
+    return res.status(200).send(pdfBuffer);
+  });
+  doc.on('error', pdfErr => {
+    if (!res.headersSent) {
+      return res.status(500).json({ error: 'PDF Generation Error', message: pdfErr.message });
+    }
+  });
+
+  const { irLogoPath, azadiLogoPath } = resolveLogos();
+
+  function drawMappingHeader(docInstance: typeof doc, isFirstPage: boolean) {
+    if (isFirstPage) {
+      docInstance.rect(0, 0, docInstance.page.width, 90).fill(NAVY_BLUE);
+
+      if (irLogoPath) {
+        try { docInstance.image(irLogoPath, 16, 11, { fit: [72, 68], align: 'center', valign: 'center' }); } catch (_) {}
+      }
+      if (azadiLogoPath) {
+        try { docInstance.image(azadiLogoPath, docInstance.page.width - 100, 11, { fit: [84, 68], align: 'center', valign: 'center' }); } catch (_) {}
+      }
+
+      docInstance.fillColor('white').fontSize(9.5).font('Helvetica')
+        .text('Government of India', 0, 11, { align: 'center' })
+        .text('Ministry of Railways', 0, 24, { align: 'center' });
+
+      docInstance.fillColor('white').fontSize(17).font('Helvetica-Bold')
+        .text('INDIAN RAILWAYS', 0, 37, { align: 'center' });
+
+      docInstance.fillColor(GOLDEN_SAND).fontSize(10.5).font('Helvetica')
+        .text('LC Gate · Master Unit · AWS IoT Thing Mapping Registry', 0, 59, { align: 'center' });
+
+      docInstance.rect(0, 75, docInstance.page.width, 5).fill(SAFFRON);
+      docInstance.rect(0, 80, docInstance.page.width, 5).fill('white');
+      docInstance.rect(0, 85, docInstance.page.width, 5).fill(DEEP_GREEN);
+    } else {
+      docInstance.rect(0, 0, docInstance.page.width, 24).fill(NAVY_BLUE);
+      docInstance.fillColor('white').fontSize(9).font('Helvetica-Bold')
+        .text('INDIAN RAILWAYS — Gate & IoT Controller Mapping Registry (Continued)', 0, 7, { align: 'center' });
+      docInstance.rect(0, 24, docInstance.page.width, 2).fill(SAFFRON);
+    }
+  }
+
+  drawMappingHeader(doc, true);
+
+  const tableX = 36;
+  const tableWidth = doc.page.width - 72;
+  let yPos = 102;
+
+  // Metadata ribbon
+  doc.rect(tableX, yPos, tableWidth, 20).fill('#F1F5F9');
+  doc.fillColor('#475569').fontSize(8.5).font('Helvetica');
+  const genStr = new Date(data.generatedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+  doc.text(`Generated On: ${genStr} IST   |   Target Role: Developer (Technical Inventory)   |   Total Controller Mappings: ${data.totalDevices}`, tableX + 10, yPos + 5);
+  yPos += 26;
+
+  const cols = [
+    { label: 'S.No.', width: 40, align: 'center' },
+    { label: 'LC Gate', width: 140, align: 'left' },
+    { label: 'Division / Zone', width: 130, align: 'left' },
+    { label: 'Master Unit Serial (ID)', width: 120, align: 'left' },
+    { label: 'AWS IoT Thing Name', width: 120, align: 'left' },
+    { label: 'SIM Details', width: 90, align: 'center' },
+    { label: 'SIM ICCID', width: 129, align: 'left' },
+  ];
+
+  function drawTableHeader() {
+    doc.rect(tableX, yPos, tableWidth, 20).fill(HEADER_BG);
+    doc.fillColor('white').fontSize(8.5).font('Helvetica-Bold');
+    let curX = tableX;
+    for (const c of cols) {
+      doc.text(c.label, curX + 4, yPos + 5, { width: c.width - 8, align: c.align as any });
+      curX += c.width;
+    }
+    yPos += 20;
+  }
+
+  drawTableHeader();
+
+  // Draw rows
+  for (let i = 0; i < data.rows.length; i++) {
+    const row = data.rows[i];
+    if (yPos > doc.page.height - 45) {
+      doc.addPage({ margin: 36, size: 'A4', layout: 'landscape' });
+      drawMappingHeader(doc, false);
+      yPos = 36;
+      drawTableHeader();
+    }
+
+    const isEven = i % 2 === 0;
+    if (!isEven) {
+      doc.rect(tableX, yPos, tableWidth, 18).fill('#F8FAFC');
+    }
+
+    // Border line bottom
+    doc.strokeColor('#E2E8F0').lineWidth(0.5).moveTo(tableX, yPos + 18).lineTo(tableX + tableWidth, yPos + 18).stroke();
+
+    let curX = tableX;
+    
+    // S.No.
+    doc.fillColor('#64748B').fontSize(8).font('Helvetica')
+      .text(String(row.sNo), curX + 2, yPos + 4, { width: cols[0].width - 4, align: 'center' });
+    curX += cols[0].width;
+
+    // LC Gate
+    doc.fillColor('#0F172A').fontSize(8.5).font('Helvetica-Bold')
+      .text(row.lcGateNumber, curX + 4, yPos + 4, { width: cols[1].width - 8, align: 'left' });
+    curX += cols[1].width;
+
+    // Division / Zone
+    const divZone = row.division && row.zone ? `${row.division} · ${row.zone}` : (row.division || row.zone || '-');
+    doc.fillColor('#475569').fontSize(8).font('Helvetica')
+      .text(divZone, curX + 4, yPos + 4, { width: cols[2].width - 8, align: 'left' });
+    curX += cols[2].width;
+
+    // Master Unit Serial
+    doc.fillColor('#0B3C7A').fontSize(8).font('Helvetica-Bold')
+      .text(row.masterSerialNumber, curX + 4, yPos + 4, { width: cols[3].width - 8, align: 'left' });
+    curX += cols[3].width;
+
+    // AWS IoT Thing
+    doc.fillColor('#0B3C7A').fontSize(8).font('Helvetica-Bold')
+      .text(row.awsIotThingName, curX + 4, yPos + 4, { width: cols[4].width - 8, align: 'left' });
+    curX += cols[4].width;
+
+    // SIM Details
+    doc.fillColor('#046A38').fontSize(8).font('Helvetica-Bold')
+      .text(row.simDetails, curX + 2, yPos + 4, { width: cols[5].width - 4, align: 'center' });
+    curX += cols[5].width;
+
+    // SIM ICCID
+    doc.fillColor('#334155').fontSize(8).font('Courier')
+      .text(row.iccid, curX + 4, yPos + 4, { width: cols[6].width - 8, align: 'left' });
+
+    yPos += 18;
+  }
+
+  // Footer page numbers
+  const pages = doc.bufferedPageRange();
+  for (let i = 0; i < pages.count; i++) {
+    doc.switchToPage(i);
+    doc.fillColor('#94A3B8').fontSize(8).font('Helvetica')
+      .text(`Page ${i + 1} of ${pages.count}   |   Ministry of Railways — Safety & Telemetry Directorate   |   Developer Confidential`,
+        36, doc.page.height - 24, { align: 'center', width: doc.page.width - 72 });
+  }
+
+  doc.end();
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────
+ * EXPORT GATE & DEVICE MAPPING REPORT: CSV (.csv)
+ * ─────────────────────────────────────────────────────────────
+ */
+export function exportDeviceMappingCsv(
+  res: Response,
+  data: DeviceMappingReportData,
+  options: { filenameBase: string }
+) {
+  const headers = ['S.No.', 'LC Gate', 'Division', 'Zone', 'Master Unit Serial (ID)', 'AWS IoT Thing Name', 'SIM Details', 'SIM ICCID'];
+  const lines: string[] = [headers.map(h => `"${h}"`).join(',')];
+
+  for (const r of data.rows) {
+    const row = [
+      r.sNo,
+      r.lcGateNumber,
+      r.division,
+      r.zone,
+      r.masterSerialNumber,
+      r.awsIotThingName,
+      r.simDetails,
+      r.iccid
+    ];
+    lines.push(row.map(val => `"${String(val ?? '').replace(/"/g, '""')}"`).join(','));
+  }
+
+  const csvBuffer = Buffer.from(lines.join('\r\n'), 'utf-8');
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.csv"`);
+  res.setHeader('Content-Length', csvBuffer.byteLength.toString());
+  return res.status(200).send(csvBuffer);
+}
+
+

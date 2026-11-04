@@ -42,6 +42,12 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   Map<String, dynamic>? _holisticAnalytics;
   bool _isLoadingHolistic = false;
 
+  // 1.5. Developer Gate & Device Mapping Registry
+  Map<String, dynamic>? _deviceMappingData;
+  bool _isLoadingDeviceMapping = false;
+  final TextEditingController _mappingSearchCtrl = TextEditingController();
+  String _mappingSearchQuery = '';
+
   // 2. Clusters & Hierarchy Selection
   List<dynamic> _clusters = [];
   bool _isLoadingClusters = true;
@@ -100,7 +106,9 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _isDeveloper = widget.user['role'] == 'Developer';
+    _isDeveloper = widget.user['role'] == 'Developer' ||
+        widget.user['roleId'] == 1 ||
+        (widget.user['role'] is String && widget.user['role'].toString().toLowerCase() == 'developer');
     final now = DateTime.now();
     _dateRange = DateTimeRange(
       start: now.subtract(const Duration(days: 7)),
@@ -115,6 +123,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     WidgetsBinding.instance.removeObserver(this);
     _pollingTimer?.cancel();
     _searchCtrl.dispose();
+    _mappingSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -206,8 +215,31 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       await _fetchCycleAnalytics();
     } else if (_reportType == 'holistic') {
       await _fetchHolisticAnalytics();
+    } else if (_reportType == 'device_mapping') {
+      await _fetchDeviceMapping(forceReload: forceReload);
     } else {
       await _fetchRecords(forceReload: forceReload);
+    }
+  }
+
+  // Fetch Developer Device & IoT Mapping Registry
+  Future<void> _fetchDeviceMapping({bool forceReload = false}) async {
+    if (!mounted) return;
+    setState(() => _isLoadingDeviceMapping = true);
+    try {
+      final uri = Uri.parse('$baseUrl/reports/device-mapping');
+      final res = await http.get(uri, headers: _headers).timeout(const Duration(seconds: 15));
+      if (res.statusCode == 200 && mounted) {
+        setState(() {
+          _deviceMappingData = json.decode(res.body);
+        });
+      } else if (res.statusCode == 403 && mounted) {
+        AppFeedback.showError(context, 'Device Mapping is restricted to Developer role.');
+      }
+    } catch (e) {
+      debugPrint('[ReportsScreen] Device mapping fetch error: $e');
+    } finally {
+      if (mounted) setState(() => _isLoadingDeviceMapping = false);
     }
   }
 
@@ -885,7 +917,9 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    selectedReportType == 'cycle' ? 'Compiling operating cycle analytics...' : 'Compiling operational logs & metrics...',
+                    selectedReportType == 'device_mapping'
+                        ? 'Compiling physical controller & AWS IoT Thing mapping...'
+                        : (selectedReportType == 'cycle' ? 'Compiling operating cycle analytics...' : 'Compiling operational logs & metrics...'),
                     style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
                   ),
                   const SizedBox(height: 18),
@@ -988,13 +1022,15 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
               ? 'application/pdf'
               : (selectedFormat == 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
           final timestamp = DateTime.now().millisecondsSinceEpoch;
-          final filename = selectedReportType == 'count'
-              ? 'LC_Gate_Count_Report_$timestamp.$ext'
-              : selectedReportType == 'holistic'
-                  ? 'LC_Gate_Holistic_Report_$timestamp.$ext'
-                  : selectedReportType == 'cycle' || selectedReportType == 'duration'
-                      ? 'LC_Gate_Duration_Report_$timestamp.$ext'
-                      : 'LC_Gate_Complete_Log_$timestamp.$ext';
+          final filename = selectedReportType == 'device_mapping'
+              ? 'LC_Gate_Device_IoT_Mapping_$timestamp.$ext'
+              : selectedReportType == 'count'
+                  ? 'LC_Gate_Count_Report_$timestamp.$ext'
+                  : selectedReportType == 'holistic'
+                      ? 'LC_Gate_Holistic_Report_$timestamp.$ext'
+                      : selectedReportType == 'cycle' || selectedReportType == 'duration'
+                          ? 'LC_Gate_Duration_Report_$timestamp.$ext'
+                          : 'LC_Gate_Complete_Log_$timestamp.$ext';
 
           await downloadFileUniversal(
             bytes: res.bodyBytes,
@@ -1174,6 +1210,38 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                               ),
                             ],
                           ),
+                          if (_isDeveloper) ...[
+                            const SizedBox(height: 8),
+                            InkWell(
+                              onTap: () => setModalState(() => selectedReportType = 'device_mapping'),
+                              child: Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: selectedReportType == 'device_mapping' ? const Color(0xFFD97706).withValues(alpha: 0.08) : Colors.white,
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: selectedReportType == 'device_mapping' ? const Color(0xFFD97706) : Colors.grey.shade300,
+                                    width: 2,
+                                  ),
+                                ),
+                                child: const Row(
+                                  children: [
+                                    Icon(Icons.developer_board, color: Color(0xFFD97706), size: 22),
+                                    SizedBox(width: 10),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text('Gate & Device Mapping (Developer Only)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+                                          Text('Physical Master Unit · AWS IoT Thing · SIM ICCID cross-linkage', style: TextStyle(fontSize: 10.5, color: Colors.grey)),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
                           const SizedBox(height: 16),
 
                           Container(
@@ -1406,103 +1474,105 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                   // 1. Report Type Selector
                   _buildReportTypeSelector(),
 
-                  // 2. Scope Groups & Gates Tree Trigger Card
-                  InkWell(
-                    onTap: _showHierarchyTreeSheet,
-                    child: Container(
+                  if (_reportType != 'device_mapping') ...[
+                    // 2. Scope Groups & Gates Tree Trigger Card
+                    InkWell(
+                      onTap: _showHierarchyTreeSheet,
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.grey.shade200),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(color: AppColors.primary.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+                              child: const Icon(Icons.account_tree_outlined, color: AppColors.primary, size: 20),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text('Select Level Crossing Gates', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+                                  Text('${_selectedGateIds.length} Gate(s) Selected for Analytics', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                                ],
+                              ),
+                            ),
+                            const Icon(Icons.chevron_right, color: Colors.grey),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+
+                    // 3. Date Range Picker Card & Presets
+                    Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: Colors.grey.shade200),
                       ),
-                      child: Row(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(color: AppColors.primary.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-                            child: const Icon(Icons.account_tree_outlined, color: AppColors.primary, size: 20),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('DATE RANGE', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey)),
+                              InkWell(
+                                onTap: () async {
+                                  final picked = await showDateRangePicker(
+                                    context: context,
+                                    firstDate: DateTime(2025),
+                                    lastDate: DateTime.now().add(const Duration(days: 1)),
+                                    initialDateRange: _dateRange,
+                                  );
+                                  if (picked != null) {
+                                    setState(() {
+                                      _dateRange = picked;
+                                      _activePreset = 'custom';
+                                    });
+                                    _triggerReportFetch();
+                                  }
+                                },
+                                child: const Row(
+                                  children: [
+                                    Icon(Icons.calendar_month, size: 14, color: AppColors.primary),
+                                    SizedBox(width: 4),
+                                    Text('Pick Range', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                          const SizedBox(height: 8),
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(
                               children: [
-                                const Text('Select Level Crossing Gates', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
-                                Text('${_selectedGateIds.length} Gate(s) Selected for Analytics', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                                _buildPresetChip('7days', 'Last 7 Days'),
+                                _buildPresetChip('today', 'Today'),
+                                _buildPresetChip('yesterday', 'Yesterday'),
+                                _buildPresetChip('30days', 'Last 30 Days'),
+                                _buildPresetChip('month', 'This Month'),
                               ],
                             ),
                           ),
-                          const Icon(Icons.chevron_right, color: Colors.grey),
+                          const SizedBox(height: 8),
+                          Text(
+                            '${_formatDate(_dateRange.start)}  ➔  ${_formatDate(_dateRange.end)}',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.primary),
+                          ),
                         ],
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 10),
-
-                  // 3. Date Range Picker Card & Presets
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey.shade200),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('DATE RANGE', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey)),
-                            InkWell(
-                              onTap: () async {
-                                final picked = await showDateRangePicker(
-                                  context: context,
-                                  firstDate: DateTime(2025),
-                                  lastDate: DateTime.now().add(const Duration(days: 1)),
-                                  initialDateRange: _dateRange,
-                                );
-                                if (picked != null) {
-                                  setState(() {
-                                    _dateRange = picked;
-                                    _activePreset = 'custom';
-                                  });
-                                  _triggerReportFetch();
-                                }
-                              },
-                              child: Row(
-                                children: const [
-                                  Icon(Icons.calendar_month, size: 14, color: AppColors.primary),
-                                  SizedBox(width: 4),
-                                  Text('Pick Range', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primary)),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: Row(
-                            children: [
-                              _buildPresetChip('7days', 'Last 7 Days'),
-                              _buildPresetChip('today', 'Today'),
-                              _buildPresetChip('yesterday', 'Yesterday'),
-                              _buildPresetChip('30days', 'Last 30 Days'),
-                              _buildPresetChip('month', 'This Month'),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          '${_formatDate(_dateRange.start)}  ➔  ${_formatDate(_dateRange.end)}',
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.primary),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 10),
+                    const SizedBox(height: 10),
+                  ],
 
                   // 4. Report Body: Complete Log vs Cycle Report
                   if (_reportType == 'complete_log') ...[
@@ -1605,6 +1675,8 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                     _buildCountReportView(),
                   ] else if (_reportType == 'holistic') ...[
                     _buildHolisticReportView(),
+                  ] else if (_reportType == 'device_mapping') ...[
+                    _buildDeviceMappingReportView(),
                   ] else ...[
                     _buildCycleAnalyticsView(),
                   ],
@@ -1621,6 +1693,15 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       {'key': 'holistic', 'label': 'Holistic', 'icon': Icons.account_tree_outlined, 'color': const Color(0xFF7C3AED)},
       {'key': 'complete_log', 'label': 'Event Log', 'icon': Icons.table_rows_outlined, 'color': AppColors.primary},
     ];
+
+    if (_isDeveloper) {
+      tabs.add({
+        'key': 'device_mapping',
+        'label': 'Mapping',
+        'icon': Icons.developer_board,
+        'color': const Color(0xFFD97706),
+      });
+    }
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -1646,6 +1727,8 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                     _fetchCycleAnalytics();
                   } else if (k == 'holistic' && _holisticAnalytics == null) {
                     _fetchHolisticAnalytics();
+                  } else if (k == 'device_mapping' && _deviceMappingData == null) {
+                    _fetchDeviceMapping();
                   } else if (k == 'complete_log' && _records.isEmpty) {
                     _fetchRecords();
                   }
@@ -2617,6 +2700,295 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         '$label: $value',
         style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: color),
       ),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 6. DEVELOPER ONLY: GATE & DEVICE CONNECTIVITY MAPPING REGISTRY
+  // ─────────────────────────────────────────────────────────────
+  Widget _buildDeviceMappingReportView() {
+    if (_isLoadingDeviceMapping) {
+      return const Padding(
+        padding: EdgeInsets.all(40),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(strokeWidth: 2.5),
+              SizedBox(height: 14),
+              Text(
+                'Compiling Developer Hardware & IoT Mapping...',
+                style: TextStyle(fontSize: 13, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final rawRows = (_deviceMappingData?['rows'] as List?) ?? [];
+    final totalMapped = _deviceMappingData?['totalDevices'] ?? rawRows.length;
+
+    // Filter by search query
+    final query = _mappingSearchQuery.toLowerCase().trim();
+    final rows = query.isEmpty
+        ? rawRows
+        : rawRows.where((r) {
+            final gate = (r['lcGateNumber'] ?? '').toString().toLowerCase();
+            final master = (r['masterSerialNumber'] ?? '').toString().toLowerCase();
+            final thing = (r['awsIotThingName'] ?? '').toString().toLowerCase();
+            final iccid = (r['iccid'] ?? '').toString().toLowerCase();
+            final sim = (r['simDetails'] ?? '').toString().toLowerCase();
+            final div = (r['division'] ?? '').toString().toLowerCase();
+            final zone = (r['zone'] ?? '').toString().toLowerCase();
+            return gate.contains(query) ||
+                master.contains(query) ||
+                thing.contains(query) ||
+                iccid.contains(query) ||
+                sim.contains(query) ||
+                div.contains(query) ||
+                zone.contains(query);
+          }).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 1. Developer Header Card
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFD97706).withOpacity(0.3)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.02),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD97706).withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.developer_board, color: Color(0xFFD97706), size: 22),
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Gate & IoT Controller Mapping Registry',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5, color: Color(0xFF0F172A)),
+                        ),
+                        Text(
+                          'Restricted Developer hardware inventory linking LC Gate, Master Unit, AWS IoT Thing & SIM ICCID',
+                          style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF003580).withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      'TOTAL CONTROLLERS: $totalMapped',
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF003580)),
+                    ),
+                  ),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF107C41),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      textStyle: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      elevation: 0,
+                    ),
+                    icon: const Icon(Icons.table_view_rounded, size: 16),
+                    label: const Text('Export Excel'),
+                    onPressed: () {
+                      _startExportWithProgress(
+                        parentCtx: context,
+                        selectedReportType: 'device_mapping',
+                        selectedFormat: 'xlsx',
+                        selectedCols: {},
+                      );
+                    },
+                  ),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFE11D48),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      textStyle: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      elevation: 0,
+                    ),
+                    icon: const Icon(Icons.picture_as_pdf_rounded, size: 16),
+                    label: const Text('Export PDF'),
+                    onPressed: () {
+                      _startExportWithProgress(
+                        parentCtx: context,
+                        selectedReportType: 'device_mapping',
+                        selectedFormat: 'pdf',
+                        selectedCols: {},
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+
+        // 2. Search Filter Input
+        Container(
+          height: 42,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.grey.shade200),
+          ),
+          child: TextField(
+            controller: _mappingSearchCtrl,
+            decoration: InputDecoration(
+              hintText: 'Filter by Gate, Serial, AWS Thing, ICCID...',
+              hintStyle: const TextStyle(fontSize: 12),
+              prefixIcon: const Icon(Icons.search, size: 18, color: Colors.grey),
+              suffixIcon: _mappingSearchQuery.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.close, size: 16),
+                      onPressed: () {
+                        _mappingSearchCtrl.clear();
+                        setState(() => _mappingSearchQuery = '');
+                      },
+                    )
+                  : null,
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(vertical: 10),
+            ),
+            onChanged: (val) {
+              setState(() => _mappingSearchQuery = val);
+            },
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        // 3. Mapping Table
+        if (rows.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(24),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: Text(
+              query.isEmpty ? 'No controllers found in registry.' : 'No controllers match "$query".',
+              style: const TextStyle(fontSize: 13, color: Colors.grey),
+            ),
+          )
+        else
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.grey.shade200),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 4, offset: const Offset(0, 1)),
+              ],
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: DataTable(
+                headingRowColor: WidgetStateProperty.all(const Color(0xFF1E293B)),
+                headingTextStyle: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 11),
+                dataTextStyle: const TextStyle(fontSize: 11.5, color: Color(0xFF0F172A)),
+                columnSpacing: 18,
+                horizontalMargin: 14,
+                headingRowHeight: 38,
+                dataRowMinHeight: 38,
+                dataRowMaxHeight: 44,
+                columns: const [
+                  DataColumn(label: Text('S.No.')),
+                  DataColumn(label: Text('LC Gate')),
+                  DataColumn(label: Text('Division / Zone')),
+                  DataColumn(label: Text('Master Unit Serial (ID)')),
+                  DataColumn(label: Text('AWS IoT Thing')),
+                  DataColumn(label: Text('SIM Details')),
+                  DataColumn(label: Text('SIM ICCID')),
+                ],
+                rows: rows.asMap().entries.map((entry) {
+                  final idx = entry.key;
+                  final r = entry.value;
+                  final isEven = idx % 2 == 0;
+                  final simDetails = (r['simDetails'] ?? '-').toString();
+                  final divZone = (r['division'] != null && r['zone'] != null)
+                      ? '${r['division']} · ${r['zone']}'
+                      : (r['division'] ?? r['zone'] ?? '-');
+
+                  return DataRow(
+                    color: WidgetStateProperty.all(isEven ? Colors.white : const Color(0xFFF8FAFC)),
+                    cells: [
+                      DataCell(Text('${r['sNo'] ?? idx + 1}', style: const TextStyle(color: Colors.grey))),
+                      DataCell(Text(r['lcGateNumber'] ?? '-', style: const TextStyle(fontWeight: FontWeight.bold))),
+                      DataCell(Text(divZone, style: const TextStyle(color: Color(0xFF475569)))),
+                      DataCell(Text(
+                        r['masterSerialNumber'] ?? '-',
+                        style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0B3C7A)),
+                      )),
+                      DataCell(Text(
+                        r['awsIotThingName'] ?? '-',
+                        style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0B3C7A)),
+                      )),
+                      DataCell(
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF046A38).withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            simDetails,
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10.5, color: Color(0xFF046A38)),
+                          ),
+                        ),
+                      ),
+                      DataCell(Text(
+                        r['iccid'] ?? '-',
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: 11, color: Color(0xFF334155)),
+                      )),
+                    ],
+                  );
+                }).toList(),
+              ),
+            ),
+          ),
+      ],
     );
   }
 

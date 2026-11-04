@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
+import '../../utils/file_download_helper.dart';
 
 class DeviceRegistryScreen extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -465,6 +466,11 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                               ),
                             ],
                           ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.description_outlined, color: AppColors.primary),
+                          onPressed: _showExportMappingModal,
+                          tooltip: 'Export Developer Mapping Report',
                         ),
                         IconButton(
                           icon: const Icon(Icons.refresh, color: AppColors.primary),
@@ -1004,6 +1010,113 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
         ),
       ),
     );
+  }
+
+  void _showExportMappingModal() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(color: const Color(0xFF003580).withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
+                  child: const Icon(Icons.description, color: Color(0xFF003580), size: 22),
+                ),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Export Developer Mapping Registry', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15.5)),
+                      Text('Download compiled LC Gate · Master Unit · AWS IoT Thing report', style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF107C41),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    icon: const Icon(Icons.table_view_rounded),
+                    label: const Text('Excel (.xlsx)', style: TextStyle(fontWeight: FontWeight.bold)),
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _downloadReport('xlsx');
+                    },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFE11D48),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    icon: const Icon(Icons.picture_as_pdf_rounded),
+                    label: const Text('PDF (.pdf)', style: TextStyle(fontWeight: FontWeight.bold)),
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _downloadReport('pdf');
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _downloadReport(String format) async {
+    try {
+      AppFeedback.showInfo(context, 'Generating official ${format.toUpperCase()} report with Indian Railways crest...');
+      final token = await _getToken();
+      final uri = Uri.parse('$baseUrl/reports/export?reportType=device_mapping&format=$format');
+      final res = await http.get(uri, headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      }).timeout(const Duration(seconds: 25));
+
+      if (res.statusCode == 200) {
+        final timestamp = DateTime.now().millisecondsSinceEpoch;
+        final filename = 'LC_Gate_Device_IoT_Mapping_$timestamp.$format';
+        final mimeType = format == 'pdf'
+            ? 'application/pdf'
+            : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+        await downloadFileUniversal(
+          bytes: res.bodyBytes,
+          filename: filename,
+          mimeType: mimeType,
+        );
+        if (mounted) {
+          AppFeedback.showSuccess(context, 'Exported $filename (${(res.bodyBytes.length / 1024).toStringAsFixed(1)} KB)');
+        }
+      } else {
+        if (mounted) AppFeedback.showError(context, 'Export failed: HTTP ${res.statusCode}');
+      }
+    } catch (e) {
+      if (mounted) AppFeedback.showError(context, 'Download error: $e');
+    }
   }
 }
 

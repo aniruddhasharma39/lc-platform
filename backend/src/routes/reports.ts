@@ -37,7 +37,12 @@ import {
   exportCountCsv,
   exportHolisticExcel,
   exportHolisticPdf,
-  exportHolisticCsv
+  exportHolisticCsv,
+  exportDeviceMappingExcel,
+  exportDeviceMappingPdf,
+  exportDeviceMappingCsv,
+  DeviceMappingReportData,
+  DeviceMappingReportRow
 } from '../lib/reportExporter';
 
 const router = Router();
@@ -1160,12 +1165,156 @@ router.get('/holistic', async (req: AuthRequest, res: Response, next: any) => {
   }
 });
 
+/**
+ * Helper to get compiled developer device mapping registry
+ */
+async function getDeviceMappingReportData(): Promise<DeviceMappingReportData> {
+  const devices = await prisma.deviceRegistry.findMany({
+    include: {
+      gate: true,
+      master: true,
+    },
+    orderBy: [
+      { gateId: 'desc' },
+      { thingName: 'asc' }
+    ]
+  });
+
+  const trackedMasterIds = new Set<number>();
+  const rows: DeviceMappingReportRow[] = [];
+  let sNo = 1;
+
+  for (const d of devices) {
+    if (d.masterId) trackedMasterIds.add(d.masterId);
+
+    const gateText = d.gate
+      ? `${d.gate.lcNumber}${d.gate.locationName ? ' (' + d.gate.locationName + ')' : ''}`
+      : 'Unassigned';
+
+    const divZoneText = d.gate
+      ? `${d.gate.division || '-'} · ${d.gate.zone || '-'}`
+      : '-';
+
+    const masterText = d.master
+      ? `${d.master.serialNumber} (#${d.master.id})`
+      : (d.serialNumber || '-');
+
+    const provider = d.simProvider?.trim() || '';
+    const type = d.simType?.trim() || '';
+    let simDetails = '-';
+    if (provider && type) {
+      simDetails = `${provider}-${type}`;
+    } else if (provider) {
+      simDetails = `${provider}-M2M`;
+    } else if (type) {
+      simDetails = type;
+    }
+
+    const iccid = d.iccid && d.iccid.trim().length > 0 ? d.iccid.trim() : '-';
+
+    rows.push({
+      sNo: sNo++,
+      lcGateNumber: gateText,
+      locationName: d.gate?.locationName || '',
+      division: d.gate?.division || '-',
+      zone: d.gate?.zone || '-',
+      masterSerialNumber: masterText,
+      masterId: d.masterId,
+      awsIotThingName: d.thingName,
+      simDetails,
+      iccid
+    });
+  }
+
+  // Also include any MasterUnits associated with gates that don't have a DeviceRegistry entry yet
+  const mastersWithoutDevice = await prisma.masterUnit.findMany({
+    where: {
+      id: { notIn: Array.from(trackedMasterIds) }
+    },
+    include: {
+      gate: true
+    },
+    orderBy: {
+      id: 'asc'
+    }
+  });
+
+  for (const m of mastersWithoutDevice) {
+    const gateText = m.gate
+      ? `${m.gate.lcNumber}${m.gate.locationName ? ' (' + m.gate.locationName + ')' : ''}`
+      : 'Unassigned';
+
+    const divZoneText = m.gate
+      ? `${m.gate.division || '-'} · ${m.gate.zone || '-'}`
+      : '-';
+
+    rows.push({
+      sNo: sNo++,
+      lcGateNumber: gateText,
+      locationName: m.gate?.locationName || '',
+      division: m.gate?.division || '-',
+      zone: m.gate?.zone || '-',
+      masterSerialNumber: `${m.serialNumber} (#${m.id})`,
+      masterId: m.id,
+      awsIotThingName: 'Pending Provisioning',
+      simDetails: '-',
+      iccid: '-'
+    });
+  }
+
+  return {
+    generatedAt: new Date(),
+    totalDevices: rows.length,
+    rows
+  };
+}
+
+/**
+ * GET /api/v1/reports/device-mapping
+ * Developer-only: Compiled LC Gate, Master Unit, AWS IoT Thing & SIM ICCID mapping
+ */
+router.get('/device-mapping', async (req: AuthRequest, res: Response, next: any) => {
+  try {
+    const roleStr = (req.user?.role || '').toLowerCase();
+    const isDev = roleStr === 'developer' || req.user?.id === 1;
+    if (!isDev) {
+      return res.status(403).json({ error: 'Access denied: Gate & Device Mapping is restricted to Developer role only' });
+    }
+
+    const data = await getDeviceMappingReportData();
+    res.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
   try {
     const reportType = (req.query.reportType as string || 'complete_log').toLowerCase();
     const format = (req.query.format as string || 'xlsx').toLowerCase();
     const statusFilter = typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL';
     const shiftFilter = typeof req.query.shift === 'string' ? req.query.shift.toUpperCase() : 'ALL';
+
+    // ── REPORT TYPE: DEVELOPER GATE & DEVICE MAPPING ──
+    if (reportType === 'device_mapping' || reportType === 'mapping') {
+      const roleStr = (req.user?.role || '').toLowerCase();
+      const isDev = roleStr === 'developer' || req.user?.id === 1;
+      if (!isDev) {
+        return res.status(403).json({ error: 'Access denied: Gate & Device Mapping is restricted to Developer role only' });
+      }
+
+      const mappingData = await getDeviceMappingReportData();
+      const dateStr = new Date().toISOString().split('T')[0];
+      const filenameBase = `LC_Gate_Device_IoT_Mapping_${dateStr}`;
+
+      if (format === 'xlsx' || format === 'excel') {
+        return await exportDeviceMappingExcel(res, mappingData, { filenameBase });
+      } else if (format === 'pdf') {
+        return await exportDeviceMappingPdf(res, mappingData, { filenameBase });
+      } else {
+        return exportDeviceMappingCsv(res, mappingData, { filenameBase });
+      }
+    }
 
     // ── REPORT TYPE: COUNT REPORT ──
     if (reportType === 'count') {
