@@ -393,6 +393,37 @@ router.get('/registration-form', async (req, res, next) => {
   }
 });
 
+async function findMatchingRegistrationRequest(identifier: string) {
+  const cleanId = identifier.trim().toLowerCase();
+  const digitsOnly = identifier.replace(/\D/g, '').slice(-10);
+
+  const requests = await prisma.registrationRequest.findMany({
+    where: {
+      status: { in: ['PENDING', 'REJECTED', 'ESCALATED'] }
+    },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  for (const req of requests) {
+    if (!req.data) continue;
+    try {
+      const pData = JSON.parse(req.data);
+      const email = (pData.email || '').trim().toLowerCase();
+      const mobile = (pData.mobile || '').replace(/\D/g, '').slice(-10);
+      const employeeId = (pData.employeeId || '').trim().toLowerCase();
+
+      if (
+        (email && email === cleanId) ||
+        (digitsOnly && digitsOnly.length === 10 && mobile === digitsOnly) ||
+        (employeeId && employeeId === cleanId)
+      ) {
+        return { req, pData };
+      }
+    } catch {}
+  }
+  return null;
+}
+
 async function createSession(user: any) {
   const secret = process.env.JWT_SECRET || 'super-secret-jwt-key';
   const refreshSecret = process.env.JWT_REFRESH_SECRET || 'super-secret-refresh-key';
@@ -465,11 +496,34 @@ router.post('/login', async (req, res, next) => {
     });
 
     if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      const pendingMatch = await findMatchingRegistrationRequest(cleanIdentifier);
+      if (pendingMatch) {
+        const { req: matchReq, pData } = pendingMatch;
+        if (matchReq.status === 'PENDING' || matchReq.status === 'ESCALATED') {
+          return res.status(403).json({
+            error: 'Your account registration is currently pending supervisor approval. You will be able to log in once your application is reviewed and approved.',
+            registrationPending: true,
+            requestId: matchReq.id,
+            status: matchReq.status,
+            applicantName: pData.fullName || 'Applicant'
+          });
+        }
+        if (matchReq.status === 'REJECTED') {
+          return res.status(403).json({
+            error: `Your registration request was rejected by your supervisor.${matchReq.rejectionReason ? ` Reason: ${matchReq.rejectionReason}` : ''}`,
+            registrationRejected: true,
+            rejectionReason: matchReq.rejectionReason
+          });
+        }
+      }
+      return res.status(401).json({ error: 'Invalid credentials. If you are a new applicant, please register first.' });
     }
 
     if (user.status === 'PENDING') {
-      return res.status(403).json({ error: 'Account pending approval' });
+      return res.status(403).json({
+        error: 'Your account registration is currently pending supervisor approval. You will be able to log in once approved.',
+        registrationPending: true
+      });
     }
 
     if (user.status === 'REJECTED') {
@@ -545,6 +599,22 @@ router.post('/otp/send', async (req, res, next) => {
       });
 
       if (!user) {
+        const pendingMatch = await findMatchingRegistrationRequest(cleanId);
+        if (pendingMatch) {
+          if (pendingMatch.req.status === 'PENDING' || pendingMatch.req.status === 'ESCALATED') {
+            return res.status(403).json({
+              error: 'Your registration is currently pending supervisor approval. You will be able to log in once approved.',
+              registrationPending: true
+            });
+          }
+          if (pendingMatch.req.status === 'REJECTED') {
+            return res.status(403).json({
+              error: `Your registration request was rejected by your supervisor.${pendingMatch.req.rejectionReason ? ` Reason: ${pendingMatch.req.rejectionReason}` : ''}`,
+              registrationRejected: true
+            });
+          }
+        }
+
         return res.status(404).json({
           error: 'No account found with this email address.',
           suggestAlternative: 'phone',
@@ -566,6 +636,22 @@ router.post('/otp/send', async (req, res, next) => {
       });
 
       if (!user) {
+        const pendingMatch = await findMatchingRegistrationRequest(digitsOnly);
+        if (pendingMatch) {
+          if (pendingMatch.req.status === 'PENDING' || pendingMatch.req.status === 'ESCALATED') {
+            return res.status(403).json({
+              error: 'Your registration is currently pending supervisor approval. You will be able to log in once approved.',
+              registrationPending: true
+            });
+          }
+          if (pendingMatch.req.status === 'REJECTED') {
+            return res.status(403).json({
+              error: `Your registration request was rejected by your supervisor.${pendingMatch.req.rejectionReason ? ` Reason: ${pendingMatch.req.rejectionReason}` : ''}`,
+              registrationRejected: true
+            });
+          }
+        }
+
         return res.status(404).json({
           error: 'No account found with this mobile number.',
           suggestAlternative: 'email',
@@ -575,7 +661,10 @@ router.post('/otp/send', async (req, res, next) => {
     }
 
     if (user.status === 'PENDING') {
-      return res.status(403).json({ error: 'Your account is pending administrator approval.' });
+      return res.status(403).json({
+        error: 'Your account is pending supervisor approval.',
+        registrationPending: true
+      });
     }
     if (user.status === 'REJECTED') {
       return res.status(403).json({ error: `Account has been rejected. Reason: ${user.rejectionReason || 'None'}` });

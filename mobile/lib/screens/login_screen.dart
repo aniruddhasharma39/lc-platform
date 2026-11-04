@@ -50,6 +50,7 @@ class _LoginScreenState extends State<LoginScreen> {
   // Status & Branding
   bool _isLoading = false;
   String _error = '';
+  bool _isPendingApproval = false;
   String _successMsg = '';
   bool _hasEmailField = true;
   bool _hasPhoneField = true;
@@ -172,6 +173,7 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() {
       _isLoading = true;
       _error = '';
+      _isPendingApproval = false;
       _successMsg = '';
     });
 
@@ -190,14 +192,25 @@ class _LoginScreenState extends State<LoginScreen> {
         widget.onLogin(data['user'], data['token']);
       } else {
         final err = data['error'] ?? 'Login failed. Please check credentials.';
-        setState(() => _error = err);
+        final isPending = data['registrationPending'] == true || err.toString().toLowerCase().contains('pending');
+        setState(() {
+          _error = err;
+          _isPendingApproval = isPending;
+        });
         if (mounted) {
-          AppFeedback.showError(context, err);
+          if (isPending) {
+            AppFeedback.showWarning(context, err);
+          } else {
+            AppFeedback.showError(context, err);
+          }
         }
       }
     } catch (_) {
       const netErr = 'Network error. Please ensure backend is running.';
-      setState(() => _error = netErr);
+      setState(() {
+        _error = netErr;
+        _isPendingApproval = false;
+      });
       if (mounted) {
         AppFeedback.showError(context, netErr);
       }
@@ -272,9 +285,17 @@ class _LoginScreenState extends State<LoginScreen> {
           });
         }
         final err = data['error'] ?? 'Failed to send OTP';
-        setState(() => _error = err);
+        final isPending = data['registrationPending'] == true || err.toString().toLowerCase().contains('pending');
+        setState(() {
+          _error = err;
+          _isPendingApproval = isPending;
+        });
         if (mounted) {
-          AppFeedback.showError(context, err);
+          if (isPending) {
+            AppFeedback.showWarning(context, err);
+          } else {
+            AppFeedback.showError(context, err);
+          }
         }
       }
     } catch (_) {
@@ -491,25 +512,73 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(height: 20),
 
-                      // Error Banner
+                      // Status Banner (Pending vs Error)
                       if (_error.isNotEmpty) ...[
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: AppColors.danger.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: AppColors.danger.withValues(alpha: 0.4)),
+                        if (_isPendingApproval)
+                          Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFFBEB),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: const Color(0xFFFDE68A)),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.amber.withValues(alpha: 0.08),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Icon(Icons.hourglass_top_rounded, color: Color(0xFFD97706), size: 24),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'Registration Pending Approval',
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          color: Color(0xFF92400E),
+                                          fontSize: 13.5,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        _error,
+                                        style: const TextStyle(
+                                          color: Color(0xFF78350F),
+                                          fontSize: 12.5,
+                                          height: 1.35,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                        else
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: AppColors.danger.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: AppColors.danger.withValues(alpha: 0.4)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.warning_amber_rounded, color: AppColors.danger, size: 20),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(_error, style: const TextStyle(color: AppColors.danger, fontSize: 12.5, fontWeight: FontWeight.w500)),
+                                ),
+                              ],
+                            ),
                           ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.warning_amber_rounded, color: AppColors.danger, size: 20),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(_error, style: const TextStyle(color: AppColors.danger, fontSize: 12.5, fontWeight: FontWeight.w500)),
-                              ),
-                            ],
-                          ),
-                        ),
                         const SizedBox(height: 14),
                       ],
 
