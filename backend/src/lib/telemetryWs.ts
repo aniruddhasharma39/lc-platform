@@ -45,42 +45,8 @@ export async function getGateTelemetryPayload(gateId: number) {
 
   if (!gate) return null;
 
-  // If gate has no Master Unit attached, it has NO live hardware telemetry, but operational records still exist!
+  // If gate has no Master Unit attached, it has NO live hardware telemetry and NO operational cycles
   if (!gate.masters || gate.masters.length === 0) {
-    const rawEvents = await prisma.lCGateEvent.findMany({
-      where: { gateId },
-      orderBy: { openedAt: 'desc' },
-      take: 100,
-    }).catch(() => []);
-
-    const nowMs = Date.now();
-    const operationalCycles = rawEvents.map(ev => {
-      let duration = ev.durationSeconds;
-      if (duration === null || duration === undefined) {
-        if (ev.closedAt) {
-          duration = Math.max(0, Math.round((new Date(ev.closedAt).getTime() - new Date(ev.openedAt).getTime()) / 1000));
-        } else {
-          duration = Math.max(0, Math.round((nowMs - new Date(ev.openedAt).getTime()) / 1000));
-        }
-      }
-      return {
-        id: ev.id,
-        gateId: ev.gateId,
-        openedAt: ev.openedAt.toISOString(),
-        closedAt: ev.closedAt ? ev.closedAt.toISOString() : null,
-        durationSeconds: duration,
-        formattedDuration: ev.closedAt ? formatDurationHuman(duration) : `${formatDurationHuman(duration)} (In Progress)`,
-        status: ev.status,
-        openedBy: ev.openedBy,
-        closedBy: ev.closedBy,
-        trainNumber: ev.trainNumber,
-        remarks: ev.remarks,
-        createdAt: ev.createdAt.toISOString(),
-      };
-    });
-
-    const lastClosedCycle = operationalCycles.find(c => c.closedAt !== null);
-
     return {
       success: true,
       gateId: gate.id,
@@ -101,22 +67,22 @@ export async function getGateTelemetryPayload(gateId: number) {
         timeInCurrentStateSeconds: 0,
         timeInCurrentStateFormatted: '—',
         activeCycle: null,
-        lastClosedCycle: lastClosedCycle || null,
-        totalCyclesRecorded: operationalCycles.length,
+        lastClosedCycle: null,
+        totalCyclesRecorded: 0,
       },
       topic: null,
       counts: {
-        all: operationalCycles.length,
+        all: 0,
         telemetry: 0,
         manifest: 0,
         healthCheck: 0,
-        cycles: operationalCycles.length,
+        cycles: 0,
       },
       payloads: [],
       telemetryRecords: [],
       manifestRecords: [],
       healthRecords: [],
-      operationalCycles,
+      operationalCycles: [],
       latestTelemetry: null,
       latestManifest: null,
       latestHealthCheck: null,
@@ -313,6 +279,8 @@ export async function getGateTelemetryPayload(gateId: number) {
     gateId: gate.id,
     lcNumber: gate.lcNumber,
     locationName: gate.locationName,
+    hasMaster: true,
+    mastersCount: gate.masters.length,
     thingName: primaryThingName,
     deviceStatus,
     isDeviceOnline,

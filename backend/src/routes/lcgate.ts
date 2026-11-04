@@ -1093,6 +1093,68 @@ const createMasterSchema = z.object({
 });
 
 // Add a Master to an LC Gate with mandatory AWS IoT registry association & standard slave creation
+
+async function syncDeviceHistoryToGate(gateId: number, thingName: string, tx: any) {
+  try {
+    const telemetries = await tx.deviceTelemetry.findMany({
+      where: {
+        thingName,
+        topic: { contains: '/telemetry' }
+      },
+      orderBy: { receivedAt: 'asc' }
+    });
+
+    if (telemetries.length === 0) return;
+
+    const eventsToCreate: any[] = [];
+    let currentOpen: { openedAt: Date; openedBy: string } | null = null;
+
+    for (const t of telemetries) {
+      const p = t.payload as any;
+      if (!p) continue;
+
+      let isClosed = true;
+      if (p.LimitSwitchClosed !== undefined) {
+        isClosed = Boolean(p.LimitSwitchClosed);
+      } else if (p.Status) {
+        const s = String(p.Status).trim().toUpperCase();
+        isClosed = s === 'CLOSED';
+      }
+
+      if (!isClosed && !currentOpen) {
+        currentOpen = {
+          openedAt: new Date(t.receivedAt),
+          openedBy: `AWS IoT / ${thingName}`
+        };
+      } else if (isClosed && currentOpen) {
+        const closedAt = new Date(t.receivedAt);
+        const durationSeconds = Math.max(1, Math.round((closedAt.getTime() - currentOpen.openedAt.getTime()) / 1000));
+        eventsToCreate.push({
+          gateId,
+          openedAt: currentOpen.openedAt,
+          closedAt,
+          durationSeconds,
+          status: durationSeconds > 900 ? 'EXTENDED_DELAY' : 'CLOSED',
+          openedBy: currentOpen.openedBy,
+          closedBy: `AWS IoT / ${thingName}`,
+          remarks: 'Physical LimitSwitch transition detected via AWS IoT Telemetry'
+        });
+        currentOpen = null;
+      }
+    }
+
+    if (eventsToCreate.length > 0) {
+      // Clear any prior events for this gate and replace with the genuine device transitions
+      await tx.lCGateEvent.deleteMany({ where: { gateId } });
+      await tx.lCGateEvent.createMany({ data: eventsToCreate });
+      await bumpReportRevisionInTx(tx, gateId);
+      console.log(`[syncDeviceHistoryToGate] Synced ${eventsToCreate.length} genuine cycles from ${thingName} into Gate #${gateId}`);
+    }
+  } catch (err) {
+    console.warn('[syncDeviceHistoryToGate] Error synchronizing telemetry cycles:', err);
+  }
+}
+
 router.post('/:gateId/masters', authenticate, async (req, res, next) => {
   try {
     const gateId = parseInt(req.params.gateId);
@@ -1157,11 +1219,12 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
       });
 
       // Link device in registry
-      if (data.deviceId) {
+      if (data.deviceId && dev) {
         await tx.deviceRegistry.update({
           where: { id: data.deviceId },
           data: { masterId: created.id, gateId: created.gateId }
         }).catch(console.warn);
+        await syncDeviceHistoryToGate(gateId, dev.thingName, tx);
       }
 
       // Bump revision for gate's assigned scope groups
@@ -1244,6 +1307,9 @@ router.put('/masters/:id', authenticate, async (req, res, next) => {
           where: { id: data.deviceId },
           data: { masterId: id, gateId: existing.gateId }
         });
+        if (linkedDev) {
+          await syncDeviceHistoryToGate(existing.gateId, linkedDev.thingName, tx);
+        }
 
         // If current serial is virtual or unmodified, adopt the linked device thingName
         // Preserve clean gate sequential identifier; do not overwrite with AWS IoT thingName
@@ -1489,8 +1555,33 @@ router.delete('/masters/:id', authenticate, async (req, res, next) => {
         data: { masterId: null, gateId: null, childDeviceId: null }
       });
       await tx.masterUnit.delete({ where: { id } });
-      if (targetMaster) {
-                await bumpDirectoryRevision([], true, tx);
+
+      if (targetMaster?.gateId) {
+        const remainingCount = await tx.masterUnit.count({
+          where: { gateId: targetMaster.gateId }
+        });
+        if (remainingCount === 0) {
+          // All masters removed from this gate. Purge orphan operational events and record tombstones.
+          const orphanEvents = await tx.lCGateEvent.findMany({
+            where: { gateId: targetMaster.gateId },
+            select: { id: true, gateId: true, openedAt: true }
+          });
+          if (orphanEvents.length > 0) {
+            await tx.lCGateEventTombstone.createMany({
+              data: orphanEvents.map(e => ({
+                eventId: e.id,
+                gateId: e.gateId,
+                openedAt: e.openedAt,
+                deletedAt: new Date()
+              }))
+            });
+            await tx.lCGateEvent.deleteMany({
+              where: { gateId: targetMaster.gateId }
+            });
+            await bumpReportRevisionInTx(tx, targetMaster.gateId);
+          }
+        }
+        await bumpDirectoryRevision([], true, tx);
       } else {
         await bumpDirectoryRevision([], true, tx);
       }
