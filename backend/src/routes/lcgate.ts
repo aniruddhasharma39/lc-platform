@@ -516,6 +516,7 @@ router.post('/', authenticate, async (req: any, res, next) => {
 
       // Bump global directory revision (scope groups removed)
       await bumpDirectoryRevision([], true, tx);
+      clusterCacheManager.clear();
 
       return created;
     });
@@ -1616,6 +1617,7 @@ router.delete('/masters/:id', authenticate, async (req, res, next) => {
         await bumpDirectoryRevision([], true, tx);
       }
     });
+    clusterCacheManager.clear();
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -1861,11 +1863,11 @@ router.get('/:id/telemetry', authenticate, async (req: any, res, next) => {
 // Trigger health check command to gate's master hardware over AWS IoT Core MQTT broker
 router.post('/:id/health-check', authenticate, async (req, res, next) => {
   try {
-    const id = parseInt(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: 'Invalid gate ID' });
+    const idNum = parseInt(req.params.id);
+    const gateWhere = !isNaN(idNum) ? { id: idNum } : { lcNumber: req.params.id };
 
-    const gate = await prisma.lCGate.findUnique({
-      where: { id },
+    const gate = await prisma.lCGate.findFirst({
+      where: gateWhere,
       include: {
         masters: {
           orderBy: { masterSequence: 'asc' },

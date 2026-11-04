@@ -1694,9 +1694,31 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   }
 
   Widget _buildCompleteLogList() {
+    final totalOps = _metrics['totalOperations'] ?? _records.length;
+    final totalDuration = _metrics['totalDurationFormatted'] ?? '0s';
+    final avgDuration = _metrics['avgDurationFormatted'] ?? '0s';
+    final delays = _metrics['extendedDelaysCount'] ?? 0;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Consistent 4-Card Summary Header for Complete Log
+        Row(
+          children: [
+            Expanded(child: _buildCycleKpiCard('Total Ops', '$totalOps', Icons.alt_route_rounded, const Color(0xFF003580), 'Total events logged')),
+            const SizedBox(width: 8),
+            Expanded(child: _buildCycleKpiCard('Open Time', totalDuration, Icons.timer_outlined, const Color(0xFF2563EB), 'Cumulative open duration')),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(child: _buildCycleKpiCard('Avg Clearance', avgDuration, Icons.speed_rounded, const Color(0xFF10B981), 'Average pace per operation')),
+            const SizedBox(width: 8),
+            Expanded(child: _buildCycleKpiCard('Delays (>15m)', '$delays', Icons.warning_amber_rounded, const Color(0xFFEF4444), 'Extended road blockage')),
+          ],
+        ),
+        const SizedBox(height: 14),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [

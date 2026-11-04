@@ -185,6 +185,8 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             'isOnline': statusItem.isOnline,
             'deviceStatus': statusItem.deviceStatus,
             'lastSeenAt': statusItem.lastSeenAt,
+            'hasMaster': statusItem.hasMaster,
+            'mastersCount': statusItem.mastersCount,
           };
         }
       }
@@ -335,6 +337,12 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
 
   // Compute operational gate status: 'OPEN' or 'CLOSED'
   String _getGateStatus(Map<String, dynamic> gate) {
+    final masters = gate['masters'] as List?;
+    final int rawMastersCount = (gate['mastersCount'] as int?) ?? (masters?.length ?? 0);
+    final bool hasMaster = (gate['hasMaster'] as bool?) ?? (rawMastersCount > 0);
+    if (!hasMaster || rawMastersCount == 0) {
+      return 'UNCONFIGURED';
+    }
     final events = gate['events'] as List?;
     if (events != null && events.isNotEmpty) {
       final firstEv = events.first;

@@ -452,6 +452,15 @@ router.put('/:id/deactivate', requireModule('manage-users'), async (req: any, re
       return res.status(400).json({ error: 'You cannot deactivate your own account' });
     }
 
+    const targetUser = await prisma.user.findUnique({
+      where: { id },
+      include: { role: true },
+    });
+    if (!targetUser) return res.status(404).json({ error: 'User not found' });
+    if (targetUser.role?.name === 'Developer') {
+      return res.status(400).json({ error: 'Developer accounts cannot be deactivated' });
+    }
+
     const user = await prisma.user.update({
       where: { id },
       data: {
@@ -553,6 +562,10 @@ router.delete('/:id', requireModule('manage-users'), async (req: any, res, next)
 
     if (!existingUser) {
       return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (existingUser.role?.name === 'Developer') {
+      return res.status(400).json({ error: 'Developer accounts cannot be deleted' });
     }
 
     // 1. Delete RefreshTokens

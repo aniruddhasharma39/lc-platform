@@ -9,7 +9,7 @@ class GateStatusItem {
   final int gateId;
   final String lcNumber;
   final bool isOnline;
-  final String deviceStatus; // ONLINE, OFFLINE
+  final String? deviceStatus; // ONLINE, OFFLINE, or null if unconfigured
   final String? lastSeenAt;
   final bool hasMaster;
   final int mastersCount;
@@ -18,7 +18,7 @@ class GateStatusItem {
     required this.gateId,
     required this.lcNumber,
     required this.isOnline,
-    required this.deviceStatus,
+    this.deviceStatus,
     this.lastSeenAt,
     this.hasMaster = false,
     this.mastersCount = 0,
@@ -31,7 +31,7 @@ class GateStatusItem {
           : int.tryParse(json['gateId']?.toString() ?? '0') ?? 0,
       lcNumber: json['lcNumber']?.toString() ?? '',
       isOnline: json['isOnline'] == true,
-      deviceStatus: json['deviceStatus']?.toString() ?? 'OFFLINE',
+      deviceStatus: json['deviceStatus']?.toString(),
       lastSeenAt: json['lastSeenAt']?.toString(),
       hasMaster: json['hasMaster'] == true,
       mastersCount: json['mastersCount'] is int

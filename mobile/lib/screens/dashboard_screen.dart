@@ -1119,33 +1119,38 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             const Divider(height: 1, thickness: 1, color: Color(0xFFE5E7EB)),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              child: ListTile(
-                selected: _currentView == 'home',
-                selectedTileColor: AppColors.primary.withOpacity(0.12),
-                selectedColor: AppColors.primary,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                dense: true,
-                title: Text(
-                  'Home',
-                  style: TextStyle(
-                    fontWeight: _currentView == 'home' ? FontWeight.bold : FontWeight.w500,
-                    color: _currentView == 'home' ? AppColors.primary : const Color(0xFF1E293B),
-                    fontSize: 13.5,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: _currentView == 'home' ? AppColors.primary : Colors.transparent,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: ListTile(
+                  dense: true,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  title: Text(
+                    'Home',
+                    style: TextStyle(
+                      fontWeight: _currentView == 'home' ? FontWeight.bold : FontWeight.w500,
+                      color: _currentView == 'home' ? Colors.white : const Color(0xFF1E293B),
+                      fontSize: 13.5,
+                    ),
                   ),
+                  leading: Icon(
+                    Icons.home,
+                    color: _currentView == 'home' ? Colors.white : const Color(0xFF64748B),
+                  ),
+                  onTap: () {
+                    setState(() { _currentView = 'home'; });
+                    Navigator.pop(context);
+                  },
                 ),
-                leading: Icon(
-                  Icons.home,
-                  color: _currentView == 'home' ? AppColors.primary : const Color(0xFF64748B),
-                ),
-                onTap: () {
-                  setState(() { _currentView = 'home'; });
-                  Navigator.pop(context);
-                },
               ),
             ),
             ..._systemModules.where((m) {
-              if (m['slug'] == 'scope-groups') return false;
+              final slug = (m['slug'] ?? '').toString().toLowerCase();
+              final name = (m['name'] ?? '').toString().toLowerCase();
+              if (slug.contains('scope') || name.contains('scope')) return false;
               // Device Registry is strictly exclusive to Developer / System Admin
               if (m['slug'] == 'devices' || m['slug'] == 'device-registry') {
                 final r = (widget.user['role'] ?? '').toString().toLowerCase();
@@ -1157,29 +1162,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
             }).map((m) {
               final isSelected = _currentView == m['slug'];
               return Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-                child: ListTile(
-                  selected: isSelected,
-                  selectedTileColor: AppColors.primary.withOpacity(0.12),
-                  selectedColor: AppColors.primary,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  dense: true,
-                  title: Text(
-                    _getModuleTitle(m),
-                    style: TextStyle(
-                      fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                      color: isSelected ? AppColors.primary : const Color(0xFF1E293B),
-                      fontSize: 13.5,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: isSelected ? AppColors.primary : Colors.transparent,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: ListTile(
+                    dense: true,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    title: Text(
+                      _getModuleTitle(m),
+                      style: TextStyle(
+                        fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                        color: isSelected ? Colors.white : const Color(0xFF1E293B),
+                        fontSize: 13.5,
+                      ),
                     ),
+                    leading: Icon(
+                      getIconForModule(m['slug']),
+                      color: isSelected ? Colors.white : const Color(0xFF64748B),
+                    ),
+                    onTap: () {
+                      setState(() { _currentView = m['slug']; });
+                      Navigator.pop(context);
+                    },
                   ),
-                  leading: Icon(
-                    getIconForModule(m['slug']),
-                    color: isSelected ? AppColors.primary : const Color(0xFF64748B),
-                  ),
-                  onTap: () {
-                    setState(() { _currentView = m['slug']; });
-                    Navigator.pop(context);
-                  },
                 ),
               );
             }),
@@ -2627,33 +2635,77 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               Row(
                                 mainAxisAlignment: MainAxisAlignment.end,
                                 children: [
-                                  TextButton.icon(
-                                    style: TextButton.styleFrom(foregroundColor: u['status'] == 'DEACTIVATED' ? AppColors.success : AppColors.danger),
-                                    icon: Icon(u['status'] == 'DEACTIVATED' ? Icons.check_circle : Icons.block, size: 16),
-                                    label: Text(u['status'] == 'DEACTIVATED' ? 'Reactivate' : 'Deactivate'),
-                                    onPressed: () async {
+                                  Builder(
+                                    builder: (context) {
+                                      final isSelf = u['id'] == widget.user['id'] || u['employeeId'] == widget.user['employeeId'];
+                                      final targetRole = (u['role'] is Map ? u['role']['name'] : u['role']?.toString()) ?? '';
+                                      final isDeveloper = targetRole == 'Developer';
+
+                                      if (isSelf) {
+                                        return Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFEFF6FF),
+                                            borderRadius: BorderRadius.circular(6),
+                                            border: Border.all(color: const Color(0xFFBFDBFE)),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: const [
+                                              Icon(Icons.person, size: 14, color: AppColors.primary),
+                                              SizedBox(width: 4),
+                                              Text(
+                                                'Current User (You)',
+                                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary),
+                                              ),
+                                            ],
+                                          ),
+                                        );
+                                      }
+
+                                      if (isDeveloper) {
+                                        return Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFF1F5F9),
+                                            borderRadius: BorderRadius.circular(6),
+                                          ),
+                                          child: const Text(
+                                            'Root Developer Account',
+                                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+                                          ),
+                                        );
+                                      }
+
                                       final isDeactivated = u['status'] == 'DEACTIVATED';
                                       final actionName = isDeactivated ? 'reactivate' : 'deactivate';
                                       final userName = (u['fullName'] ?? 'User').toString();
-                                      
-                                      final confirm = await showDialog<bool>(
-                                        context: context,
-                                        builder: (context) => AlertDialog(
-                                          title: Text('Confirm ${isDeactivated ? 'Reactivation' : 'Deactivation'}'),
-                                          content: Text('Are you sure you want to $actionName user "$userName"?'),
-                                          actions: [
-                                            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-                                            ElevatedButton(
-                                              onPressed: () => Navigator.pop(context, true),
-                                              style: ElevatedButton.styleFrom(backgroundColor: isDeactivated ? AppColors.success : AppColors.danger),
-                                              child: const Text('Confirm', style: TextStyle(color: Colors.white)),
+
+                                      return TextButton.icon(
+                                        style: TextButton.styleFrom(foregroundColor: isDeactivated ? AppColors.success : AppColors.danger),
+                                        icon: Icon(isDeactivated ? Icons.check_circle : Icons.block, size: 16),
+                                        label: Text(isDeactivated ? 'Reactivate' : 'Deactivate'),
+                                        onPressed: () async {
+                                          final confirm = await showDialog<bool>(
+                                            context: context,
+                                            builder: (context) => AlertDialog(
+                                              title: Text('Confirm ${isDeactivated ? 'Reactivation' : 'Deactivation'}'),
+                                              content: Text('Are you sure you want to $actionName user "$userName"?'),
+                                              actions: [
+                                                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                                                ElevatedButton(
+                                                  onPressed: () => Navigator.pop(context, true),
+                                                  style: ElevatedButton.styleFrom(backgroundColor: isDeactivated ? AppColors.success : AppColors.danger),
+                                                  child: const Text('Confirm', style: TextStyle(color: Colors.white)),
+                                                ),
+                                              ],
                                             ),
-                                          ],
-                                        ),
+                                          );
+                                          if (confirm == true) {
+                                            _actionUser(u['id'], actionName, null, false, userName);
+                                          }
+                                        },
                                       );
-                                      if (confirm == true) {
-                                        _actionUser(u['id'], actionName, null, false, userName);
-                                      }
                                     },
                                   ),
                                   if (u['id'] != widget.user['id']) ...[

@@ -250,22 +250,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: AppColors.success.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              status,
-                              style: const TextStyle(
-                                color: AppColors.success,
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
+                          if (roleName.toLowerCase() != 'developer' && roleName.toLowerCase() != 'system admin') ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: AppColors.success.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                status,
+                                style: const TextStyle(
+                                  color: AppColors.success,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                             ),
-                          ),
+                          ],
                         ],
                       ),
                     ],
@@ -295,12 +297,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             'Account Details',
                             style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppColors.primary),
                           ),
-                          const Spacer(),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                            decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(4)),
-                            child: const Text('Read-Only', style: TextStyle(color: Colors.grey, fontSize: 11)),
-                          ),
+
                         ],
                       ),
                       const Divider(height: 24),
@@ -316,7 +313,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(height: 16),
 
-              // Registration Metadata Section
+              if (customEntries.isNotEmpty && roleName.toLowerCase() != 'developer' && roleName.toLowerCase() != 'system admin') ...[
+                // Registration Metadata Section
               Card(
                 elevation: 0,
                 shape: RoundedRectangleBorder(
@@ -425,28 +423,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(height: 20),
 
-              // Read-Only Disclaimer Note
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: Colors.blue.shade50,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.blue.shade200),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.info_outline, color: Colors.blue.shade800, size: 20),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        'All details displayed are as submitted during account registration and verified by the system administrator.',
-                        style: TextStyle(color: Colors.blue.shade900, fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
+
+                            ],const SizedBox(height: 24),
             ],
           ),
         ),
