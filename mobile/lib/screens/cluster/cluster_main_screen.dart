@@ -101,6 +101,12 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
 
   Future<void> _fetchReferenceData() async {
     try {
+      if (_token.isEmpty) {
+        final prefs = await SharedPreferences.getInstance();
+        _token = prefs.getString('token') ?? prefs.getString('auth_token') ?? '';
+      }
+      if (_token.isEmpty) return;
+
       final cached = await LCGatesCacheService.instance.getCachedReferenceData();
       final headers = <String, String>{
         'Authorization': 'Bearer $_token',
