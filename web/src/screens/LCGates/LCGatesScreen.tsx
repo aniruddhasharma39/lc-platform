@@ -957,10 +957,12 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
 
             <div className="lcg-toolbar-right">
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span className={`lcg-power-pill ${selectedGate.masters?.some((m: any) => m.powerSource === 'SOLAR') ? 'solar' : 'direct'}`} style={{ fontSize: '0.8rem' }}>
-                  {selectedGate.masters?.some((m: any) => m.powerSource === 'SOLAR') ? <FaSun /> : <FaBolt />}
-                  {selectedGate.masters?.some((m: any) => m.powerSource === 'SOLAR') ? ' Solar Powered' : ' Direct AC'}
-                </span>
+                {selectedGate.masters && selectedGate.masters.length > 0 && (
+                  <span className={`lcg-power-pill ${selectedGate.masters?.some((m: any) => m.powerSource === 'SOLAR') ? 'solar' : 'direct'}`} style={{ fontSize: '0.8rem' }}>
+                    {selectedGate.masters?.some((m: any) => m.powerSource === 'SOLAR') ? <FaSun /> : <FaBolt />}
+                    {selectedGate.masters?.some((m: any) => m.powerSource === 'SOLAR') ? ' Solar Powered' : ' Direct AC'}
+                  </span>
+                )}
                 <button
                   type="button"
                   className="btn-small btn-outline"
@@ -1226,10 +1228,14 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                   <div className="lcg-about-field-row">
                     <span className="lcg-about-field-label">Primary Power</span>
                     <span className="lcg-about-field-value">
-                      <span className={`lcg-power-pill ${selectedGate.masters?.some((m: any) => m.powerSource === 'SOLAR') ? 'solar' : 'direct'}`} style={{ fontSize: '0.74rem' }}>
-                        {selectedGate.masters?.some((m: any) => m.powerSource === 'SOLAR') ? <FaSun /> : <FaBolt />}
-                        {selectedGate.masters?.some((m: any) => m.powerSource === 'SOLAR') ? ' Solar Powered' : ' Direct AC Mains'}
-                      </span>
+                      {selectedGate.masters && selectedGate.masters.length > 0 ? (
+                        <span className={`lcg-power-pill ${selectedGate.masters?.some((m: any) => m.powerSource === 'SOLAR') ? 'solar' : 'direct'}`} style={{ fontSize: '0.74rem' }}>
+                          {selectedGate.masters?.some((m: any) => m.powerSource === 'SOLAR') ? <FaSun /> : <FaBolt />}
+                          {selectedGate.masters?.some((m: any) => m.powerSource === 'SOLAR') ? ' Solar Powered' : ' Direct AC Mains'}
+                        </span>
+                      ) : (
+                        <span style={{ color: '#64748b', fontSize: '0.82rem', fontWeight: 600 }}>Not Configured</span>
+                      )}
                     </span>
                   </div>
                   <div className="lcg-about-field-row">

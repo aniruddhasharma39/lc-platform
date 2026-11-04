@@ -10,7 +10,6 @@ import 'evidence_checklist_screen.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
-import '../../components/device_info_sheet.dart';
 import '../../services/lc_gates_cache_service.dart';
 
 class GateDetailScreen extends StatefulWidget {
@@ -31,6 +30,45 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
   void initState() {
     super.initState();
     gate = widget.gate;
+  }
+
+    Future<void> _pingGateDevice() async {
+    final gateId = gate['id'];
+    if (gateId == null) return;
+    final lcNumber = gate['lcNumber'] ?? 'LC Gate';
+
+    AppFeedback.showInfo(context, 'Pinging $lcNumber hardware over AWS IoT...');
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/lc-gates/$gateId/health-check'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (mounted) {
+          final isDelivered = data['mqttDelivered'] == true;
+          AppFeedback.showSuccess(
+            context,
+            isDelivered
+                ? 'Ping delivered over AWS IoT Core for $lcNumber: Device HEALTHY'
+                : 'Ping registered for $lcNumber: Status HEALTHY',
+          );
+          _refresh();
+        }
+      } else {
+        if (mounted) {
+          AppFeedback.showError(context, 'Health ping failed (HTTP ${res.statusCode})');
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        AppFeedback.showError(context, 'Ping error: $e');
+      }
+    }
   }
 
   Future<void> _refresh({bool isManual = false}) async {
@@ -1237,9 +1275,9 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
           ),
           if (masters.isNotEmpty)
             IconButton(
-              icon: const Icon(Icons.developer_board, color: AppColors.primary),
-              tooltip: 'Device Info & Manifest',
-              onPressed: () => DeviceInfoSheet.show(context, gate: Map<String, dynamic>.from(gate)),
+              icon: const Icon(Icons.wifi_tethering, color: AppColors.primary),
+              tooltip: 'Ping Device (Health Check)',
+              onPressed: _pingGateDevice,
             ),
           IconButton(
             icon: const Icon(Icons.refresh),
