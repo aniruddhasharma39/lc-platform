@@ -396,7 +396,7 @@ router.get('/', authenticate, async (req, res, next) => {
         device.status !== 'INACTIVE'
       );
 
-      let simPhotoUrl = device.simPhotoUrl;
+      let simPhotoUrl = (device as any).simPhotoUrl;
       if (!simPhotoUrl && device.masterId) {
         const simEvidence = await prisma.installationEvidence.findFirst({
           where: { masterId: device.masterId, category: 'SIM_CARD' },
@@ -1222,7 +1222,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
       return res.status(404).json({ error: 'Device not found in registry' });
     }
 
-    let simPhotoUrl = device.simPhotoUrl;
+    let simPhotoUrl = (device as any).simPhotoUrl;
     if (!simPhotoUrl && device.masterId) {
       const simEvidence = await prisma.installationEvidence.findFirst({
         where: { masterId: device.masterId, category: 'SIM_CARD' },
@@ -1427,7 +1427,7 @@ router.put('/:id/sim', authenticate, async (req: any, res, next) => {
     }
 
     if (!finalPhotoUrl) {
-      finalPhotoUrl = existing.simPhotoUrl || null;
+      finalPhotoUrl = (existing as any).simPhotoUrl || null;
     }
 
     if (!finalPhotoUrl && existing.masterId) {
@@ -1450,13 +1450,13 @@ router.put('/:id/sim', authenticate, async (req: any, res, next) => {
       where: { id },
       data: {
         simPhotoUrl: finalPhotoUrl,
-        simProvider: data.simProvider !== undefined ? data.simProvider : existing.simProvider,
-        simNumber: data.simNumber !== undefined ? data.simNumber : existing.simNumber,
-        iccid: data.iccid !== undefined ? data.iccid : existing.iccid,
-        simType: data.simType !== undefined ? data.simType : (existing.simType || 'M2M'),
-        lastRechargeDate: data.lastRechargeDate !== undefined ? data.lastRechargeDate : existing.lastRechargeDate,
-        validityExpiryDate: data.validityExpiryDate !== undefined ? data.validityExpiryDate : existing.validityExpiryDate,
-      },
+        simProvider: data.simProvider !== undefined ? data.simProvider : (existing as any).simProvider,
+        simNumber: data.simNumber !== undefined ? data.simNumber : (existing as any).simNumber,
+        iccid: data.iccid !== undefined ? data.iccid : (existing as any).iccid,
+        simType: data.simType !== undefined ? data.simType : ((existing as any).simType || 'M2M'),
+        lastRechargeDate: data.lastRechargeDate !== undefined ? data.lastRechargeDate : (existing as any).lastRechargeDate,
+        validityExpiryDate: data.validityExpiryDate !== undefined ? data.validityExpiryDate : (existing as any).validityExpiryDate,
+      } as any,
       include: {
         gate: true,
         master: true,
@@ -1528,7 +1528,7 @@ router.post('/:id/recharge', authenticate, async (req, res, next) => {
       data: {
         lastRechargeDate: data.lastRechargeDate,
         validityExpiryDate: data.validityExpiryDate,
-      },
+      } as any,
       include: {
         gate: true,
         master: true,
