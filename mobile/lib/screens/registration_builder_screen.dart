@@ -1917,12 +1917,15 @@ class _RegistrationBuilderScreenState extends State<RegistrationBuilderScreen> {
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
-      decoration: BoxDecoration(
+      child: Material(
         color: Colors.white,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
-      ),
-      child: ListTile(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+          side: const BorderSide(color: Color(0xFFE2E8F0)),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: ListTile(
         onTap: () {
           _addField(item.type);
           setState(() => _activeTab = 'canvas');
@@ -1941,6 +1944,7 @@ class _RegistrationBuilderScreenState extends State<RegistrationBuilderScreen> {
           style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
         ),
         trailing: const Icon(Icons.add, color: AppColors.primary, size: 20),
+        ),
       ),
     );
   }

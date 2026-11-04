@@ -1120,11 +1120,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
             const Divider(height: 1, thickness: 1, color: Color(0xFFE5E7EB)),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: _currentView == 'home' ? AppColors.primary : Colors.transparent,
-                  borderRadius: BorderRadius.circular(10),
-                ),
+              child: Material(
+                color: _currentView == 'home' ? AppColors.primary : Colors.transparent,
+                borderRadius: BorderRadius.circular(10),
+                clipBehavior: Clip.antiAlias,
                 child: ListTile(
                   dense: true,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -1163,11 +1162,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
               final isSelected = _currentView == m['slug'];
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: isSelected ? AppColors.primary : Colors.transparent,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+                child: Material(
+                  color: isSelected ? AppColors.primary : Colors.transparent,
+                  borderRadius: BorderRadius.circular(10),
+                  clipBehavior: Clip.antiAlias,
                   child: ListTile(
                     dense: true,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
