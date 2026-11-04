@@ -45,6 +45,19 @@ async function main() {
     throw new Error('Developer role not found after seed.');
   }
 
+  // Ensure Developer role has access to all system modules
+  const allModules = await prisma.module.findMany();
+  for (const mod of allModules) {
+    const existing = await prisma.roleModule.findFirst({
+      where: { roleId: devRole.id, moduleId: mod.id }
+    });
+    if (!existing) {
+      await prisma.roleModule.create({
+        data: { roleId: devRole.id, moduleId: mod.id }
+      });
+    }
+  }
+
   const devEmail = process.env.DEFAULT_ADMIN_EMAIL;
   const devPassword = process.env.DEFAULT_ADMIN_PASSWORD;
 

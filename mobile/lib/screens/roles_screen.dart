@@ -229,7 +229,11 @@ class _RolesScreenState extends State<RolesScreen> {
             itemCount: _roles.length,
             itemBuilder: (c, i) {
               final r = _roles[i];
-              final mods = (r['roleModules'] as List).map((rm) => rm['module']['name']).join(', ');
+              final isDev = r['name'] == 'Developer' || r['id'] == 1;
+              final rawMods = (r['roleModules'] as List).map((rm) => rm['module']?['name']).where((n) => n != null).join(', ');
+              final mods = isDev
+                  ? 'All Modules: My Gates, Reports, Gate Management, Manage Users, Registration Builder, Roles, Branding, Scope Groups, Device Registry'
+                  : (rawMods.isEmpty ? 'No modules access' : rawMods);
               return Card(
                 color: Colors.white,
                 margin: const EdgeInsets.only(bottom: 16),
@@ -238,9 +242,45 @@ class _RolesScreenState extends State<RolesScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(r['name'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(r['name'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                          if (isDev)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFEFF6FF),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: const Color(0xFF93C5FD)),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.verified_user_rounded, size: 14, color: Color(0xFF1D4ED8)),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    'Full Master Access',
+                                    style: TextStyle(
+                                      color: Color(0xFF1D4ED8),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
                       const SizedBox(height: 8),
-                      Text(mods.isEmpty ? 'No modules access' : mods, style: const TextStyle(color: Colors.grey)),
+                      Text(
+                        mods,
+                        style: TextStyle(
+                          color: isDev ? const Color(0xFF1E3A8A) : Colors.grey.shade700,
+                          fontSize: 13,
+                          height: 1.35,
+                        ),
+                      ),
                       if (r['name'] != 'Developer') ...[
                         const SizedBox(height: 16),
                         Row(
