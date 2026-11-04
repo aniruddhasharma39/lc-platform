@@ -13,8 +13,7 @@ async function testGateUnassignAndSync() {
         lcNumber: 'LC-30',
         locationName: 'Kasu',
         zone: 'Central Railway',
-        division: 'Mumbai CST',
-        status: 'OPERATIONAL'
+        division: 'Mumbai CST'
       }
     });
   }
@@ -34,7 +33,7 @@ async function testGateUnassignAndSync() {
 
   // TEST 1: Unconfigured gate must return 0 operational cycles
   console.log('\n--- TEST 1: Verify Unconfigured Gate LC-30 has ZERO operational cycles ---');
-  const unconfiguredTelemetry = await getGateTelemetryPayload(gate30.id);
+  const unconfiguredTelemetry: any = await getGateTelemetryPayload(gate30.id);
   assert(unconfiguredTelemetry !== null, 'Telemetry payload should exist');
   assert.strictEqual(unconfiguredTelemetry.hasMaster, false, 'hasMaster must be false');
   assert.strictEqual(unconfiguredTelemetry.deviceStatus, 'UNCONFIGURED', 'deviceStatus must be UNCONFIGURED');
@@ -134,7 +133,7 @@ async function testGateUnassignAndSync() {
   assert.strictEqual(unassignedDev?.masterId, null, 'DeviceRegistry.masterId must be null');
   assert.strictEqual(unassignedDev?.gateId, null, 'DeviceRegistry.gateId must be null');
 
-  const recheckedTelemetry = await getGateTelemetryPayload(gate30.id);
+  const recheckedTelemetry: any = await getGateTelemetryPayload(gate30.id);
   assert(recheckedTelemetry !== null, 'Rechecked telemetry should exist');
   assert.strictEqual(recheckedTelemetry.hasMaster, false, 'hasMaster must be false after deletion');
   assert.strictEqual(recheckedTelemetry.deviceStatus, 'UNCONFIGURED', 'deviceStatus must be UNCONFIGURED');
