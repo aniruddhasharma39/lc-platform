@@ -721,7 +721,7 @@ export async function exportCycleExcel(
   // Row 2: Title
   sheet.mergeCells(`A2:${lastColLetter}2`);
   const r2 = sheet.getCell('A2');
-  r2.value = 'INDIAN RAILWAYS — LEVEL CROSSING CYCLE & OPERATIONAL SUMMARY REPORT';
+  r2.value = 'INDIAN RAILWAYS — LEVEL CROSSING DURATION REPORT';
   r2.font = { name: 'Calibri', size: 15, bold: true, color: { argb: 'FFFFFFFF' } };
   r2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
   r2.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -955,7 +955,7 @@ export async function exportCyclePdf(
         .text('INDIAN RAILWAYS', 0, 37, { align: 'center' });
 
       docInstance.fillColor(GOLDEN_SAND).fontSize(10.5).font('Helvetica')
-        .text('Level Crossing Cycle & Operational Summary Report', 0, 59, { align: 'center' });
+        .text('Level Crossing Duration Report', 0, 59, { align: 'center' });
 
       docInstance.rect(0, 75, docInstance.page.width, 5).fill(SAFFRON);
       docInstance.rect(0, 80, docInstance.page.width, 5).fill('white');
@@ -963,21 +963,33 @@ export async function exportCyclePdf(
     } else {
       docInstance.rect(0, 0, docInstance.page.width, 24).fill(NAVY_BLUE);
       docInstance.fillColor('white').fontSize(9).font('Helvetica-Bold')
-        .text('INDIAN RAILWAYS — Level Crossing Cycle Summary Report (Continued)', 0, 7, { align: 'center' });
+        .text('INDIAN RAILWAYS — Level Crossing Duration Report (Continued)', 0, 7, { align: 'center' });
       docInstance.rect(0, 24, docInstance.page.width, 2).fill(SAFFRON);
     }
   }
 
   drawCycleHeader(doc, true);
 
-  // Global Metadata
+  // Global Metadata Box
   let yPos = 98;
-  doc.rect(36, yPos, doc.page.width - 72, 34).strokeColor('#CCCCCC').lineWidth(1).stroke();
-  const mY = yPos + 6;
-  doc.fillColor('#334155').fontSize(8.5).font('Helvetica');
-  doc.text(`Reporting Period: ${cycleData.startDate}  —  ${cycleData.endDate}`, 46, mY);
-  doc.text(`Generated At: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`, doc.page.width * 0.38, mY);
-  doc.text(`Reporting Gates: ${cycleData.overall.reportingGatesCount} Gates`, doc.page.width * 0.72, mY);
+  doc.rect(36, yPos, doc.page.width - 72, 36).strokeColor('#CBD5E1').lineWidth(1).stroke();
+  const isSingleGate = cycleData.gateReports.length === 1;
+  const singleG = isSingleGate ? cycleData.gateReports[0].gate : null;
+
+  doc.fillColor('#1E293B').fontSize(8.5).font('Helvetica-Bold');
+  if (isSingleGate && singleG) {
+    doc.text(`Assigned Gate: LC-${singleG.lcNumber} — ${singleG.locationName || singleG.name || 'Station Gate'}`, 46, yPos + 6);
+    doc.fillColor('#64748B').fontSize(8).font('Helvetica')
+      .text(`Zone / Division: ${singleG.zone || '-'} / ${singleG.division || '-'}`, doc.page.width * 0.65, yPos + 6);
+  } else {
+    doc.text(`Monitored Network: ${cycleData.overall.reportingGatesCount} Level Crossing Gates`, 46, yPos + 6);
+    doc.fillColor('#64748B').fontSize(8).font('Helvetica')
+      .text(`Total Cycle Volume: ${cycleData.overall.totalCycles} Completed Cycles`, doc.page.width * 0.65, yPos + 6);
+  }
+
+  doc.fillColor('#475569').fontSize(8).font('Helvetica')
+    .text(`Audit Period: ${cycleData.startDate} to ${cycleData.endDate}`, 46, yPos + 20);
+  doc.text(`Generated At: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`, doc.page.width * 0.65, yPos + 20);
 
   yPos += 42;
 
@@ -1010,17 +1022,27 @@ export async function exportCyclePdf(
       yPos = 36;
     }
 
-    // Gate Section Header
+    // Gate Section Header Banner
     doc.rect(36, yPos, doc.page.width - 72, 22).fill(NAVY_BLUE);
     doc.fillColor('white').fontSize(10).font('Helvetica-Bold')
-      .text(`SECTION ${gIdx + 1}: LC GATE ${gr.gate.lcNumber} — ${gr.gate.locationName} (${gr.gate.scopeGroupName})`, 44, yPos + 6);
+      .text(`SECTION ${gIdx + 1}: LC GATE ${gr.gate.lcNumber} — ${gr.gate.locationName} (${gr.gate.zone || '-'} / ${gr.gate.division || '-'})`, 44, yPos + 6);
     yPos += 26;
 
-    // Gate Metadata Sub-line
-    doc.rect(36, yPos, doc.page.width - 72, 18).fill('#F1F5F9');
-    doc.fillColor('#475569').fontSize(7.5).font('Helvetica')
-      .text(`Zone: ${gr.gate.zone || '-'}  |  Division: ${gr.gate.division || '-'}  |  Completed Cycles: ${gr.kpis.totalCycles}  |  Avg Close: ${gr.kpis.avgClosingFormatted}  |  Avg Open: ${gr.kpis.avgOpeningFormatted}  |  Total Closed: ${gr.kpis.totalClosedFormatted}`, 44, yPos + 5);
-    yPos += 24;
+    // Structured Section 4-KPI Cards (Matching Top Header Style)
+    const secKpiWidth = (doc.page.width - 72 - 30) / 4;
+    const secKpis = [
+      { label: 'COMPLETED CYCLES', val: `${gr.kpis.totalCycles}` },
+      { label: 'AVG CLOSING TIME', val: gr.kpis.avgClosingFormatted || '—' },
+      { label: 'AVG OPENING INTERVAL', val: gr.kpis.avgOpeningFormatted || '—' },
+      { label: 'TOTAL CLOSED DURATION', val: gr.kpis.totalClosedFormatted || '0s' },
+    ];
+    secKpis.forEach((kpi, i) => {
+      const xPos = 36 + i * (secKpiWidth + 10);
+      doc.rect(xPos, yPos, secKpiWidth, 30).fillAndStroke('#F8FAFC', '#CBD5E1');
+      doc.fillColor('#475569').fontSize(7).font('Helvetica-Bold').text(kpi.label, xPos + 8, yPos + 5);
+      doc.fillColor(NAVY_BLUE).fontSize(10.5).font('Helvetica-Bold').text(kpi.val, xPos + 8, yPos + 15);
+    });
+    yPos += 36;
 
     // Table Header
     const cols = [
@@ -1553,7 +1575,7 @@ export function exportHolisticCsv(
     'Total Open Duration',
     'Average Open Duration',
     'Total Closed Duration',
-    'Extended Delays (>10m)'
+    'Extended Delays (>15m)'
   ];
 
   const rows: string[] = [];
@@ -1662,7 +1684,7 @@ export async function exportHolisticExcel(
   sheet1.getCell('C11').value = data.kpis.totalOpenFormatted;
   sheet1.getCell('E10').value = 'Average Open Duration';
   sheet1.getCell('E11').value = data.kpis.avgOpenFormatted;
-  sheet1.getCell('G10').value = 'Extended Delays (>10m)';
+  sheet1.getCell('G10').value = 'Extended Delays (>15m)';
   sheet1.getCell('G11').value = data.kpis.totalExtendedDelays;
 
   for (const col of ['A', 'C', 'E', 'G']) {
@@ -1672,7 +1694,7 @@ export async function exportHolisticExcel(
   sheet1.getRow(10).height = 16;
   sheet1.getRow(11).height = 22;
 
-  sheet1.getRow(13).values = ['Jurisdiction Level', 'Name', 'Total Gates', 'Operations', 'Open Count', 'Close Count', 'Total Open Time', 'Avg Open Time', 'Delays (>10m)'];
+  sheet1.getRow(13).values = ['Jurisdiction Level', 'Name', 'Total Gates', 'Operations', 'Open Count', 'Close Count', 'Total Open Time', 'Avg Open Time', 'Delays (>15m)'];
   sheet1.getRow(13).font = { bold: true, color: { argb: 'FFFFFFFF' } };
   sheet1.getRow(13).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B3C7A' } };
   sheet1.getRow(13).height = 24;
@@ -1775,7 +1797,7 @@ export async function exportHolisticPdf(
     { label: 'TOTAL OPERATIONS', val: `${data.kpis.totalOperations}` },
     { label: 'TOTAL OPEN TIME', val: data.kpis.totalOpenFormatted },
     { label: 'AVERAGE OPEN DURATION', val: data.kpis.avgOpenFormatted },
-    { label: 'EXTENDED DELAYS (>10m)', val: `${data.kpis.totalExtendedDelays}` },
+    { label: 'EXTENDED DELAYS (>15m)', val: `${data.kpis.totalExtendedDelays}` },
   ];
 
   holisticKpis.forEach((kpi, i) => {
@@ -1799,7 +1821,7 @@ export async function exportHolisticPdf(
   doc.text('Close Count', tableX + 455, yPos + 5, { width: 65, align: 'right' });
   doc.text('Total Open Time', tableX + 525, yPos + 5, { width: 85, align: 'right' });
   doc.text('Avg Open', tableX + 615, yPos + 5, { width: 65, align: 'right' });
-  doc.text('Delays (>10m)', tableX + 685, yPos + 5, { width: 80, align: 'right' });
+  doc.text('Delays (>15m)', tableX + 685, yPos + 5, { width: 80, align: 'right' });
 
   yPos += 20;
 

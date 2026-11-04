@@ -782,7 +782,7 @@ export async function getDurationReportAnalytics(options: {
         : Math.max(1, Math.round((new Date(ev.closedAt!).getTime() - new Date(ev.openedAt).getTime()) / 1000));
       gateOpenSec += dur;
       grandOpenDurations.push(dur);
-      if (dur > 600) {
+      if (dur > 900) { // Extended delay: > 15 minutes (900 seconds)
         extendedDelays += 1;
       }
     }

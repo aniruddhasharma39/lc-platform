@@ -2504,7 +2504,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
           children: [
             Expanded(child: _buildCycleKpiCard('Avg Open Duration', '$avgOpen', Icons.speed_rounded, const Color(0xFF046A38), 'Per Open Operation')),
             const SizedBox(width: 8),
-            Expanded(child: _buildCycleKpiCard('Delays (>10m)', '$delays', Icons.warning_amber_rounded, const Color(0xFFEF4444), 'Extended Closures')),
+            Expanded(child: _buildCycleKpiCard('Delays (>15m)', '$delays', Icons.warning_amber_rounded, const Color(0xFFEF4444), 'Extended Closures')),
           ],
         ),
         const SizedBox(height: 14),
