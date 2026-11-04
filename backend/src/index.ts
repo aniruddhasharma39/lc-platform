@@ -49,6 +49,7 @@ app.use('/api/v1/settings', settingsRoutes);
 app.use('/api/v1/branding', settingsRoutes);
 app.use('/api/v1/lcgate', lcgateRoutes);
 app.use('/api/v1/lcgates', lcgateRoutes);
+app.use('/api/v1/lc-gates', lcgateRoutes);
 app.use('/api/v1/devices', deviceRoutes);
 app.use('/api/v1/evidence', evidenceRoutes);
 app.use('/api/v1/notifications', notificationsRoutes);

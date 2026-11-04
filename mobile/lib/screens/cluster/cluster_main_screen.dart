@@ -1089,7 +1089,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
     AppFeedback.showInfo(context, 'Pinging $lcNumber hardware over AWS IoT...');
     try {
       final res = await http.post(
-        Uri.parse('$baseUrl/lc-gates/$gateId/health-check'),
+        Uri.parse('$baseUrl/lcgate/$gateId/health-check'),
         headers: {
           'Authorization': 'Bearer $_token',
           'Content-Type': 'application/json',

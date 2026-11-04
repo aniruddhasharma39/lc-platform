@@ -40,7 +40,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     AppFeedback.showInfo(context, 'Pinging $lcNumber hardware over AWS IoT...');
     try {
       final res = await http.post(
-        Uri.parse('$baseUrl/lc-gates/$gateId/health-check'),
+        Uri.parse('$baseUrl/lcgate/$gateId/health-check'),
         headers: {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
