@@ -226,7 +226,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       } else if (_isDeveloper) {
         queryParams['gateIds'] = 'all';
       }
-      final uri = Uri.parse('$baseUrl/api/v1/reports/count').replace(queryParameters: queryParams);
+      final uri = Uri.parse('$baseUrl/reports/count').replace(queryParameters: queryParams);
       final res = await http.get(uri, headers: {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $_token',
@@ -257,7 +257,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       } else if (_isDeveloper) {
         queryParams['gateIds'] = 'all';
       }
-      final uri = Uri.parse('$baseUrl/api/v1/reports/holistic').replace(queryParameters: queryParams);
+      final uri = Uri.parse('$baseUrl/reports/holistic').replace(queryParameters: queryParams);
       final res = await http.get(uri, headers: {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $_token',
@@ -1694,31 +1694,9 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   }
 
   Widget _buildCompleteLogList() {
-    final totalOps = _metrics['totalOperations'] ?? _records.length;
-    final totalDuration = _metrics['totalDurationFormatted'] ?? '0s';
-    final avgDuration = _metrics['avgDurationFormatted'] ?? '0s';
-    final delays = _metrics['extendedDelaysCount'] ?? 0;
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Consistent 4-Card Summary Header for Complete Log
-        Row(
-          children: [
-            Expanded(child: _buildCycleKpiCard('Total Ops', '$totalOps', Icons.alt_route_rounded, const Color(0xFF003580), 'Total events logged')),
-            const SizedBox(width: 8),
-            Expanded(child: _buildCycleKpiCard('Open Time', totalDuration, Icons.timer_outlined, const Color(0xFF2563EB), 'Cumulative open duration')),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(child: _buildCycleKpiCard('Avg Clearance', avgDuration, Icons.speed_rounded, const Color(0xFF10B981), 'Average pace per operation')),
-            const SizedBox(width: 8),
-            Expanded(child: _buildCycleKpiCard('Delays (>15m)', '$delays', Icons.warning_amber_rounded, const Color(0xFFEF4444), 'Extended road blockage')),
-          ],
-        ),
-        const SizedBox(height: 14),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
@@ -1868,8 +1846,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     final totalCycles = overall['totalCycles'] ?? 0;
     final avgClosingFormatted = overall['avgClosingFormatted'] ?? '—';
     final avgOpeningFormatted = overall['avgOpeningFormatted'] ?? '—';
-    final totalClosedFormatted = overall['totalClosedFormatted'] ?? '0s';
-    final totalOpenFormatted = overall['totalOpenFormatted'] ?? '0s';
     final reportingGatesCount = overall['reportingGatesCount'] ?? gateReports.length;
 
     final displayedReports = _selectedCycleGateId == null
@@ -1912,30 +1888,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                 Icons.schedule_rounded,
                 const Color(0xFF059669),
                 'Road clearance interval',
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: _buildCycleKpiCard(
-                'Total Road Closed',
-                '$totalClosedFormatted',
-                Icons.timer_outlined,
-                const Color(0xFFD97706),
-                'Cumulative restriction',
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: _buildCycleKpiCard(
-                'Total Road Open',
-                '$totalOpenFormatted',
-                Icons.speed_rounded,
-                const Color(0xFF7C3AED),
-                'Cumulative clearance',
               ),
             ),
             const SizedBox(width: 8),
@@ -2273,8 +2225,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     final totalDuration = _metrics['totalDurationFormatted'] ?? '0s';
     final avgDuration = _metrics['avgDurationFormatted'] ?? '0s';
     final extendedDelays = _metrics['extendedDelaysCount'] ?? 0;
-    final currentlyOpen = _metrics['currentlyOpenCount'] ?? 0;
-    final reportingGates = _metrics['reportingGatesCount'] ?? 0;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -2282,57 +2232,18 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         children: [
           Row(
             children: [
-              Expanded(child: _buildKpiCard('Total Ops', '$totalOps', Icons.alt_route_rounded, const Color(0xFF3B82F6))),
+              Expanded(child: _buildCycleKpiCard('Total Ops', '$totalOps', Icons.alt_route_rounded, const Color(0xFF003580), 'Total events logged')),
               const SizedBox(width: 8),
-              Expanded(child: _buildKpiCard('Total Duration', '$totalDuration', Icons.timer_outlined, const Color(0xFF8B5CF6))),
-              const SizedBox(width: 8),
-              Expanded(child: _buildKpiCard('Avg Duration', '$avgDuration', Icons.speed_rounded, const Color(0xFF06B6D4))),
+              Expanded(child: _buildCycleKpiCard('Total Duration', '$totalDuration', Icons.timer_outlined, const Color(0xFF2563EB), 'Cumulative duration')),
             ],
           ),
           const SizedBox(height: 8),
           Row(
             children: [
-              Expanded(child: _buildKpiCard('Delays (>15m)', '$extendedDelays', Icons.warning_amber_rounded, const Color(0xFFF59E0B))),
+              Expanded(child: _buildCycleKpiCard('Avg Duration', '$avgDuration', Icons.speed_rounded, const Color(0xFF10B981), 'Average per operation')),
               const SizedBox(width: 8),
-              Expanded(child: _buildKpiCard('Currently Open', '$currentlyOpen', Icons.lock_open_rounded, const Color(0xFFEF4444))),
-              const SizedBox(width: 8),
-              Expanded(child: _buildKpiCard('Active Gates', '$reportingGates', Icons.grid_view_rounded, const Color(0xFF10B981))),
+              Expanded(child: _buildCycleKpiCard('Delays (>15m)', '$extendedDelays', Icons.warning_amber_rounded, const Color(0xFFEF4444), 'Extended blockage')),
             ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildKpiCard(String label, String value, IconData icon, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Expanded(
-                child: Text(
-                  label,
-                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.grey.shade600),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              Icon(icon, size: 13, color: color),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: color),
-            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
@@ -2377,15 +2288,17 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       );
     }
 
-    final summary = (_countAnalytics!['summary'] as Map<String, dynamic>?) ?? {};
+    final summary = (_countAnalytics!['kpis'] as Map<String, dynamic>?) ??
+        (_countAnalytics!['summary'] as Map<String, dynamic>?) ?? {};
     final totalOps = summary['totalOperations'] ?? 0;
     final totalOpen = summary['totalOpenCount'] ?? 0;
     final totalClose = summary['totalCloseCount'] ?? 0;
-    final activeGates = summary['activeGatesCount'] ?? 0;
+    final activeGates = summary['reportingGatesCount'] ?? summary['activeGatesCount'] ?? 0;
 
-    final gateReports = (_countAnalytics!['gateReports'] as List?) ?? [];
-    // station breakdown used in rollups
-    final divisionBreakdown = (_countAnalytics!['divisionBreakdown'] as List?) ?? [];
+    final gateReports = (_countAnalytics!['gates'] as List?) ??
+        (_countAnalytics!['gateReports'] as List?) ?? [];
+    final divisionBreakdown = (_countAnalytics!['divisions'] as List?) ??
+        (_countAnalytics!['divisionBreakdown'] as List?) ?? [];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2428,10 +2341,10 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
               ),
               const Divider(height: 16),
               ...gateReports.map((gr) {
-                final gate = (gr['gate'] as Map<String, dynamic>?) ?? {};
-                final gateNo = gate['gateNumber'] ?? 'Unknown';
-                final station = gate['station'] ?? '—';
-                final div = gate['division'] ?? '—';
+                final gate = (gr['gate'] as Map<String, dynamic>?) ?? gr;
+                final gateNo = gr['lcNumber'] ?? gate['lcNumber'] ?? gate['gateNumber'] ?? 'LC Gate';
+                final station = gr['stationName'] ?? gate['station'] ?? gate['locationName'] ?? '—';
+                final div = gr['division'] ?? gate['division'] ?? '—';
                 final gOpen = gr['openCount'] ?? 0;
                 final gClose = gr['closeCount'] ?? 0;
                 final gTotal = gr['totalOperations'] ?? 0;
@@ -2488,7 +2401,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
               ...divisionBreakdown.map((div) {
                 final divName = div['division'] ?? '—';
                 final divTotal = div['totalOperations'] ?? 0;
-                final divGates = div['gateCount'] ?? 0;
+                final divGates = div['gatesCount'] ?? div['gateCount'] ?? 0;
                 final divStations = div['stationCount'] ?? 0;
 
                 return Padding(
@@ -2547,12 +2460,14 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       );
     }
 
-    final summary = (_holisticAnalytics!['summary'] as Map<String, dynamic>?) ?? {};
+    final summary = (_holisticAnalytics!['kpis'] as Map<String, dynamic>?) ??
+        (_holisticAnalytics!['summary'] as Map<String, dynamic>?) ?? {};
     final totalOps = summary['totalOperations'] ?? 0;
     final totalOpen = summary['totalOpenFormatted'] ?? '0s';
-    final avgOpen = summary['avgOpenDurationFormatted'] ?? '0s';
-    final delays = summary['extendedDelaysCount'] ?? 0;
-    final tree = (_holisticAnalytics!['tree'] as List?) ?? [];
+    final avgOpen = summary['avgOpenFormatted'] ?? summary['avgOpenDurationFormatted'] ?? '0s';
+    final delays = summary['totalExtendedDelays'] ?? summary['extendedDelaysCount'] ?? 0;
+    final tree = (_holisticAnalytics!['hierarchy'] as List?) ??
+        (_holisticAnalytics!['tree'] as List?) ?? [];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2581,7 +2496,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
 
         ...tree.map((zoneObj) {
           final zoneName = zoneObj['zone'] ?? 'Unknown Zone';
-          final zGates = zoneObj['totalGates'] ?? 0;
+          final zGates = zoneObj['gatesCount'] ?? zoneObj['totalGates'] ?? 0;
           final zOps = zoneObj['totalOperations'] ?? 0;
           final zOpen = zoneObj['totalOpenFormatted'] ?? '0s';
           final divisions = (zoneObj['divisions'] as List?) ?? [];
@@ -2597,7 +2512,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
               subtitle: Text('$zGates Gates · $zOps Ops · $zOpen Open Window', style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
               children: divisions.map((divObj) {
                 final divName = divObj['division'] ?? 'Unknown Division';
-                final dGates = divObj['totalGates'] ?? 0;
+                final dGates = divObj['gatesCount'] ?? divObj['totalGates'] ?? 0;
                 final dOps = divObj['totalOperations'] ?? 0;
                 final stations = (divObj['stations'] as List?) ?? [];
 
@@ -2612,7 +2527,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                       title: Text('$divName Division', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
                       subtitle: Text('$dGates Gates · $dOps Operations', style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
                       children: stations.map((stObj) {
-                        final stName = stObj['station'] ?? 'Station';
+                        final stName = stObj['stationName'] ?? stObj['station'] ?? 'Station';
                         final sOps = stObj['totalOperations'] ?? 0;
                         final gates = (stObj['gates'] as List?) ?? [];
 
@@ -2632,10 +2547,10 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                               ),
                               const SizedBox(height: 6),
                               ...gates.map((g) {
-                                final gNo = g['gateNumber'] ?? 'LC';
+                                final gNo = g['lcNumber'] ?? g['gateNumber'] ?? 'LC';
                                 final gOpen = g['openCount'] ?? 0;
                                 final gClose = g['closeCount'] ?? 0;
-                                final gAvg = g['avgOpenDurationFormatted'] ?? '—';
+                                final gAvg = g['avgOpenFormatted'] ?? g['avgOpenDurationFormatted'] ?? '—';
                                 return Padding(
                                   padding: const EdgeInsets.symmetric(vertical: 2),
                                   child: Row(
