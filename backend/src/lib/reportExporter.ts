@@ -616,7 +616,7 @@ export async function exportCompleteLogPdf(
 
       // Rows
       dg.events.forEach((ev, eIdx) => {
-        if (yPos > doc.page.height - 45) {
+        if (yPos > doc.page.height - 60) {
           doc.addPage({ layout: 'landscape', size: 'A4', margin: 36 });
           drawPageBanner(doc, false);
           yPos = 36;
@@ -675,15 +675,19 @@ export async function exportCompleteLogPdf(
     yPos += 12; // Space between gate sections
   }
 
-  // Footer on all pages
+  // Footer on all pages (prevent auto page overflow)
   const range = doc.bufferedPageRange();
   for (let i = range.start; i < range.start + range.count; i++) {
     doc.switchToPage(i);
+    const prevMargin = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
     doc.fillColor('#94A3B8').fontSize(7.5).font('Helvetica')
-      .text(`Generated on ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST | Level Crossing Safety Platform | Page ${i - range.start + 1} of ${range.count}`, 36, doc.page.height - 24, {
+      .text(`Generated on ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST | Level Crossing Safety Platform | Page ${i - range.start + 1} of ${range.count}`, 36, doc.page.height - 20, {
         align: 'center',
-        width: doc.page.width - 72
+        width: doc.page.width - 72,
+        lineBreak: false
       });
+    doc.page.margins.bottom = prevMargin;
   }
 
   doc.end();
@@ -1065,7 +1069,7 @@ export async function exportCyclePdf(
 
     // Daily breakdown rows
     gr.dailyBreakdown.forEach((day, dIdx) => {
-      if (yPos > doc.page.height - 40) {
+      if (yPos > doc.page.height - 60) {
         doc.addPage({ layout: 'landscape', size: 'A4', margin: 36 });
         drawCycleHeader(doc, false);
         yPos = 36;
@@ -1108,15 +1112,19 @@ export async function exportCyclePdf(
     yPos += 16; // Space after gate section
   }
 
-  // Footer on all pages
+  // Footer on all pages (prevent auto page overflow)
   const range = doc.bufferedPageRange();
   for (let i = range.start; i < range.start + range.count; i++) {
     doc.switchToPage(i);
+    const prevMargin = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
     doc.fillColor('#94A3B8').fontSize(7.5).font('Helvetica')
-      .text(`Generated on ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST | Level Crossing Safety Platform | Page ${i - range.start + 1} of ${range.count}`, 36, doc.page.height - 24, {
+      .text(`Generated on ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST | Level Crossing Safety Platform | Page ${i - range.start + 1} of ${range.count}`, 36, doc.page.height - 20, {
         align: 'center',
-        width: doc.page.width - 72
+        width: doc.page.width - 72,
+        lineBreak: false
       });
+    doc.page.margins.bottom = prevMargin;
   }
 
   doc.end();
@@ -1425,7 +1433,7 @@ export async function exportCountPdf(
   data: CountReportResponse,
   options: { filenameBase: string }
 ) {
-  const doc = new PDFDocument({ margin: 36, size: 'A4', layout: 'landscape' });
+  const doc = new PDFDocument({ bufferPages: true, margin: 36, size: 'A4', layout: 'landscape' });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.pdf"`);
   doc.pipe(res);
@@ -1513,7 +1521,7 @@ export async function exportCountPdf(
   doc.font('Helvetica').fontSize(8.5);
 
   for (const g of data.gates) {
-    if (yPos > doc.page.height - 50) {
+    if (yPos > doc.page.height - 60) {
       doc.addPage({ margin: 36, size: 'A4', layout: 'landscape' });
       drawCountHeader(doc, false);
       yPos = 36;
