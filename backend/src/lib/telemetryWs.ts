@@ -263,15 +263,10 @@ export async function getGateTelemetryPayload(gateId: number) {
 
   const primaryThingName = gate.masters[0]?.serialNumber || 'Unassigned';
 
-  // 65-Minute Rule: determine device connectivity (1 hr periodic heartbeat + 5 min grace)
-  const ONLINE_CUTOFF_MS = 65 * 60 * 1000;
+  // 5-Minute strict heartbeat rule: determine live device connectivity from actual telemetry
+  const ONLINE_CUTOFF_MS = 5 * 60 * 1000;
   const latestPacketTime = deduplicatedPayloads[0]?.receivedAt ? new Date(deduplicatedPayloads[0].receivedAt).getTime() : 0;
-  const lastSeenTimes = [
-    latestPacketTime,
-    ...gate.deviceRegistries.map(d => d.lastSeenAt ? new Date(d.lastSeenAt).getTime() : 0)
-  ];
-  const maxLastSeen = Math.max(...lastSeenTimes);
-  const isDeviceOnline = maxLastSeen > 0 && (nowMs - maxLastSeen <= ONLINE_CUTOFF_MS);
+  const isDeviceOnline = latestPacketTime > 0 && (nowMs - latestPacketTime <= ONLINE_CUTOFF_MS);
   const deviceStatus: 'ONLINE' | 'OFFLINE' = isDeviceOnline ? 'ONLINE' : 'OFFLINE';
 
   return {
@@ -284,7 +279,7 @@ export async function getGateTelemetryPayload(gateId: number) {
     thingName: primaryThingName,
     deviceStatus,
     isDeviceOnline,
-    lastSeenAt: maxLastSeen > 0 ? new Date(maxLastSeen).toISOString() : null,
+    lastSeenAt: latestPacketTime > 0 ? new Date(latestPacketTime).toISOString() : null,
     currentStatus,
     currentOperationalState,
     topic: `lc-gate/${primaryThingName}/telemetry`,

@@ -1028,10 +1028,6 @@ export default function ReportsScreen({ user }: Props) {
 
   // Direct Download Trigger (Server-Side Excel or PDF on Full Filtered Dataset)
   const handleDownloadReport = async (format: 'xlsx' | 'pdf' | 'csv') => {
-    if (selectedGateIds.length === 0) {
-      toastInfo('Please select at least one gate to generate the report');
-      return;
-    }
 
     setIsExporting(true);
     setExportFormat(format.toUpperCase());
@@ -1072,7 +1068,7 @@ export default function ReportsScreen({ user }: Props) {
 
       if (selectedGateIds.length > 0) {
         url.searchParams.append('gateIds', selectedGateIds.join(','));
-      } else if (isDeveloper) {
+      } else {
         url.searchParams.append('gateIds', 'all');
       }
 

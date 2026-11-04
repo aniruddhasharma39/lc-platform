@@ -965,7 +965,11 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         'sortOrder': _sortOrder,
       };
       if (_selectedClusterIds.isNotEmpty) queryParams['scopeGroupIds'] = _selectedClusterIds.join(',');
-      if (_selectedGateIds.isNotEmpty) queryParams['gateIds'] = _selectedGateIds.join(',');
+      if (_selectedGateIds.isNotEmpty) {
+        queryParams['gateIds'] = _selectedGateIds.join(',');
+      } else {
+        queryParams['gateIds'] = 'all';
+      }
       if (_filterStatus != 'ALL') queryParams['status'] = _filterStatus;
       if (_filterShift != 'ALL') queryParams['shift'] = _filterShift;
 
@@ -987,14 +991,18 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         }
 
         try {
-          final ext = selectedFormat == 'pdf' ? 'pdf' : 'xlsx';
+          final ext = selectedFormat == 'pdf' ? 'pdf' : (selectedFormat == 'csv' ? 'csv' : 'xlsx');
           final mimeType = selectedFormat == 'pdf'
               ? 'application/pdf'
-              : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+              : (selectedFormat == 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
           final timestamp = DateTime.now().millisecondsSinceEpoch;
-          final filename = selectedReportType == 'cycle'
-              ? 'LC_Gate_Cycle_Report_$timestamp.$ext'
-              : 'LC_Gate_Complete_Log_$timestamp.$ext';
+          final filename = selectedReportType == 'count'
+              ? 'LC_Gate_Count_Report_$timestamp.$ext'
+              : selectedReportType == 'holistic'
+                  ? 'LC_Gate_Holistic_Report_$timestamp.$ext'
+                  : selectedReportType == 'cycle' || selectedReportType == 'duration'
+                      ? 'LC_Gate_Duration_Report_$timestamp.$ext'
+                      : 'LC_Gate_Complete_Log_$timestamp.$ext';
 
           await downloadFileUniversal(
             bytes: res.bodyBytes,
@@ -1352,10 +1360,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                             onPressed: _isExporting
                                 ? null
                                 : () {
-                                    if (_selectedGateIds.isEmpty) {
-                                      AppFeedback.showInfo(context, 'Please select at least one gate to export.');
-                                      return;
-                                    }
                                     _startExportWithProgress(
                                       parentCtx: ctx,
                                       selectedReportType: selectedReportType,

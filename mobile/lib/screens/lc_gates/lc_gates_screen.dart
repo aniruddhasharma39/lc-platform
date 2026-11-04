@@ -833,54 +833,56 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 10),
+          if (_viewMode != 'detail') ...[
+            const SizedBox(height: 10),
 
-          // Search Field with Integrated Refresh Button (No Toggle Button)
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _searchCtrl,
-                  onChanged: (val) => setState(() => _searchQuery = val),
-                  style: const TextStyle(fontSize: 13),
-                  decoration: InputDecoration(
-                    hintText: 'Search gates...',
-                    hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                    prefixIcon: const Icon(Icons.search, size: 18, color: Color(0xFF64748B)),
-                    suffixIcon: _searchQuery.isNotEmpty
-                        ? IconButton(
-                            icon: const Icon(Icons.clear, size: 16),
-                            onPressed: () {
-                              _searchCtrl.clear();
-                              setState(() => _searchQuery = '');
-                            },
-                          )
-                        : null,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    isDense: true,
-                    filled: true,
-                    fillColor: const Color(0xFFF8FAFC),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
-                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
-                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppColors.primary)),
+            // Search Field with Integrated Refresh Button (Only shown in directory list view)
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _searchCtrl,
+                    onChanged: (val) => setState(() => _searchQuery = val),
+                    style: const TextStyle(fontSize: 13),
+                    decoration: InputDecoration(
+                      hintText: 'Search gates...',
+                      hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                      prefixIcon: const Icon(Icons.search, size: 18, color: Color(0xFF64748B)),
+                      suffixIcon: _searchQuery.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear, size: 16),
+                              onPressed: () {
+                                _searchCtrl.clear();
+                                setState(() => _searchQuery = '');
+                              },
+                            )
+                          : null,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      isDense: true,
+                      filled: true,
+                      fillColor: const Color(0xFFF8FAFC),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
+                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
+                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppColors.primary)),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              IconButton(
-                style: IconButton.styleFrom(
-                  backgroundColor: const Color(0xFFF1F5F9),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                  padding: const EdgeInsets.all(9),
+                const SizedBox(width: 8),
+                IconButton(
+                  style: IconButton.styleFrom(
+                    backgroundColor: const Color(0xFFF1F5F9),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    padding: const EdgeInsets.all(9),
+                  ),
+                  icon: _isRefreshing
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
+                      : const Icon(Icons.refresh, size: 18, color: Color(0xFF475569)),
+                  tooltip: 'Refresh directory',
+                  onPressed: _isRefreshing ? null : () => _fetchData(isManual: true),
                 ),
-                icon: _isRefreshing
-                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
-                    : const Icon(Icons.refresh, size: 18, color: Color(0xFF475569)),
-                tooltip: 'Refresh directory',
-                onPressed: _isRefreshing ? null : () => _fetchData(isManual: true),
-              ),
-            ],
-          ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -1676,7 +1678,20 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               final childDevices = (master['childDevices'] as List?) ?? [];
               final isMasterExpanded = _expandedMasterIndex == mIdx;
               final masterSerial = (master['serialNumber'] ?? '').toString();
-              final isVirtual = masterSerial.contains('(Virtual Master)') || ((master['deviceRegistries'] as List?)?.isEmpty ?? true);
+              final masterDevices = (master['deviceRegistries'] as List?) ?? [];
+              final gateDevices = (gate['deviceRegistries'] as List?) ?? [];
+              final matchingGateDev = gateDevices.firstWhere(
+                (d) => d is Map && (
+                  (d['masterId'] != null && d['masterId'] == master['id']) ||
+                  (d['thingName'] != null && d['thingName'] == master['serialNumber']) ||
+                  (d['thingName'] != null && master['awsThingName'] != null && d['thingName'] == master['awsThingName'])
+                ),
+                orElse: () => null,
+              );
+              final hasHardware = masterDevices.isNotEmpty || matchingGateDev != null || (master['awsThingName'] != null && master['isVirtual'] == false);
+              final isVirtual = masterSerial.contains('(Virtual Master)') || !hasHardware;
+              final dynamic linkedDevObj = masterDevices.isNotEmpty ? masterDevices[0] : matchingGateDev;
+              final linkedDevName = linkedDevObj != null ? (linkedDevObj['thingName'] ?? linkedDevObj['serialNumber']) : master['awsThingName'];
 
               // Extract component-wise evidence photos uploaded during setup
               final masterEv = _findDeviceEvidence(master, 'MASTER');
@@ -1798,7 +1813,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
                                         Text(
-                                          isVirtual ? 'Virtual Master (No Physical Hardware Linked)' : 'Linked to AWS IoT Device',
+                                          isVirtual ? 'Virtual Master (No Physical Hardware Linked)' : 'Linked to AWS IoT Device${linkedDevName != null ? ' ($linkedDevName)' : ''}',
                                           style: TextStyle(
                                             fontSize: 11.5,
                                             fontWeight: FontWeight.bold,

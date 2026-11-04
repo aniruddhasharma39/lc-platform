@@ -236,7 +236,8 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
         masters: {
           orderBy: { masterSequence: 'asc' },
           include: {
-            childDevices: true
+            childDevices: true,
+            deviceRegistries: true
           }
         }
       }
@@ -636,6 +637,7 @@ router.post('/:id/assign-device', authenticate, async (req: any, res, next) => {
           childDeviceId: childDeviceId ? Number(childDeviceId) : null,
         }
       });
+      await syncDeviceHistoryToGate(gate.id, dev.thingName, tx);
 
       await bumpDirectoryRevision([], true, tx);
 
@@ -718,7 +720,7 @@ router.get('/status-summary', authenticate, async (req: any, res, next) => {
     });
 
     const nowMs = Date.now();
-    const ONLINE_CUTOFF_MS = 65 * 60 * 1000;
+    const ONLINE_CUTOFF_MS = 5 * 60 * 1000; // 5-minute strict heartbeat window
 
     const allThingNames: string[] = [];
     gates.forEach(g => {
@@ -757,12 +759,8 @@ router.get('/status-summary', authenticate, async (req: any, res, next) => {
       ]);
 
       const latestTele = recentTelemetries.find(t => gateThingNames.has(t.thingName));
-      const lastSeenTimes = [
-        latestTele?.receivedAt ? new Date(latestTele.receivedAt).getTime() : 0,
-        ...gate.deviceRegistries.map(d => d.lastSeenAt ? new Date(d.lastSeenAt).getTime() : 0)
-      ];
-      const maxLastSeen = Math.max(...lastSeenTimes);
-      const isOnline = maxLastSeen > 0 && (nowMs - maxLastSeen <= ONLINE_CUTOFF_MS);
+      const latestPacketTime = latestTele?.receivedAt ? new Date(latestTele.receivedAt).getTime() : 0;
+      const isOnline = latestPacketTime > 0 && (nowMs - latestPacketTime <= ONLINE_CUTOFF_MS);
       const deviceStatus: 'ONLINE' | 'OFFLINE' = isOnline ? 'ONLINE' : 'OFFLINE';
 
       return {
@@ -770,7 +768,7 @@ router.get('/status-summary', authenticate, async (req: any, res, next) => {
         lcNumber: gate.lcNumber,
         isOnline,
         deviceStatus,
-        lastSeenAt: maxLastSeen > 0 ? new Date(maxLastSeen).toISOString() : null,
+        lastSeenAt: latestPacketTime > 0 ? new Date(latestPacketTime).toISOString() : null,
         hasMaster: gate.masters.length > 0,
         mastersCount: gate.masters.length,
       };
@@ -944,7 +942,7 @@ router.get('/', authenticate, async (req: any, res, next) => {
 
     // 65-Minute Rule: evaluate device online/offline status per gate
     const nowMs = Date.now();
-    const ONLINE_CUTOFF_MS = 65 * 60 * 1000;
+    const ONLINE_CUTOFF_MS = 5 * 60 * 1000; // 5-minute strict heartbeat window
 
     const allThingNames: string[] = [];
     gates.forEach(g => {
@@ -983,19 +981,15 @@ router.get('/', authenticate, async (req: any, res, next) => {
       ]);
 
       const latestTele = recentTelemetries.find(t => gateThingNames.has(t.thingName));
-      const lastSeenTimes = [
-        latestTele?.receivedAt ? new Date(latestTele.receivedAt).getTime() : 0,
-        ...gate.deviceRegistries.map(d => d.lastSeenAt ? new Date(d.lastSeenAt).getTime() : 0)
-      ];
-      const maxLastSeen = Math.max(...lastSeenTimes);
-      const isOnline = maxLastSeen > 0 && (nowMs - maxLastSeen <= ONLINE_CUTOFF_MS);
+      const latestPacketTime = latestTele?.receivedAt ? new Date(latestTele.receivedAt).getTime() : 0;
+      const isOnline = latestPacketTime > 0 && (nowMs - latestPacketTime <= ONLINE_CUTOFF_MS);
       const deviceStatus: 'ONLINE' | 'OFFLINE' = isOnline ? 'ONLINE' : 'OFFLINE';
 
       return {
         ...gate,
         isOnline,
         deviceStatus,
-        lastSeenAt: maxLastSeen > 0 ? new Date(maxLastSeen).toISOString() : null,
+        lastSeenAt: latestPacketTime > 0 ? new Date(latestPacketTime).toISOString() : null,
       };
     });
 
