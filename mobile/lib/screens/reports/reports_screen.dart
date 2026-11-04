@@ -2043,6 +2043,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                       Text(
                         '${gate['locationName'] ?? ''}${gate['division'] != null ? ' • ${gate['division']} Div' : ''}${gate['zone'] != null ? ' (${gate['zone']})' : ''}',
                         style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ],
                   ),
@@ -2379,19 +2380,23 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('$gateNo', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A))),
-                          Text('$station Station · $div', style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
-                        ],
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('$gateNo', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)), overflow: TextOverflow.ellipsis),
+                            Text('$station Station · $div', style: TextStyle(fontSize: 11, color: Colors.grey.shade600), overflow: TextOverflow.ellipsis),
+                          ],
+                        ),
                       ),
+                      const SizedBox(width: 8),
                       Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
                           _buildMiniBadge('Open', '$gOpen', const Color(0xFF10B981)),
-                          const SizedBox(width: 6),
+                          const SizedBox(width: 4),
                           _buildMiniBadge('Close', '$gClose', const Color(0xFFEF4444)),
-                          const SizedBox(width: 6),
+                          const SizedBox(width: 4),
                           _buildMiniBadge('Total', '$gTotal', const Color(0xFF2563EB)),
                         ],
                       ),
@@ -2428,7 +2433,14 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('$divName Division ($divStations stations, $divGates gates)', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                      Expanded(
+                        child: Text(
+                          '$divName Division ($divStations stations, $divGates gates)',
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
                       Text('$divTotal ops', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF2563EB))),
                     ],
                   ),
@@ -2560,7 +2572,10 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                               Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text('$stName Station', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                  Expanded(
+                                    child: Text('$stName Station', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12), overflow: TextOverflow.ellipsis),
+                                  ),
+                                  const SizedBox(width: 8),
                                   Text('$sOps Total Ops', style: const TextStyle(fontSize: 11, color: Color(0xFF7C3AED), fontWeight: FontWeight.bold)),
                                 ],
                               ),
@@ -2575,7 +2590,10 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                   child: Row(
                                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Text(' • $gNo', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w500)),
+                                      Expanded(
+                                        child: Text(' • $gNo', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w500), overflow: TextOverflow.ellipsis),
+                                      ),
+                                      const SizedBox(width: 8),
                                       Text('Open: $gOpen | Close: $gClose | Avg: $gAvg', style: TextStyle(fontSize: 10.5, color: Colors.grey.shade700)),
                                     ],
                                   ),
