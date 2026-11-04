@@ -1120,13 +1120,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
             const Divider(height: 1, thickness: 1, color: Color(0xFFE5E7EB)),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              child: Material(
-                color: _currentView == 'home' ? AppColors.primary : Colors.transparent,
-                borderRadius: BorderRadius.circular(10),
-                clipBehavior: Clip.antiAlias,
-                child: ListTile(
-                  dense: true,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              child: ListTile(
+                dense: true,
+                tileColor: _currentView == 'home' ? AppColors.primary : Colors.transparent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   title: Text(
                     'Home',
                     style: TextStyle(
@@ -1145,7 +1142,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   },
                 ),
               ),
-            ),
             ..._systemModules.where((m) {
               final slug = (m['slug'] ?? '').toString().toLowerCase();
               final name = (m['name'] ?? '').toString().toLowerCase();
@@ -1162,30 +1158,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
               final isSelected = _currentView == m['slug'];
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                child: Material(
-                  color: isSelected ? AppColors.primary : Colors.transparent,
-                  borderRadius: BorderRadius.circular(10),
-                  clipBehavior: Clip.antiAlias,
-                  child: ListTile(
-                    dense: true,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    title: Text(
-                      _getModuleTitle(m),
-                      style: TextStyle(
-                        fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                        color: isSelected ? Colors.white : const Color(0xFF1E293B),
-                        fontSize: 13.5,
-                      ),
+                child: ListTile(
+                  dense: true,
+                  tileColor: isSelected ? AppColors.primary : Colors.transparent,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  title: Text(
+                    _getModuleTitle(m),
+                    style: TextStyle(
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                      color: isSelected ? Colors.white : const Color(0xFF1E293B),
+                      fontSize: 13.5,
                     ),
-                    leading: Icon(
-                      getIconForModule(m['slug']),
-                      color: isSelected ? Colors.white : const Color(0xFF64748B),
-                    ),
-                    onTap: () {
-                      setState(() { _currentView = m['slug']; });
-                      Navigator.pop(context);
-                    },
                   ),
+                  leading: Icon(
+                    getIconForModule(m['slug']),
+                    color: isSelected ? Colors.white : const Color(0xFF64748B),
+                  ),
+                  onTap: () {
+                    setState(() { _currentView = m['slug']; });
+                    Navigator.pop(context);
+                  },
                 ),
               );
             }),

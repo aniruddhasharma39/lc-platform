@@ -1675,12 +1675,16 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                       color: isSelected ? Colors.white : Colors.grey.shade700,
                     ),
                     const SizedBox(width: 4),
-                    Text(
-                      tab['label'] as String,
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.bold,
-                        color: isSelected ? Colors.white : Colors.grey.shade700,
+                    Flexible(
+                      child: Text(
+                        tab['label'] as String,
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.bold,
+                          color: isSelected ? Colors.white : Colors.grey.shade700,
+                        ),
                       ),
                     ),
                   ],
@@ -2016,10 +2020,22 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                     children: [
                       Row(
                         children: [
-                          Text(gate['lcNumber'] ?? 'LC', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF046A38))),
+                          Flexible(
+                            child: Text(
+                              gate['lcNumber'] ?? 'LC',
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF046A38)),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
                           if (gate['name'] != null && gate['name'].toString().isNotEmpty) ...[
                             const SizedBox(width: 6),
-                            Text('• ${gate['name']}', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                            Flexible(
+                              child: Text(
+                                '• ${gate['name']}',
+                                style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
                           ],
                         ],
                       ),
@@ -2063,16 +2079,19 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(d['dateFormatted'] ?? d['dateStr'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12)),
-                          const SizedBox(height: 2),
-                          Text(
-                            'Closed: ${d['totalClosedFormatted'] ?? '0s'} • Open: ${d['totalOpenFormatted'] ?? '0s'}',
-                            style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600),
-                          ),
-                        ],
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(d['dateFormatted'] ?? d['dateStr'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12), overflow: TextOverflow.ellipsis),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Closed: ${d['totalClosedFormatted'] ?? '0s'} • Open: ${d['totalOpenFormatted'] ?? '0s'}',
+                              style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
                       ),
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.end,
