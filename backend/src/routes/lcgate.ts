@@ -237,7 +237,8 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
           orderBy: { masterSequence: 'asc' },
           include: {
             childDevices: true,
-            deviceRegistries: true
+            deviceRegistries: true,
+            evidences: true,
           }
         }
       }

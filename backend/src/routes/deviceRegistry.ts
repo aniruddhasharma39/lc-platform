@@ -41,9 +41,14 @@ async function uploadSimImage(base64Str: string): Promise<string> {
   let imageUrl = `/uploads/${filename}`;
   try {
     const uploadResult = await new Promise<any>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Cloudinary SIM upload timed out after 8s'));
+      }, 8000);
+
       const stream = cloudinary.uploader.upload_stream(
         { folder: 'lc-platform-evidence', resource_type: 'image' },
         (error, result) => {
+          clearTimeout(timeout);
           if (error) reject(error);
           else resolve(result);
         }

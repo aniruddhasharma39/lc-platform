@@ -26,6 +26,23 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
 
   Future<void> _fetchEvidences({bool isManual = false}) async {
     try {
+      // 1. Direct fetch from dedicated evidence endpoint
+      final directRes = await http.get(
+        Uri.parse('$baseUrl/evidence/master/${widget.master['id']}'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (directRes.statusCode == 200) {
+        final List data = json.decode(directRes.body);
+        if (mounted) {
+          setState(() => evidences = data);
+          if (isManual) {
+            AppFeedback.showSuccess(context, 'Evidence checklist synchronized.');
+          }
+        }
+        return;
+      }
+
+      // 2. Fallback to /lcgate
       final res = await http.get(
         Uri.parse('$baseUrl/lcgate'),
         headers: {'Authorization': 'Bearer ${widget.token}'},

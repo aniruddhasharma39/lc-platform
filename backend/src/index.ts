@@ -47,6 +47,7 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+app.use('/api/v1/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 // Normalize repeated slashes in request paths (e.g., //api/v1 -> /api/v1)
 app.use((req, res, next) => {

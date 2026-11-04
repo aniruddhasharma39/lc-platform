@@ -2305,6 +2305,7 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
                       disabledBackgroundColor: AppColors.primary,
+                      disabledForegroundColor: Colors.white,
                       elevation: _isSaving ? 0 : 2,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                     ),
