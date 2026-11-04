@@ -2,159 +2,93 @@ import 'dotenv/config';
 import { prisma } from '../src/lib/prisma';
 import { bumpDirectoryRevision } from '../src/lib/revisionManager';
 import { bumpReportRevision } from '../src/lib/reportRevisionManager';
+import { parseGateStateFromPayload } from '../src/lib/telemetryMonitor';
 
 async function seedGatesAndEvents() {
-  console.log('Seeding LC Gates, Scope Groups, and Historical Telemetry Events...');
+  console.log('Ensuring LC Gates and Real Telemetry synchronization (NO FAKE DATA)...');
 
-  console.log('Role-based access mode: ensuring LC gates metadata...');
-
-  // 2. Gates metadata
-  const gatesData: any[] = [];
   const createdGates = await prisma.lCGate.findMany();
-  for (const g of gatesData) {
-    const existing = await prisma.lCGate.findUnique({ where: { id: g.id } });
-    let gate;
-    if (existing) {
-      gate = existing;
-    } else {
-      gate = await prisma.lCGate.create({
-        data: {
-          id: g.id,
-          lcNumber: g.lcNumber,
-          name: g.name,
-          locationName: g.locationName,
-          zone: g.zone,
-          division: g.division,
-          latitude: 19.0 + (g.id * 0.01),
-          longitude: 72.8 + (g.id * 0.01)
-        }
-      });
-    }
-    createdGates.push(gate);
+  console.log(`Found ${createdGates.length} active LC Gates.`);
 
-    // Link gate directly to user access
-    const allUsers = await prisma.user.findMany({ select: { id: true } });
-    for (const u of allUsers) {
-      await prisma.userGate.upsert({
-        where: { userId_gateId: { userId: u.id, gateId: gate.id } },
-        update: {},
-        create: { userId: u.id, gateId: gate.id }
-      }).catch(() => {});
-    }
+  // 1. Sync real telemetry from AWS IoT (DeviceTelemetry) into LCGateEvent
+  const realTelemetry = await prisma.deviceTelemetry.findMany({
+    where: {
+      thingName: 'LC-M-001'
+    },
+    orderBy: { receivedAt: 'asc' }
+  });
 
-    // Ensure MasterUnit and ChildDevice
-    let master = await prisma.masterUnit.findFirst({ where: { gateId: gate.id } });
-    if (!master) {
-      master = await prisma.masterUnit.create({
-        data: {
-          serialNumber: `MST-${g.lcNumber}`,
-          masterSequence: 1,
-          powerSource: 'SOLAR',
-          gateId: gate.id,
-        }
-      });
-      await prisma.childDevice.create({
-        data: {
-          serialNumber: `SLV-${g.lcNumber}-01`,
-          type: 'DEVICE_1',
-          deviceSequence: 1,
-          masterId: master.id,
-        }
-      });
-    }
-
-    // Link device in DeviceRegistry to this gate
-    await prisma.deviceRegistry.updateMany({
-      where: { serialNumber: g.lcNumber },
-      data: { gateId: gate.id, masterId: master.id }
+  if (realTelemetry.length > 0) {
+    console.log(`Found ${realTelemetry.length} real physical telemetry records for LC-M-001 from AWS IoT.`);
+    
+    // Find gate linked to LC-M-001
+    const dev = await prisma.deviceRegistry.findFirst({
+      where: { thingName: 'LC-M-001' },
+      select: { gateId: true }
     });
-  }
-  console.log(`Ensured ${createdGates.length} LC Gates created and mapped.`);
 
-  // 3. Seed 35 days of realistic operational events
-  const TRAIN_MOVEMENTS = [
-    '12951 Mumbai Central - New Delhi Rajdhani Exp',
-    '12952 New Delhi - Mumbai Rajdhani Exp',
-    '12903 Golden Temple Mail',
-    '12904 Golden Temple Mail (Down)',
-    '19019 Bandra Terminus - Haridwar Dehradun Exp',
-    '22914 BDTS Humsafar Express',
-    '12925 Paschim Superfast Express',
-    'Goods Freight DN-402 (Coal Rake)',
-    'Goods Container UP-819 (CONCOR)',
-    'Routine Road Traffic Clearance',
-    'Track Maintenance Machine Movement',
-    'Shunting Engine Movement (Yard to Main)'
-  ];
+    const targetGateId = dev?.gateId || (createdGates.find(g => g.lcNumber === 'LC-30')?.id || createdGates[0]?.id);
 
-  const OPERATORS = [
-    'Gatesman Rajesh Sharma',
-    'Gatesman Arvind Patel',
-    'Gatesman Mukesh Meena',
-    'Station Master K. K. Verma',
-    'Station Master S. N. Trivedi',
-    'Auto-Interlock / Track Circuit Trigger',
-    'Section Traffic Controller'
-  ];
+    if (targetGateId) {
+      let transitions: any[] = [];
+      let prevState: string | null = null;
 
-  const now = new Date();
-  const eventsToCreate: any[] = [];
+      for (const r of realTelemetry) {
+        const state = parseGateStateFromPayload(r.payload);
+        if (!state) continue;
 
-  for (let dayOffset = 35; dayOffset >= 0; dayOffset--) {
-    const targetDate = new Date(now);
-    targetDate.setDate(now.getDate() - dayOffset);
+        if (state !== prevState) {
+          transitions.push({
+            id: r.id,
+            receivedAt: r.receivedAt,
+            state,
+            payload: r.payload
+          });
+          prevState = state;
+        }
+      }
 
-    for (const gate of createdGates) {
-      const seedValue = (gate.id * 37 + dayOffset * 17) % 5;
-      const operationsToday = 4 + seedValue; // 4 to 8 operations per day
-      const stepHours = 24 / operationsToday;
+      // Check existing events count
+      const existingCount = await prisma.lCGateEvent.count({
+        where: { gateId: targetGateId }
+      });
 
-      for (let opIdx = 0; opIdx < operationsToday; opIdx++) {
-        const hour = Math.floor(opIdx * stepHours) % 24;
-        const minute = (opIdx * 19 + gate.id * 7) % 60;
-        const second = (opIdx * 11) % 60;
+      if (existingCount === 0) {
+        const realEventsToCreate: any[] = [];
+        let currentOpen: any = null;
 
-        const openedAt = new Date(targetDate);
-        openedAt.setHours(hour, minute, second, 0);
+        for (const tr of transitions) {
+          if (tr.state === 'OPEN') {
+            currentOpen = tr;
+          } else if (tr.state === 'CLOSED' && currentOpen) {
+            const openTime = new Date(currentOpen.receivedAt);
+            const closeTime = new Date(tr.receivedAt);
+            const durationSeconds = Math.max(0, Math.round((closeTime.getTime() - openTime.getTime()) / 1000));
+            const status = durationSeconds > 900 ? 'EXTENDED_DELAY' : 'CLOSED';
 
-        if (openedAt > now) continue;
+            realEventsToCreate.push({
+              gateId: targetGateId,
+              openedAt: openTime,
+              closedAt: closeTime,
+              durationSeconds,
+              status,
+              openedBy: 'AWS IoT / LC-M-001',
+              closedBy: 'AWS IoT / LC-M-001',
+              trainNumber: null,
+              remarks: 'Physical LimitSwitch transition detected via AWS IoT Telemetry'
+            });
+            currentOpen = null;
+          }
+        }
 
-        const isDelayed = (opIdx + dayOffset) % 7 === 0;
-        const durationSeconds = isDelayed
-          ? 960 + ((opIdx * 33) % 400) // 16 to 22 mins
-          : 240 + ((opIdx * 47) % 480); // 4 to 12 mins
-
-        const closedAt = new Date(openedAt.getTime() + durationSeconds * 1000);
-
-        // If today and very recent (within 10 mins), leave open
-        const isCurrentlyOpen = dayOffset === 0 && opIdx === operationsToday - 1 && (now.getTime() - openedAt.getTime()) < 10 * 60 * 1000;
-
-        const trainIdx = (gate.id + dayOffset + opIdx) % TRAIN_MOVEMENTS.length;
-        const operatorIdx = (gate.id * 2 + opIdx) % OPERATORS.length;
-
-        eventsToCreate.push({
-          gateId: gate.id,
-          openedAt,
-          closedAt: isCurrentlyOpen ? null : (closedAt > now ? now : closedAt),
-          durationSeconds: isCurrentlyOpen ? null : Math.round((Math.min(closedAt.getTime(), now.getTime()) - openedAt.getTime()) / 1000),
-          status: isCurrentlyOpen ? 'OPEN' : (isDelayed ? 'EXTENDED_DELAY' : 'CLOSED'),
-          openedBy: OPERATORS[operatorIdx],
-          closedBy: isCurrentlyOpen ? null : OPERATORS[operatorIdx],
-          trainNumber: TRAIN_MOVEMENTS[trainIdx],
-          remarks: isDelayed
-            ? 'Road traffic congestion cleared before barrier locking'
-            : (isCurrentlyOpen ? 'Barrier raised for road transit clearance' : 'Standard railway block clearance completed safely')
-        });
+        if (realEventsToCreate.length > 0) {
+          await prisma.lCGateEvent.createMany({
+            data: realEventsToCreate
+          });
+          console.log(`Synced ${realEventsToCreate.length} real AWS telemetry events for Gate #${targetGateId}.`);
+        }
       }
     }
-  }
-
-  if (eventsToCreate.length > 0) {
-    await prisma.lCGateEvent.createMany({
-      data: eventsToCreate,
-      skipDuplicates: true
-    });
-    console.log(`Seeded ${eventsToCreate.length} operational events!`);
   }
 
   // Bump revisions
@@ -162,16 +96,16 @@ async function seedGatesAndEvents() {
   for (const g of createdGates) {
     await bumpReportRevision(g.id);
   }
-  console.log('Bumpped directory and report revisions.');
+  console.log('Bumped directory and report revisions.');
 }
 
 seedGatesAndEvents()
   .then(() => {
-    console.log('Seeding completed successfully!');
+    console.log('Gate & Real Telemetry sync completed successfully!');
     process.exit(0);
   })
   .catch((err) => {
-    console.error('Seeding failed:', err);
+    console.error('Sync failed:', err);
     process.exit(1);
   })
   .finally(() => prisma.$disconnect());

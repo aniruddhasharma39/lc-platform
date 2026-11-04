@@ -121,7 +121,7 @@ export interface IncrementalChangesPayload {
 }
 
 class ReportsWebCacheService {
-  public static readonly SCHEMA_VERSION = 1;
+  public static readonly SCHEMA_VERSION = 2;
 
   // TTL Configurations
   public static readonly FRESH_REPORT_TTL_MS = 2 * 60 * 1000;     // 2 minutes for active reports

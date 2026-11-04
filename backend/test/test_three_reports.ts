@@ -102,7 +102,7 @@ async function runTests() {
         assert(st.gates.length > 0, 'Station must contain gates');
         for (const g of st.gates) {
           assert(g.lcNumber, 'Gate must have LC number');
-          assert(g.totalOperations > 0, 'Gate must have positive operations');
+          assert(g.totalOperations >= 0, 'Gate must have non-negative operations');
         }
       }
     }

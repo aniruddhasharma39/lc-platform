@@ -463,7 +463,7 @@ class ReportsCacheService {
   ReportsCacheService._internal();
   static final ReportsCacheService instance = ReportsCacheService._internal();
 
-  static const int currentSchemaVersion = 1;
+  static const int currentSchemaVersion = 2;
 
   // TTL Configurations
   static const Duration freshReportTtl = Duration(minutes: 2);
