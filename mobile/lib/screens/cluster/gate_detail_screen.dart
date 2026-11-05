@@ -827,44 +827,26 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                       ),
                       const SizedBox(height: 8),
                       if (slavePhoto == null) ...[
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                onPressed: () async {
-                                  try {
-                                    final img = await picker.pickImage(source: ImageSource.camera, imageQuality: 80);
-                                    if (img != null) {
-                                      setDialogState(() => slavePhoto = img);
-                                    }
-                                  } catch (e) {
-                                    debugPrint('Camera error: $e');
-                                  }
-                                },
-                                icon: const Icon(Icons.camera_alt, size: 16),
-                                label: const Text('Camera', style: TextStyle(fontSize: 12)),
-                                style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
-                              ),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: () async {
+                              try {
+                                final img = await picker.pickImage(source: ImageSource.camera, imageQuality: 80);
+                                if (img != null) {
+                                  setDialogState(() => slavePhoto = img);
+                                }
+                              } catch (e) {
+                                debugPrint('Camera error: $e');
+                              }
+                            },
+                            icon: const Icon(Icons.camera_alt, size: 16, color: Color(0xFF0B3C7A)),
+                            label: const Text('Capture Live Photo (Camera)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0B3C7A))),
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(color: Color(0xFF0B3C7A)),
+                              padding: const EdgeInsets.symmetric(vertical: 10),
                             ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                onPressed: () async {
-                                  try {
-                                    final img = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
-                                    if (img != null) {
-                                      setDialogState(() => slavePhoto = img);
-                                    }
-                                  } catch (e) {
-                                    debugPrint('Gallery error: $e');
-                                  }
-                                },
-                                icon: const Icon(Icons.photo_library, size: 16),
-                                label: const Text('Gallery', style: TextStyle(fontSize: 12)),
-                                style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
-                              ),
-                            ),
-                          ],
+                          ),
                         ),
                       ] else ...[
                         Row(

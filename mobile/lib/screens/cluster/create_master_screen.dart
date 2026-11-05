@@ -467,24 +467,16 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
                               ],
                             )
                           else
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: OutlinedButton.icon(
-                                    icon: const Icon(Icons.camera_alt_outlined, size: 16),
-                                    label: const Text('Camera', style: TextStyle(fontSize: 12)),
-                                    onPressed: () => _pickSimImage(ImageSource.camera),
-                                  ),
+                            SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton.icon(
+                                icon: const Icon(Icons.camera_alt_outlined, size: 16),
+                                label: const Text('Capture Live Photo (Camera)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                                onPressed: () => _pickSimImage(ImageSource.camera),
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(vertical: 10),
                                 ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: OutlinedButton.icon(
-                                    icon: const Icon(Icons.photo_library_outlined, size: 16),
-                                    label: const Text('Gallery', style: TextStyle(fontSize: 12)),
-                                    onPressed: () => _pickSimImage(ImageSource.gallery),
-                                  ),
-                                ),
-                              ],
+                              ),
                             ),
                         ],
                       ),

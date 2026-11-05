@@ -355,10 +355,10 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
         setState(() {
           _image = photo;
           _imageBytes = bytes;
-          _sourceLabel = source == ImageSource.camera ? 'Live Camera' : 'Gallery / File';
+          _sourceLabel = 'Live Camera';
         });
         if (mounted) {
-          AppFeedback.showSuccess(context, 'Photo captured via $_sourceLabel.');
+          AppFeedback.showSuccess(context, 'Photo captured via Live Camera.');
         }
         _refreshLocationStatus();
       }
@@ -646,34 +646,23 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
                 Text('Source: $_sourceLabel', style: const TextStyle(color: Colors.grey, fontSize: 13)),
                 const SizedBox(height: 16),
               ],
-              Wrap(
-                spacing: 12,
-                runSpacing: 10,
-                alignment: WrapAlignment.center,
-                children: [
-                  ElevatedButton.icon(
-                    icon: const Icon(Icons.camera_alt),
-                    label: Text(_imageBytes == null ? 'Capture Photo' : 'Retake (Camera)'),
-                    onPressed: _isLoading ? null : () => _pickImage(ImageSource.camera),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF0B3C7A),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  icon: const Icon(Icons.camera_alt, size: 20),
+                  label: Text(
+                    _imageBytes == null ? 'Capture Live Photo (Camera Only)' : 'Retake Live Photo (Camera)',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                   ),
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.photo_library),
-                    label: Text(_imageBytes == null ? 'Select from Gallery' : 'Choose Different'),
-                    onPressed: _isLoading ? null : () => _pickImage(ImageSource.gallery),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF0B3C7A),
-                      side: const BorderSide(color: Color(0xFF0B3C7A), width: 1.5),
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
+                  onPressed: _isLoading ? null : () => _pickImage(ImageSource.camera),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF0B3C7A),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    elevation: 1,
                   ),
-                ],
+                ),
               ),
               const SizedBox(height: 8),
               Row(
