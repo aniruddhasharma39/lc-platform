@@ -9,7 +9,6 @@ import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
 import '../../services/lc_gates_cache_service.dart';
-import '../cluster/upload_evidence_screen.dart';
 
 class LCGatesScreen extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -441,47 +440,13 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     }
   }
 
-  // Launch upload evidence screen and invalidate cache upon completion
-  Future<void> _launchUploadEvidence({
-    required Map<String, dynamic> gate,
-    required int masterId,
-    required String category,
-    required String targetName,
-    int? childDeviceId,
-  }) async {
-    final res = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => UploadEvidenceScreen(
-          token: _token,
-          masterId: masterId,
-          childDeviceId: childDeviceId,
-          category: category,
-          targetName: targetName,
-        ),
-      ),
-    );
-    if (res != null) {
-      final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
-      await LCGatesCacheService.instance.markStale(_userId);
-      await _fetchData(isManual: true);
-      if (gateId > 0) {
-        await _refreshSelectedGate(gateId);
-      }
-      if (mounted) {
-        AppFeedback.showSuccess(context, '$targetName evidence photo updated successfully!');
-      }
-    }
-  }
-
-  // Evidence Photo Full View Dialog
+  // Evidence Photo Full View Dialog (Read-Only)
   void _showEvidenceDialog({
     required Map<String, dynamic> gate,
     required Map<String, dynamic> evidence,
     String? itemTitle,
     int? masterSeq,
     int? deviceSeq,
-    VoidCallback? onUpload,
   }) {
     showDialog(
       context: context,
@@ -610,47 +575,15 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                         ),
                       ],
                       const SizedBox(height: 12),
-                      if (onUpload != null)
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(vertical: 8),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                ),
-                                onPressed: () {
-                                  Navigator.pop(ctx);
-                                  onUpload();
-                                },
-                                icon: const Icon(Icons.camera_alt_outlined, size: 16),
-                                label: const Text('Update Photo', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: AppColors.primary,
-                                  padding: const EdgeInsets.symmetric(vertical: 8),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                ),
-                                onPressed: () => Navigator.pop(ctx),
-                                child: const Text('Close Viewer', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
-                              ),
-                            ),
-                          ],
-                        )
-                      else
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.primary,
-                            minimumSize: const Size.fromHeight(38),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                          onPressed: () => Navigator.pop(ctx),
-                          child: const Text('Close Viewer', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          minimumSize: const Size.fromHeight(38),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                         ),
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('Close Viewer', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      ),
                     ],
                   ),
                 ),
@@ -2041,14 +1974,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                               gate: gate,
                               masterSeq: master['masterSequence'],
                               emptyLabel: 'No installation photo uploaded for Master unit.',
-                              onUpload: master['id'] != null
-                                  ? () => _launchUploadEvidence(
-                                        gate: gate,
-                                        masterId: master['id'],
-                                        category: 'MASTER',
-                                        targetName: 'Master Gateway ESP',
-                                      )
-                                  : null,
                             ),
                             const SizedBox(height: 10),
 
@@ -2062,14 +1987,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                               gate: gate,
                               masterSeq: master['masterSequence'],
                               emptyLabel: 'No installation photo uploaded for SIM card.',
-                              onUpload: master['id'] != null
-                                  ? () => _launchUploadEvidence(
-                                        gate: gate,
-                                        masterId: master['id'],
-                                        category: 'SIM_CARD',
-                                        targetName: 'Installed SIM Card',
-                                      )
-                                  : null,
                             ),
                             const SizedBox(height: 10),
 
@@ -2083,14 +2000,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                               gate: gate,
                               masterSeq: master['masterSequence'],
                               emptyLabel: 'No installation photo uploaded for Power source.',
-                              onUpload: master['id'] != null
-                                  ? () => _launchUploadEvidence(
-                                        gate: gate,
-                                        masterId: master['id'],
-                                        category: 'POWER_SOURCE',
-                                        targetName: master['powerSource'] == 'SOLAR' ? 'Solar Power Source' : 'Direct AC Power Source',
-                                      )
-                                  : null,
                             ),
                             const SizedBox(height: 12),
 
@@ -2203,15 +2112,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                                         masterSeq: master['masterSequence'],
                                                         deviceSeq: child['deviceSequence'],
                                                         emptyMessage: 'No installation photo uploaded for this slave sensor.',
-                                                        onUpload: master['id'] != null
-                                                            ? () => _launchUploadEvidence(
-                                                                  gate: gate,
-                                                                  masterId: master['id'],
-                                                                  childDeviceId: child['id'],
-                                                                  category: child['type']?.toString() ?? 'DEVICE_1',
-                                                                  targetName: 'Slave ',
-                                                                )
-                                                            : null,
                                                       ),
                                                     ],
                                                   ),
@@ -2238,7 +2138,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     );
   }
 
-  // Component Evidence Card Builder
+  // Component Evidence Card Builder (View Only)
   Widget _buildDeviceEvidenceCard({
     required String title,
     required String subtitle,
@@ -2248,7 +2148,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     required Map<String, dynamic> gate,
     required int? masterSeq,
     required String emptyLabel,
-    VoidCallback? onUpload,
   }) {
     return Container(
       padding: const EdgeInsets.all(10),
@@ -2281,14 +2180,13 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             itemTitle: title,
             masterSeq: masterSeq,
             emptyMessage: emptyLabel,
-            onUpload: onUpload,
           ),
         ],
       ),
     );
   }
 
-  // Photo Thumbnail Row with High Quality Full Photo Modal
+  // Photo Thumbnail Row with High Quality Full Photo Modal (View Only)
   Widget _buildPhotoThumbnailRow({
     required Map<String, dynamic>? evidence,
     required Map<String, dynamic> gate,
@@ -2296,7 +2194,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     int? masterSeq,
     int? deviceSeq,
     required String emptyMessage,
-    VoidCallback? onUpload,
   }) {
     if (evidence == null) {
       return Container(
@@ -2316,23 +2213,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                 style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
               ),
             ),
-            if (onUpload != null) ...[
-              const SizedBox(width: 8),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF0B3C7A),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  minimumSize: const Size(76, 28),
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
-                  elevation: 0,
-                ),
-                icon: const Icon(Icons.camera_alt, size: 12, color: Colors.white),
-                label: const Text('Upload', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                onPressed: onUpload,
-              ),
-            ],
           ],
         ),
       );
@@ -2358,7 +2238,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               itemTitle: itemTitle,
               masterSeq: masterSeq,
               deviceSeq: deviceSeq,
-              onUpload: onUpload,
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(6),
@@ -2407,26 +2286,9 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               itemTitle: itemTitle,
               masterSeq: masterSeq,
               deviceSeq: deviceSeq,
-              onUpload: onUpload,
             ),
             child: const Text('View Photo', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold)),
           ),
-          if (onUpload != null) ...[
-            const SizedBox(width: 6),
-            InkWell(
-              onTap: onUpload,
-              borderRadius: BorderRadius.circular(4),
-              child: Container(
-                padding: const EdgeInsets.all(5),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF1F5F9),
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: const Color(0xFFCBD5E1)),
-                ),
-                child: const Icon(Icons.camera_alt_outlined, size: 14, color: Color(0xFF0B3C7A)),
-              ),
-            ),
-          ],
         ],
       ),
     );
