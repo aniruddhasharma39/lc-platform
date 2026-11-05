@@ -1376,6 +1376,50 @@ router.put('/:id', authenticate, async (req, res, next) => {
       },
     });
 
+    // Reconcile SIM InstallationEvidence with DeviceRegistry on assignment or update
+    const finalSimPhoto = (updated as any).simPhotoUrl;
+    if (updated.masterId && finalSimPhoto) {
+      try {
+        const existingEv = await prisma.installationEvidence.findFirst({
+          where: { masterId: updated.masterId, category: 'SIM_CARD' },
+        });
+        if (existingEv) {
+          if (existingEv.imageUrl !== finalSimPhoto) {
+            await prisma.installationEvidence.update({
+              where: { id: existingEv.id },
+              data: { imageUrl: finalSimPhoto },
+            });
+          }
+        } else {
+          await prisma.installationEvidence.create({
+            data: {
+              masterId: updated.masterId,
+              category: 'SIM_CARD',
+              imageUrl: finalSimPhoto,
+              userId: (req as any).user?.id || 1,
+            },
+          });
+        }
+      } catch (evErr) {
+        console.warn('Failed to reconcile SIM InstallationEvidence on device update:', evErr);
+      }
+    } else if (updated.masterId && !finalSimPhoto) {
+      try {
+        const simEv = await prisma.installationEvidence.findFirst({
+          where: { masterId: updated.masterId, category: 'SIM_CARD' },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (simEv && simEv.imageUrl) {
+          await prisma.deviceRegistry.update({
+            where: { id: updated.id },
+            data: { simPhotoUrl: simEv.imageUrl } as any,
+          });
+        }
+      } catch (evErr) {
+        console.warn('Failed to reverse reconcile SIM photo to DeviceRegistry:', evErr);
+      }
+    }
+
     // Invalidate Cluster cache if device assignment changed or belongs to a gate
     const affectedGateIds = [existing.gateId, updated.gateId].filter((gid): gid is number => typeof gid === 'number');
     if (affectedGateIds.length > 0) {

@@ -83,12 +83,17 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
   }
 
   String _fullImageUrl(String url) {
-    if (url.startsWith('http://') || url.startsWith('https://')) return url;
-    final base = baseUrl; // https://<host>/api/v1
-    final host = base.endsWith('/api/v1')
-        ? base.substring(0, base.length - '/api/v1'.length)
-        : base;
-    return '$host$url';
+    if (url.isEmpty) return '';
+    String resolved = url;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      final base = baseUrl; // https://<host>/api/v1
+      final host = base.endsWith('/api/v1')
+          ? base.substring(0, base.length - '/api/v1'.length)
+          : base;
+      resolved = '$host$url';
+    }
+    final separator = resolved.contains('?') ? '&' : '?';
+    return '$resolved${separator}_t=${DateTime.now().millisecondsSinceEpoch}';
   }
 
   void _onUploadSuccess(Map newEvidence) {
@@ -273,6 +278,30 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
           ],
         ),
       ),
+      bottomNavigationBar: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          boxShadow: [
+            BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 8, offset: const Offset(0, -2)),
+          ],
+        ),
+        child: SafeArea(
+          child: ElevatedButton.icon(
+            icon: const Icon(Icons.arrow_back, color: Colors.white, size: 20),
+            label: const Text(
+              'Done • Return to Gate Details',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF0B3C7A),
+              minimumSize: const Size.fromHeight(48),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: () => Navigator.pop(context, true),
+          ),
+        ),
+      ),
     );
   }
 
@@ -292,9 +321,20 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
       color: isDone ? Colors.green.shade50 : null,
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        onTap: isDone ? () => _viewPhoto(evidence!) : onUpload,
         leading: Icon(isDone ? Icons.check_circle : Icons.camera_alt, color: isDone ? Colors.green : Colors.blue, size: 32),
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text(description),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(description),
+            const SizedBox(height: 2),
+            Text(
+              isDone ? 'Tap to view full photo' : 'Tap anywhere to upload photo',
+              style: TextStyle(fontSize: 11, color: isDone ? Colors.green.shade700 : Colors.blue.shade700, fontWeight: FontWeight.w500),
+            ),
+          ],
+        ),
         trailing: isDone
           ? Row(
               mainAxisSize: MainAxisSize.min,

@@ -9,6 +9,7 @@ import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
 import '../../services/lc_gates_cache_service.dart';
+import '../cluster/upload_evidence_screen.dart';
 
 class LCGatesScreen extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -50,12 +51,16 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
 
   String getFullImageUrl(String? url) {
     if (url == null || url.isEmpty) return '';
-    if (url.startsWith('http://') || url.startsWith('https://')) return url;
-    final base = baseUrl;
-    final host = base.endsWith('/api/v1')
-        ? base.substring(0, base.length - '/api/v1'.length)
-        : base;
-    return '$host$url';
+    String resolved = url;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      final base = baseUrl;
+      final host = base.endsWith('/api/v1')
+          ? base.substring(0, base.length - '/api/v1'.length)
+          : base;
+      resolved = '$host$url';
+    }
+    final separator = resolved.contains('?') ? '&' : '?';
+    return '$resolved${separator}_t=${DateTime.now().millisecondsSinceEpoch}';
   }
 
   Color parseHexColor(dynamic hexStr, {Color fallback = AppColors.primary}) {
@@ -310,6 +315,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     String category, [
     int? childDeviceId,
     String? childType,
+    Map<String, dynamic>? gate,
   ]) {
     final mEvs = (master['evidences'] as List?) ?? [];
     for (final e in mEvs) {
@@ -328,6 +334,33 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
           final cEvs = (c['evidences'] as List?) ?? [];
           if (cEvs.isNotEmpty && cEvs.first is Map) {
             return Map<String, dynamic>.from(cEvs.first as Map);
+          }
+        }
+      }
+    }
+    // Fallback for SIM_CARD: check deviceRegistries on master or gate
+    if (category == 'SIM_CARD') {
+      final mRegs = (master['deviceRegistries'] as List?) ?? [];
+      for (final r in mRegs) {
+        if (r is Map && r['simPhotoUrl'] != null && r['simPhotoUrl'].toString().isNotEmpty) {
+          return {
+            'imageUrl': r['simPhotoUrl'],
+            'category': 'SIM_CARD',
+            'createdAt': r['updatedAt'] ?? r['createdAt'],
+            'source': 'DEVICE_REGISTRY',
+          };
+        }
+      }
+      if (gate != null) {
+        final gRegs = (gate['deviceRegistries'] as List?) ?? [];
+        for (final r in gRegs) {
+          if (r is Map && r['simPhotoUrl'] != null && r['simPhotoUrl'].toString().isNotEmpty) {
+            return {
+              'imageUrl': r['simPhotoUrl'],
+              'category': 'SIM_CARD',
+              'createdAt': r['updatedAt'] ?? r['createdAt'],
+              'source': 'DEVICE_REGISTRY',
+            };
           }
         }
       }
@@ -408,6 +441,39 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     }
   }
 
+  // Launch upload evidence screen and invalidate cache upon completion
+  Future<void> _launchUploadEvidence({
+    required Map<String, dynamic> gate,
+    required int masterId,
+    required String category,
+    required String targetName,
+    int? childDeviceId,
+  }) async {
+    final res = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => UploadEvidenceScreen(
+          token: _token,
+          masterId: masterId,
+          childDeviceId: childDeviceId,
+          category: category,
+          targetName: targetName,
+        ),
+      ),
+    );
+    if (res != null) {
+      final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
+      await LCGatesCacheService.instance.markStale(_userId);
+      await _fetchData(isManual: true);
+      if (gateId > 0) {
+        await _refreshSelectedGate(gateId);
+      }
+      if (mounted) {
+        AppFeedback.showSuccess(context, '$targetName evidence photo updated successfully!');
+      }
+    }
+  }
+
   // Evidence Photo Full View Dialog
   void _showEvidenceDialog({
     required Map<String, dynamic> gate,
@@ -415,6 +481,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     String? itemTitle,
     int? masterSeq,
     int? deviceSeq,
+    VoidCallback? onUpload,
   }) {
     showDialog(
       context: context,
@@ -543,15 +610,47 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                         ),
                       ],
                       const SizedBox(height: 12),
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.primary,
-                          minimumSize: const Size.fromHeight(38),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      if (onUpload != null)
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  onUpload();
+                                },
+                                icon: const Icon(Icons.camera_alt_outlined, size: 16),
+                                label: const Text('Update Photo', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.primary,
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                                onPressed: () => Navigator.pop(ctx),
+                                child: const Text('Close Viewer', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                              ),
+                            ),
+                          ],
+                        )
+                      else
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.primary,
+                            minimumSize: const Size.fromHeight(38),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('Close Viewer', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                         ),
-                        onPressed: () => Navigator.pop(ctx),
-                        child: const Text('Close Viewer', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                      ),
                     ],
                   ),
                 ),
@@ -1791,7 +1890,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
 
               // Extract component-wise evidence photos uploaded during setup
               final masterEv = _findDeviceEvidence(master, 'MASTER');
-              final simEv = _findDeviceEvidence(master, 'SIM_CARD');
+              final simEv = _findDeviceEvidence(master, 'SIM_CARD', null, null, gate);
               final powerEv = _findDeviceEvidence(master, 'POWER_SOURCE');
 
               return Container(
@@ -1942,6 +2041,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                               gate: gate,
                               masterSeq: master['masterSequence'],
                               emptyLabel: 'No installation photo uploaded for Master unit.',
+                              onUpload: master['id'] != null
+                                  ? () => _launchUploadEvidence(
+                                        gate: gate,
+                                        masterId: master['id'],
+                                        category: 'MASTER',
+                                        targetName: 'Master Gateway ESP',
+                                      )
+                                  : null,
                             ),
                             const SizedBox(height: 10),
 
@@ -1955,6 +2062,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                               gate: gate,
                               masterSeq: master['masterSequence'],
                               emptyLabel: 'No installation photo uploaded for SIM card.',
+                              onUpload: master['id'] != null
+                                  ? () => _launchUploadEvidence(
+                                        gate: gate,
+                                        masterId: master['id'],
+                                        category: 'SIM_CARD',
+                                        targetName: 'Installed SIM Card',
+                                      )
+                                  : null,
                             ),
                             const SizedBox(height: 10),
 
@@ -1968,6 +2083,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                               gate: gate,
                               masterSeq: master['masterSequence'],
                               emptyLabel: 'No installation photo uploaded for Power source.',
+                              onUpload: master['id'] != null
+                                  ? () => _launchUploadEvidence(
+                                        gate: gate,
+                                        masterId: master['id'],
+                                        category: 'POWER_SOURCE',
+                                        targetName: master['powerSource'] == 'SOLAR' ? 'Solar Power Source' : 'Direct AC Power Source',
+                                      )
+                                  : null,
                             ),
                             const SizedBox(height: 12),
 
@@ -2009,7 +2132,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                         final rawChild = childDevices[cIdx];
                                         if (rawChild is! Map) return const SizedBox.shrink();
                                         final child = Map<String, dynamic>.from(rawChild);
-                                        final childEv = _findDeviceEvidence(master, child['type'], child['id']);
+                                        final childEv = _findDeviceEvidence(master, child['type'], child['id'], null, gate);
                                         final isSlaveExpanded = _expandedSlaveId == child['id'];
 
                                         return Container(
@@ -2076,10 +2199,19 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                                       _buildPhotoThumbnailRow(
                                                         evidence: childEv,
                                                         gate: gate,
-                                                        itemTitle: 'Slave: ${child['serialNumber']}',
+                                                        itemTitle: 'Slave: ',
                                                         masterSeq: master['masterSequence'],
                                                         deviceSeq: child['deviceSequence'],
                                                         emptyMessage: 'No installation photo uploaded for this slave sensor.',
+                                                        onUpload: master['id'] != null
+                                                            ? () => _launchUploadEvidence(
+                                                                  gate: gate,
+                                                                  masterId: master['id'],
+                                                                  childDeviceId: child['id'],
+                                                                  category: child['type']?.toString() ?? 'DEVICE_1',
+                                                                  targetName: 'Slave ',
+                                                                )
+                                                            : null,
                                                       ),
                                                     ],
                                                   ),
@@ -2116,6 +2248,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     required Map<String, dynamic> gate,
     required int? masterSeq,
     required String emptyLabel,
+    VoidCallback? onUpload,
   }) {
     return Container(
       padding: const EdgeInsets.all(10),
@@ -2148,6 +2281,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             itemTitle: title,
             masterSeq: masterSeq,
             emptyMessage: emptyLabel,
+            onUpload: onUpload,
           ),
         ],
       ),
@@ -2162,6 +2296,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     int? masterSeq,
     int? deviceSeq,
     required String emptyMessage,
+    VoidCallback? onUpload,
   }) {
     if (evidence == null) {
       return Container(
@@ -2181,6 +2316,23 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                 style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
               ),
             ),
+            if (onUpload != null) ...[
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF0B3C7A),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  minimumSize: const Size(76, 28),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
+                  elevation: 0,
+                ),
+                icon: const Icon(Icons.camera_alt, size: 12, color: Colors.white),
+                label: const Text('Upload', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                onPressed: onUpload,
+              ),
+            ],
           ],
         ),
       );
@@ -2206,6 +2358,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               itemTitle: itemTitle,
               masterSeq: masterSeq,
               deviceSeq: deviceSeq,
+              onUpload: onUpload,
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(6),
@@ -2254,9 +2407,26 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               itemTitle: itemTitle,
               masterSeq: masterSeq,
               deviceSeq: deviceSeq,
+              onUpload: onUpload,
             ),
             child: const Text('View Photo', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold)),
           ),
+          if (onUpload != null) ...[
+            const SizedBox(width: 6),
+            InkWell(
+              onTap: onUpload,
+              borderRadius: BorderRadius.circular(4),
+              child: Container(
+                padding: const EdgeInsets.all(5),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: const Color(0xFFCBD5E1)),
+                ),
+                child: const Icon(Icons.camera_alt_outlined, size: 14, color: Color(0xFF0B3C7A)),
+              ),
+            ),
+          ],
         ],
       ),
     );

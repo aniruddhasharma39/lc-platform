@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import 'station_search_sheet.dart';
 import 'railway_data.dart';
 import 'evidence_checklist_screen.dart';
+import 'upload_evidence_screen.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
@@ -954,10 +955,14 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
 
   String _fullImageUrl(String? url) {
     if (url == null || url.isEmpty) return '';
-    if (url.startsWith('http://') || url.startsWith('https://')) return url;
-    final base = baseUrl;
-    final host = base.endsWith('/api/v1') ? base.substring(0, base.length - '/api/v1'.length) : base;
-    return '$host$url';
+    String resolved = url;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      final base = baseUrl;
+      final host = base.endsWith('/api/v1') ? base.substring(0, base.length - '/api/v1'.length) : base;
+      resolved = '$host$url';
+    }
+    final separator = resolved.contains('?') ? '&' : '?';
+    return '$resolved${separator}_t=${DateTime.now().millisecondsSinceEpoch}';
   }
 
   void _showZoomPhoto(String url, String title, [dynamic lat, dynamic lng, String? timestamp]) {
@@ -1023,7 +1028,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
   }
 
   void _showViewEvidenceSheet(Map master) {
-    final evidences = (master['evidences'] as List?) ?? [];
+    final evidences = List<dynamic>.from(master['evidences'] ?? []);
     final childDevices = (master['childDevices'] as List?) ?? [];
 
     Map? findEv(String category, [int? childId]) {
@@ -1038,97 +1043,141 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
       return null;
     }
 
-    final masterEv = findEv('MASTER');
-    final simEv = findEv('SIM_CARD');
-    final powerEv = findEv('POWER_SOURCE');
-
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        height: MediaQuery.of(context).size.height * 0.85,
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        child: Column(
-          children: [
-            Container(
-              margin: const EdgeInsets.only(top: 10, bottom: 6),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          final masterEv = findEv('MASTER');
+          Map? simEv = findEv('SIM_CARD');
+          if (simEv == null) {
+            final masterDevs = (master['deviceRegistries'] as List?) ?? [];
+            final gateDevs = (gate['deviceRegistries'] as List?) ?? [];
+            for (final d in [...masterDevs, ...gateDevs]) {
+              if (d is Map && d['simPhotoUrl'] != null && d['simPhotoUrl'].toString().trim().isNotEmpty) {
+                simEv = {
+                  'imageUrl': d['simPhotoUrl'],
+                  'category': 'SIM_CARD',
+                  'createdAt': d['updatedAt'] ?? d['createdAt'],
+                };
+                break;
+              }
+            }
+          }
+          final powerEv = findEv('POWER_SOURCE');
+
+          Future<void> launchUpload(String category, String targetName, [int? childId]) async {
+            final res = await Navigator.push(context, MaterialPageRoute(
+              builder: (_) => UploadEvidenceScreen(
+                token: widget.token,
+                masterId: master['id'],
+                childDeviceId: childId,
+                category: category,
+                targetName: targetName,
+              ),
+            ));
+            if (res != null && res is Map) {
+              final idx = evidences.indexWhere((e) => e['category'] == res['category'] && e['childDeviceId'] == res['childDeviceId']);
+              if (idx >= 0) {
+                evidences[idx] = res;
+              } else {
+                evidences.add(res);
+              }
+              setSheetState(() {});
+              await _refresh();
+            }
+          }
+
+          return Container(
+            height: MediaQuery.of(context).size.height * 0.85,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
             ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+            child: Column(
+              children: [
+                Container(
+                  margin: const EdgeInsets.only(top: 10, bottom: 6),
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('View Evidence Gallery', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
-                      Text('Master #${master['masterSequence']} (${master['serialNumber']})', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('View Evidence Gallery', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
+                          Text('Master #${master['masterSequence']} (${master['serialNumber']})', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                        ],
+                      ),
+                      IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx)),
                     ],
                   ),
-                  IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx)),
-                ],
-              ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      _buildEvidenceViewTile(
+                        title: 'Master Gateway Unit (ESP)',
+                        subtitle: 'Serial: ${master['serialNumber']}',
+                        icon: Icons.memory,
+                        evidence: masterEv,
+                        onUpload: () => launchUpload('MASTER', 'Master ESP'),
+                      ),
+                      const SizedBox(height: 10),
+                      _buildEvidenceViewTile(
+                        title: 'Installed SIM Card',
+                        subtitle: 'SIM Card & ICCID Hardware Proof',
+                        icon: Icons.sim_card_outlined,
+                        evidence: simEv,
+                        onUpload: () => launchUpload('SIM_CARD', 'SIM Card'),
+                      ),
+                      const SizedBox(height: 10),
+                      _buildEvidenceViewTile(
+                        title: master['powerSource'] == 'SOLAR' ? 'Solar Power Source' : 'Direct AC Power Source',
+                        subtitle: master['powerSource'] == 'SOLAR' ? 'Panels & Battery Installation' : 'Grid AC Power Supply',
+                        icon: master['powerSource'] == 'SOLAR' ? Icons.wb_sunny_outlined : Icons.bolt,
+                        evidence: powerEv,
+                        onUpload: () => launchUpload('POWER_SOURCE', 'Power Source'),
+                      ),
+                      const SizedBox(height: 14),
+                      const Text('CONNECTED SLAVE DEVICES', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B), letterSpacing: 0.5)),
+                      const SizedBox(height: 8),
+                      if (childDevices.isEmpty)
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(color: Colors.grey.shade50, borderRadius: BorderRadius.circular(8)),
+                          child: const Text('No slave devices linked to this master.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                        )
+                      else
+                        ...childDevices.map((child) {
+                          final childEv = findEv(child['type']?.toString() ?? '', child['id']);
+                          final isTypeA = child['type'] == 'DEVICE_1';
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: _buildEvidenceViewTile(
+                              title: 'Slave #${child['deviceSequence']}: ${child['serialNumber']}',
+                              subtitle: isTypeA ? 'Limit Switch & Hall Effect' : 'Tilt Sensor',
+                              icon: Icons.sensors,
+                              evidence: childEv,
+                              onUpload: () => launchUpload(child['type']?.toString() ?? 'DEVICE_1', 'Slave ${child['type']}', child['id']),
+                            ),
+                          );
+                        }),
+                    ],
+                  ),
+                ),
+              ],
             ),
-            const Divider(height: 1),
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  _buildEvidenceViewTile(
-                    title: 'Master Gateway Unit (ESP)',
-                    subtitle: 'Serial: ${master['serialNumber']}',
-                    icon: Icons.memory,
-                    evidence: masterEv,
-                  ),
-                  const SizedBox(height: 10),
-                  _buildEvidenceViewTile(
-                    title: 'Installed SIM Card',
-                    subtitle: 'SIM Card & ICCID Hardware Proof',
-                    icon: Icons.sim_card_outlined,
-                    evidence: simEv,
-                  ),
-                  const SizedBox(height: 10),
-                  _buildEvidenceViewTile(
-                    title: master['powerSource'] == 'SOLAR' ? 'Solar Power Source' : 'Direct AC Power Source',
-                    subtitle: master['powerSource'] == 'SOLAR' ? 'Panels & Battery Installation' : 'Grid AC Power Supply',
-                    icon: master['powerSource'] == 'SOLAR' ? Icons.wb_sunny_outlined : Icons.bolt,
-                    evidence: powerEv,
-                  ),
-                  const SizedBox(height: 14),
-                  const Text('CONNECTED SLAVE DEVICES', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B), letterSpacing: 0.5)),
-                  const SizedBox(height: 8),
-                  if (childDevices.isEmpty)
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(color: Colors.grey.shade50, borderRadius: BorderRadius.circular(8)),
-                      child: const Text('No slave devices linked to this master.', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                    )
-                  else
-                    ...childDevices.map((child) {
-                      final childEv = findEv(child['type']?.toString() ?? '', child['id']);
-                      final isTypeA = child['type'] == 'DEVICE_1';
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 10),
-                        child: _buildEvidenceViewTile(
-                          title: 'Slave #${child['deviceSequence']}: ${child['serialNumber']}',
-                          subtitle: isTypeA ? 'Limit Switch & Hall Effect' : 'Tilt Sensor',
-                          icon: Icons.sensors,
-                          evidence: childEv,
-                        ),
-                      );
-                    }),
-                ],
-              ),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -1138,6 +1187,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     required String subtitle,
     required IconData icon,
     required Map? evidence,
+    VoidCallback? onUpload,
   }) {
     final hasPhoto = evidence != null && evidence['imageUrl'] != null;
     final imgUrl = hasPhoto ? _fullImageUrl(evidence['imageUrl'].toString()) : '';
@@ -1145,95 +1195,117 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     final lng = evidence?['longitude'];
     final date = evidence?['createdAt']?.toString();
 
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: hasPhoto ? const Color(0xFF10B981) : Colors.grey.shade300, width: hasPhoto ? 1.5 : 1),
-        boxShadow: const [BoxShadow(color: Color(0x06000000), blurRadius: 4, offset: Offset(0, 1))],
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (hasPhoto)
-            InkWell(
-              onTap: () => _showZoomPhoto(imgUrl, title, lat, lng, date),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.network(
-                  imgUrl,
-                  width: 64,
-                  height: 64,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Container(
+        onTap: hasPhoto ? () => _showZoomPhoto(imgUrl, title, lat, lng, date) : onUpload,
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: hasPhoto ? const Color(0xFF10B981) : Colors.grey.shade300, width: hasPhoto ? 1.5 : 1),
+            boxShadow: const [BoxShadow(color: Color(0x06000000), blurRadius: 4, offset: Offset(0, 1))],
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (hasPhoto)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.network(
+                    imgUrl,
                     width: 64,
                     height: 64,
-                    color: Colors.grey.shade200,
-                    child: const Icon(Icons.broken_image, size: 24, color: Colors.grey),
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      width: 64,
+                      height: 64,
+                      color: Colors.grey.shade200,
+                      child: const Icon(Icons.broken_image, size: 24, color: Colors.grey),
+                    ),
                   ),
+                )
+              else
+                Container(
+                  width: 64,
+                  height: 64,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: Icon(icon, color: Colors.grey.shade400, size: 28),
                 ),
-              ),
-            )
-          else
-            Container(
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: Icon(icon, color: Colors.grey.shade400, size: 28),
-            ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: Text(
-                        title,
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: hasPhoto ? const Color(0xFFECFDF5) : Colors.grey.shade100,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        hasPhoto ? 'UPLOADED' : 'MISSING',
-                        style: TextStyle(
-                          fontSize: 9.5,
-                          fontWeight: FontWeight.bold,
-                          color: hasPhoto ? const Color(0xFF059669) : Colors.grey.shade600,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            title,
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                          ),
                         ),
-                      ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: hasPhoto ? const Color(0xFFECFDF5) : Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            hasPhoto ? 'UPLOADED' : 'MISSING',
+                            style: TextStyle(
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.bold,
+                              color: hasPhoto ? const Color(0xFF059669) : Colors.grey.shade600,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
+                    Text(subtitle, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                    const SizedBox(height: 6),
+                    if (hasPhoto) ...[
+                      if (lat != null && lng != null)
+                        Text('GPS: $lat, $lng', style: const TextStyle(fontSize: 10, color: Color(0xFF0B3C7A), fontWeight: FontWeight.w500)),
+                      const SizedBox(height: 2),
+                      Row(
+                        children: const [
+                          Icon(Icons.fullscreen, size: 14, color: Color(0xFF0B3C7A)),
+                          SizedBox(width: 4),
+                          Text('Tap anywhere to view full photo', style: TextStyle(fontSize: 11, color: Color(0xFF0B3C7A), fontWeight: FontWeight.w600)),
+                        ],
+                      ),
+                    ] else ...[
+                      if (onUpload != null) ...[
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF0B3C7A),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            minimumSize: const Size(90, 28),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                          ),
+                          icon: const Icon(Icons.camera_alt, size: 13, color: Colors.white),
+                          label: const Text('Upload Photo', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                          onPressed: onUpload,
+                        ),
+                      ] else ...[
+                        const Text('No photo uploaded yet.', style: TextStyle(fontSize: 10.5, color: Colors.grey, fontStyle: FontStyle.italic)),
+                      ],
+                    ],
                   ],
                 ),
-                Text(subtitle, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
-                const SizedBox(height: 4),
-                if (hasPhoto) ...[
-                  if (lat != null && lng != null)
-                    Text('GPS: $lat, $lng', style: const TextStyle(fontSize: 10, color: Color(0xFF0B3C7A), fontWeight: FontWeight.w500)),
-                  TextButton.icon(
-                    style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(50, 24), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                    icon: const Icon(Icons.fullscreen, size: 14, color: Color(0xFF0B3C7A)),
-                    label: const Text('View Full Photo', style: TextStyle(fontSize: 11, color: Color(0xFF0B3C7A), fontWeight: FontWeight.bold)),
-                    onPressed: () => _showZoomPhoto(imgUrl, title, lat, lng, date),
-                  ),
-                ] else ...[
-                  const Text('No photo uploaded yet.', style: TextStyle(fontSize: 10.5, color: Colors.grey, fontStyle: FontStyle.italic)),
-                ],
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
