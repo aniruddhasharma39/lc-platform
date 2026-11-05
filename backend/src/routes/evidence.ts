@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
+import { bumpDirectoryRevision } from '../lib/revisionManager';
+import { clusterCacheManager } from '../lib/clusterCacheManager';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -250,6 +252,20 @@ router.post('/', authenticate, async (req: any, res, next) => {
       }
     }
 
+    if (masterExists) {
+      try {
+        const now = new Date();
+        await prisma.masterUnit.update({ where: { id: masterExists.id }, data: { updatedAt: now } }).catch(() => {});
+        if (masterExists.gateId) {
+          await prisma.lCGate.update({ where: { id: masterExists.gateId }, data: { updatedAt: now } }).catch(() => {});
+          await bumpDirectoryRevision([masterExists.gateId], true);
+        }
+        clusterCacheManager.clear();
+      } catch (cacheErr) {
+        console.warn('Failed to bump revision/cache after evidence upload:', cacheErr);
+      }
+    }
+
     res.status(201).json(evidence);
   } catch (error) {
     next(error);
@@ -262,11 +278,28 @@ router.delete('/:id', authenticate, async (req, res, next) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid evidence ID' });
 
-    const evidence = await prisma.installationEvidence.findUnique({ where: { id } });
+    const evidence = await prisma.installationEvidence.findUnique({
+      where: { id },
+      include: { master: { select: { id: true, gateId: true } } },
+    });
     if (!evidence) return res.status(404).json({ error: 'Evidence not found' });
 
     await deleteEvidenceFile(evidence.imageUrl);
     await prisma.installationEvidence.delete({ where: { id } });
+
+    if (evidence.master) {
+      try {
+        const now = new Date();
+        await prisma.masterUnit.update({ where: { id: evidence.master.id }, data: { updatedAt: now } }).catch(() => {});
+        if (evidence.master.gateId) {
+          await prisma.lCGate.update({ where: { id: evidence.master.gateId }, data: { updatedAt: now } }).catch(() => {});
+          await bumpDirectoryRevision([evidence.master.gateId], true);
+        }
+        clusterCacheManager.clear();
+      } catch (cacheErr) {
+        console.warn('Failed to bump revision/cache after evidence deletion:', cacheErr);
+      }
+    }
 
     res.status(204).send();
   } catch (error) {
@@ -280,11 +313,28 @@ router.post('/:id/delete', authenticate, async (req, res, next) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid evidence ID' });
 
-    const evidence = await prisma.installationEvidence.findUnique({ where: { id } });
+    const evidence = await prisma.installationEvidence.findUnique({
+      where: { id },
+      include: { master: { select: { id: true, gateId: true } } },
+    });
     if (!evidence) return res.status(404).json({ error: 'Evidence not found' });
 
     await deleteEvidenceFile(evidence.imageUrl);
     await prisma.installationEvidence.delete({ where: { id } });
+
+    if (evidence.master) {
+      try {
+        const now = new Date();
+        await prisma.masterUnit.update({ where: { id: evidence.master.id }, data: { updatedAt: now } }).catch(() => {});
+        if (evidence.master.gateId) {
+          await prisma.lCGate.update({ where: { id: evidence.master.gateId }, data: { updatedAt: now } }).catch(() => {});
+          await bumpDirectoryRevision([evidence.master.gateId], true);
+        }
+        clusterCacheManager.clear();
+      } catch (cacheErr) {
+        console.warn('Failed to bump revision/cache after evidence deletion:', cacheErr);
+      }
+    }
 
     res.status(200).json({ success: true });
   } catch (error) {

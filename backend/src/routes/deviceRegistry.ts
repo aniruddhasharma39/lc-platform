@@ -1534,6 +1534,23 @@ router.put('/:id/sim', authenticate, async (req: any, res, next) => {
       }
     }
 
+    if (existing.gateId || existing.master?.gateId) {
+      try {
+        const gId = existing.gateId || existing.master?.gateId;
+        const now = new Date();
+        if (gId) {
+          await prisma.lCGate.update({ where: { id: gId }, data: { updatedAt: now } }).catch(() => {});
+          await bumpDirectoryRevision([gId], true);
+        }
+        if (existing.masterId) {
+          await prisma.masterUnit.update({ where: { id: existing.masterId }, data: { updatedAt: now } }).catch(() => {});
+        }
+        clusterCacheManager.clear();
+      } catch (cErr) {
+        console.warn('Cache bump after SIM update non-critical error:', cErr);
+      }
+    }
+
     res.json({
       message: 'SIM details updated successfully',
       device: updated,
@@ -1579,6 +1596,22 @@ router.post('/:id/recharge', authenticate, async (req, res, next) => {
         childDevice: true,
       },
     });
+
+    if (existing.gateId || (existing as any).masterId) {
+      try {
+        const now = new Date();
+        if (existing.gateId) {
+          await prisma.lCGate.update({ where: { id: existing.gateId }, data: { updatedAt: now } }).catch(() => {});
+          await bumpDirectoryRevision([existing.gateId], true);
+        }
+        if ((existing as any).masterId) {
+          await prisma.masterUnit.update({ where: { id: (existing as any).masterId }, data: { updatedAt: now } }).catch(() => {});
+        }
+        clusterCacheManager.clear();
+      } catch (cErr) {
+        console.warn('Cache bump after recharge non-critical error:', cErr);
+      }
+    }
 
     res.json({
       message: 'SIM recharge logged successfully',

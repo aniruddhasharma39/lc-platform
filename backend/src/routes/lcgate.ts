@@ -1692,6 +1692,15 @@ router.get('/:id', authenticate, async (req: any, res, next) => {
       ...gate.masters.flatMap((m: any) =>
         (m.childDevices || []).map((c: any) => (c.updatedAt ? new Date(c.updatedAt).getTime() : (c.createdAt ? new Date(c.createdAt).getTime() : 0)))
       ),
+      ...gate.masters.flatMap((m: any) =>
+        (m.evidences || []).map((e: any) => (e.updatedAt ? new Date(e.updatedAt).getTime() : (e.createdAt ? new Date(e.createdAt).getTime() : 0)))
+      ),
+      ...gate.masters.flatMap((m: any) =>
+        (m.childDevices || []).flatMap((c: any) =>
+          (c.evidences || []).map((e: any) => (e.updatedAt ? new Date(e.updatedAt).getTime() : (e.createdAt ? new Date(e.createdAt).getTime() : 0)))
+        )
+      ),
+      ...gate.deviceRegistries.map((d: any) => (d.updatedAt ? new Date(d.updatedAt).getTime() : (d.createdAt ? new Date(d.createdAt).getTime() : 0))),
     ];
     const maxTimestamp = Math.max(0, ...timestamps);
     const gateETag = `W/"gate-${id}-rev-${maxTimestamp}"`;

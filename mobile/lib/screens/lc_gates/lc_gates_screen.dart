@@ -29,6 +29,7 @@ class LCGatesScreen extends StatefulWidget {
 class _LCGatesScreenState extends State<LCGatesScreen> {
   bool _isLoading = true;
   bool _isRefreshing = false;
+  bool _isGateDetailRefreshing = false;
   String _token = '';
   String _userId = 'user';
 
@@ -174,6 +175,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         _selectedGate = Map<String, dynamic>.from(found);
         _viewMode = 'detail';
         _clusterTab = widget.initialTab ?? 'about';
+        _refreshSelectedGate(widget.initialGateId!);
       }
     }
   }
@@ -236,6 +238,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         setState(() {
           _applyDynamicStatuses(statuses);
         });
+      }
+
+      if (_selectedGate != null) {
+        final currentId = _selectedGate!['id'];
+        final idNum = currentId is int ? currentId : int.tryParse(currentId?.toString() ?? '') ?? 0;
+        if (idNum > 0) {
+          _refreshSelectedGate(idNum);
+        }
       }
 
       if (mounted && isManual) {
@@ -431,6 +441,9 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     });
     final gateId = gate['id'];
     final idNum = gateId is int ? gateId : int.tryParse(gateId?.toString() ?? '') ?? 0;
+    if (idNum > 0) {
+      _refreshSelectedGate(idNum);
+    }
     if (tab == 'telemetry') {
       if (idNum > 0) {
         _connectTelemetryWs(idNum);
@@ -1450,6 +1463,41 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                InkWell(
+                  onTap: _isGateDetailRefreshing
+                      ? null
+                      : () {
+                          final gId = gate['id'];
+                          final idNum = gId is int ? gId : int.tryParse(gId?.toString() ?? '') ?? 0;
+                          if (idNum > 0) {
+                            _refreshSelectedGate(idNum, showToast: true);
+                          }
+                        },
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFCBD5E1)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _isGateDetailRefreshing
+                            ? const SizedBox(
+                                width: 11,
+                                height: 11,
+                                child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xFF475569)),
+                              )
+                            : const Icon(Icons.refresh, size: 12, color: Color(0xFF475569)),
+                        const SizedBox(width: 4),
+                        const Text('Refresh', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF475569))),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
                 if (masters != null && masters.isNotEmpty) ...[
                   InkWell(
                     onTap: () => _pingGateDevice(gate),
@@ -2738,11 +2786,18 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     );
   }
 
-  Future<void> _refreshSelectedGate(int gateId) async {
+  Future<void> _refreshSelectedGate(int gateId, {bool showToast = false}) async {
     try {
+      if (showToast && mounted) {
+        setState(() => _isGateDetailRefreshing = true);
+      }
       final res = await http.get(
-        Uri.parse('$baseUrl/lcgate/$gateId'),
-        headers: {'Authorization': 'Bearer $_token'},
+        Uri.parse('$baseUrl/lcgate/$gateId?_t=${DateTime.now().millisecondsSinceEpoch}'),
+        headers: {
+          'Authorization': 'Bearer $_token',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+        },
       );
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
@@ -2750,10 +2805,18 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         if (gateData != null && mounted) {
           setState(() {
             _selectedGate = Map<String, dynamic>.from(gateData);
+            _isGateDetailRefreshing = false;
           });
+          if (showToast) {
+            AppFeedback.showSuccess(context, 'Gate hardware & evidence refreshed');
+          }
         }
+      } else {
+        if (mounted) setState(() => _isGateDetailRefreshing = false);
       }
-    } catch (_) {}
+    } catch (_) {
+      if (mounted) setState(() => _isGateDetailRefreshing = false);
+    }
   }
 
 }
