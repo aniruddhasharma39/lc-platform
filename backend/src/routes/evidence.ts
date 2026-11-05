@@ -26,7 +26,7 @@ const router = Router();
  * Best-effort deletion of an evidence image from Cloudinary and/or the local
  * uploads directory. Never throws: cleanup failures should not fail the request.
  */
-async function deleteEvidenceFile(imageUrl?: string | null) {
+export async function deleteEvidenceFile(imageUrl?: string | null) {
   if (!imageUrl) return;
 
   // Local file: /uploads/<uuid>.jpg
@@ -199,23 +199,27 @@ router.post('/', authenticate, async (req: any, res, next) => {
 
     // Replace any existing evidence for this exact slot so "Re-upload" does not
     // create duplicates. Clean up the previous remote/local file first.
+    const slotWhere: any = {
+      masterId: data.masterId,
+    };
+    if (data.childDeviceId) {
+      // For a slave device, replace ANY previous evidence for this slave device
+      slotWhere.childDeviceId = data.childDeviceId;
+    } else {
+      // For master, power source, or sim card, match category where childDeviceId is null
+      slotWhere.childDeviceId = null;
+      slotWhere.category = data.category;
+    }
+
     const existingForSlot = await prisma.installationEvidence.findMany({
-      where: {
-        masterId: data.masterId,
-        childDeviceId: data.childDeviceId ?? null,
-        category: data.category,
-      },
+      where: slotWhere,
     });
     for (const old of existingForSlot) {
       await deleteEvidenceFile(old.imageUrl);
     }
     if (existingForSlot.length > 0) {
       await prisma.installationEvidence.deleteMany({
-        where: {
-          masterId: data.masterId,
-          childDeviceId: data.childDeviceId ?? null,
-          category: data.category,
-        },
+        where: slotWhere,
       });
     }
 
@@ -244,9 +248,27 @@ router.post('/', authenticate, async (req: any, res, next) => {
         if (data.validityExpiryDate) updateData.validityExpiryDate = data.validityExpiryDate;
 
         await prisma.deviceRegistry.updateMany({
-          where: { masterId: data.masterId },
+          where: {
+            OR: [
+              { masterId: data.masterId },
+              ...(masterExists.gateId ? [{ gateId: masterExists.gateId }] : []),
+              ...(masterExists.serialNumber ? [{ serialNumber: masterExists.serialNumber }, { thingName: masterExists.serialNumber }] : []),
+            ],
+          },
           data: updateData,
         });
+
+        if (masterExists.gateId) {
+          const unlinkedDev = await prisma.deviceRegistry.findFirst({
+            where: { gateId: masterExists.gateId, masterId: null },
+          });
+          if (unlinkedDev) {
+            await prisma.deviceRegistry.update({
+              where: { id: unlinkedDev.id },
+              data: { masterId: data.masterId },
+            }).catch(() => {});
+          }
+        }
       } catch (e) {
         console.warn('Failed to sync SIM evidence into DeviceRegistry:', e);
       }
@@ -287,6 +309,22 @@ router.delete('/:id', authenticate, async (req, res, next) => {
     await deleteEvidenceFile(evidence.imageUrl);
     await prisma.installationEvidence.delete({ where: { id } });
 
+    if (evidence.category === 'SIM_CARD' && evidence.masterId) {
+      try {
+        await prisma.deviceRegistry.updateMany({
+          where: {
+            OR: [
+              { masterId: evidence.masterId },
+              ...(evidence.master?.gateId ? [{ gateId: evidence.master.gateId }] : []),
+            ],
+          },
+          data: { simPhotoUrl: null },
+        });
+      } catch (simErr) {
+        console.warn('Failed to clear SIM photo in DeviceRegistry on delete:', simErr);
+      }
+    }
+
     if (evidence.master) {
       try {
         const now = new Date();
@@ -321,6 +359,22 @@ router.post('/:id/delete', authenticate, async (req, res, next) => {
 
     await deleteEvidenceFile(evidence.imageUrl);
     await prisma.installationEvidence.delete({ where: { id } });
+
+    if (evidence.category === 'SIM_CARD' && evidence.masterId) {
+      try {
+        await prisma.deviceRegistry.updateMany({
+          where: {
+            OR: [
+              { masterId: evidence.masterId },
+              ...(evidence.master?.gateId ? [{ gateId: evidence.master.gateId }] : []),
+            ],
+          },
+          data: { simPhotoUrl: null },
+        });
+      } catch (simErr) {
+        console.warn('Failed to clear SIM photo in DeviceRegistry on delete:', simErr);
+      }
+    }
 
     if (evidence.master) {
       try {

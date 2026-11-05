@@ -74,36 +74,92 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
 
   Future<void> _refresh({bool isManual = false}) async {
     try {
+      final gateId = gate['id'];
       final res = await http.get(
-        Uri.parse('$baseUrl/lcgate'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
+        Uri.parse('$baseUrl/lcgate/$gateId?_t=${DateTime.now().millisecondsSinceEpoch}'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+        },
       );
       if (res.statusCode == 200) {
-        final List data = json.decode(res.body);
-        final updated = data.firstWhere((g) => g['id'] == gate['id'], orElse: () => gate);
-        if (mounted) {
-          setState(() => gate = updated);
+        final data = json.decode(res.body);
+        final gateData = data is Map ? (data['cluster'] ?? data['gate'] ?? data) : null;
+        if (gateData != null && mounted) {
+          setState(() => gate = Map<String, dynamic>.from(gateData));
           if (isManual) {
             AppFeedback.showSuccess(context, 'Gate and device details refreshed.');
           }
-          // Patch cache immediately
           try {
             final prefs = await SharedPreferences.getInstance();
             final userId = prefs.getString('userId') ?? prefs.getString('employeeId') ?? 'user';
-            if (updated is Map) {
-              LCGatesCacheService.instance.patchGate(userId, Map<String, dynamic>.from(updated));
-            }
+            LCGatesCacheService.instance.patchGate(userId, Map<String, dynamic>.from(gateData));
           } catch (_) {}
+          return;
         }
-      } else {
-        if (mounted && isManual) {
-          AppFeedback.showError(context, 'Failed to refresh gate details (HTTP ${res.statusCode}).');
+      }
+
+      // Fallback to /lcgate directory
+      final fallbackRes = await http.get(
+        Uri.parse('$baseUrl/lcgate'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (fallbackRes.statusCode == 200) {
+        final List data = json.decode(fallbackRes.body);
+        final updated = data.firstWhere((g) => g['id'] == gate['id'], orElse: () => gate);
+        if (mounted) {
+          setState(() => gate = updated);
         }
       }
     } catch (e) {
       if (mounted && isManual) {
         AppFeedback.showError(context, 'Network error refreshing gate details: $e');
       }
+    }
+  }
+
+  Future<void> _deleteEvidence(Map evidence, String itemTitle, [VoidCallback? onDeleted]) async {
+    bool confirm = await showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text('Delete Photo for "$itemTitle"?'),
+        content: const Text('Are you sure you want to delete this uploaded photo? This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogCtx, false), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(dialogCtx, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    ) ?? false;
+
+    if (!confirm) return;
+    try {
+      final evId = evidence['id'];
+      http.Response res = await http.delete(
+        Uri.parse('$baseUrl/evidence/$evId'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode != 204 && res.statusCode != 200) {
+        res = await http.post(
+          Uri.parse('$baseUrl/evidence/$evId/delete'),
+          headers: {'Authorization': 'Bearer ${widget.token}'},
+        );
+      }
+      if (res.statusCode == 200 || res.statusCode == 204) {
+        if (mounted) {
+          AppFeedback.showSuccess(context, 'Photo for "$itemTitle" deleted successfully.');
+        }
+        await _refresh();
+        if (onDeleted != null) onDeleted();
+      } else {
+        if (mounted) AppFeedback.showError(context, 'Failed to delete photo: ${res.body}');
+      }
+    } catch (e) {
+      if (mounted) AppFeedback.showError(context, 'Error deleting photo: $e');
     }
   }
 
@@ -1112,6 +1168,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         icon: Icons.memory,
                         evidence: masterEv,
                         onUpload: () => launchUpload('MASTER', 'Master ESP'),
+                        onDelete: masterEv != null ? () => _deleteEvidence(masterEv, 'Master ESP', () => setSheetState(() {})) : null,
                       ),
                       const SizedBox(height: 10),
                       _buildEvidenceViewTile(
@@ -1120,6 +1177,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         icon: Icons.sim_card_outlined,
                         evidence: simEv,
                         onUpload: () => launchUpload('SIM_CARD', 'SIM Card'),
+                        onDelete: simEv != null ? () => _deleteEvidence(simEv, 'SIM Card', () => setSheetState(() {})) : null,
                       ),
                       const SizedBox(height: 10),
                       _buildEvidenceViewTile(
@@ -1128,6 +1186,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         icon: master['powerSource'] == 'SOLAR' ? Icons.wb_sunny_outlined : Icons.bolt,
                         evidence: powerEv,
                         onUpload: () => launchUpload('POWER_SOURCE', 'Power Source'),
+                        onDelete: powerEv != null ? () => _deleteEvidence(powerEv, 'Power Source', () => setSheetState(() {})) : null,
                       ),
                       const SizedBox(height: 14),
                       const Text('CONNECTED SLAVE DEVICES', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B), letterSpacing: 0.5)),
@@ -1150,6 +1209,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                               icon: Icons.sensors,
                               evidence: childEv,
                               onUpload: () => launchUpload(child['type']?.toString() ?? 'DEVICE_1', 'Slave ${child['type']}', child['id']),
+                              onDelete: childEv != null ? () => _deleteEvidence(childEv, 'Slave ${child['type']}', () => setSheetState(() {})) : null,
                             ),
                           );
                         }),
@@ -1170,6 +1230,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     required IconData icon,
     required Map? evidence,
     VoidCallback? onUpload,
+    VoidCallback? onDelete,
   }) {
     final hasPhoto = evidence != null && evidence['imageUrl'] != null;
     final imgUrl = hasPhoto ? _fullImageUrl(evidence['imageUrl'].toString()) : '';
@@ -1179,22 +1240,21 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
 
     return Material(
       color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: hasPhoto ? () => _showZoomPhoto(imgUrl, title, lat, lng, date) : onUpload,
-        child: Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: hasPhoto ? const Color(0xFF10B981) : Colors.grey.shade300, width: hasPhoto ? 1.5 : 1),
-            boxShadow: const [BoxShadow(color: Color(0x06000000), blurRadius: 4, offset: Offset(0, 1))],
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (hasPhoto)
-                ClipRRect(
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: hasPhoto ? const Color(0xFF10B981) : Colors.grey.shade300, width: hasPhoto ? 1.5 : 1),
+          boxShadow: const [BoxShadow(color: Color(0x06000000), blurRadius: 4, offset: Offset(0, 1))],
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (hasPhoto)
+              InkWell(
+                onTap: () => _showZoomPhoto(imgUrl, title, lat, lng, date),
+                child: ClipRRect(
                   borderRadius: BorderRadius.circular(8),
                   child: Image.network(
                     imgUrl,
@@ -1208,85 +1268,119 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                       child: const Icon(Icons.broken_image, size: 24, color: Colors.grey),
                     ),
                   ),
-                )
-              else
-                Container(
-                  width: 64,
-                  height: 64,
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade100,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.grey.shade300),
-                  ),
-                  child: Icon(icon, color: Colors.grey.shade400, size: 28),
                 ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+              )
+            else
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: Icon(icon, color: Colors.grey.shade400, size: 28),
+              ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: hasPhoto ? const Color(0xFFECFDF5) : Colors.grey.shade100,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          hasPhoto ? 'UPLOADED' : 'MISSING',
+                          style: TextStyle(
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.bold,
+                            color: hasPhoto ? const Color(0xFF059669) : Colors.grey.shade600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Text(subtitle, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                  const SizedBox(height: 6),
+                  if (hasPhoto) ...[
+                    if (lat != null && lng != null)
+                      Text('GPS: $lat, $lng', style: const TextStyle(fontSize: 10, color: Color(0xFF0B3C7A), fontWeight: FontWeight.w500)),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
                       children: [
-                        Expanded(
-                          child: Text(
-                            title,
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                        OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
                           ),
+                          icon: const Icon(Icons.fullscreen, size: 12, color: Color(0xFF0B3C7A)),
+                          label: const Text('View', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF0B3C7A))),
+                          onPressed: () => _showZoomPhoto(imgUrl, title, lat, lng, date),
                         ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: hasPhoto ? const Color(0xFFECFDF5) : Colors.grey.shade100,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            hasPhoto ? 'UPLOADED' : 'MISSING',
-                            style: TextStyle(
-                              fontSize: 9.5,
-                              fontWeight: FontWeight.bold,
-                              color: hasPhoto ? const Color(0xFF059669) : Colors.grey.shade600,
+                        if (onUpload != null)
+                          OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
                             ),
+                            icon: const Icon(Icons.refresh, size: 12, color: Color(0xFF0E9AA7)),
+                            label: const Text('Re-upload', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF0E9AA7))),
+                            onPressed: onUpload,
                           ),
-                        ),
+                        if (onDelete != null)
+                          OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                            ),
+                            icon: const Icon(Icons.delete_outline, size: 12, color: Colors.red),
+                            label: const Text('Delete', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.red)),
+                            onPressed: onDelete,
+                          ),
                       ],
                     ),
-                    Text(subtitle, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
-                    const SizedBox(height: 6),
-                    if (hasPhoto) ...[
-                      if (lat != null && lng != null)
-                        Text('GPS: $lat, $lng', style: const TextStyle(fontSize: 10, color: Color(0xFF0B3C7A), fontWeight: FontWeight.w500)),
-                      const SizedBox(height: 2),
-                      Row(
-                        children: const [
-                          Icon(Icons.fullscreen, size: 14, color: Color(0xFF0B3C7A)),
-                          SizedBox(width: 4),
-                          Text('Tap anywhere to view full photo', style: TextStyle(fontSize: 11, color: Color(0xFF0B3C7A), fontWeight: FontWeight.w600)),
-                        ],
+                  ] else ...[
+                    if (onUpload != null) ...[
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF0B3C7A),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          minimumSize: const Size(90, 28),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                        ),
+                        icon: const Icon(Icons.camera_alt, size: 13, color: Colors.white),
+                        label: const Text('Upload Photo', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                        onPressed: onUpload,
                       ),
                     ] else ...[
-                      if (onUpload != null) ...[
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF0B3C7A),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            minimumSize: const Size(90, 28),
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                          ),
-                          icon: const Icon(Icons.camera_alt, size: 13, color: Colors.white),
-                          label: const Text('Upload Photo', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                          onPressed: onUpload,
-                        ),
-                      ] else ...[
-                        const Text('No photo uploaded yet.', style: TextStyle(fontSize: 10.5, color: Colors.grey, fontStyle: FontStyle.italic)),
-                      ],
+                      const Text('No photo uploaded yet.', style: TextStyle(fontSize: 10.5, color: Colors.grey, fontStyle: FontStyle.italic)),
                     ],
                   ],
-                ),
+                ],
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );

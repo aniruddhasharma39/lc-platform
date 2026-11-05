@@ -626,11 +626,36 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
     setSelectedGate(null);
   };
 
+  // Fetch full cluster details including masters and evidence photos
+  const refreshSelectedGate = useCallback(async (gateId: number) => {
+    try {
+      const res = await fetch(`${API_URL}/api/v1/lcgate/${gateId}?_t=${Date.now()}`, {
+        headers: {
+          ...authHeaders(),
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const gateData = data?.cluster || data?.gate || data;
+        if (gateData) {
+          setSelectedGate((prev: any) => ({ ...(prev || {}), ...gateData }));
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to refresh gate cluster detail', err);
+    }
+  }, []);
+
   // Open cluster drilldown in "About & Manifest" mode
   const handleOpenClusterAbout = (gate: any) => {
     setSelectedGate(gate);
     setClusterTab('about_manifest');
     setViewMode('detail');
+    if (gate?.id) {
+      refreshSelectedGate(gate.id);
+    }
   };
 
   // Open cluster drilldown in "AWS Telemetry" mode
@@ -638,6 +663,9 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
     setSelectedGate(gate);
     setClusterTab('telemetry');
     setViewMode('detail');
+    if (gate?.id) {
+      refreshSelectedGate(gate.id);
+    }
   };
 
   // Fetch real-time telemetry from backend for the gate

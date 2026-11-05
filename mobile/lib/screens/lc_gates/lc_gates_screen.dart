@@ -328,18 +328,25 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   ]) {
     final mEvs = (master['evidences'] as List?) ?? [];
     for (final e in mEvs) {
-      if (e is Map<String, dynamic>) {
-        if (childDeviceId != null && e['childDeviceId'] == childDeviceId) return e;
-        if (e['category'] == category) {
-          if (childDeviceId == null || e['childDeviceId'] == childDeviceId) return e;
+      if (e is Map) {
+        final ev = Map<String, dynamic>.from(e);
+        final evCat = (ev['category'] ?? '').toString();
+        final evChildId = ev['childDeviceId'];
+        if (childDeviceId != null && evChildId != null && evChildId.toString() == childDeviceId.toString()) {
+          return ev;
         }
-        if (childType != null && e['category'] == childType) return e;
+        if (childDeviceId == null && evCat == category && evChildId == null) {
+          return ev;
+        }
+        if (childType != null && evCat == childType) {
+          return ev;
+        }
       }
     }
     if (childDeviceId != null) {
       final children = (master['childDevices'] as List?) ?? [];
       for (final c in children) {
-        if (c is Map && c['id'] == childDeviceId) {
+        if (c is Map && c['id']?.toString() == childDeviceId.toString()) {
           final cEvs = (c['evidences'] as List?) ?? [];
           if (cEvs.isNotEmpty && cEvs.first is Map) {
             return Map<String, dynamic>.from(cEvs.first as Map);

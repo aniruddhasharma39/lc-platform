@@ -12,6 +12,7 @@ import { recordGateTelemetryTransition } from '../lib/telemetryMonitor';
 import { broadcastGateTelemetry } from '../lib/telemetryWs';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
+import { deleteEvidenceFile } from './evidence';
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -1508,16 +1509,38 @@ router.put('/:id/sim', authenticate, async (req: any, res, next) => {
       },
     });
 
-    // Also sync to InstallationEvidence if device is linked to a MasterUnit
-    if (existing.masterId && (data.imageBase64 || data.simPhotoUrl)) {
+    // Resolve linked master ID (from existing.masterId or from gate's primary master)
+    let linkedMasterId = existing.masterId;
+    if (!linkedMasterId && existing.gateId) {
+      const gateMaster = await prisma.masterUnit.findFirst({
+        where: { gateId: existing.gateId },
+        orderBy: { masterSequence: 'asc' },
+      });
+      if (gateMaster) {
+        linkedMasterId = gateMaster.id;
+        await prisma.deviceRegistry.update({
+          where: { id },
+          data: { masterId: linkedMasterId },
+        }).catch(() => {});
+      }
+    }
+
+    // Also sync to InstallationEvidence
+    if (linkedMasterId && finalPhotoUrl) {
       try {
         const existingEv = await prisma.installationEvidence.findFirst({
-          where: { masterId: existing.masterId, category: 'SIM_CARD' },
+          where: { masterId: linkedMasterId, category: 'SIM_CARD' },
         });
         if (existingEv) {
+          if (existingEv.imageUrl !== finalPhotoUrl) {
+            await deleteEvidenceFile(existingEv.imageUrl);
+          }
           await prisma.installationEvidence.update({
             where: { id: existingEv.id },
-            data: { imageUrl: finalPhotoUrl },
+            data: {
+              imageUrl: finalPhotoUrl,
+              updatedAt: new Date(),
+            },
           });
         } else {
           await prisma.installationEvidence.create({
@@ -1525,7 +1548,7 @@ router.put('/:id/sim', authenticate, async (req: any, res, next) => {
               category: 'SIM_CARD',
               imageUrl: finalPhotoUrl,
               userId: req.user?.id || 1,
-              masterId: existing.masterId,
+              masterId: linkedMasterId,
             },
           });
         }

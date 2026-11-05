@@ -22,14 +22,19 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
   void initState() {
     super.initState();
     evidences = widget.master['evidences'] ?? [];
+    _fetchEvidences();
   }
 
   Future<void> _fetchEvidences({bool isManual = false}) async {
     try {
-      // 1. Direct fetch from dedicated evidence endpoint
+      // 1. Direct fetch from dedicated evidence endpoint with cache-busting
       final directRes = await http.get(
-        Uri.parse('$baseUrl/evidence/master/${widget.master['id']}'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
+        Uri.parse('$baseUrl/evidence/master/${widget.master['id']}?_t=${DateTime.now().millisecondsSinceEpoch}'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+        },
       );
       if (directRes.statusCode == 200) {
         final List data = json.decode(directRes.body);
@@ -42,15 +47,20 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
         return;
       }
 
-      // 2. Fallback to /lcgate
-      final res = await http.get(
-        Uri.parse('$baseUrl/lcgate'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
-      );
-      if (res.statusCode == 200) {
-        final List data = json.decode(res.body);
-        for (final g in data) {
-          final masters = g['masters'] as List? ?? [];
+      // 2. Fallback to /lcgate/:id
+      final gateId = widget.master['gateId'];
+      if (gateId != null) {
+        final res = await http.get(
+          Uri.parse('$baseUrl/lcgate/$gateId?_t=${DateTime.now().millisecondsSinceEpoch}'),
+          headers: {
+            'Authorization': 'Bearer ${widget.token}',
+            'Cache-Control': 'no-cache',
+          },
+        );
+        if (res.statusCode == 200) {
+          final data = json.decode(res.body);
+          final gateData = data is Map ? (data['cluster'] ?? data['gate'] ?? data) : null;
+          final masters = (gateData?['masters'] as List?) ?? [];
           for (final m in masters) {
             if (m['id'] == widget.master['id']) {
               if (mounted) {
@@ -72,12 +82,23 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
   }
 
   bool _hasEvidence(String category, [int? childId]) {
-    return evidences.any((e) => e['category'] == category && e['childDeviceId'] == childId);
+    return evidences.any((e) {
+      if (e is! Map) return false;
+      if (childId != null) {
+        return e['childDeviceId']?.toString() == childId.toString();
+      }
+      return e['category'] == category && e['childDeviceId'] == null;
+    });
   }
 
   Map? _findEvidence(String category, [int? childId]) {
     for (final e in evidences) {
-      if (e['category'] == category && e['childDeviceId'] == childId) return e;
+      if (e is! Map) continue;
+      if (childId != null) {
+        if (e['childDeviceId']?.toString() == childId.toString()) return e;
+      } else {
+        if (e['category'] == category && e['childDeviceId'] == null) return e;
+      }
     }
     return null;
   }
@@ -98,16 +119,22 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
 
   void _onUploadSuccess(Map newEvidence) {
     setState(() {
-      // Replace the existing evidence for the same slot (re-upload), or add it.
-      final index = evidences.indexWhere((e) =>
-          e['category'] == newEvidence['category'] &&
-          e['childDeviceId'] == newEvidence['childDeviceId']);
+      final newChildId = newEvidence['childDeviceId']?.toString();
+      final newCat = newEvidence['category']?.toString();
+      final index = evidences.indexWhere((e) {
+        if (e is! Map) return false;
+        if (newChildId != null) {
+          return e['childDeviceId']?.toString() == newChildId;
+        }
+        return e['category'] == newCat && e['childDeviceId'] == null;
+      });
       if (index >= 0) {
         evidences[index] = newEvidence;
       } else {
         evidences.add(newEvidence);
       }
     });
+    _fetchEvidences(isManual: false);
   }
 
   Future<void> _deleteEvidence(Map evidence, String itemTitle) async {
@@ -129,13 +156,21 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
 
     if (!confirm) return;
     try {
-      final res = await http.delete(
-        Uri.parse('$baseUrl/evidence/${evidence['id']}'),
+      final evId = evidence['id'];
+      http.Response res = await http.delete(
+        Uri.parse('$baseUrl/evidence/$evId'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
+      if (res.statusCode != 204 && res.statusCode != 200) {
+        // Fallback for proxies
+        res = await http.post(
+          Uri.parse('$baseUrl/evidence/$evId/delete'),
+          headers: {'Authorization': 'Bearer ${widget.token}'},
+        );
+      }
       if (res.statusCode == 204 || res.statusCode == 200) {
         setState(() {
-          evidences.removeWhere((e) => e['id'] == evidence['id']);
+          evidences.removeWhere((e) => e is Map && e['id']?.toString() == evId?.toString());
         });
         if (mounted) {
           AppFeedback.showSuccess(
@@ -143,13 +178,11 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
             'Photo for "$itemTitle" deleted successfully.',
           );
         }
+        _fetchEvidences(isManual: false);
       } else {
         String msg = res.body;
-        if (res.statusCode == 404 || msg.contains('Cannot DELETE')) {
-          msg = 'Server route not found (404). The backend on Render does not have the DELETE endpoint deployed yet.';
-        }
         if (mounted) {
-          AppFeedback.showError(context, msg);
+          AppFeedback.showError(context, 'Failed to delete photo: $msg');
         }
       }
     } catch (e) {
