@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:async';
 import 'package:image_picker/image_picker.dart';
 
 import '../config.dart';
@@ -28,6 +29,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _passwordCtrl = TextEditingController();
   final _confirmPasswordCtrl = TextEditingController();
 
+  // Mobile OTP Verification State
+  final _otpCtrl = TextEditingController();
+  bool _isMobileVerified = false;
+  String _verifiedMobile = '';
+  bool _isSendingOtp = false;
+  bool _isVerifyingOtp = false;
+  bool _otpSent = false;
+  int _otpResendCountdown = 0;
+  Timer? _countdownTimer;
+
   // Selected Railway Jurisdiction & Designation
   String? _selectedZone;
   String? _selectedDivision;
@@ -51,13 +62,29 @@ class _RegisterScreenState extends State<RegisterScreen> {
   @override
   void initState() {
     super.initState();
+    _mobileCtrl.addListener(_onMobileChanged);
     _fetchHierarchy();
+  }
+
+  void _onMobileChanged() {
+    final current = _mobileCtrl.text.replaceAll(RegExp(r'\D'), '');
+    if (_isMobileVerified && current != _verifiedMobile) {
+      setState(() {
+        _isMobileVerified = false;
+        _verifiedMobile = '';
+        _otpSent = false;
+        _otpCtrl.clear();
+      });
+    }
   }
 
   @override
   void dispose() {
+    _countdownTimer?.cancel();
     _fullNameCtrl.dispose();
+    _mobileCtrl.removeListener(_onMobileChanged);
     _mobileCtrl.dispose();
+    _otpCtrl.dispose();
     _emailCtrl.dispose();
     _empIdCtrl.dispose();
     _passwordCtrl.dispose();
@@ -180,6 +207,114 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
   }
 
+  Future<void> _sendMobileOtp() async {
+    final mobile = _mobileCtrl.text.replaceAll(RegExp(r'\D'), '');
+    if (mobile.length != 10 || !RegExp(r'^[6-9]\d{9}$').hasMatch(mobile)) {
+      AppFeedback.showWarning(context, 'Please enter a valid 10-digit Indian mobile number (starting with 6-9).');
+      return;
+    }
+
+    setState(() {
+      _isSendingOtp = true;
+      _error = '';
+    });
+
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/auth/register/otp/send'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'mobile': mobile}),
+      );
+
+      final data = json.decode(res.body);
+
+      if (res.statusCode == 200 && data['success'] == true) {
+        setState(() {
+          _otpSent = true;
+          _otpResendCountdown = 60;
+        });
+
+        _startResendTimer();
+
+        if (mounted) {
+          AppFeedback.showSuccess(context, 'OTP dispatched via SMS to +91 $mobile. Please enter the 6-digit code.');
+        }
+      } else {
+        final errMsg = data['error'] ?? 'Failed to send OTP. Please check mobile number.';
+        if (mounted) {
+          AppFeedback.showError(context, errMsg);
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        AppFeedback.showError(context, 'Network error sending OTP: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSendingOtp = false);
+      }
+    }
+  }
+
+  void _startResendTimer() {
+    _countdownTimer?.cancel();
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_otpResendCountdown > 0) {
+        if (mounted) setState(() => _otpResendCountdown--);
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
+  Future<void> _verifyMobileOtp() async {
+    final mobile = _mobileCtrl.text.replaceAll(RegExp(r'\D'), '');
+    final otp = _otpCtrl.text.trim();
+
+    if (otp.length != 6) {
+      AppFeedback.showWarning(context, 'Please enter the complete 6-digit OTP code.');
+      return;
+    }
+
+    setState(() => _isVerifyingOtp = true);
+
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/auth/register/otp/verify'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'mobile': mobile, 'otp': otp}),
+      );
+
+      final data = json.decode(res.body);
+
+      if (res.statusCode == 200 && data['verified'] == true) {
+        setState(() {
+          _isMobileVerified = true;
+          _verifiedMobile = mobile;
+          _otpSent = false;
+        });
+        _countdownTimer?.cancel();
+
+        if (mounted) {
+          AppFeedback.showSuccess(context, 'Mobile number +91 $mobile verified successfully!');
+        }
+      } else {
+        final errMsg = data['error'] ?? 'Invalid or expired OTP. Please check code and try again.';
+        if (mounted) {
+          AppFeedback.showError(context, errMsg);
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        AppFeedback.showError(context, 'Network error verifying OTP: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isVerifyingOtp = false);
+      }
+    }
+  }
+
   Future<void> _submitRegistration() async {
     if (_isSubmitting) return;
 
@@ -196,6 +331,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
     if (mobile.length != 10) {
       AppFeedback.showWarning(context, 'Mobile number must be a 10-digit Indian number.');
+      return;
+    }
+    if (!_isMobileVerified || mobile != _verifiedMobile) {
+      AppFeedback.showWarning(context, 'Please verify your mobile number with OTP before submitting registration.');
       return;
     }
     if (email.isEmpty || !email.contains('@')) {
@@ -243,10 +382,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       }
     }
 
-    if (_idCardFile == null) {
-      AppFeedback.showWarning(context, 'Official Railway Identity Document photo upload is mandatory.');
-      return;
-    }
+    // Official Identity Document photo upload is optional
 
     if (!_declarationConfirmed) {
       AppFeedback.showWarning(context, 'You must accept the official verification declaration before submitting.');
@@ -290,12 +426,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
         request.fields['gateIds'] = gid.toString();
       }
 
-      final bytes = await _idCardFile!.readAsBytes();
-      request.files.add(http.MultipartFile.fromBytes(
-        'idCard',
-        bytes,
-        filename: _idCardFile!.name,
-      ));
+      if (_idCardFile != null) {
+        final bytes = await _idCardFile!.readAsBytes();
+        request.files.add(http.MultipartFile.fromBytes(
+          'idCard',
+          bytes,
+          filename: _idCardFile!.name,
+        ));
+      }
 
       final streamedRes = await request.send();
       final res = await http.Response.fromStream(streamedRes);
@@ -494,11 +632,145 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                 decoration: const InputDecoration(labelText: 'Employee ID / PF Number *', isDense: true, border: OutlineInputBorder()),
                               ),
                               const SizedBox(height: 10),
-                              TextField(
-                                controller: _mobileCtrl,
-                                keyboardType: TextInputType.phone,
-                                maxLength: 10,
-                                decoration: const InputDecoration(labelText: 'Mobile Number (10 Digits) *', isDense: true, border: OutlineInputBorder(), counterText: ''),
+                              // Mobile Number & OTP Verification Section
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(
+                                        child: TextField(
+                                          controller: _mobileCtrl,
+                                          keyboardType: TextInputType.phone,
+                                          maxLength: 10,
+                                          enabled: !_isMobileVerified,
+                                          decoration: InputDecoration(
+                                            labelText: 'Mobile Number (10 Digits) *',
+                                            prefixText: '+91 ',
+                                            isDense: true,
+                                            border: const OutlineInputBorder(),
+                                            counterText: '',
+                                            suffixIcon: _isMobileVerified
+                                                ? const Icon(Icons.check_circle, color: Color(0xFF059669))
+                                                : null,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      if (!_isMobileVerified)
+                                        SizedBox(
+                                          height: 48,
+                                          child: ElevatedButton(
+                                            onPressed: _isSendingOtp ? null : _sendMobileOtp,
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: AppColors.primary,
+                                              foregroundColor: Colors.white,
+                                              padding: const EdgeInsets.symmetric(horizontal: 14),
+                                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                            ),
+                                            child: _isSendingOtp
+                                                ? const SizedBox(
+                                                    width: 16,
+                                                    height: 16,
+                                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                                  )
+                                                : Text(_otpSent ? 'Resend' : 'Verify', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                          ),
+                                        )
+                                      else
+                                        SizedBox(
+                                          height: 48,
+                                          child: TextButton.icon(
+                                            onPressed: () {
+                                              setState(() {
+                                                _isMobileVerified = false;
+                                                _verifiedMobile = '';
+                                                _otpSent = false;
+                                                _otpCtrl.clear();
+                                              });
+                                            },
+                                            icon: const Icon(Icons.edit, size: 14, color: AppColors.primary),
+                                            label: const Text('Change', style: TextStyle(fontSize: 12, color: AppColors.primary)),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  if (_isMobileVerified)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 4, left: 4),
+                                      child: Row(
+                                        children: const [
+                                          Icon(Icons.verified, size: 14, color: Color(0xFF059669)),
+                                          SizedBox(width: 4),
+                                          Text('Mobile number verified via SMS OTP', style: TextStyle(fontSize: 11, color: Color(0xFF059669), fontWeight: FontWeight.w600)),
+                                        ],
+                                      ),
+                                    ),
+                                  if (!_isMobileVerified && _otpSent) ...[
+                                    const SizedBox(height: 10),
+                                    Container(
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFF0FDF4),
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(color: const Color(0xFF86EFAC)),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: const [
+                                              Icon(Icons.sms_outlined, size: 16, color: Color(0xFF15803D)),
+                                              SizedBox(width: 6),
+                                              Text('Enter 6-Digit SMS OTP', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF15803D))),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Row(
+                                            children: [
+                                              Expanded(
+                                                child: TextField(
+                                                  controller: _otpCtrl,
+                                                  keyboardType: TextInputType.number,
+                                                  maxLength: 6,
+                                                  decoration: const InputDecoration(
+                                                    hintText: '6-digit OTP',
+                                                    isDense: true,
+                                                    border: OutlineInputBorder(),
+                                                    fillColor: Colors.white,
+                                                    filled: true,
+                                                    counterText: '',
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              ElevatedButton(
+                                                onPressed: _isVerifyingOtp ? null : _verifyMobileOtp,
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor: const Color(0xFF15803D),
+                                                  foregroundColor: Colors.white,
+                                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                                ),
+                                                child: _isVerifyingOtp
+                                                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                                    : const Text('Submit OTP', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                              ),
+                                            ],
+                                          ),
+                                          if (_otpResendCountdown > 0)
+                                            Padding(
+                                              padding: const EdgeInsets.only(top: 6),
+                                              child: Text(
+                                                'Resend code in ${_otpResendCountdown}s',
+                                                style: const TextStyle(fontSize: 11, color: Colors.grey),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ],
                               ),
                               const SizedBox(height: 10),
                               TextField(
@@ -520,8 +792,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                               ),
                               const SizedBox(height: 14),
 
-                              // ID Card Picker
-                              const Text('Official Railway Identity Document *', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                              // ID Card Picker (Optional)
+                              const Text('Official Railway Identity Document (Optional)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                               const SizedBox(height: 6),
                               Row(
                                 children: [
@@ -540,9 +812,25 @@ class _RegisterScreenState extends State<RegisterScreen> {
                               ),
                               if (_idCardFile != null) ...[
                                 const SizedBox(height: 6),
-                                Text(
-                                  'Selected: ${_idCardFile!.name}',
-                                  style: const TextStyle(fontSize: 11, color: Color(0xFF059669), fontWeight: FontWeight.bold),
+                                Row(
+                                  children: [
+                                    const Icon(Icons.check_circle, size: 14, color: Color(0xFF059669)),
+                                    const SizedBox(width: 4),
+                                    Expanded(
+                                      child: Text(
+                                        'Selected: ${_idCardFile!.name}',
+                                        style: const TextStyle(fontSize: 11, color: Color(0xFF059669), fontWeight: FontWeight.bold),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.close, size: 16, color: Colors.red),
+                                      onPressed: () => setState(() => _idCardFile = null),
+                                      tooltip: 'Remove',
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(),
+                                    ),
+                                  ],
                                 ),
                               ],
                             ],

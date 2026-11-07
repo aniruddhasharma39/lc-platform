@@ -7,7 +7,6 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
-import 'dart:io' as io;
 import '../../config.dart';
 import '../../utils/app_feedback.dart';
 
@@ -149,8 +148,10 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
       Position? pos;
       try {
         pos = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.high,
-          timeLimit: const Duration(seconds: 4),
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            timeLimit: Duration(seconds: 4),
+          ),
         );
       } catch (_) {
         try {
@@ -307,8 +308,10 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
     Position? position;
     try {
       position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 4),
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 4),
+        ),
       );
     } catch (_) {
       try {

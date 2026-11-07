@@ -1231,6 +1231,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final totalCyclesToday = summary?['totalCyclesToday'] ?? 0;
     final totalOpenGates = summary?['totalOpenGates'] ?? 0;
     final totalClosedGates = summary?['totalClosedGates'] ?? 0;
+    final avgOpenFormatted = summary?['avgOpenFormatted']?.toString() ?? '--';
+    final avgClosedFormatted = summary?['avgClosedFormatted']?.toString() ?? '--';
     final roleName = widget.user['role']?.toString() ?? 'User';
 
     return RefreshIndicator(
@@ -1312,7 +1314,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
             const SizedBox(height: 18),
 
-            // 4 KPI Metric Cards in 2x2 Grid
+            // Top KPI Metric Cards Grid (6 Metric Tiles)
             Row(
               children: [
                 Expanded(
@@ -1359,6 +1361,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     icon: Icons.lock_rounded,
                     iconColor: const Color(0xFF059669),
                     iconBg: const Color(0xFFD1FAE5),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildKpiCard(
+                    title: 'Avg Open Time',
+                    value: _loadingSummary ? '-' : avgOpenFormatted,
+                    subtitle: 'Road clearance avg',
+                    icon: Icons.timer_outlined,
+                    iconColor: const Color(0xFF0284C7),
+                    iconBg: const Color(0xFFE0F2FE),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _buildKpiCard(
+                    title: 'Avg Closed Time',
+                    value: _loadingSummary ? '-' : avgClosedFormatted,
+                    subtitle: 'Train passage avg',
+                    icon: Icons.lock_clock_outlined,
+                    iconColor: const Color(0xFFD97706),
+                    iconBg: const Color(0xFFFEF3C7),
                   ),
                 ),
               ],
@@ -1493,7 +1521,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               )
             else
               SizedBox(
-                height: 225,
+                height: 260,
                 child: ListView.separated(
                   scrollDirection: Axis.horizontal,
                   itemCount: gates.length,
@@ -1513,6 +1541,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     final isOpen = !isUnconfigured && gate['status'] == 'OPEN';
                     final todayCycles = gate['todayCycles'] ?? 0;
                     final totalCycles = gate['totalCycles'] ?? 0;
+                    final gateAvgOpen = gate['avgOpenFormatted']?.toString() ?? '--';
+                    final gateAvgClosed = gate['avgClosedFormatted']?.toString() ?? '--';
                     final lastClosedFormatted = gate['lastClosedFormatted'] ?? 'No recorded closure';
                     final isSolar = gate['powerSource'] == 'SOLAR';
                     final isSelected = _activeGateId == gateId;
@@ -1641,7 +1671,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               ],
                             ),
 
-                            // Metric Box
+                            // Metric Box with Cycles & Average Open/Closed Timings
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                               decoration: BoxDecoration(
@@ -1649,39 +1679,85 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 borderRadius: BorderRadius.circular(8),
                                 border: Border.all(color: Colors.grey.shade200),
                               ),
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              child: Column(
                                 children: [
                                   Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
-                                      const Icon(Icons.history, color: Color(0xFF0284C7), size: 18),
-                                      const SizedBox(width: 8),
-                                      Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                      Row(
                                         children: [
-                                          const Text(
-                                            'CYCLES TODAY',
-                                            style: TextStyle(
-                                              fontSize: 9,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.grey,
-                                            ),
-                                          ),
-                                          Text(
-                                            '$todayCycles times',
-                                            style: const TextStyle(
-                                              fontSize: 13,
-                                              fontWeight: FontWeight.bold,
-                                              color: Color(0xFF0F172A),
-                                            ),
+                                          const Icon(Icons.history, color: Color(0xFF0284C7), size: 18),
+                                          const SizedBox(width: 8),
+                                          Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              const Text(
+                                                'CYCLES TODAY',
+                                                style: TextStyle(
+                                                  fontSize: 9,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.grey,
+                                                ),
+                                              ),
+                                              Text(
+                                                '$todayCycles times',
+                                                style: const TextStyle(
+                                                  fontSize: 13,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Color(0xFF0F172A),
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ],
                                       ),
+                                      Text(
+                                        'Total: $totalCycles',
+                                        style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600),
+                                      ),
                                     ],
                                   ),
-                                  Text(
-                                    'Total: $totalCycles',
-                                    style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600),
+                                  const SizedBox(height: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFF1F5F9),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            const Icon(Icons.lock_open, size: 11, color: Color(0xFF0284C7)),
+                                            const SizedBox(width: 3),
+                                            Text(
+                                              'Avg Open: ',
+                                              style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                                            ),
+                                            Text(
+                                              gateAvgOpen,
+                                              style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                            ),
+                                          ],
+                                        ),
+                                        Container(width: 1, height: 12, color: Colors.grey.shade300),
+                                        Row(
+                                          children: [
+                                            const Icon(Icons.lock_outline, size: 11, color: Color(0xFFD97706)),
+                                            const SizedBox(width: 3),
+                                            Text(
+                                              'Avg Closed: ',
+                                              style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                                            ),
+                                            Text(
+                                              gateAvgClosed,
+                                              style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ],
                               ),

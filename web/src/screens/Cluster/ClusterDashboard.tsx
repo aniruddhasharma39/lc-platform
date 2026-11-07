@@ -1123,25 +1123,22 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
                               </div>
                               <button 
                                 className="transition flex items-center justify-center rounded-md flex-shrink-0" 
-                                style={{ backgroundColor: 'rgba(239, 68, 68, 0.08)', color: '#ef4444', padding: '6px', border: 'none', cursor: 'pointer', width: '32px', height: '32px' }}
-                                onClick={() => executeDeleteDevice(dev.id)} 
-                                title="Delete Slave Device"
-                                onMouseOver={(e) => { e.currentTarget.style.backgroundColor = '#ef4444'; e.currentTarget.style.color = '#ffffff'; }}
-                                onMouseOut={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.08)'; e.currentTarget.style.color = '#ef4444'; }}
+                                style={{ width: '28px', height: '28px', backgroundColor: 'transparent', border: '1px solid #ef4444', color: '#ef4444', cursor: 'pointer' }}
+                                onClick={() => executeDeleteDevice(dev.id)}
+                                title="Delete slave device"
                               >
-                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                <FaTrash style={{ fontSize: '0.85rem' }} />
                               </button>
                             </div>
-                            
-                            <div className="flex justify-between items-center gap-4">
-                              <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 500, lineHeight: '1.3' }}>
-                                {dev.type === 'LIMIT_SWITCH' ? 'Limit Switch' : dev.type === 'HALL_EFFECT' ? 'Hall Effect Sensor' : dev.type === 'TILT_SENSOR' ? 'Tilt Sensor' : (dev.type === 'DEVICE_1' ? 'Limit Switch & Hall Effect' : 'Tilt Sensor')}
+                            <div className="flex justify-between items-center text-xs" style={{ borderTop: '1px solid var(--border)', paddingTop: '10px' }}>
+                              <span className="text-muted font-medium">Type:</span>
+                              <span style={{ fontWeight: 600, color: 'var(--primary)' }}>
+                                {dev.type === 'LIMIT_SWITCH' ? 'Limit Switch'
+                                  : dev.type === 'HALL_EFFECT' ? 'Hall Effect Sensor'
+                                  : dev.type === 'TILT_SENSOR' ? 'Tilt Sensor'
+                                  : dev.type === 'DEVICE_1' ? 'Device 1 (Hall Effect + Limit Switch)'
+                                  : 'Device 2 (Tilt Sensor)'}
                               </span>
-                              <div style={{ display: 'flex', alignItems: 'center' }}>
-                                <span className="badge badge-blue" style={{ whiteSpace: 'nowrap', fontWeight: 700, padding: '4px 10px', fontSize: '0.75rem', letterSpacing: '0.5px', textTransform: 'uppercase', borderRadius: '6px' }}>
-                                  {dev.type === 'LIMIT_SWITCH' || dev.type === 'DEVICE_1' ? 'Type A (Limit Switch)' : dev.type === 'HALL_EFFECT' || dev.type === 'DEVICE_2' ? 'Type B (Hall Effect)' : 'Type C (Tilt Sensor)'}
-                                </span>
-                              </div>
                             </div>
                           </li>
                         ))}
@@ -1244,7 +1241,11 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
 
               {/* 2. Installed SIM Card Evidence */}
               {(() => {
-                const ev = (viewingEvidenceFor.evidences || []).find((e: any) => e.category === 'SIM_CARD');
+                const ev = (viewingEvidenceFor.evidences || []).find((e: any) => e.category === 'SIM_CARD')
+                  || (() => {
+                    const reg = (viewingEvidenceFor.deviceRegistries || []).find((r: any) => r.simPhotoUrl);
+                    return reg ? { imageUrl: reg.simPhotoUrl, category: 'SIM_CARD', createdAt: reg.updatedAt || reg.createdAt } : null;
+                  })();
                 return (
                   <EvidenceCardViewer
                     title="Installed SIM Card"
@@ -1272,12 +1273,23 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
               {(viewingEvidenceFor.childDevices || []).map((child: any) => {
                 const ev = (viewingEvidenceFor.evidences || []).find((e: any) => e.childDeviceId === child.id || (e.category === child.type && e.childDeviceId === child.id))
                   || (child.evidences && child.evidences[0]);
-                const isTypeA = child.type === 'DEVICE_1';
+                const sName = child.type === 'LIMIT_SWITCH' ? 'Limit Switch'
+                  : child.type === 'HALL_EFFECT' ? 'Hall Effect Sensor'
+                  : child.type === 'TILT_SENSOR' ? 'Tilt Sensor'
+                  : child.type === 'DEVICE_1' ? 'Limit Switch & Hall Effect'
+                  : child.type === 'DEVICE_2' ? 'Tilt Sensor'
+                  : (child.type || 'Slave').replace(/_/g, ' ');
+                const sSub = child.type === 'LIMIT_SWITCH' ? 'Limit Switch (End-stop detection)'
+                  : child.type === 'HALL_EFFECT' ? 'Hall Effect Sensor (Boom barrier angle detection)'
+                  : child.type === 'TILT_SENSOR' ? 'Tilt Sensor (Boom inclination monitoring)'
+                  : child.type === 'DEVICE_1' ? 'Limit Switch & Hall Effect Sensors'
+                  : child.type === 'DEVICE_2' ? 'Tilt & Angle Sensor'
+                  : 'Connected Hardware Slave Sensor';
                 return (
                   <EvidenceCardViewer
                     key={child.id}
-                    title={`Slave #${child.deviceSequence}: ${child.serialNumber}`}
-                    subtitle={isTypeA ? 'Limit Switch & Hall Effect Sensors' : 'Tilt & Angle Sensor'}
+                    title={`Slave #${child.deviceSequence}: ${sName} (${child.serialNumber})`}
+                    subtitle={sSub}
                     evidence={ev}
                     onPreview={() => ev?.imageUrl && setLightboxPhoto({ url: getFullImageUrl(ev.imageUrl), title: `Slave: ${child.serialNumber}`, ev })}
                   />
@@ -2341,19 +2353,33 @@ function CentralizedEvidenceUpload({ master, onClose }: any) {
           onDeleted={handleDeleted}
         />
 
-        {master.childDevices?.map((dev: any) => (
-          <EvidenceItem 
-            key={dev.id}
-            title={`Slave ${dev.type}`} 
-            description={dev.type === 'DEVICE_1' ? 'Hall Effect + Limit Switch' : 'Tilt Sensor'}
-            evidence={findEv(dev.type, dev.id)}
-            masterId={master.id}
-            childDeviceId={dev.id}
-            category={dev.type}
-            onUploaded={handleUploaded}
-            onDeleted={handleDeleted}
-          />
-        ))}
+        {master.childDevices?.map((dev: any) => {
+          const sName = dev.type === 'LIMIT_SWITCH' ? 'Limit Switch'
+            : dev.type === 'HALL_EFFECT' ? 'Hall Effect Sensor'
+            : dev.type === 'TILT_SENSOR' ? 'Tilt Sensor'
+            : dev.type === 'DEVICE_1' ? 'Limit Switch & Hall Effect'
+            : dev.type === 'DEVICE_2' ? 'Tilt Sensor'
+            : (dev.type || 'Slave').replace(/_/g, ' ');
+          const sDesc = dev.type === 'LIMIT_SWITCH' ? 'Limit Switch (End-stop detection)'
+            : dev.type === 'HALL_EFFECT' ? 'Hall Effect Sensor (Boom barrier angle detection)'
+            : dev.type === 'TILT_SENSOR' ? 'Tilt Sensor (Boom inclination monitoring)'
+            : dev.type === 'DEVICE_1' ? 'Dual LimitSwitch & HallEffect Position Detection'
+            : dev.type === 'DEVICE_2' ? 'High-precision Tilt & Angle Detection'
+            : 'Connected Hardware Slave Unit';
+          return (
+            <EvidenceItem 
+              key={dev.id}
+              title={`Slave #${dev.deviceSequence}: ${sName} (${dev.serialNumber})`} 
+              description={sDesc}
+              evidence={findEv(dev.type, dev.id)}
+              masterId={master.id}
+              childDeviceId={dev.id}
+              category={dev.type}
+              onUploaded={handleUploaded}
+              onDeleted={handleDeleted}
+            />
+          );
+        })}
       </div>
     </div>
   );

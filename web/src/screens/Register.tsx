@@ -75,6 +75,15 @@ export default function Register({ onGoToLogin }: Props) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
 
+  // Mobile OTP Verification State
+  const [otp, setOtp] = useState('');
+  const [isMobileVerified, setIsMobileVerified] = useState(false);
+  const [verifiedMobile, setVerifiedMobile] = useState('');
+  const [isSendingOtp, setIsSendingOtp] = useState(false);
+  const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpResendCountdown, setOtpResendCountdown] = useState(0);
+
   // ID card file
   const [idCardFile, setIdCardFile] = useState<File | null>(null);
   const [idCardPreview, setIdCardPreview] = useState<string | null>(null);
@@ -217,6 +226,86 @@ export default function Register({ onGoToLogin }: Props) {
     }
   };
 
+  // Mobile number change listener to invalidate verification if altered
+  const handleMobileChange = (val: string) => {
+    setMobile(val);
+    const clean = val.replace(/\D/g, '');
+    if (isMobileVerified && clean !== verifiedMobile) {
+      setIsMobileVerified(false);
+      setVerifiedMobile('');
+      setOtpSent(false);
+      setOtp('');
+    }
+  };
+
+  // OTP resend timer countdown
+  useEffect(() => {
+    if (otpResendCountdown <= 0) return;
+    const timer = setInterval(() => {
+      setOtpResendCountdown(prev => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [otpResendCountdown]);
+
+  // Send Registration OTP
+  const handleSendOtp = async () => {
+    const clean = mobile.replace(/\D/g, '');
+    if (clean.length !== 10 || !/^[6-9]\d{9}$/.test(clean)) {
+      setError('Please enter a valid 10-digit Indian mobile number starting with 6, 7, 8, or 9.');
+      return;
+    }
+    setError('');
+    setIsSendingOtp(true);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/auth/register/otp/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mobile: clean }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setError(data.error || 'Failed to dispatch verification OTP.');
+      } else {
+        setOtpSent(true);
+        setOtpResendCountdown(60);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Network error sending verification OTP.');
+    } finally {
+      setIsSendingOtp(false);
+    }
+  };
+
+  // Verify Registration OTP
+  const handleVerifyOtp = async () => {
+    const clean = mobile.replace(/\D/g, '');
+    if (otp.trim().length !== 6) {
+      setError('Please enter the 6-digit OTP code received via SMS.');
+      return;
+    }
+    setError('');
+    setIsVerifyingOtp(true);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/auth/register/otp/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mobile: clean, otp: otp.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.verified) {
+        setError(data.error || 'Invalid or expired OTP code.');
+      } else {
+        setIsMobileVerified(true);
+        setVerifiedMobile(clean);
+        setOtpSent(false);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Network error verifying OTP.');
+    } finally {
+      setIsVerifyingOtp(false);
+    }
+  };
+
   // Form submit
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -230,6 +319,10 @@ export default function Register({ onGoToLogin }: Props) {
     const cleanMobile = mobile.replace(/\D/g, '');
     if (cleanMobile.length !== 10) {
       setError('Mobile Number must be a 10-digit Indian mobile number.');
+      return;
+    }
+    if (!isMobileVerified || cleanMobile !== verifiedMobile) {
+      setError('Please verify your mobile number with OTP before submitting registration.');
       return;
     }
     if (!email.trim() || !email.includes('@')) {
@@ -281,10 +374,7 @@ export default function Register({ onGoToLogin }: Props) {
       }
     }
 
-    if (!idCardFile && !idCardPreview) {
-      setError('Official Railway Employee Identity Document upload is mandatory.');
-      return;
-    }
+    // Official Identity Document upload is optional
 
     if (!declarationConfirmed) {
       setError('You must accept the official security declaration confirming the accuracy of your details.');
@@ -461,16 +551,75 @@ export default function Register({ onGoToLogin }: Props) {
                 </div>
 
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>Mobile Number (10 Digits) *</label>
-                  <input
-                    type="tel"
-                    required
-                    maxLength={10}
-                    placeholder="e.g. 9876543210"
-                    value={mobile}
-                    onChange={e => setMobile(e.target.value)}
-                    style={{ width: '100%', padding: '9px 12px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
-                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 600, color: '#334155' }}>Mobile Number (10 Digits) *</label>
+                    {isMobileVerified && (
+                      <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#059669', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <FaCheckCircle /> Verified
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      type="tel"
+                      required
+                      maxLength={10}
+                      disabled={isMobileVerified}
+                      placeholder="e.g. 9876543210"
+                      value={mobile}
+                      onChange={e => handleMobileChange(e.target.value)}
+                      style={{ flex: 1, padding: '9px 12px', borderRadius: 6, border: isMobileVerified ? '1px solid #10b981' : '1px solid #cbd5e1', background: isMobileVerified ? '#f0fdf4' : '#fff', fontSize: '0.875rem' }}
+                    />
+                    {!isMobileVerified ? (
+                      <button
+                        type="button"
+                        onClick={handleSendOtp}
+                        disabled={isSendingOtp || otpResendCountdown > 0}
+                        style={{ padding: '0 14px', background: '#0B3C7A', color: '#fff', border: 'none', borderRadius: 6, fontSize: '0.8rem', fontWeight: 600, cursor: isSendingOtp || otpResendCountdown > 0 ? 'not-allowed' : 'pointer', opacity: isSendingOtp || otpResendCountdown > 0 ? 0.7 : 1, whiteSpace: 'nowrap' }}
+                      >
+                        {isSendingOtp ? 'Sending...' : otpSent ? (otpResendCountdown > 0 ? `Resend (${otpResendCountdown}s)` : 'Resend OTP') : 'Get OTP'}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMobileVerified(false);
+                          setVerifiedMobile('');
+                          setOtpSent(false);
+                          setOtp('');
+                        }}
+                        style={{ padding: '0 12px', background: '#f1f5f9', color: '#0B3C7A', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                      >
+                        Change
+                      </button>
+                    )}
+                  </div>
+
+                  {!isMobileVerified && otpSent && (
+                    <div style={{ marginTop: 8, padding: 10, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 6 }}>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: '#166534', marginBottom: 4 }}>
+                        Enter 6-digit OTP sent to +91 {mobile} via SMS
+                      </label>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <input
+                          type="text"
+                          maxLength={6}
+                          placeholder="6-digit OTP"
+                          value={otp}
+                          onChange={e => setOtp(e.target.value.replace(/\D/g, ''))}
+                          style={{ flex: 1, padding: '7px 10px', borderRadius: 6, border: '1px solid #86efac', background: '#fff', fontSize: '0.85rem' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleVerifyOtp}
+                          disabled={isVerifyingOtp}
+                          style={{ padding: '0 14px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer' }}
+                        >
+                          {isVerifyingOtp ? 'Verifying...' : 'Verify OTP'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -510,10 +659,10 @@ export default function Register({ onGoToLogin }: Props) {
                 </div>
               </div>
 
-              {/* Identity Document Upload */}
+              {/* Identity Document Upload (Optional) */}
               <div style={{ marginTop: 14 }}>
                 <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: 4 }}>
-                  Official Railway Identity Document (Photo / Scan) *
+                  Official Railway Identity Document (Photo / Scan) (Optional)
                 </label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: '0.82rem', fontWeight: 600, color: '#0B3C7A', cursor: 'pointer' }}>
@@ -522,8 +671,17 @@ export default function Register({ onGoToLogin }: Props) {
                     <input type="file" accept="image/*,.pdf" onChange={handleFileChange} style={{ display: 'none' }} />
                   </label>
                   <span style={{ fontSize: '0.8rem', color: idCardFile ? '#059669' : '#64748b' }}>
-                    {idCardFile ? idCardFile.name : 'No file chosen (Mandatory)'}
+                    {idCardFile ? idCardFile.name : 'No file chosen (Optional)'}
                   </span>
+                  {idCardFile && (
+                    <button
+                      type="button"
+                      onClick={() => { setIdCardFile(null); setIdCardPreview(null); }}
+                      style={{ border: 'none', background: 'transparent', color: '#ef4444', fontSize: '0.78rem', cursor: 'pointer', fontWeight: 600 }}
+                    >
+                      Remove
+                    </button>
+                  )}
                 </div>
                 {idCardPreview && (
                   <div style={{ marginTop: 8 }}>

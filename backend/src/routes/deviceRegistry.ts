@@ -13,6 +13,10 @@ import { broadcastGateTelemetry } from '../lib/telemetryWs';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
 import { deleteEvidenceFile } from './evidence';
+// @ts-ignore
+import { Jimp, loadFont } from 'jimp';
+// @ts-ignore
+import { SANS_16_WHITE, SANS_16_BLACK } from 'jimp/fonts';
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -31,10 +35,32 @@ async function uploadSimImage(base64Str: string): Promise<string> {
     ? Buffer.from(matches[2], 'base64')
     : Buffer.from(base64Str, 'base64');
 
+  let stampedBuffer: Buffer = buffer;
+  try {
+    const image = await Jimp.read(buffer);
+    if (image.bitmap && (image.bitmap.width > 2048 || image.bitmap.height > 2048)) {
+      if (image.bitmap.width >= image.bitmap.height) {
+        image.resize({ w: 2048 });
+      } else {
+        image.resize({ h: 2048 });
+      }
+    }
+    const dateStr = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+    const text = `SIM Proof | ${dateStr}`;
+    const fontWhite = await loadFont(SANS_16_WHITE);
+    const fontBlack = await loadFont(SANS_16_BLACK);
+    image.print({ font: fontBlack, x: 13, y: 13, text });
+    image.print({ font: fontWhite, x: 12, y: 12, text });
+    stampedBuffer = await image.getBuffer('image/jpeg');
+  } catch (jimpErr) {
+    console.warn('Jimp watermarking failed for SIM photo, using original buffer:', jimpErr);
+    stampedBuffer = buffer;
+  }
+
   const filename = `${crypto.randomUUID()}.jpg`;
   const filepath = path.join(uploadsDir, filename);
   try {
-    fs.writeFileSync(filepath, buffer);
+    fs.writeFileSync(filepath, stampedBuffer);
   } catch (e) {
     console.warn('Local fs write failed for SIM photo:', e);
   }
@@ -54,7 +80,7 @@ async function uploadSimImage(base64Str: string): Promise<string> {
           else resolve(result);
         }
       );
-      stream.end(buffer);
+      stream.end(stampedBuffer);
     });
     if (uploadResult?.secure_url) {
       imageUrl = uploadResult.secure_url;
@@ -398,14 +424,20 @@ router.get('/', authenticate, async (req, res, next) => {
       );
 
       let simPhotoUrl = (device as any).simPhotoUrl;
-      if (!simPhotoUrl && device.masterId) {
+      if (device.masterId) {
         const simEvidence = await prisma.installationEvidence.findFirst({
           where: { masterId: device.masterId, category: 'SIM_CARD' },
-          orderBy: { createdAt: 'desc' },
+          orderBy: { updatedAt: 'desc' },
           select: { imageUrl: true },
         }).catch(() => null);
         if (simEvidence?.imageUrl) {
           simPhotoUrl = simEvidence.imageUrl;
+          if ((device as any).simPhotoUrl !== simEvidence.imageUrl) {
+            prisma.deviceRegistry.update({
+              where: { id: device.id },
+              data: { simPhotoUrl: simEvidence.imageUrl },
+            }).catch(() => {});
+          }
         }
       }
 
@@ -1224,14 +1256,20 @@ router.get('/:id', authenticate, async (req, res, next) => {
     }
 
     let simPhotoUrl = (device as any).simPhotoUrl;
-    if (!simPhotoUrl && device.masterId) {
+    if (device.masterId) {
       const simEvidence = await prisma.installationEvidence.findFirst({
         where: { masterId: device.masterId, category: 'SIM_CARD' },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { updatedAt: 'desc' },
         select: { imageUrl: true },
       }).catch(() => null);
       if (simEvidence?.imageUrl) {
         simPhotoUrl = simEvidence.imageUrl;
+        if ((device as any).simPhotoUrl !== simEvidence.imageUrl) {
+          prisma.deviceRegistry.update({
+            where: { id: device.id },
+            data: { simPhotoUrl: simEvidence.imageUrl },
+          }).catch(() => {});
+        }
       }
     }
 
@@ -1491,6 +1529,10 @@ router.put('/:id/sim', authenticate, async (req: any, res, next) => {
       });
     }
 
+    if (existing.simPhotoUrl && existing.simPhotoUrl !== finalPhotoUrl) {
+      await deleteEvidenceFile(existing.simPhotoUrl);
+    }
+
     const updated = await prisma.deviceRegistry.update({
       where: { id },
       data: {
@@ -1509,8 +1551,32 @@ router.put('/:id/sim', authenticate, async (req: any, res, next) => {
       },
     });
 
-    // Resolve linked master ID (from existing.masterId or from gate's primary master)
+    // Resolve linked master ID (from existing.masterId, serialNumber, thingName, or gate's primary master)
     let linkedMasterId = existing.masterId;
+    if (!linkedMasterId && existing.serialNumber) {
+      const masterBySerial = await prisma.masterUnit.findUnique({
+        where: { serialNumber: existing.serialNumber },
+      });
+      if (masterBySerial) {
+        linkedMasterId = masterBySerial.id;
+        await prisma.deviceRegistry.update({
+          where: { id },
+          data: { masterId: linkedMasterId, gateId: masterBySerial.gateId },
+        }).catch(() => {});
+      }
+    }
+    if (!linkedMasterId && existing.thingName) {
+      const masterByThing = await prisma.masterUnit.findUnique({
+        where: { serialNumber: existing.thingName },
+      });
+      if (masterByThing) {
+        linkedMasterId = masterByThing.id;
+        await prisma.deviceRegistry.update({
+          where: { id },
+          data: { masterId: linkedMasterId, gateId: masterByThing.gateId },
+        }).catch(() => {});
+      }
+    }
     if (!linkedMasterId && existing.gateId) {
       const gateMaster = await prisma.masterUnit.findFirst({
         where: { gateId: existing.gateId },
@@ -1525,23 +1591,32 @@ router.put('/:id/sim', authenticate, async (req: any, res, next) => {
       }
     }
 
-    // Also sync to InstallationEvidence
+    // Also sync to InstallationEvidence (single source of truth, removing duplicates)
     if (linkedMasterId && finalPhotoUrl) {
       try {
-        const existingEv = await prisma.installationEvidence.findFirst({
+        const existingEvs = await prisma.installationEvidence.findMany({
           where: { masterId: linkedMasterId, category: 'SIM_CARD' },
+          orderBy: { createdAt: 'desc' },
         });
-        if (existingEv) {
-          if (existingEv.imageUrl !== finalPhotoUrl) {
-            await deleteEvidenceFile(existingEv.imageUrl);
+        if (existingEvs.length > 0) {
+          const primaryEv = existingEvs[0];
+          if (primaryEv.imageUrl !== finalPhotoUrl) {
+            await deleteEvidenceFile(primaryEv.imageUrl);
           }
           await prisma.installationEvidence.update({
-            where: { id: existingEv.id },
+            where: { id: primaryEv.id },
             data: {
               imageUrl: finalPhotoUrl,
               updatedAt: new Date(),
             },
           });
+          // Remove any duplicate SIM evidence records
+          for (let i = 1; i < existingEvs.length; i++) {
+            if (existingEvs[i].imageUrl !== finalPhotoUrl) {
+              await deleteEvidenceFile(existingEvs[i].imageUrl);
+            }
+            await prisma.installationEvidence.delete({ where: { id: existingEvs[i].id } });
+          }
         } else {
           await prisma.installationEvidence.create({
             data: {
@@ -1552,21 +1627,32 @@ router.put('/:id/sim', authenticate, async (req: any, res, next) => {
             },
           });
         }
+
+        // Keep all devices under this master in sync
+        await prisma.deviceRegistry.updateMany({
+          where: {
+            masterId: linkedMasterId,
+            id: { not: id },
+          },
+          data: {
+            simPhotoUrl: finalPhotoUrl,
+          },
+        }).catch(() => {});
       } catch (evErr) {
-        console.warn('Syncing SIM photo to installation evidence non-critical warning:', evErr);
+        console.warn('Syncing SIM photo to installation evidence warning:', evErr);
       }
     }
 
-    if (existing.gateId || existing.master?.gateId) {
+    const gateIdToBump = existing.gateId || existing.master?.gateId;
+    if (gateIdToBump || linkedMasterId) {
       try {
-        const gId = existing.gateId || existing.master?.gateId;
         const now = new Date();
-        if (gId) {
-          await prisma.lCGate.update({ where: { id: gId }, data: { updatedAt: now } }).catch(() => {});
-          await bumpDirectoryRevision([gId], true);
+        if (gateIdToBump) {
+          await prisma.lCGate.update({ where: { id: gateIdToBump }, data: { updatedAt: now } }).catch(() => {});
+          await bumpDirectoryRevision([gateIdToBump], true);
         }
-        if (existing.masterId) {
-          await prisma.masterUnit.update({ where: { id: existing.masterId }, data: { updatedAt: now } }).catch(() => {});
+        if (linkedMasterId) {
+          await prisma.masterUnit.update({ where: { id: linkedMasterId }, data: { updatedAt: now } }).catch(() => {});
         }
         clusterCacheManager.clear();
       } catch (cErr) {

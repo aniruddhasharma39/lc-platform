@@ -326,23 +326,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     String? childType,
     Map<String, dynamic>? gate,
   ]) {
-    final mEvs = (master['evidences'] as List?) ?? [];
-    for (final e in mEvs) {
-      if (e is Map) {
-        final ev = Map<String, dynamic>.from(e);
-        final evCat = (ev['category'] ?? '').toString();
-        final evChildId = ev['childDeviceId'];
-        if (childDeviceId != null && evChildId != null && evChildId.toString() == childDeviceId.toString()) {
-          return ev;
-        }
-        if (childDeviceId == null && evCat == category && evChildId == null) {
-          return ev;
-        }
-        if (childType != null && evCat == childType) {
-          return ev;
-        }
-      }
-    }
+    // 1. If looking for a child device's evidence
     if (childDeviceId != null) {
       final children = (master['childDevices'] as List?) ?? [];
       for (final c in children) {
@@ -353,8 +337,33 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
           }
         }
       }
+      final mEvs = (master['evidences'] as List?) ?? [];
+      for (final e in mEvs) {
+        if (e is Map) {
+          final ev = Map<String, dynamic>.from(e);
+          final evChildId = ev['childDeviceId'];
+          if (evChildId != null && evChildId.toString() == childDeviceId.toString()) {
+            return ev;
+          }
+        }
+      }
+      return null;
     }
-    // Fallback for SIM_CARD: check deviceRegistries on master or gate
+
+    // 2. Otherwise matching master-level evidence (SIM_CARD, MASTER, POWER_SOURCE, etc.)
+    final mEvs = (master['evidences'] as List?) ?? [];
+    for (final e in mEvs) {
+      if (e is Map) {
+        final ev = Map<String, dynamic>.from(e);
+        final evCat = (ev['category'] ?? '').toString();
+        final evChildId = ev['childDeviceId'];
+        if (evChildId == null && evCat == category) {
+          return ev;
+        }
+      }
+    }
+
+    // 3. Fallback for SIM_CARD: check deviceRegistries on master or gate
     if (category == 'SIM_CARD') {
       final mRegs = (master['deviceRegistries'] as List?) ?? [];
       for (final r in mRegs) {
@@ -2096,8 +2105,48 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                         final rawChild = childDevices[cIdx];
                                         if (rawChild is! Map) return const SizedBox.shrink();
                                         final child = Map<String, dynamic>.from(rawChild);
-                                        final childEv = _findDeviceEvidence(master, child['type'], child['id'], null, gate);
+                                        final childId = child['id'] is int ? child['id'] as int : int.tryParse(child['id']?.toString() ?? '');
+                                        final childEv = _findDeviceEvidence(master, child['type']?.toString() ?? '', childId, null, gate);
                                         final isSlaveExpanded = _expandedSlaveId == child['id'];
+
+                                        final cType = child['type']?.toString() ?? 'LIMIT_SWITCH';
+                                        final cSeq = child['deviceSequence']?.toString() ?? (cIdx + 1).toString();
+                                        final cSerial = child['serialNumber']?.toString() ?? 'Slave Device';
+                                        String slaveName;
+                                        String slaveDesc;
+                                        String slaveLetter;
+                                        switch (cType) {
+                                          case 'LIMIT_SWITCH':
+                                            slaveName = 'Limit Switch';
+                                            slaveDesc = 'Sensors: End-stop detection & locking mechanism';
+                                            slaveLetter = 'A';
+                                            break;
+                                          case 'HALL_EFFECT':
+                                            slaveName = 'Hall Effect Sensor';
+                                            slaveDesc = 'Sensors: Boom barrier magnetic angle positioning';
+                                            slaveLetter = 'B';
+                                            break;
+                                          case 'TILT_SENSOR':
+                                            slaveName = 'Tilt Sensor';
+                                            slaveDesc = 'Sensors: Boom inclination & vibration monitoring';
+                                            slaveLetter = 'C';
+                                            break;
+                                          case 'DEVICE_1':
+                                            slaveName = 'Limit Switch & Hall Effect';
+                                            slaveDesc = 'Sensors: Dual LimitSwitch & HallEffect Position Detection';
+                                            slaveLetter = 'A';
+                                            break;
+                                          case 'DEVICE_2':
+                                            slaveName = 'Tilt Sensor';
+                                            slaveDesc = 'Sensors: High-precision Tilt & Angle Detection';
+                                            slaveLetter = 'B';
+                                            break;
+                                          default:
+                                            slaveName = cType.replaceAll('_', ' ');
+                                            slaveDesc = 'Sensors: Wired hardware slave unit';
+                                            slaveLetter = 'A';
+                                        }
+                                        final slaveTitle = 'Slave #$cSeq: $slaveName ($cSerial)';
 
                                         return Container(
                                           decoration: BoxDecoration(
@@ -2124,17 +2173,38 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                                         child: Column(
                                                           crossAxisAlignment: CrossAxisAlignment.start,
                                                           children: [
-                                                            Text(
-                                                              child['serialNumber'] ?? 'Slave Device',
-                                                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                                            Row(
+                                                              children: [
+                                                                Expanded(
+                                                                  child: Text(
+                                                                    'Slave #$cSeq: $cSerial',
+                                                                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                                                    overflow: TextOverflow.ellipsis,
+                                                                  ),
+                                                                ),
+                                                                Container(
+                                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                                                                  decoration: BoxDecoration(
+                                                                    color: const Color(0xFFEFF6FF),
+                                                                    borderRadius: BorderRadius.circular(4),
+                                                                    border: Border.all(color: const Color(0xFFBFDBFE)),
+                                                                  ),
+                                                                  child: Text(
+                                                                    'TYPE $slaveLetter',
+                                                                    style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFF2563EB)),
+                                                                  ),
+                                                                ),
+                                                              ],
                                                             ),
+                                                            const SizedBox(height: 2),
                                                             Text(
-                                                              '${child['type'] ?? 'Device'} • Sequence #${child['deviceSequence']}',
+                                                              '$slaveName • Sequence #$cSeq',
                                                               style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
                                                             ),
                                                           ],
                                                         ),
                                                       ),
+                                                      const SizedBox(width: 8),
                                                       Icon(
                                                         isSlaveExpanded ? Icons.expand_less : Icons.expand_more,
                                                         size: 18,
@@ -2154,19 +2224,17 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                                     crossAxisAlignment: CrossAxisAlignment.start,
                                                     children: [
                                                       Text(
-                                                        child['type'] == 'DEVICE_2'
-                                                            ? 'Sensors: Tilt & Vibration Sensor'
-                                                            : 'Sensors: LimitSwitch & HallEffect Position Detection',
+                                                        slaveDesc,
                                                         style: const TextStyle(fontSize: 10.5, color: Color(0xFF475569), fontWeight: FontWeight.w500),
                                                       ),
                                                       const SizedBox(height: 6),
                                                       _buildPhotoThumbnailRow(
                                                         evidence: childEv,
                                                         gate: gate,
-                                                        itemTitle: 'Slave: ',
+                                                        itemTitle: slaveTitle,
                                                         masterSeq: master['masterSequence'],
                                                         deviceSeq: child['deviceSequence'],
-                                                        emptyMessage: 'No installation photo uploaded for this slave sensor.',
+                                                        emptyMessage: 'No installation photo uploaded for $slaveName ($cSerial).',
                                                       ),
                                                     ],
                                                   ),
@@ -2322,7 +2390,9 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                   style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
                 ),
                 Text(
-                  'Uploaded at setup • Tap to zoom',
+                  evidence['createdAt'] != null
+                      ? 'Recorded: ${_formatDateTime(evidence['createdAt'])}'
+                      : 'Uploaded at setup • Tap to zoom',
                   style: const TextStyle(fontSize: 9.5, color: Color(0xFF64748B)),
                 ),
               ],

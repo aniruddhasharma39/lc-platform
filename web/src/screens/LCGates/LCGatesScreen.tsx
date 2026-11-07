@@ -1470,12 +1470,22 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                                         {ev.category === 'MASTER' ? 'Master Gateway Unit Photo' :
                                          ev.category === 'POWER_SOURCE' ? 'Power / Solar Source Photo' :
                                          ev.category === 'SIM_CARD' ? 'SIM Card Photo' :
-                                         `${ev.category || 'Equipment'} Photo`}
+                                         ev.category === 'LIMIT_SWITCH' ? 'Limit Switch Photo' :
+                                         ev.category === 'HALL_EFFECT' ? 'Hall Effect Sensor Photo' :
+                                         ev.category === 'TILT_SENSOR' ? 'Tilt Sensor Photo' :
+                                         ev.category === 'DEVICE_1' ? 'Limit Switch & Hall Effect Photo' :
+                                         ev.category === 'DEVICE_2' ? 'Tilt Sensor Photo' :
+                                         `${(ev.category || 'Equipment').replace(/_/g, ' ')} Photo`}
                                       </div>
                                       <div style={{ fontSize: '0.7rem', color: '#64748b', marginBottom: 4 }}>
                                         {ev.latitude && ev.longitude
                                           ? `GPS: ${ev.latitude.toFixed(4)}, ${ev.longitude.toFixed(4)}`
                                           : 'Site Photo Attached'}
+                                        {ev.createdAt && (
+                                          <span style={{ marginLeft: 6, color: '#94a3b8' }}>
+                                            • {new Date(ev.createdAt).toLocaleDateString()}
+                                          </span>
+                                        )}
                                       </div>
                                       <button
                                         type="button"
@@ -1510,7 +1520,13 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                             ) : (
                               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 8 }}>
                                 {master.childDevices.map((child: any) => {
-                                  const childEvidence = child.evidences?.[0];
+                                  const childEvidence = child.evidences?.[0] || (master.evidences || []).find((e: any) => e.childDeviceId && String(e.childDeviceId) === String(child.id));
+                                  const slaveName = child.type === 'LIMIT_SWITCH' ? 'Limit Switch'
+                                    : child.type === 'HALL_EFFECT' ? 'Hall Effect Sensor'
+                                    : child.type === 'TILT_SENSOR' ? 'Tilt Sensor'
+                                    : child.type === 'DEVICE_1' ? 'Limit Switch & Hall Effect'
+                                    : child.type === 'DEVICE_2' ? 'Tilt Sensor'
+                                    : (child.type || 'Slave Sensor').replace(/_/g, ' ');
                                   return (
                                     <div
                                       key={child.id}
@@ -1530,7 +1546,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                                           {child.serialNumber}
                                         </div>
                                         <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
-                                          {child.type} • Sequence #{child.deviceSequence}
+                                          {slaveName} • Sequence #{child.deviceSequence}
                                         </div>
                                       </div>
 

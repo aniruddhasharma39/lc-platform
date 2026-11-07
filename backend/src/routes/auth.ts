@@ -135,6 +135,133 @@ router.post('/check-availability', async (req, res, next) => {
   }
 });
 
+const registerOtpSendSchema = z.object({
+  mobile: z.string().min(1),
+});
+
+// Registration: Send OTP to verify new user's phone number using approved DLT template (MIRTHA)
+router.post('/register/otp/send', async (req, res, next) => {
+  try {
+    const { mobile } = registerOtpSendSchema.parse(req.body);
+    const cleanDigits = mobile.replace(/\D/g, '').slice(-10);
+    const indianPhoneRegex = /^[6-9]\d{9}$/;
+    if (!indianPhoneRegex.test(cleanDigits)) {
+      return res.status(400).json({
+        error: 'Please enter a valid 10-digit Indian mobile number starting with 6, 7, 8, or 9.'
+      });
+    }
+
+    // 1. Check if an active user already has this mobile number
+    const existingUser = await prisma.user.findFirst({
+      where: { mobile: cleanDigits }
+    });
+    if (existingUser) {
+      return res.status(409).json({
+        error: 'An account is already registered with this mobile number. Please log in directly.'
+      });
+    }
+
+    // 2. Check if a pending or escalated registration request already exists
+    const pendingMatch = await findMatchingRegistrationRequest(cleanDigits);
+    if (pendingMatch) {
+      if (pendingMatch.req.status === 'PENDING' || pendingMatch.req.status === 'ESCALATED') {
+        return res.status(409).json({
+          error: 'A registration request with this mobile number has already been submitted and is pending supervisor approval.'
+        });
+      }
+      if (pendingMatch.req.status === 'REJECTED') {
+        return res.status(409).json({
+          error: `A previous registration request for this mobile number was rejected.${pendingMatch.req.rejectionReason ? ` Reason: ${pendingMatch.req.rejectionReason}` : ''} Please contact your railway supervisor.`
+        });
+      }
+    }
+
+    // 3. Generate 6-digit OTP & 10-minute expiry
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    // 4. Dispatch SMS via 2Factor TSMS using approved DLT template (MIRTHA)
+    const smsResult = await send2FactorSmsOtp(cleanDigits, otp);
+    if (!smsResult.success) {
+      return res.status(502).json({
+        error: `Failed to deliver SMS OTP via 2Factor.in: ${smsResult.details || 'Gateway error'}. Please check your phone number.`
+      });
+    }
+
+    // 5. Store OTP in database
+    await prisma.otpVerification.deleteMany({
+      where: { identifier: cleanDigits, type: 'PHONE' }
+    });
+
+    await prisma.otpVerification.create({
+      data: {
+        identifier: cleanDigits,
+        type: 'PHONE',
+        otp,
+        expiresAt,
+        verified: false,
+      }
+    });
+
+    console.log(`\n=================================================`);
+    console.log(`📱 [REGISTRATION OTP DISPATCH] (DLT SMS)`);
+    console.log(`📞 Recipient: +91${cleanDigits}`);
+    console.log(`🔑 Verification Code: ${otp}`);
+    console.log(`⏱️  Valid for: 10 minutes`);
+    console.log(`=================================================\n`);
+
+    res.json({
+      success: true,
+      message: 'OTP has been dispatched to your mobile number as an SMS text message.',
+      expiresInSeconds: 600
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const registerOtpVerifySchema = z.object({
+  mobile: z.string().min(1),
+  otp: z.string().length(6),
+});
+
+// Registration: Verify submitted OTP for mobile number
+router.post('/register/otp/verify', async (req, res, next) => {
+  try {
+    const { mobile, otp } = registerOtpVerifySchema.parse(req.body);
+    const cleanDigits = mobile.replace(/\D/g, '').slice(-10);
+
+    const record = await prisma.otpVerification.findFirst({
+      where: {
+        identifier: cleanDigits,
+        type: 'PHONE',
+        verified: false,
+        expiresAt: { gt: new Date() }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (!record || record.otp !== otp.trim()) {
+      return res.status(400).json({
+        error: 'Invalid or expired OTP. Please enter the correct code or request a new one.'
+      });
+    }
+
+    await prisma.otpVerification.update({
+      where: { id: record.id },
+      data: { verified: true }
+    });
+
+    res.json({
+      success: true,
+      verified: true,
+      message: 'Mobile number verified successfully!'
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/register', upload.any(), async (req, res, next) => {
   try {
     let parsedData: any;
@@ -278,10 +405,7 @@ router.post('/register', upload.any(), async (req, res, next) => {
         return res.status(400).json({ error: 'You must confirm the official security declaration stating that all submitted information is accurate.' });
       }
 
-      // Enforce Identity Document upload
-      if (!idCardUploadedUrl && !parsedData.idCard && !parsedData.identityCard) {
-        return res.status(400).json({ error: 'Official Railway Identity Document upload is mandatory for registration.' });
-      }
+      // Identity Document upload is optional (saved if provided)
 
       // Resolve matching role ID from designation
       const matchedRole = await prisma.role.findFirst({
@@ -290,6 +414,52 @@ router.post('/register', upload.any(), async (req, res, next) => {
       if (matchedRole) {
         requestedRoleId = matchedRole.id;
       }
+    }
+
+    // Enforce Mobile Number verification via OTP
+    const registrationMobile = (extractedFields.mobile || parsedData.mobile || '').replace(/\D/g, '').slice(-10);
+    if (!registrationMobile || registrationMobile.length !== 10) {
+      return res.status(400).json({ error: 'A valid 10-digit Indian mobile number is required.' });
+    }
+
+    let isMobileVerified = false;
+    const verifiedOtp = await prisma.otpVerification.findFirst({
+      where: {
+        identifier: registrationMobile,
+        type: 'PHONE',
+        verified: true,
+        createdAt: { gt: new Date(Date.now() - 30 * 60 * 1000) }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (verifiedOtp) {
+      isMobileVerified = true;
+    } else if (parsedData.otp) {
+      // In case OTP was submitted along with the registration form
+      const pendingRecord = await prisma.otpVerification.findFirst({
+        where: {
+          identifier: registrationMobile,
+          type: 'PHONE',
+          verified: false,
+          expiresAt: { gt: new Date() }
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+
+      if (pendingRecord && pendingRecord.otp === String(parsedData.otp).trim()) {
+        await prisma.otpVerification.update({
+          where: { id: pendingRecord.id },
+          data: { verified: true }
+        });
+        isMobileVerified = true;
+      }
+    }
+
+    if (!isMobileVerified) {
+      return res.status(400).json({
+        error: 'Mobile number verification is required. Please verify your mobile number with OTP before submitting registration.'
+      });
     }
 
     // Hash password if it exists in data

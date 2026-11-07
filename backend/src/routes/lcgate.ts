@@ -14,6 +14,12 @@ import { broadcastGateTelemetry, getGateTelemetryPayload } from '../lib/telemetr
 import { bumpDirectoryRevision, getDirectoryRevisionToken } from '../lib/revisionManager';
 import { bumpReportRevisionInTx, recordEventChangeInTx } from '../lib/reportRevisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
+import { v2 as cloudinary } from 'cloudinary';
+import { deleteEvidenceFile } from './evidence';
+// @ts-ignore
+import { Jimp, loadFont } from 'jimp';
+// @ts-ignore
+import { SANS_16_WHITE, SANS_16_BLACK } from 'jimp/fonts';
 
 const router = Router();
 
@@ -187,6 +193,22 @@ router.post('/stations', authenticate, async (req, res, next) => {
   }
 });
 
+// Helper to format KPI duration into human-readable string (e.g., "14m 20s", "5m", "45s", or "--")
+function formatKpiDuration(seconds: number | null): string {
+  if (seconds === null || seconds === undefined || isNaN(seconds) || seconds <= 0) {
+    return '--';
+  }
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  if (mins === 0) {
+    return `${secs}s`;
+  }
+  if (secs === 0) {
+    return `${mins}m`;
+  }
+  return `${mins}m ${secs}s`;
+}
+
 // GET /dashboard-summary - Home screen KPIs, gate cycle stats & cluster map coordinates
 router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
   try {
@@ -236,7 +258,10 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
         masters: {
           orderBy: { masterSequence: 'asc' },
           include: {
-            childDevices: true,
+            childDevices: {
+              orderBy: { deviceSequence: 'asc' },
+              include: { evidences: true },
+            },
             deviceRegistries: true,
             evidences: true,
           }
@@ -297,6 +322,10 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
           hasMaster: false,
           todayCycles: 0,
           totalCycles: 0,
+          avgOpenSeconds: null,
+          avgOpenFormatted: '--',
+          avgClosedSeconds: null,
+          avgClosedFormatted: '--',
           lastClosedAt: null,
           lastClosedFormatted: 'No master unit assigned',
           masterSerialNumber: 'Unassigned',
@@ -319,6 +348,47 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
 
       const todayCyclesCount = todayEvents.length;
       totalCyclesToday += todayCyclesCount;
+
+      // 1. Calculate Average Open Time (Road clearance duration per cycle)
+      const todayCompleted = todayEvents.filter(e => e.closedAt && e.durationSeconds && e.durationSeconds > 0);
+      const allCompleted = gate.events.filter(e => e.closedAt && e.durationSeconds && e.durationSeconds > 0);
+      const targetOpenEvents = todayCompleted.length > 0 ? todayCompleted : allCompleted;
+
+      let avgOpenSeconds: number | null = null;
+      if (targetOpenEvents.length > 0) {
+        const sumSec = targetOpenEvents.reduce((acc, ev) => acc + (ev.durationSeconds || 0), 0);
+        avgOpenSeconds = Math.round(sumSec / targetOpenEvents.length);
+      }
+      const avgOpenFormatted = formatKpiDuration(avgOpenSeconds);
+
+      // 2. Calculate Average Closed Time (Time barrier remains down for train passage)
+      const chronologicalEvents = [...gate.events]
+        .filter(e => e.openedAt)
+        .sort((a, b) => new Date(a.openedAt).getTime() - new Date(b.openedAt).getTime());
+
+      let totalClosedSec = 0;
+      let closedIntervalCount = 0;
+
+      for (let i = 0; i < chronologicalEvents.length - 1; i++) {
+        const curEvent = chronologicalEvents[i];
+        const nextEvent = chronologicalEvents[i + 1];
+
+        if (curEvent.closedAt && nextEvent.openedAt) {
+          const closedDiffSec = Math.round(
+            (new Date(nextEvent.openedAt).getTime() - new Date(curEvent.closedAt).getTime()) / 1000
+          );
+          if (closedDiffSec >= 30 && closedDiffSec <= 43200) {
+            totalClosedSec += closedDiffSec;
+            closedIntervalCount++;
+          }
+        }
+      }
+
+      let avgClosedSeconds: number | null = null;
+      if (closedIntervalCount > 0) {
+        avgClosedSeconds = Math.round(totalClosedSec / closedIntervalCount);
+      }
+      const avgClosedFormatted = formatKpiDuration(avgClosedSeconds);
 
       // Last closed time
       const lastClosedEvent = gate.events.find(e => e.closedAt !== null);
@@ -385,6 +455,10 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
         hasMaster: true,
         todayCycles: todayCyclesCount,
         totalCycles: gate.events.length,
+        avgOpenSeconds,
+        avgOpenFormatted,
+        avgClosedSeconds,
+        avgClosedFormatted,
         lastClosedAt,
         lastClosedFormatted,
         masterSerialNumber: primaryMaster,
@@ -402,6 +476,19 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
     const totalConfiguredClusters = gates.filter(g => g.masters.length > 0).length;
     const totalUnconfiguredGates = gates.length - totalConfiguredClusters;
 
+    // Compute user-scoped global averages across all authorized configured gates
+    const gatesWithAvgOpen = mappedGates.filter(g => g.avgOpenSeconds !== null && g.avgOpenSeconds > 0);
+    const globalAvgOpenSec = gatesWithAvgOpen.length > 0
+      ? Math.round(gatesWithAvgOpen.reduce((sum, g) => sum + g.avgOpenSeconds!, 0) / gatesWithAvgOpen.length)
+      : null;
+    const globalAvgOpenFormatted = formatKpiDuration(globalAvgOpenSec);
+
+    const gatesWithAvgClosed = mappedGates.filter(g => g.avgClosedSeconds !== null && g.avgClosedSeconds > 0);
+    const globalAvgClosedSec = gatesWithAvgClosed.length > 0
+      ? Math.round(gatesWithAvgClosed.reduce((sum, g) => sum + g.avgClosedSeconds!, 0) / gatesWithAvgClosed.length)
+      : null;
+    const globalAvgClosedFormatted = formatKpiDuration(globalAvgClosedSec);
+
     const responsePayload = {
       totalDevices: totalConfiguredClusters, // Strictly counts gates with configured Master Units
       totalClusters: totalConfiguredClusters,
@@ -411,6 +498,10 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       totalCyclesToday,
       totalOpenGates,
       totalClosedGates,
+      avgOpenSeconds: globalAvgOpenSec,
+      avgOpenFormatted: globalAvgOpenFormatted,
+      avgClosedSeconds: globalAvgClosedSec,
+      avgClosedFormatted: globalAvgClosedFormatted,
       gates: mappedGates,
       lastSyncedAt: new Date().toISOString(),
     };
@@ -423,7 +514,9 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
         totalCyclesToday: responsePayload.totalCyclesToday,
         totalOpenGates: responsePayload.totalOpenGates,
         totalClosedGates: responsePayload.totalClosedGates,
-        gateSignatures: mappedGates.map(g => `${g.id}:${g.status}:${g.todayCycles}:${g.totalCycles}:${g.lastClosedAt}`),
+        avgOpenFormatted: responsePayload.avgOpenFormatted,
+        avgClosedFormatted: responsePayload.avgClosedFormatted,
+        gateSignatures: mappedGates.map(g => `${g.id}:${g.status}:${g.todayCycles}:${g.totalCycles}:${g.avgOpenFormatted}:${g.avgClosedFormatted}:${g.lastClosedAt}`),
       }))
       .digest('hex');
 
@@ -1532,8 +1625,13 @@ router.post('/masters/:masterId/devices', authenticate, async (req: any, res, ne
         }).catch(console.warn);
       }
 
-      // Bump revision for gate's assigned scope groups
-            await bumpDirectoryRevision([], true, tx);
+      // Bump revision for gate
+      if (master.gateId) {
+        const now = new Date();
+        await tx.masterUnit.update({ where: { id: master.id }, data: { updatedAt: now } }).catch(() => {});
+        await tx.lCGate.update({ where: { id: master.gateId }, data: { updatedAt: now } }).catch(() => {});
+        await bumpDirectoryRevision([master.gateId], true, tx);
+      }
 
       // Save installation evidence if image provided
       if (data.imageBase64 && req.user?.id) {
@@ -1542,10 +1640,59 @@ router.post('/masters/:masterId/devices', authenticate, async (req: any, res, ne
           if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
           const matches = data.imageBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
           const buf = matches && matches[2] ? Buffer.from(matches[2], 'base64') : Buffer.from(data.imageBase64, 'base64');
+
+          let stampedBuffer: Buffer = buf;
+          try {
+            const image = await Jimp.read(buf);
+            if (image.bitmap && (image.bitmap.width > 2048 || image.bitmap.height > 2048)) {
+              if (image.bitmap.width >= image.bitmap.height) {
+                image.resize({ w: 2048 });
+              } else {
+                image.resize({ h: 2048 });
+              }
+            }
+            const dateStr = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+            const latStr = data.latitude !== undefined && data.latitude !== null ? Number(data.latitude).toFixed(6) : 'N/A';
+            const lngStr = data.longitude !== undefined && data.longitude !== null ? Number(data.longitude).toFixed(6) : 'N/A';
+            const text = `Lat: ${latStr} | Lng: ${lngStr} | ${dateStr}`;
+
+            const fontWhite = await loadFont(SANS_16_WHITE);
+            const fontBlack = await loadFont(SANS_16_BLACK);
+            image.print({ font: fontBlack, x: 13, y: 13, text });
+            image.print({ font: fontWhite, x: 12, y: 12, text });
+            stampedBuffer = await image.getBuffer('image/jpeg');
+          } catch (jErr) {
+            console.warn('Jimp watermark for slave photo failed:', jErr);
+          }
+
           const filename = `${crypto.randomUUID()}.jpg`;
           const filepath = path.join(uploadsDir, filename);
-          fs.writeFileSync(filepath, buf);
-          const imageUrl = `/uploads/${filename}`;
+          try {
+            fs.writeFileSync(filepath, stampedBuffer);
+          } catch (fErr) {
+            console.warn('Local fs write failed for slave photo:', fErr);
+          }
+
+          let imageUrl = `/uploads/${filename}`;
+          try {
+            const uploadResult = await new Promise<any>((resolve, reject) => {
+              const timeout = setTimeout(() => reject(new Error('Cloudinary timeout')), 8000);
+              const stream = cloudinary.uploader.upload_stream(
+                { folder: 'lc-platform-evidence', resource_type: 'image' },
+                (err, res) => {
+                  clearTimeout(timeout);
+                  if (err) reject(err);
+                  else resolve(res);
+                }
+              );
+              stream.end(stampedBuffer);
+            });
+            if (uploadResult?.secure_url) {
+              imageUrl = uploadResult.secure_url;
+            }
+          } catch (cldErr) {
+            console.warn('Cloudinary upload for slave photo failed, using local URL:', cldErr);
+          }
 
           await tx.installationEvidence.create({
             data: {
@@ -1566,6 +1713,8 @@ router.post('/masters/:masterId/devices', authenticate, async (req: any, res, ne
       return created;
     });
 
+    clusterCacheManager.clear();
+
     res.status(201).json(device);
   } catch (error) {
     next(error);
@@ -1581,6 +1730,16 @@ router.delete('/masters/:id', authenticate, async (req, res, next) => {
     
     await prisma.$transaction(async (tx) => {
       const targetMaster = await tx.masterUnit.findUnique({ where: { id }, select: { gateId: true } });
+      
+      // Clean up evidence files
+      const masterEvs = await tx.installationEvidence.findMany({
+        where: { masterId: id },
+        select: { imageUrl: true },
+      });
+      for (const ev of masterEvs) {
+        await deleteEvidenceFile(ev.imageUrl);
+      }
+
       // Explicitly detach any mapped hardware devices back to the unassigned registry pool
       await tx.deviceRegistry.updateMany({
         where: { masterId: id },
@@ -1613,7 +1772,9 @@ router.delete('/masters/:id', authenticate, async (req, res, next) => {
             await bumpReportRevisionInTx(tx, targetMaster.gateId);
           }
         }
-        await bumpDirectoryRevision([], true, tx);
+        const now = new Date();
+        await tx.lCGate.update({ where: { id: targetMaster.gateId }, data: { updatedAt: now } }).catch(() => {});
+        await bumpDirectoryRevision([targetMaster.gateId], true, tx);
       } else {
         await bumpDirectoryRevision([], true, tx);
       }
@@ -1634,20 +1795,37 @@ router.delete('/devices/:id', authenticate, async (req, res, next) => {
     await prisma.$transaction(async (tx) => {
       const targetDevice = await tx.childDevice.findUnique({
         where: { id },
-        include: { master: { select: { gateId: true } } },
+        include: { master: { select: { id: true, gateId: true } } },
       });
+
+      // Clean up evidence files for this slave device
+      const childEvs = await tx.installationEvidence.findMany({
+        where: { childDeviceId: id },
+        select: { imageUrl: true },
+      });
+      for (const ev of childEvs) {
+        await deleteEvidenceFile(ev.imageUrl);
+      }
+
       // Explicitly detach child device mapping from registry pool
       await tx.deviceRegistry.updateMany({
         where: { childDeviceId: id },
         data: { childDeviceId: null }
       });
       await tx.childDevice.delete({ where: { id } });
-      if (targetDevice?.master) {
-                await bumpDirectoryRevision([], true, tx);
+
+      if (targetDevice?.master?.gateId) {
+        const now = new Date();
+        if (targetDevice.master.id) {
+          await tx.masterUnit.update({ where: { id: targetDevice.master.id }, data: { updatedAt: now } }).catch(() => {});
+        }
+        await tx.lCGate.update({ where: { id: targetDevice.master.gateId }, data: { updatedAt: now } }).catch(() => {});
+        await bumpDirectoryRevision([targetDevice.master.gateId], true, tx);
       } else {
         await bumpDirectoryRevision([], true, tx);
       }
     });
+    clusterCacheManager.clear();
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -1926,7 +2104,7 @@ router.post('/:id/health-check', authenticate, async (req, res, next) => {
           mqttError: mqttResult.error || null,
         },
         status: 'REQUESTED',
-        deviceRegistryId: gate.deviceRegistries[0]?.id || null,
+        deviceRegistryId: gate.deviceRegistries[0]?.id || gate.masters[0]?.deviceRegistries?.[0]?.id || null,
         receivedAt: new Date(),
       }
     });

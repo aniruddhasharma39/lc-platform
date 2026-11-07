@@ -66,7 +66,7 @@ const uploadSchema = z.object({
     (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
     z.number().nullable().optional()
   ),
-  category: z.enum(['MASTER', 'DEVICE_1', 'DEVICE_2', 'LIMIT_SWITCH', 'HALL_EFFECT', 'TILT_SENSOR', 'POWER_SOURCE', 'SIM_CARD']),
+  category: z.string().min(1, 'Category is required'),
   imageBase64: z.string(),
   latitude: z.preprocess(
     (val) => (val === '' || val === null || val === undefined ? undefined : Number(val)),
@@ -215,7 +215,9 @@ router.post('/', authenticate, async (req: any, res, next) => {
       where: slotWhere,
     });
     for (const old of existingForSlot) {
-      await deleteEvidenceFile(old.imageUrl);
+      if (old.imageUrl !== imageUrl) {
+        await deleteEvidenceFile(old.imageUrl);
+      }
     }
     if (existingForSlot.length > 0) {
       await prisma.installationEvidence.deleteMany({
@@ -247,27 +249,43 @@ router.post('/', authenticate, async (req: any, res, next) => {
         if (data.lastRechargeDate) updateData.lastRechargeDate = data.lastRechargeDate;
         if (data.validityExpiryDate) updateData.validityExpiryDate = data.validityExpiryDate;
 
-        await prisma.deviceRegistry.updateMany({
-          where: {
-            OR: [
-              { masterId: data.masterId },
-              ...(masterExists.gateId ? [{ gateId: masterExists.gateId }] : []),
-              ...(masterExists.serialNumber ? [{ serialNumber: masterExists.serialNumber }, { thingName: masterExists.serialNumber }] : []),
-            ],
-          },
-          data: updateData,
+        // Locate device specifically mapped to this master unit
+        let targetDev = await prisma.deviceRegistry.findFirst({
+          where: { masterId: data.masterId },
         });
 
-        if (masterExists.gateId) {
-          const unlinkedDev = await prisma.deviceRegistry.findFirst({
-            where: { gateId: masterExists.gateId, masterId: null },
+        if (!targetDev && masterExists.serialNumber) {
+          targetDev = await prisma.deviceRegistry.findFirst({
+            where: {
+              OR: [
+                { serialNumber: masterExists.serialNumber },
+                { thingName: masterExists.serialNumber },
+              ],
+            },
           });
-          if (unlinkedDev) {
-            await prisma.deviceRegistry.update({
-              where: { id: unlinkedDev.id },
-              data: { masterId: data.masterId },
-            }).catch(() => {});
+        }
+
+        if (!targetDev && masterExists.gateId) {
+          targetDev = await prisma.deviceRegistry.findFirst({
+            where: {
+              gateId: masterExists.gateId,
+              masterId: null,
+            },
+          });
+        }
+
+        if (targetDev) {
+          if (targetDev.simPhotoUrl && targetDev.simPhotoUrl !== imageUrl) {
+            await deleteEvidenceFile(targetDev.simPhotoUrl);
           }
+          await prisma.deviceRegistry.update({
+            where: { id: targetDev.id },
+            data: {
+              ...updateData,
+              masterId: data.masterId,
+              gateId: masterExists.gateId,
+            },
+          });
         }
       } catch (e) {
         console.warn('Failed to sync SIM evidence into DeviceRegistry:', e);
@@ -302,7 +320,7 @@ router.delete('/:id', authenticate, async (req, res, next) => {
 
     const evidence = await prisma.installationEvidence.findUnique({
       where: { id },
-      include: { master: { select: { id: true, gateId: true } } },
+      include: { master: { select: { id: true, gateId: true, serialNumber: true } } },
     });
     if (!evidence) return res.status(404).json({ error: 'Evidence not found' });
 
@@ -315,7 +333,12 @@ router.delete('/:id', authenticate, async (req, res, next) => {
           where: {
             OR: [
               { masterId: evidence.masterId },
-              ...(evidence.master?.gateId ? [{ gateId: evidence.master.gateId }] : []),
+              ...(evidence.master?.serialNumber
+                ? [
+                    { serialNumber: evidence.master.serialNumber },
+                    { thingName: evidence.master.serialNumber },
+                  ]
+                : []),
             ],
           },
           data: { simPhotoUrl: null },
@@ -353,7 +376,7 @@ router.post('/:id/delete', authenticate, async (req, res, next) => {
 
     const evidence = await prisma.installationEvidence.findUnique({
       where: { id },
-      include: { master: { select: { id: true, gateId: true } } },
+      include: { master: { select: { id: true, gateId: true, serialNumber: true } } },
     });
     if (!evidence) return res.status(404).json({ error: 'Evidence not found' });
 
@@ -366,7 +389,12 @@ router.post('/:id/delete', authenticate, async (req, res, next) => {
           where: {
             OR: [
               { masterId: evidence.masterId },
-              ...(evidence.master?.gateId ? [{ gateId: evidence.master.gateId }] : []),
+              ...(evidence.master?.serialNumber
+                ? [
+                    { serialNumber: evidence.master.serialNumber },
+                    { thingName: evidence.master.serialNumber },
+                  ]
+                : []),
             ],
           },
           data: { simPhotoUrl: null },

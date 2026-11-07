@@ -29,6 +29,10 @@ interface GateSummaryItem {
   hasMaster?: boolean;
   todayCycles: number;
   totalCycles: number;
+  avgOpenSeconds?: number | null;
+  avgOpenFormatted?: string;
+  avgClosedSeconds?: number | null;
+  avgClosedFormatted?: string;
   lastClosedAt: string | null;
   lastClosedFormatted: string;
   masterSerialNumber: string;
@@ -48,6 +52,10 @@ interface DashboardSummaryData {
   totalCyclesToday: number;
   totalOpenGates: number;
   totalClosedGates: number;
+  avgOpenSeconds?: number | null;
+  avgOpenFormatted?: string;
+  avgClosedSeconds?: number | null;
+  avgClosedFormatted?: string;
   gates: GateSummaryItem[];
 }
 
@@ -667,6 +675,92 @@ export default function HomeDashboard({
             
           </div>
         </div>
+
+        {/* KPI 5: Avg Open Time */}
+        <div
+          className="card"
+          style={{
+            padding: '18px 20px',
+            borderRadius: 12,
+            border: '1px solid #e0f2fe',
+            backgroundColor: '#f8fafc',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 16,
+            boxShadow: '0 2px 8px rgba(2, 132, 199, 0.05)',
+          }}
+        >
+          <div
+            style={{
+              width: 50,
+              height: 50,
+              borderRadius: 12,
+              backgroundColor: '#e0f2fe',
+              color: '#0284c7',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '1.4rem',
+              flexShrink: 0,
+            }}
+          >
+            <FaClock />
+          </div>
+          <div>
+            <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#0284c7', textTransform: 'uppercase' }}>
+              Avg Open Time
+            </div>
+            <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#0f172a', lineHeight: 1.2 }}>
+              {loading ? '—' : data?.avgOpenFormatted ?? '--'}
+            </div>
+            <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: 3, fontWeight: 500 }}>
+              Road clearance avg
+            </div>
+          </div>
+        </div>
+
+        {/* KPI 6: Avg Closed Time */}
+        <div
+          className="card"
+          style={{
+            padding: '18px 20px',
+            borderRadius: 12,
+            border: '1px solid #fef3c7',
+            backgroundColor: '#fffdfa',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 16,
+            boxShadow: '0 2px 8px rgba(217, 119, 6, 0.05)',
+          }}
+        >
+          <div
+            style={{
+              width: 50,
+              height: 50,
+              borderRadius: 12,
+              backgroundColor: '#fef3c7',
+              color: '#d97706',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '1.4rem',
+              flexShrink: 0,
+            }}
+          >
+            <FaDoorClosed />
+          </div>
+          <div>
+            <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#d97706', textTransform: 'uppercase' }}>
+              Avg Closed Time
+            </div>
+            <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#0f172a', lineHeight: 1.2 }}>
+              {loading ? '—' : data?.avgClosedFormatted ?? '--'}
+            </div>
+            <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: 3, fontWeight: 500 }}>
+              Train passage avg
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Transition Card Slider Section */}
@@ -885,6 +979,32 @@ export default function HomeDashboard({
                         <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#475569' }}>
                           {gate.totalCycles} cycles
                         </div>
+                      </div>
+                    </div>
+
+                    {/* Gate Timings (Avg Open & Avg Closed) */}
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        background: isSelected ? '#ffffff' : '#f1f5f9',
+                        borderRadius: 6,
+                        padding: '6px 10px',
+                        marginBottom: 8,
+                        fontSize: '0.74rem',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <FaDoorOpen style={{ color: '#0284c7', fontSize: '0.78rem' }} />
+                        <span style={{ color: '#64748b' }}>Avg Open:</span>
+                        <strong style={{ color: '#0f172a' }}>{gate.avgOpenFormatted || '--'}</strong>
+                      </div>
+                      <div style={{ width: 1, height: 12, backgroundColor: '#cbd5e1' }} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <FaDoorClosed style={{ color: '#d97706', fontSize: '0.78rem' }} />
+                        <span style={{ color: '#64748b' }}>Avg Closed:</span>
+                        <strong style={{ color: '#0f172a' }}>{gate.avgClosedFormatted || '--'}</strong>
                       </div>
                     </div>
 

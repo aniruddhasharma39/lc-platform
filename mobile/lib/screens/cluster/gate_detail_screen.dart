@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'create_master_screen.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:geolocator/geolocator.dart';
 import 'station_search_sheet.dart';
 import 'railway_data.dart';
 import 'evidence_checklist_screen.dart';
@@ -710,36 +711,69 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     }
   }
 
-  Future<void> _addSlaveDevice(Map master) async {
-    String getSlaveLetter(String type) {
-      switch (type) {
-        case 'LIMIT_SWITCH':
-        case 'DEVICE_1':
-          return 'A';
-        case 'HALL_EFFECT':
-        case 'DEVICE_2':
-          return 'B';
-        case 'TILT_SENSOR':
-          return 'C';
-        default:
-          return 'A';
-      }
+  String getSlaveLetter(String? type) {
+    switch (type) {
+      case 'LIMIT_SWITCH':
+      case 'DEVICE_1':
+        return 'A';
+      case 'HALL_EFFECT':
+      case 'DEVICE_2':
+        return 'B';
+      case 'TILT_SENSOR':
+        return 'C';
+      default:
+        return 'A';
     }
+  }
 
-    String getSlaveName(String type) {
-      switch (type) {
-        case 'LIMIT_SWITCH':
-        case 'DEVICE_1':
-          return 'Limit Switch';
-        case 'HALL_EFFECT':
-        case 'DEVICE_2':
-          return 'Hall Effect Sensor';
-        case 'TILT_SENSOR':
-          return 'Tilt Sensor';
-        default:
-          return 'Slave Device';
+  String getSlaveName(String? type) {
+    switch (type) {
+      case 'LIMIT_SWITCH':
+      case 'DEVICE_1':
+        return 'Limit Switch';
+      case 'HALL_EFFECT':
+      case 'DEVICE_2':
+        return 'Hall Effect Sensor';
+      case 'TILT_SENSOR':
+        return 'Tilt Sensor';
+      default:
+        return type?.replaceAll('_', ' ') ?? 'Slave Device';
+    }
+  }
+
+  String getSlaveSubtitle(String? type) {
+    switch (type) {
+      case 'LIMIT_SWITCH':
+        return 'Limit Switch (End-stop & locking mechanism)';
+      case 'HALL_EFFECT':
+        return 'Hall Effect Sensor (Boom barrier position detection)';
+      case 'TILT_SENSOR':
+        return 'Tilt Sensor (Boom inclination monitoring)';
+      case 'DEVICE_1':
+        return 'Limit Switch & Hall Effect Sensors';
+      case 'DEVICE_2':
+        return 'Tilt & Angle Sensor';
+      default:
+        return 'Connected hardware wired slave sensor';
+    }
+  }
+
+  Map<String, dynamic>? _findChildDeviceEvidence(Map master, Map device) {
+    final dId = device['id']?.toString();
+    final cEvList = device['evidences'];
+    if (cEvList is List && cEvList.isNotEmpty && cEvList.first is Map) {
+      return Map<String, dynamic>.from(cEvList.first as Map);
+    }
+    final mEvidences = master['evidences'] as List? ?? [];
+    for (final e in mEvidences) {
+      if (e is Map && e['childDeviceId'] != null && e['childDeviceId'].toString() == dId) {
+        return Map<String, dynamic>.from(e);
       }
     }
+    return null;
+  }
+
+  Future<void> _addSlaveDevice(Map master) async {
 
     int calcLocalSeq(String type) {
       final devices = (master['childDevices'] as List? ?? [])
@@ -944,9 +978,21 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
       setState(() => _isLoading = true);
       try {
         String? base64Img;
+        double? photoLat;
+        double? photoLng;
         if (slavePhoto != null) {
           final bytes = await slavePhoto!.readAsBytes();
           base64Img = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+          try {
+            final pos = await Geolocator.getCurrentPosition(
+              locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium, timeLimit: Duration(seconds: 4)),
+            );
+            photoLat = pos.latitude;
+            photoLng = pos.longitude;
+          } catch (_) {
+            photoLat = double.tryParse((gate['latitude'] ?? '0').toString());
+            photoLng = double.tryParse((gate['longitude'] ?? '0').toString());
+          }
         }
 
         final res = await http.post(
@@ -959,6 +1005,8 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
             'type': selectedType,
             'deviceSequence': int.tryParse(seqCtrl.text) ?? calcLocalSeq(selectedType),
             if (base64Img != null) 'imageBase64': base64Img,
+            if (photoLat != null) 'latitude': photoLat,
+            if (photoLng != null) 'longitude': photoLng,
           }),
         );
         if (res.statusCode == 201) {
@@ -1072,9 +1120,15 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     Map? findEv(String category, [int? childId]) {
       for (final e in evidences) {
         if (e is Map) {
-          if (childId != null && e['childDeviceId'] == childId) return e;
-          if (e['category'] == category) {
-            if (childId == null || e['childDeviceId'] == childId) return e;
+          if (childId != null && e['childDeviceId']?.toString() == childId.toString()) return e;
+          if (childId == null && e['category'] == category && e['childDeviceId'] == null) return e;
+        }
+      }
+      if (childId != null) {
+        for (final c in childDevices) {
+          if (c is Map && c['id']?.toString() == childId.toString()) {
+            final cEvs = (c['evidences'] as List?) ?? [];
+            if (cEvs.isNotEmpty && cEvs.first is Map) return cEvs.first as Map;
           }
         }
       }
@@ -1087,6 +1141,18 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
       backgroundColor: Colors.transparent,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setSheetState) {
+          void removeEvFromSheet(dynamic ev) {
+            final evId = ev?['id']?.toString();
+            final cat = ev?['category']?.toString();
+            final cId = ev?['childDeviceId']?.toString();
+            evidences.removeWhere((e) =>
+              (evId != null && e is Map && e['id']?.toString() == evId) ||
+              (cId != null && e is Map && e['childDeviceId']?.toString() == cId) ||
+              (cId == null && e is Map && e['category'] == cat && e['childDeviceId'] == null)
+            );
+            setSheetState(() {});
+          }
+
           final masterEv = findEv('MASTER');
           Map? simEv = findEv('SIM_CARD');
           if (simEv == null) {
@@ -1116,12 +1182,16 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
               ),
             ));
             if (res != null && res is Map) {
-              final idx = evidences.indexWhere((e) => e['category'] == res['category'] && e['childDeviceId'] == res['childDeviceId']);
-              if (idx >= 0) {
-                evidences[idx] = res;
-              } else {
-                evidences.add(res);
-              }
+              final resChildId = res['childDeviceId']?.toString();
+              final resCat = res['category']?.toString();
+              evidences.removeWhere((e) {
+                if (e is! Map) return false;
+                if (resChildId != null) {
+                  return e['childDeviceId']?.toString() == resChildId;
+                }
+                return e['category'] == resCat && e['childDeviceId'] == null;
+              });
+              evidences.add(res);
               setSheetState(() {});
               await _refresh();
             }
@@ -1168,7 +1238,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         icon: Icons.memory,
                         evidence: masterEv,
                         onUpload: () => launchUpload('MASTER', 'Master ESP'),
-                        onDelete: masterEv != null ? () => _deleteEvidence(masterEv, 'Master ESP', () => setSheetState(() {})) : null,
+                        onDelete: masterEv != null ? () => _deleteEvidence(masterEv, 'Master ESP', () => removeEvFromSheet(masterEv)) : null,
                       ),
                       const SizedBox(height: 10),
                       _buildEvidenceViewTile(
@@ -1177,7 +1247,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         icon: Icons.sim_card_outlined,
                         evidence: simEv,
                         onUpload: () => launchUpload('SIM_CARD', 'SIM Card'),
-                        onDelete: simEv != null ? () => _deleteEvidence(simEv, 'SIM Card', () => setSheetState(() {})) : null,
+                        onDelete: simEv != null ? () => _deleteEvidence(simEv!, 'SIM Card', () => removeEvFromSheet(simEv)) : null,
                       ),
                       const SizedBox(height: 10),
                       _buildEvidenceViewTile(
@@ -1186,7 +1256,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         icon: master['powerSource'] == 'SOLAR' ? Icons.wb_sunny_outlined : Icons.bolt,
                         evidence: powerEv,
                         onUpload: () => launchUpload('POWER_SOURCE', 'Power Source'),
-                        onDelete: powerEv != null ? () => _deleteEvidence(powerEv, 'Power Source', () => setSheetState(() {})) : null,
+                        onDelete: powerEv != null ? () => _deleteEvidence(powerEv, 'Power Source', () => removeEvFromSheet(powerEv)) : null,
                       ),
                       const SizedBox(height: 14),
                       const Text('CONNECTED SLAVE DEVICES', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B), letterSpacing: 0.5)),
@@ -1199,17 +1269,21 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         )
                       else
                         ...childDevices.map((child) {
-                          final childEv = findEv(child['type']?.toString() ?? '', child['id']);
-                          final isTypeA = child['type'] == 'DEVICE_1';
+                          final childId = child['id'] is int ? child['id'] as int : int.tryParse(child['id']?.toString() ?? '');
+                          final childType = child['type']?.toString() ?? 'LIMIT_SWITCH';
+                          final childEv = findEv(childType, childId);
+                          final title = 'Slave #${child['deviceSequence']}: ${getSlaveName(childType)} (${child['serialNumber']})';
+                          final subtitle = getSlaveSubtitle(childType);
+
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 10),
                             child: _buildEvidenceViewTile(
-                              title: 'Slave #${child['deviceSequence']}: ${child['serialNumber']}',
-                              subtitle: isTypeA ? 'Limit Switch & Hall Effect' : 'Tilt Sensor',
+                              title: title,
+                              subtitle: subtitle,
                               icon: Icons.sensors,
                               evidence: childEv,
-                              onUpload: () => launchUpload(child['type']?.toString() ?? 'DEVICE_1', 'Slave ${child['type']}', child['id']),
-                              onDelete: childEv != null ? () => _deleteEvidence(childEv, 'Slave ${child['type']}', () => setSheetState(() {})) : null,
+                              onUpload: () => launchUpload(childType, title, childId),
+                              onDelete: childEv != null ? () => _deleteEvidence(childEv, title, () => removeEvFromSheet(childEv)) : null,
                             ),
                           );
                         }),
@@ -1567,45 +1641,231 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                       child: Text('No slave devices added yet.', style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic, fontSize: 12)),
                                     )
                                   else
-                                    ...devices.map((device) => ListTile(
-                                      leading: Container(
-                                        padding: const EdgeInsets.all(6),
-                                        decoration: BoxDecoration(
-                                          color: Colors.blue.shade50,
-                                          borderRadius: BorderRadius.circular(6),
+                                    ...devices.map((device) {
+                                      final dId = device['id'] is int ? device['id'] as int : int.tryParse(device['id']?.toString() ?? '');
+                                      final dType = device['type']?.toString() ?? 'LIMIT_SWITCH';
+                                      final dSeq = device['deviceSequence']?.toString() ?? '';
+                                      final dSerial = device['serialNumber']?.toString() ?? 'Unknown';
+                                      final slaveName = getSlaveName(dType);
+                                      final slaveSub = getSlaveSubtitle(dType);
+                                      final slaveLetter = getSlaveLetter(dType);
+                                      final childEv = _findChildDeviceEvidence(master, device);
+                                      final hasPhoto = childEv != null && childEv['imageUrl'] != null && childEv['imageUrl'].toString().isNotEmpty;
+                                      final imgUrl = hasPhoto ? _fullImageUrl(childEv['imageUrl'].toString()) : '';
+                                      final lat = childEv?['latitude'];
+                                      final lng = childEv?['longitude'];
+                                      final date = childEv?['createdAt']?.toString();
+                                      final slaveTitle = 'Slave #$dSeq: $slaveName ($dSerial)';
+
+                                      return Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                        decoration: const BoxDecoration(
+                                          border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
                                         ),
-                                        child: const Icon(Icons.power_outlined, color: Color(0xFF0284C7), size: 18),
-                                      ),
-                                      title: Text(device['serialNumber'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                                      subtitle: Text(
-                                        device['type'] == 'LIMIT_SWITCH' ? 'Limit Switch' : (device['type'] == 'HALL_EFFECT' ? 'Hall Effect Sensor' : (device['type'] == 'TILT_SENSOR' ? 'Tilt Sensor' : (device['type'] == 'DEVICE_1' ? 'Limit Switch & Hall Effect' : 'Tilt Sensor'))),
-                                        style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
-                                      ),
-                                      trailing: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                            decoration: BoxDecoration(
-                                              color: const Color(0xFFEFF6FF),
-                                              borderRadius: BorderRadius.circular(6),
-                                              border: Border.all(color: const Color(0xFFBFDBFE)),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              crossAxisAlignment: CrossAxisAlignment.center,
+                                              children: [
+                                                Container(
+                                                  padding: const EdgeInsets.all(6),
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.blue.shade50,
+                                                    borderRadius: BorderRadius.circular(6),
+                                                  ),
+                                                  child: const Icon(Icons.sensors, color: Color(0xFF0284C7), size: 18),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Expanded(
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    children: [
+                                                      Row(
+                                                        children: [
+                                                          Expanded(
+                                                            child: Text(
+                                                              'Slave #$dSeq: $dSerial',
+                                                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                                                              overflow: TextOverflow.ellipsis,
+                                                            ),
+                                                          ),
+                                                          Container(
+                                                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                                            decoration: BoxDecoration(
+                                                              color: const Color(0xFFEFF6FF),
+                                                              borderRadius: BorderRadius.circular(4),
+                                                              border: Border.all(color: const Color(0xFFBFDBFE)),
+                                                            ),
+                                                            child: Text(
+                                                              'TYPE $slaveLetter',
+                                                              style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold, color: Color(0xFF2563EB)),
+                                                            ),
+                                                          ),
+                                                          const SizedBox(width: 4),
+                                                          IconButton(
+                                                            icon: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
+                                                            onPressed: () => _deleteDevice(device),
+                                                            padding: EdgeInsets.zero,
+                                                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                                                            tooltip: 'Delete Slave Device',
+                                                          ),
+                                                        ],
+                                                      ),
+                                                      Text(
+                                                        slaveSub,
+                                                        style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ],
                                             ),
-                                            child: Text(
-                                              device['type'] == 'LIMIT_SWITCH' || device['type'] == 'DEVICE_1' ? 'TYPE A' : (device['type'] == 'HALL_EFFECT' || device['type'] == 'DEVICE_2' ? 'TYPE B' : 'TYPE C'),
-                                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF2563EB)),
+                                            const SizedBox(height: 8),
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                              decoration: BoxDecoration(
+                                                color: hasPhoto ? const Color(0xFFF0FDF4) : const Color(0xFFF8FAFC),
+                                                borderRadius: BorderRadius.circular(8),
+                                                border: Border.all(
+                                                  color: hasPhoto ? const Color(0xFFBBF7D0) : const Color(0xFFE2E8F0),
+                                                ),
+                                              ),
+                                              child: Row(
+                                                children: [
+                                                  if (hasPhoto)
+                                                    InkWell(
+                                                      onTap: () => _showZoomPhoto(imgUrl, slaveTitle, lat, lng, date),
+                                                      child: ClipRRect(
+                                                        borderRadius: BorderRadius.circular(6),
+                                                        child: Image.network(
+                                                          imgUrl,
+                                                          width: 42,
+                                                          height: 42,
+                                                          fit: BoxFit.cover,
+                                                          errorBuilder: (_, __, ___) => Container(
+                                                            width: 42,
+                                                            height: 42,
+                                                            color: Colors.grey.shade200,
+                                                            child: const Icon(Icons.broken_image, size: 18, color: Colors.grey),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    )
+                                                  else
+                                                    Container(
+                                                      width: 42,
+                                                      height: 42,
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.grey.shade100,
+                                                        borderRadius: BorderRadius.circular(6),
+                                                        border: Border.all(color: Colors.grey.shade300),
+                                                      ),
+                                                      child: const Icon(Icons.camera_alt_outlined, color: Colors.grey, size: 18),
+                                                    ),
+                                                  const SizedBox(width: 8),
+                                                  Expanded(
+                                                    child: Column(
+                                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                                      children: [
+                                                        Row(
+                                                          children: [
+                                                            Icon(
+                                                              hasPhoto ? Icons.check_circle : Icons.pending_outlined,
+                                                              size: 13,
+                                                              color: hasPhoto ? const Color(0xFF16A34A) : const Color(0xFFD97706),
+                                                            ),
+                                                            const SizedBox(width: 4),
+                                                            Text(
+                                                              hasPhoto ? 'Photo Uploaded' : 'Photo Pending',
+                                                              style: TextStyle(
+                                                                fontSize: 11,
+                                                                fontWeight: FontWeight.bold,
+                                                                color: hasPhoto ? const Color(0xFF16A34A) : const Color(0xFFD97706),
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                        if (hasPhoto && lat != null && lng != null)
+                                                          Text(
+                                                            'GPS: ${lat is num ? lat.toStringAsFixed(4) : lat}, ${lng is num ? lng.toStringAsFixed(4) : lng}',
+                                                            style: const TextStyle(fontSize: 9.5, color: Color(0xFF64748B)),
+                                                          ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                  if (hasPhoto) ...[
+                                                    IconButton(
+                                                      icon: const Icon(Icons.fullscreen, size: 18, color: Color(0xFF0B3C7A)),
+                                                      tooltip: 'View Photo',
+                                                      padding: EdgeInsets.zero,
+                                                      constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                                                      onPressed: () => _showZoomPhoto(imgUrl, slaveTitle, lat, lng, date),
+                                                    ),
+                                                    IconButton(
+                                                      icon: const Icon(Icons.refresh, size: 16, color: Color(0xFF0E9AA7)),
+                                                      tooltip: 'Re-upload Photo',
+                                                      padding: EdgeInsets.zero,
+                                                      constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                                                      onPressed: () async {
+                                                        final res = await Navigator.push(
+                                                          context,
+                                                          MaterialPageRoute(
+                                                            builder: (_) => UploadEvidenceScreen(
+                                                              token: widget.token,
+                                                              masterId: master['id'],
+                                                              childDeviceId: dId,
+                                                              category: dType,
+                                                              targetName: slaveTitle,
+                                                            ),
+                                                          ),
+                                                        );
+                                                        if (res != null) await _refresh();
+                                                      },
+                                                    ),
+                                                    IconButton(
+                                                      icon: const Icon(Icons.delete_outline, size: 16, color: Colors.red),
+                                                      tooltip: 'Delete Photo',
+                                                      padding: EdgeInsets.zero,
+                                                      constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+                                                      onPressed: () => _deleteEvidence(childEv, slaveTitle, () => _refresh()),
+                                                    ),
+                                                  ] else ...[
+                                                    TextButton.icon(
+                                                      icon: const Icon(Icons.camera_alt, size: 12),
+                                                      label: const Text('Add Photo', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold)),
+                                                      style: TextButton.styleFrom(
+                                                        backgroundColor: const Color(0xFF0B3C7A),
+                                                        foregroundColor: Colors.white,
+                                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                        minimumSize: Size.zero,
+                                                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                                      ),
+                                                      onPressed: () async {
+                                                        final res = await Navigator.push(
+                                                          context,
+                                                          MaterialPageRoute(
+                                                            builder: (_) => UploadEvidenceScreen(
+                                                              token: widget.token,
+                                                              masterId: master['id'],
+                                                              childDeviceId: dId,
+                                                              category: dType,
+                                                              targetName: slaveTitle,
+                                                            ),
+                                                          ),
+                                                        );
+                                                        if (res != null) await _refresh();
+                                                      },
+                                                    ),
+                                                  ],
+                                                ],
+                                              ),
                                             ),
-                                          ),
-                                          IconButton(
-                                            icon: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
-                                            onPressed: () => _deleteDevice(device),
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                                          )
-                                        ],
-                                      ),
-                                      dense: true,
-                                    )),
+                                          ],
+                                        ),
+                                      );
+                                    }),
                                 ],
                               ),
                             ),

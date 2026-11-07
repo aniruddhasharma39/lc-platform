@@ -17,10 +17,14 @@ class EvidenceChecklistScreen extends StatefulWidget {
 
 class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
   late List evidences;
+  late Map currentMaster;
+  late List childDevices;
 
   @override
   void initState() {
     super.initState();
+    currentMaster = Map.from(widget.master);
+    childDevices = List.from(currentMaster['childDevices'] ?? []);
     evidences = widget.master['evidences'] ?? [];
     _fetchEvidences();
   }
@@ -40,14 +44,10 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
         final List data = json.decode(directRes.body);
         if (mounted) {
           setState(() => evidences = data);
-          if (isManual) {
-            AppFeedback.showSuccess(context, 'Evidence checklist synchronized.');
-          }
         }
-        return;
       }
 
-      // 2. Fallback to /lcgate/:id
+      // 2. Fetch master and child devices dynamically from gate endpoint
       final gateId = widget.master['gateId'];
       if (gateId != null) {
         final res = await http.get(
@@ -64,7 +64,13 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
           for (final m in masters) {
             if (m['id'] == widget.master['id']) {
               if (mounted) {
-                setState(() => evidences = m['evidences'] ?? []);
+                setState(() {
+                  currentMaster = Map.from(m);
+                  childDevices = List.from(m['childDevices'] ?? []);
+                  if (m['evidences'] != null && evidences.isEmpty) {
+                    evidences = List.from(m['evidences']);
+                  }
+                });
                 if (isManual) {
                   AppFeedback.showSuccess(context, 'Evidence checklist synchronized.');
                 }
@@ -74,10 +80,55 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
           }
         }
       }
+      if (isManual && mounted) {
+        AppFeedback.showSuccess(context, 'Evidence checklist synchronized.');
+      }
     } catch (e) {
       if (mounted && isManual) {
         AppFeedback.showError(context, 'Unable to refresh checklist: $e');
       }
+    }
+  }
+
+  String _getSlaveTitle(Map dev) {
+    final type = dev['type']?.toString() ?? 'SLAVE';
+    final seq = dev['deviceSequence']?.toString() ?? '';
+    final serial = dev['serialNumber']?.toString() ?? '';
+    final seqStr = seq.isNotEmpty ? 'Slave #$seq' : 'Slave';
+    return '$seqStr: ${_getSlaveName(type)} ($serial)';
+  }
+
+  String _getSlaveName(String type) {
+    switch (type) {
+      case 'LIMIT_SWITCH':
+        return 'Limit Switch';
+      case 'HALL_EFFECT':
+        return 'Hall Effect Sensor';
+      case 'TILT_SENSOR':
+        return 'Tilt Sensor';
+      case 'DEVICE_1':
+        return 'Limit Switch & Hall Effect';
+      case 'DEVICE_2':
+        return 'Tilt Sensor';
+      default:
+        return type.replaceAll('_', ' ');
+    }
+  }
+
+  String _getSlaveSubtitle(String type) {
+    switch (type) {
+      case 'LIMIT_SWITCH':
+        return 'End-stop & locking mechanism detection';
+      case 'HALL_EFFECT':
+        return 'Boom barrier position detection';
+      case 'TILT_SENSOR':
+        return 'Boom inclination & angle monitoring';
+      case 'DEVICE_1':
+        return 'Limit Switch & Hall Effect Detection';
+      case 'DEVICE_2':
+        return 'Tilt & Angle Sensor';
+      default:
+        return 'Connected hardware wired slave sensor';
     }
   }
 
@@ -244,7 +295,7 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
     bool hasMaster = _hasEvidence('MASTER');
     bool hasSim = _hasEvidence('SIM_CARD');
     bool hasPower = _hasEvidence('POWER_SOURCE');
-    List childDevices = widget.master['childDevices'] ?? [];
+    List childList = childDevices;
 
     return Scaffold(
       appBar: AppBar(
@@ -252,7 +303,7 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text('Upload Evidence', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            Text(widget.master['serialNumber'] ?? '', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+            Text(currentMaster['serialNumber'] ?? '', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
           ],
         ),
         actions: [
@@ -271,11 +322,11 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
           children: [
             const Padding(
               padding: EdgeInsets.only(bottom: 16),
-              child: Text('Upload all required photos for this Master Unit.', style: TextStyle(color: Colors.grey)),
+              child: Text('Upload all required installation photos with verified GPS stamps.', style: TextStyle(color: Colors.grey)),
             ),
             
             _buildChecklistItem(
-              title: 'Master Unit (ESP)',
+              title: 'Master Unit (ESP Gateway)',
               description: 'Photo showing the ESP installation',
               isDone: hasMaster,
               evidence: _findEvidence('MASTER'),
@@ -291,32 +342,47 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
             ),
             
             _buildChecklistItem(
-              title: '${widget.master['powerSource'] == 'SOLAR' ? 'Solar Panel' : 'Direct Power'} Source',
+              title: '${currentMaster['powerSource'] == 'SOLAR' ? 'Solar Panel' : 'Direct Power'} Source',
               description: 'Photo verifying the power installation',
               isDone: hasPower,
               evidence: _findEvidence('POWER_SOURCE'),
               onUpload: () => _navigateToUpload('POWER_SOURCE', 'Power Source'),
             ),
 
-            ...childDevices.map((dev) {
-              bool hasDev = _hasEvidence(dev['type'], dev['id']);
-              return _buildChecklistItem(
-                title: 'Slave ${dev['type']}',
-                description: dev['type'] == 'DEVICE_1' ? 'Hall Effect + Limit Switch' : 'Tilt Sensor',
-                isDone: hasDev,
-                evidence: _findEvidence(dev['type'], dev['id']),
-                onUpload: () => _navigateToUpload(dev['type'], 'Slave ${dev['type']}', dev['id']),
-              );
-            }),
+            if (childList.isNotEmpty) ...[
+              const Padding(
+                padding: EdgeInsets.only(top: 12, bottom: 8),
+                child: Text(
+                  'CONNECTED SLAVE DEVICES',
+                  style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Color(0xFF64748B), letterSpacing: 0.5),
+                ),
+              ),
+              ...childList.map((dev) {
+                final devMap = dev is Map ? dev : {};
+                final devId = devMap['id'] is int ? devMap['id'] as int : int.tryParse(devMap['id']?.toString() ?? '');
+                final devType = devMap['type']?.toString() ?? 'DEVICE_1';
+                bool hasDev = _hasEvidence(devType, devId);
+                final title = _getSlaveTitle(devMap);
+                final desc = _getSlaveSubtitle(devType);
+
+                return _buildChecklistItem(
+                  title: title,
+                  description: desc,
+                  isDone: hasDev,
+                  evidence: _findEvidence(devType, devId),
+                  onUpload: () => _navigateToUpload(devType, title, devId),
+                );
+              }),
+            ],
           ],
         ),
       ),
       bottomNavigationBar: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        decoration: BoxDecoration(
+        decoration: const BoxDecoration(
           color: Colors.white,
           boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 8, offset: const Offset(0, -2)),
+            BoxShadow(color: Color(0x0F000000), blurRadius: 8, offset: Offset(0, -2)),
           ],
         ),
         child: SafeArea(
@@ -345,6 +411,19 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
     required Map? evidence,
     required VoidCallback onUpload,
   }) {
+    final lat = evidence?['latitude'];
+    final lng = evidence?['longitude'];
+    final date = evidence?['createdAt'];
+    String? dateFormatted;
+    if (date != null) {
+      try {
+        final dt = DateTime.parse(date.toString()).toLocal();
+        dateFormatted = '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+      } catch (_) {
+        dateFormatted = date.toString();
+      }
+    }
+
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       shape: RoundedRectangleBorder(
@@ -356,11 +435,25 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         onTap: isDone ? () => _viewPhoto(evidence!) : onUpload,
         leading: Icon(isDone ? Icons.check_circle : Icons.camera_alt, color: isDone ? Colors.green : Colors.blue, size: 32),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(description),
+            Text(description, style: const TextStyle(fontSize: 12)),
+            if (isDone) ...[
+              const SizedBox(height: 3),
+              if (lat != null && lng != null)
+                Text(
+                  'GPS: ${(lat as num).toStringAsFixed(4)}, ${(lng as num).toStringAsFixed(4)}'
+                  '${dateFormatted != null ? " • $dateFormatted" : ""}',
+                  style: const TextStyle(fontSize: 10.5, color: Color(0xFF0B3C7A), fontWeight: FontWeight.w600),
+                )
+              else if (dateFormatted != null)
+                Text(
+                  'Recorded: $dateFormatted',
+                  style: const TextStyle(fontSize: 10.5, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+                ),
+            ],
             const SizedBox(height: 2),
             Text(
               isDone ? 'Tap to view full photo' : 'Tap anywhere to upload photo',
@@ -391,7 +484,11 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
             )
           : ElevatedButton(
               onPressed: onUpload,
-              style: ElevatedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+              style: ElevatedButton.styleFrom(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                backgroundColor: const Color(0xFF0B3C7A),
+                foregroundColor: Colors.white,
+              ),
               child: const Text('Upload'),
             ),
       ),
