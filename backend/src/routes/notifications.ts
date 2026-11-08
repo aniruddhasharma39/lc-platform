@@ -37,13 +37,37 @@ async function saveUserNotificationState(userId: number, state: { readIds: strin
   });
 }
 
+function getFriendlySensorInfo(childType: string): { title: string; sensorName: string } {
+  const t = (childType || '').toUpperCase();
+  if (t.includes('TILT')) {
+    return { title: 'Sensor Connected', sensorName: 'Boom Angle Tilt Sensor' };
+  }
+  if (t.includes('LIMIT')) {
+    return { title: 'Sensor Connected', sensorName: 'Barrier Lock Limit Switch' };
+  }
+  if (t.includes('HALL') || t.includes('PROXIMITY')) {
+    return { title: 'Sensor Connected', sensorName: 'Vehicle Proximity Sensor' };
+  }
+  if (t.includes('SOLAR') || t.includes('POWER') || t.includes('BATTERY')) {
+    return { title: 'Hardware Connected', sensorName: 'Power & Battery Monitor' };
+  }
+  if (t.includes('SIREN') || t.includes('HOOTER') || t.includes('ALARM')) {
+    return { title: 'Hardware Connected', sensorName: 'Audible Hooter & Alarm' };
+  }
+  if (t.includes('SIGNAL') || t.includes('TRAFFIC')) {
+    return { title: 'Hardware Connected', sensorName: 'Road Traffic Signal' };
+  }
+  const clean = (childType || 'Peripheral').replace(/_/g, ' ').toLowerCase();
+  const capitalized = clean.charAt(0).toUpperCase() + clean.slice(1);
+  return { title: 'Sensor Connected', sensorName: `${capitalized} Sensor` };
+}
+
 // GET all notifications associated with the user's role
 router.get('/', async (req: AuthRequest, res, next) => {
   try {
     const user = req.user!;
     const isDev = user.role === 'Developer';
     const canManageUsers = isDev || user.allowedModules?.includes('manage-users');
-    const canAccessClusters = isDev || user.allowedModules?.includes('cluster');
 
     // Retrieve full approver record to accurately evaluate hierarchy and jurisdiction
     const fullUser = await prisma.user.findUnique({
@@ -74,14 +98,18 @@ router.get('/', async (req: AuthRequest, res, next) => {
       targetModule?: string;
     }> = [];
 
-    // 1. New user request for approval: ONLY visible to authorized immediate superiors
+    // 1. New user request for approval: ONLY visible to authorized immediate superiors & Developer
     if (canManageUsers) {
-      const pendingRequests = await prisma.registrationRequest.findMany({
-        where: { status: 'PENDING' },
-        include: { form: true },
-        orderBy: { createdAt: 'desc' },
-        take: 30
-      });
+      const [pendingRequests, roles] = await Promise.all([
+        prisma.registrationRequest.findMany({
+          where: { status: 'PENDING' },
+          include: { form: true },
+          orderBy: { createdAt: 'desc' },
+          take: 30
+        }),
+        prisma.role.findMany({ select: { id: true, name: true } })
+      ]);
+      const roleMap = new Map<number, string>(roles.map(r => [r.id, r.name]));
 
       for (const reqItem of pendingRequests) {
         const id = `req_${reqItem.id}`;
@@ -95,16 +123,28 @@ router.get('/', async (req: AuthRequest, res, next) => {
         }
 
         let applicantName = 'New Applicant';
+        let requestedRole = '';
         try {
           const reqData = JSON.parse(reqItem.data || '{}');
           if (reqData.fullName) applicantName = reqData.fullName;
+          if (reqData.roleName) requestedRole = reqData.roleName;
+          else if (reqData.role) requestedRole = reqData.role;
+          else if (reqData.designation) requestedRole = reqData.designation;
         } catch {}
+
+        if (!requestedRole && reqItem.requestedRoleId && roleMap.has(reqItem.requestedRoleId)) {
+          requestedRole = roleMap.get(reqItem.requestedRoleId)!;
+        } else if (!requestedRole && reqItem.designation) {
+          requestedRole = reqItem.designation;
+        }
+
+        const roleText = requestedRole ? ` for ${requestedRole} role` : '';
 
         notifications.push({
           id,
           type: 'user_request',
-          title: 'New User Request',
-          message: `${applicantName} has submitted registration for approval.`,
+          title: 'New Registration Request',
+          message: `${applicantName} requested approval${roleText}.`,
           createdAt: reqItem.createdAt.toISOString(),
           isRead: false,
           read: false,
@@ -113,8 +153,8 @@ router.get('/', async (req: AuthRequest, res, next) => {
       }
     }
 
-    // 2. New cluster creation
-    if (canAccessClusters) {
+    // 2. Gate Creation & Device Hardware Linkages: STRICTLY visible to Developer role only
+    if (isDev) {
       const gates = await prisma.lCGate.findMany({
         orderBy: { createdAt: 'desc' },
         take: 15
@@ -124,11 +164,12 @@ router.get('/', async (req: AuthRequest, res, next) => {
         const id = `cluster_${gate.id}`;
         if (dismissedSet.has(id) || readSet.has(id)) continue;
 
+        const locSuffix = gate.locationName ? ` (${gate.locationName})` : '';
         notifications.push({
           id,
           type: 'cluster_created',
-          title: 'New Cluster Created',
-          message: `Cluster LC #${gate.lcNumber} (${gate.locationName}) is live.`,
+          title: 'Level Crossing Gate Active',
+          message: `Gate ${gate.lcNumber}${locSuffix} has been successfully created and configured.`,
           createdAt: gate.createdAt.toISOString(),
           isRead: false,
           read: false,
@@ -136,7 +177,7 @@ router.get('/', async (req: AuthRequest, res, next) => {
         });
       }
 
-      // 3. New device registered (MasterUnit and ChildDevice)
+      // 3. New device registered (MasterUnit and ChildDevice): STRICTLY Developer only
       const masters = await prisma.masterUnit.findMany({
         include: { gate: true },
         orderBy: { createdAt: 'desc' },
@@ -147,15 +188,18 @@ router.get('/', async (req: AuthRequest, res, next) => {
         const id = `master_${master.id}`;
         if (dismissedSet.has(id) || readSet.has(id)) continue;
 
+        const cleanMasterSerial = (master.serialNumber || 'Unit').replace(/^#/, '');
+        const gateText = master.gate ? `Gate ${master.gate.lcNumber}` : 'Gate';
+
         notifications.push({
           id,
           type: 'device_registered',
-          title: 'New Device Registered',
-          message: `Master Unit #${master.serialNumber} registered at Gate #${master.gate?.lcNumber || 'N/A'}.`,
+          title: 'Master Controller Linked',
+          message: `Gateway unit ${cleanMasterSerial} is linked to ${gateText}.`,
           createdAt: master.createdAt.toISOString(),
           isRead: false,
           read: false,
-          targetModule: 'cluster'
+          targetModule: 'devices'
         });
       }
 
@@ -169,15 +213,18 @@ router.get('/', async (req: AuthRequest, res, next) => {
         const id = `child_${child.id}`;
         if (dismissedSet.has(id) || readSet.has(id)) continue;
 
+        const { title, sensorName } = getFriendlySensorInfo(child.type);
+        const gateText = child.master?.gate ? `Gate ${child.master.gate.lcNumber}` : 'Gate';
+
         notifications.push({
           id,
           type: 'device_registered',
-          title: 'New Child Device',
-          message: `${child.type} #${child.serialNumber} linked to Gate #${child.master?.gate?.lcNumber || 'N/A'}.`,
+          title,
+          message: `${sensorName} is connected to ${gateText}.`,
           createdAt: child.createdAt.toISOString(),
           isRead: false,
           read: false,
-          targetModule: 'cluster'
+          targetModule: 'devices'
         });
       }
     }
@@ -200,7 +247,6 @@ router.get('/', async (req: AuthRequest, res, next) => {
 async function getAllActiveNotificationIds(user: any): Promise<string[]> {
   const isDev = user.role === 'Developer';
   const canManageUsers = isDev || user.allowedModules?.includes('manage-users');
-  const canAccessClusters = isDev || user.allowedModules?.includes('cluster');
   const ids: string[] = [];
 
   const approverUserGates = await prisma.userGate.findMany({
@@ -222,7 +268,8 @@ async function getAllActiveNotificationIds(user: any): Promise<string[]> {
     }
   }
 
-  if (canAccessClusters) {
+  // Gate creation & Hardware devices strictly for Developer
+  if (isDev) {
     const gates = await prisma.lCGate.findMany({ select: { id: true }, take: 30 });
     for (const g of gates) ids.push(`cluster_${g.id}`);
 

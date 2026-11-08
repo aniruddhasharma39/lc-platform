@@ -463,16 +463,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
                               IconData typeIcon = Icons.notifications;
                               Color iconColor = AppColors.primary;
-                              Color iconBg = AppColors.primary.withOpacity(0.1);
+                              Color iconBg = AppColors.primary.withValues(alpha: 0.1);
 
                               if (notifType == 'user_request' || notifType == 'request') {
                                 typeIcon = Icons.person_add_alt_1_rounded;
                                 iconColor = Colors.orange.shade700;
                                 iconBg = Colors.orange.shade50;
-                              } else if (notifType == 'cluster_created' || notifType == 'cluster') {
-                                typeIcon = Icons.device_hub_rounded;
-                                iconColor = Colors.blue.shade700;
-                                iconBg = Colors.blue.shade50;
+                              } else if (notifType == 'cluster_created' || notifType == 'cluster' || notifType == 'gate_created' || notifType == 'gate') {
+                                typeIcon = Icons.meeting_room_outlined;
+                                iconColor = const Color(0xFF0284C7);
+                                iconBg = const Color(0xFFF0F9FF);
                               } else if (notifType == 'device_registered' || notifType == 'device') {
                                 typeIcon = Icons.router_rounded;
                                 iconColor = Colors.teal.shade700;
@@ -534,12 +534,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                       color: isRead ? Colors.white : const Color(0xFFF0F7FF),
                                       borderRadius: BorderRadius.circular(10),
                                       border: Border.all(
-                                        color: isRead ? Colors.grey.shade200 : const Color(0xFF0284C7).withOpacity(0.5),
+                                        color: isRead ? Colors.grey.shade200 : const Color(0xFF0284C7).withValues(alpha: 0.5),
                                         width: isRead ? 1 : 1.5,
                                       ),
                                       boxShadow: [
                                         BoxShadow(
-                                          color: Colors.black.withOpacity(0.02),
+                                          color: Colors.black.withValues(alpha: 0.02),
                                           blurRadius: 4,
                                           offset: const Offset(0, 2),
                                         )
