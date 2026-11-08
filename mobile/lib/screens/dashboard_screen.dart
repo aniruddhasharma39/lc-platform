@@ -465,18 +465,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               Color iconColor = AppColors.primary;
                               Color iconBg = AppColors.primary.withValues(alpha: 0.1);
 
+                              final titleLower = (item['title'] ?? '').toString().toLowerCase();
+
                               if (notifType == 'user_request' || notifType == 'request') {
                                 typeIcon = Icons.person_add_alt_1_rounded;
                                 iconColor = Colors.orange.shade700;
                                 iconBg = Colors.orange.shade50;
-                              } else if (notifType == 'cluster_created' || notifType == 'cluster' || notifType == 'gate_created' || notifType == 'gate') {
+                              } else if (notifType == 'cluster_created' || notifType == 'cluster' || notifType == 'gate_created' || notifType == 'gate' || titleLower.contains('gate active')) {
                                 typeIcon = Icons.meeting_room_outlined;
                                 iconColor = const Color(0xFF0284C7);
                                 iconBg = const Color(0xFFF0F9FF);
-                              } else if (notifType == 'device_registered' || notifType == 'device') {
+                              } else if (notifType == 'device_registered' || notifType == 'device' || titleLower.contains('controller') || titleLower.contains('sensor')) {
                                 typeIcon = Icons.router_rounded;
                                 iconColor = Colors.teal.shade700;
                                 iconBg = Colors.teal.shade50;
+                              } else if (titleLower.contains('gate closed')) {
+                                typeIcon = Icons.door_sliding_outlined;
+                                iconColor = Colors.red.shade700;
+                                iconBg = Colors.red.shade50;
+                              } else if (titleLower.contains('gate open')) {
+                                typeIcon = Icons.lock_open_rounded;
+                                iconColor = Colors.green.shade700;
+                                iconBg = Colors.green.shade50;
+                              } else if (titleLower.contains('extended') || titleLower.contains('delay') || titleLower.contains('traffic')) {
+                                typeIcon = Icons.warning_amber_rounded;
+                                iconColor = Colors.amber.shade900;
+                                iconBg = Colors.amber.shade50;
+                              } else if (titleLower.contains('approved') || titleLower.contains('welcome')) {
+                                typeIcon = Icons.verified_user_rounded;
+                                iconColor = const Color(0xFF003580);
+                                iconBg = const Color(0xFFEFF6FF);
                               }
 
                               return Dismissible(
@@ -519,6 +537,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 },
                                 child: InkWell(
                                   onTap: () {
+                                    _markNotificationRead(itemId);
                                     _dismissNotification(itemId);
                                     Navigator.pop(sheetContext);
                                     if (item['targetModule'] != null || item['link'] != null) {

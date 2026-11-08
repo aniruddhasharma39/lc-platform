@@ -37,6 +37,22 @@ async function saveUserNotificationState(userId: number, state: { readIds: strin
   });
 }
 
+function formatNotificationIstTime(dateVal: Date | string | null | undefined): string {
+  if (!dateVal) return '';
+  const d = typeof dateVal === 'string' ? new Date(dateVal) : dateVal;
+  if (!d || isNaN(d.getTime())) return '';
+  const utc = d.getTime() + (d.getTimezoneOffset() * 60000);
+  const ist = new Date(utc + (3600000 * 5.5));
+  const hours = ist.getHours();
+  const minutes = String(ist.getMinutes()).padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  const displayHours = hours % 12 || 12;
+  const day = String(ist.getDate()).padStart(2, '0');
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const month = months[ist.getMonth()];
+  return `${displayHours}:${minutes} ${ampm} (${day} ${month})`;
+}
+
 function getFriendlySensorInfo(childType: string): { title: string; sensorName: string } {
   const t = (childType || '').toUpperCase();
   if (t.includes('TILT')) {
@@ -98,7 +114,123 @@ router.get('/', async (req: AuthRequest, res, next) => {
       targetModule?: string;
     }> = [];
 
-    // 1. New user request for approval: ONLY visible to authorized immediate superiors & Developer
+    // 1. Approved Account Notice: In-app welcome notice when user registration is approved
+    if (fullUser && fullUser.status === 'APPROVED') {
+      const approvedNotifId = `user_approved_${user.id}`;
+      if (!dismissedSet.has(approvedNotifId) && !readSet.has(approvedNotifId)) {
+        let gateAssignmentMsg = '';
+        if (approverGateIds.length > 0) {
+          const assignedGates = await prisma.lCGate.findMany({
+            where: { id: { in: approverGateIds } },
+            select: { lcNumber: true, locationName: true }
+          });
+          const gateNames = assignedGates
+            .map(g => `Gate ${g.lcNumber}${g.locationName ? ` (${g.locationName})` : ''}`)
+            .join(', ');
+          if (gateNames) {
+            gateAssignmentMsg = ` You are assigned to ${gateNames}.`;
+          }
+        }
+
+        notifications.push({
+          id: approvedNotifId,
+          type: 'system',
+          title: 'Registration Approved',
+          message: `Welcome ${fullUser.fullName || 'User'}! Your registration request has been approved.${gateAssignmentMsg}`,
+          createdAt: fullUser.createdAt.toISOString(),
+          isRead: false,
+          read: false,
+          targetModule: 'profile'
+        });
+      }
+    }
+
+    // 2. Operational Gate Alerts: In-app bell notifications for Gateman and assigned railway personnel
+    // Covers: Gate Closed Confirmation, Gate Opened Confirmation, Extended Closure / Traffic Alert
+    // (Active Gate Duty Confirmation is strictly omitted per specification)
+    let monitoredGateIds: number[] = [...approverGateIds];
+    if (isDev && monitoredGateIds.length === 0) {
+      const anyGates = await prisma.lCGate.findMany({
+        select: { id: true },
+        take: 10,
+        orderBy: { updatedAt: 'desc' }
+      });
+      monitoredGateIds = anyGates.map(g => g.id);
+    }
+
+    if (monitoredGateIds.length > 0) {
+      const recentGateEvents = await prisma.lCGateEvent.findMany({
+        where: {
+          gateId: { in: monitoredGateIds }
+        },
+        include: {
+          gate: { select: { id: true, lcNumber: true, locationName: true } }
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 20
+      });
+
+      for (const ev of recentGateEvents) {
+        const locSuffix = ev.gate?.locationName ? ` (${ev.gate.locationName})` : '';
+        const gateLabel = `Gate ${ev.gate?.lcNumber || '#' + ev.gateId}${locSuffix}`;
+
+        // A. Extended Closure / Traffic Alert (>15 minutes closure)
+        if (ev.status === 'EXTENDED_DELAY' || (ev.durationSeconds && ev.durationSeconds >= 900)) {
+          const extId = `op_ext_${ev.id}`;
+          if (!dismissedSet.has(extId) && !readSet.has(extId)) {
+            const durationMins = ev.durationSeconds ? Math.round(ev.durationSeconds / 60) : 15;
+            notifications.push({
+              id: extId,
+              type: 'system',
+              title: 'Extended Closure Alert',
+              message: `${gateLabel} has remained closed for ${durationMins} minutes. Road traffic congestion alert.`,
+              createdAt: (ev.closedAt || ev.updatedAt).toISOString(),
+              isRead: false,
+              read: false,
+              targetModule: 'cluster'
+            });
+          }
+        }
+
+        // B. Gate Closed Confirmation
+        if (ev.status === 'CLOSED' || ev.closedAt) {
+          const closedId = `op_closed_${ev.id}`;
+          if (!dismissedSet.has(closedId) && !readSet.has(closedId)) {
+            const timeStr = formatNotificationIstTime(ev.closedAt || ev.updatedAt);
+            notifications.push({
+              id: closedId,
+              type: 'system',
+              title: 'Gate Closed',
+              message: `${gateLabel} closed to road traffic at ${timeStr}.`,
+              createdAt: (ev.closedAt || ev.updatedAt).toISOString(),
+              isRead: false,
+              read: false,
+              targetModule: 'cluster'
+            });
+          }
+        }
+
+        // C. Gate Opened Confirmation
+        if (ev.status === 'OPEN' || ev.openedAt) {
+          const openId = `op_open_${ev.id}`;
+          if (!dismissedSet.has(openId) && !readSet.has(openId)) {
+            const timeStr = formatNotificationIstTime(ev.openedAt);
+            notifications.push({
+              id: openId,
+              type: 'system',
+              title: 'Gate Opened',
+              message: `${gateLabel} opened to road traffic at ${timeStr}.`,
+              createdAt: ev.openedAt.toISOString(),
+              isRead: false,
+              read: false,
+              targetModule: 'cluster'
+            });
+          }
+        }
+      }
+    }
+
+    // 3. New user request for approval: ONLY visible to authorized immediate superiors & Developer
     if (canManageUsers) {
       const [pendingRequests, roles] = await Promise.all([
         prisma.registrationRequest.findMany({
@@ -153,7 +285,7 @@ router.get('/', async (req: AuthRequest, res, next) => {
       }
     }
 
-    // 2. Gate Creation & Device Hardware Linkages: STRICTLY visible to Developer role only
+    // 4. Gate Creation & Device Hardware Linkages: STRICTLY visible to Developer role only
     if (isDev) {
       const gates = await prisma.lCGate.findMany({
         orderBy: { createdAt: 'desc' },
@@ -177,7 +309,7 @@ router.get('/', async (req: AuthRequest, res, next) => {
         });
       }
 
-      // 3. New device registered (MasterUnit and ChildDevice): STRICTLY Developer only
+      // Master Controller linkage
       const masters = await prisma.masterUnit.findMany({
         include: { gate: true },
         orderBy: { createdAt: 'desc' },
@@ -203,6 +335,7 @@ router.get('/', async (req: AuthRequest, res, next) => {
         });
       }
 
+      // Child sensors
       const childDevices = await prisma.childDevice.findMany({
         include: { master: { include: { gate: true } } },
         orderBy: { createdAt: 'desc' },
@@ -254,6 +387,31 @@ async function getAllActiveNotificationIds(user: any): Promise<string[]> {
     select: { gateId: true }
   });
   const approverGateIds = approverUserGates.map(ug => ug.gateId);
+
+  // User approved welcome notice
+  if (user.status === 'APPROVED') {
+    ids.push(`user_approved_${user.id}`);
+  }
+
+  // Operational gate alerts
+  let monitoredGateIds: number[] = [...approverGateIds];
+  if (isDev && monitoredGateIds.length === 0) {
+    const anyGates = await prisma.lCGate.findMany({ select: { id: true }, take: 10 });
+    monitoredGateIds = anyGates.map(g => g.id);
+  }
+
+  if (monitoredGateIds.length > 0) {
+    const events = await prisma.lCGateEvent.findMany({
+      where: { gateId: { in: monitoredGateIds } },
+      select: { id: true, status: true, closedAt: true, openedAt: true, durationSeconds: true },
+      take: 30
+    });
+    for (const ev of events) {
+      if (ev.status === 'CLOSED' || ev.closedAt) ids.push(`op_closed_${ev.id}`);
+      if (ev.status === 'OPEN' || ev.openedAt) ids.push(`op_open_${ev.id}`);
+      if (ev.status === 'EXTENDED_DELAY' || (ev.durationSeconds && ev.durationSeconds >= 900)) ids.push(`op_ext_${ev.id}`);
+    }
+  }
 
   if (canManageUsers) {
     const pendingRequests = await prisma.registrationRequest.findMany({

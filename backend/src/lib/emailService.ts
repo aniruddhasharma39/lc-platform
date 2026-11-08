@@ -340,6 +340,78 @@ export async function sendEmailOtp(toEmail: string, otp: string, recipientName?:
 }
 
 /**
+ * Dispatches an Indian Railways official branded Registration Approval email.
+ * Note: Sent strictly via Email only (no SMS).
+ */
+export async function sendRegistrationApprovalEmail(params: {
+  toEmail: string;
+  recipientName: string;
+  assignedGateNumbers?: string[];
+  roleName?: string;
+  division?: string;
+  zone?: string;
+}): Promise<SendEmailResult> {
+  const { toEmail, recipientName, assignedGateNumbers = [], roleName = 'Staff', division = '-', zone = '-' } = params;
+  const greeting = recipientName ? `Welcome, ${recipientName}!` : 'Welcome!';
+  const gateText = assignedGateNumbers.length > 0 ? assignedGateNumbers.join(', ') : 'Pending Assignment';
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="utf-8"><title>Registration Approved</title></head>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; margin: 0; padding: 24px;">
+      <div style="max-width: 580px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
+        <div style="background: linear-gradient(135deg, #003580 0%, #0284c7 100%); padding: 28px 24px; text-align: center; color: #ffffff;">
+          <h1 style="margin: 0; font-size: 20px; font-weight: 700; letter-spacing: 0.5px;">INDIAN RAILWAYS</h1>
+          <p style="margin: 4px 0 0 0; font-size: 13px; opacity: 0.9; font-weight: 500;">Level Crossing Automated Safety & Monitoring Platform</p>
+        </div>
+        <div style="padding: 32px 28px; color: #1e293b;">
+          <div style="display: inline-block; background-color: #dcfce7; color: #166534; font-weight: bold; font-size: 12px; padding: 4px 12px; border-radius: 20px; margin-bottom: 16px;">
+            ✓ ACCOUNT APPROVED
+          </div>
+          <p style="font-size: 18px; font-weight: 700; margin: 0 0 12px 0; color: #0f172a;">${greeting}</p>
+          <p style="font-size: 14px; line-height: 1.6; color: #475569; margin: 0 0 20px 0;">
+            Your registration request for the Indian Railways Level Crossing Platform has been <strong>approved</strong> by your superior officer.
+          </p>
+          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+              <tr>
+                <td style="padding: 6px 0; color: #64748b; font-weight: 500; width: 140px;">Official Role:</td>
+                <td style="padding: 6px 0; color: #0f172a; font-weight: 700;">${roleName}</td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Assigned Gate(s):</td>
+                <td style="padding: 6px 0; color: #003580; font-weight: 700;">${gateText}</td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Division / Zone:</td>
+                <td style="padding: 6px 0; color: #0f172a; font-weight: 600;">${division} · ${zone}</td>
+              </tr>
+            </table>
+          </div>
+          <p style="font-size: 14px; line-height: 1.6; color: #475569; margin: 0 0 24px 0;">
+            You can now log in to the <strong>LC Platform Mobile Application</strong> or web portal using your registered mobile number and password.
+          </p>
+        </div>
+        <div style="background-color: #f8fafc; padding: 18px 24px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 12px; color: #64748b;">
+          <p style="margin: 0 0 4px 0; font-weight: 600; color: #334155;">Ministry of Railways — Government of India</p>
+          <p style="margin: 0; font-size: 11px; color: #94a3b8;">Level Crossing Automated Safety & Monitoring Platform</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  return sendEmail({
+    toEmail,
+    toName: recipientName,
+    subject: `Registration Approved — Indian Railways LC Platform`,
+    textContent: `Welcome ${recipientName}! Your registration request for the Indian Railways Level Crossing Platform has been approved. Assigned Gate(s): ${gateText}. You can now log in using your registered mobile number and password.`,
+    htmlContent,
+  });
+}
+
+/**
  * Dispatches an Indian Railways official branded Gate State Alert email (OPEN / CLOSED)
  */
 export async function sendGateStateEmail(params: {

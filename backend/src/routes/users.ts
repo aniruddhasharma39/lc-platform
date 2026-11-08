@@ -7,6 +7,7 @@ import { extractRegistrationUserFields } from '../lib/userExtract';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
 import { canApproveRequest, canAssignRole, getAllowedRoleNamesForApprover, getDesignationConfig, DESIGNATIONS, buildUserManagementWhereClause, verifyUserManagementAccess } from '../lib/railwayHierarchy';
+import { sendRegistrationApprovalEmail } from '../lib/emailService';
 
 const router = Router();
 
@@ -335,6 +336,37 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
           update: {},
           create: { userId: user.id, gateId: gId }
         });
+      }
+
+      // Dispatch Official Registration Approval Email (Strictly Email only, zero SMS)
+      if (user.email && user.email.includes('@') && user.email.includes('.')) {
+        (async () => {
+          try {
+            const assignedGates = gateIdsToAssign.length > 0
+              ? await prisma.lCGate.findMany({
+                  where: { id: { in: gateIdsToAssign } },
+                  select: { lcNumber: true, locationName: true }
+                })
+              : [];
+            const assignedGateNumbers = assignedGates.map(g => "Gate " + g.lcNumber + (g.locationName ? " (" + g.locationName + ")" : ""));
+            const roleObj = await prisma.role.findUnique({
+              where: { id: user.roleId || 0 },
+              select: { name: true }
+            });
+
+            await sendRegistrationApprovalEmail({
+              toEmail: user.email.trim(),
+              recipientName: user.fullName || 'Railway Staff',
+              assignedGateNumbers,
+              roleName: roleObj?.name || user.designation || 'Staff',
+              division: user.division || '-',
+              zone: user.zone || '-'
+            });
+            console.log("✉️ [REGISTRATION APPROVAL] Sent approval email to " + user.email + " (" + user.fullName + ")");
+          } catch (emailErr: any) {
+            console.error('⚠️ [REGISTRATION APPROVAL] Error sending approval email:', emailErr?.message || emailErr);
+          }
+        })();
       }
     } catch (err: any) {
       // Revert request status if user creation failed
