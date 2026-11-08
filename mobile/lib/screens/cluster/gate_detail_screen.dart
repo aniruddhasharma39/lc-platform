@@ -39,7 +39,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     if (gateId == null) return;
     final lcNumber = gate['lcNumber'] ?? 'LC Gate';
 
-    AppFeedback.showInfo(context, 'Pinging $lcNumber hardware over AWS IoT...');
+    AppFeedback.showInfo(context, 'Checking connection for $lcNumber hardware...');
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/lcgate/$gateId/health-check'),
@@ -56,19 +56,19 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
           AppFeedback.showSuccess(
             context,
             isDelivered
-                ? 'Ping delivered over AWS IoT Core for $lcNumber: Device HEALTHY'
-                : 'Ping registered for $lcNumber: Status HEALTHY',
+                ? 'Connection verified: $lcNumber hardware is ONLINE & HEALTHY'
+                : 'Connection check registered for $lcNumber: Status is HEALTHY',
           );
           _refresh();
         }
       } else {
         if (mounted) {
-          AppFeedback.showError(context, 'Health ping failed (HTTP ${res.statusCode})');
+          AppFeedback.showError(context, 'Connection check failed (HTTP ${res.statusCode})');
         }
       }
     } catch (e) {
       if (mounted) {
-        AppFeedback.showError(context, 'Ping error: $e');
+        AppFeedback.showError(context, 'Connection error: $e');
       }
     }
   }
@@ -1498,7 +1498,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
           if (masters.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.wifi_tethering, color: AppColors.primary),
-              tooltip: 'Ping Device (Health Check)',
+              tooltip: 'Check Connection',
               onPressed: _pingGateDevice,
             ),
           IconButton(

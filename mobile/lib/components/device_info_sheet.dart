@@ -185,14 +185,14 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
         final data = json.decode(res.body);
         if (mounted) {
           final pingStatus = (data['status'] ?? 'ONLINE').toString().toUpperCase();
-          AppFeedback.showSuccess(context, 'Health Ping Acknowledged: $_thingName is $pingStatus');
+          AppFeedback.showSuccess(context, 'Connection verified: $_thingName is $pingStatus');
           _fetchTelemetry();
         }
       } else {
         if (mounted) AppFeedback.showError(context, 'Health check failed (HTTP ${res.statusCode})');
       }
     } catch (e) {
-      if (mounted) AppFeedback.showError(context, 'Ping error: $e');
+      if (mounted) AppFeedback.showError(context, 'Connection error: $e');
     } finally {
       if (mounted) setState(() => _isPinging = false);
     }
@@ -363,7 +363,7 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
                   icon: _isPinging
                       ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.network_ping, size: 18, color: Color(0xFF2563EB)),
-                  tooltip: 'Ping Health Check',
+                  tooltip: 'Check Connection',
                   onPressed: _isPinging ? null : _pingHealthCheck,
                 ),
               ],
@@ -399,7 +399,7 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
                               ElevatedButton.icon(
                                 onPressed: _pingHealthCheck,
                                 icon: const Icon(Icons.refresh, size: 16),
-                                label: const Text('Ping Device Now'),
+                                label: const Text('Check Connection Now'),
                               ),
                             ],
                           ),

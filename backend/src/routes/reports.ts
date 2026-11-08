@@ -1269,15 +1269,19 @@ async function getDeviceMappingReportData(): Promise<DeviceMappingReportData> {
   };
 }
 
+function isDeveloperUser(user: any): boolean {
+  if (!user) return false;
+  const roleName = (typeof user.role === 'string' ? user.role : user.role?.name || '').toLowerCase();
+  return roleName === 'developer' || user.roleId === 1 || user.id === 1;
+}
+
 /**
  * GET /api/v1/reports/device-mapping
  * Developer-only: Compiled LC Gate, Master Unit, AWS IoT Thing & SIM ICCID mapping
  */
 router.get('/device-mapping', async (req: AuthRequest, res: Response, next: any) => {
   try {
-    const roleStr = (req.user?.role || '').toLowerCase();
-    const isDev = roleStr === 'developer' || req.user?.id === 1;
-    if (!isDev) {
+    if (!isDeveloperUser(req.user)) {
       return res.status(403).json({ error: 'Access denied: Gate & Device Mapping is restricted to Developer role only' });
     }
 
@@ -1297,9 +1301,7 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
 
     // ── REPORT TYPE: DEVELOPER GATE & DEVICE MAPPING ──
     if (reportType === 'device_mapping' || reportType === 'mapping') {
-      const roleStr = (req.user?.role || '').toLowerCase();
-      const isDev = roleStr === 'developer' || req.user?.id === 1;
-      if (!isDev) {
+      if (!isDeveloperUser(req.user)) {
         return res.status(403).json({ error: 'Access denied: Gate & Device Mapping is restricted to Developer role only' });
       }
 

@@ -94,7 +94,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   // Data
   List<dynamic> _scopeGroups = [];
   List<dynamic> _gates = [];
-  bool _isOutdated = false;
   Timer? _statusSyncTimer;
 
   @override
@@ -154,7 +153,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         setState(() {
           _gates = List.from(cached.gates);
           _scopeGroups = List.from(cached.scopeGroups);
-          _isOutdated = cached.isOutdated;
           _isLoading = false;
           _checkInitialGateSelection();
         });
@@ -218,14 +216,12 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         setState(() {
           _gates = List.from(syncResult.data!.gates);
           _scopeGroups = List.from(syncResult.data!.scopeGroups);
-          _isOutdated = syncResult.isOutdated;
           _isLoading = false;
           _isRefreshing = false;
           _checkInitialGateSelection();
         });
       } else if (mounted) {
         setState(() {
-          _isOutdated = syncResult.isOutdated;
         });
       }
 
@@ -769,33 +765,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    if (_isOutdated)
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 10),
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFFFFBEB),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: const Color(0xFFFDE68A)),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.cloud_off, size: 16, color: Color(0xFFD97706)),
-                            const SizedBox(width: 8),
-                            const Expanded(
-                              child: Text(
-                                'Showing cached directory (offline or reconnecting...)',
-                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF92400E)),
-                              ),
-                            ),
-                            GestureDetector(
-                              onTap: () => _fetchData(isManual: true),
-                              child: const Text('Retry', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFFB45309))),
-                            ),
-                          ],
-                        ),
-                      ),
-
                     // 1. Navigation Toolbar (Breadcrumb + Search + Refresh)
                     _buildNavigationToolbar(),
                     const SizedBox(height: 14),
@@ -1105,13 +1074,13 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     );
   }
 
-  // Direct AWS IoT Health Check Ping
+  // Direct Hardware Connection Check
   Future<void> _pingGateDevice(Map gate) async {
     final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
     if (gateId == 0) return;
     final lcNumber = gate['lcNumber'] ?? 'LC Gate';
 
-    AppFeedback.showInfo(context, 'Pinging $lcNumber hardware over AWS IoT...');
+    AppFeedback.showInfo(context, 'Checking connection for $lcNumber hardware...');
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/lcgate/$gateId/health-check'),
@@ -1128,20 +1097,20 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
           AppFeedback.showSuccess(
             context,
             isDelivered
-                ? 'Ping delivered over AWS IoT Core for $lcNumber: Device HEALTHY'
-                : 'Ping command registered for $lcNumber: Status HEALTHY',
+                ? 'Connection verified: $lcNumber hardware is ONLINE & HEALTHY'
+                : 'Connection check registered for $lcNumber: Status HEALTHY',
           );
           _fetchGateTelemetry(gateId);
           _refreshSelectedGate(gateId);
         }
       } else {
         if (mounted) {
-          AppFeedback.showError(context, 'Health ping failed (HTTP ${res.statusCode})');
+          AppFeedback.showError(context, 'Connection check failed (HTTP ${res.statusCode})');
         }
       }
     } catch (e) {
       if (mounted) {
-        AppFeedback.showError(context, 'Ping error: $e');
+        AppFeedback.showError(context, 'Connection check error: $e');
       }
     }
   }
@@ -1530,7 +1499,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                         children: [
                           Icon(Icons.wifi_tethering, size: 12, color: Color(0xFF1D4ED8)),
                           SizedBox(width: 4),
-                          Text('Ping Device', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
+                          Text('Check Connection', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
                         ],
                       ),
                     ),
@@ -1882,8 +1851,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               );
               final hasHardware = masterDevices.isNotEmpty || matchingGateDev != null || (master['awsThingName'] != null && master['isVirtual'] == false);
               final isVirtual = masterSerial.contains('(Virtual Master)') || !hasHardware;
-              final dynamic linkedDevObj = masterDevices.isNotEmpty ? masterDevices[0] : matchingGateDev;
-              final linkedDevName = linkedDevObj != null ? (linkedDevObj['thingName'] ?? linkedDevObj['serialNumber']) : master['awsThingName'];
 
               // Extract component-wise evidence photos uploaded during setup
               final masterEv = _findDeviceEvidence(master, 'MASTER');
@@ -1981,53 +1948,6 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            // Hardware Link & Device Topology Status Banner
-                            Container(
-                              margin: const EdgeInsets.only(bottom: 12),
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: isVirtual ? const Color(0xFFFFFBEB) : const Color(0xFFF0FDF4),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: isVirtual ? const Color(0xFFFDE68A) : const Color(0xFFBBF7D0),
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    isVirtual ? Icons.router_outlined : Icons.check_circle_outline,
-                                    size: 18,
-                                    color: isVirtual ? const Color(0xFFD97706) : const Color(0xFF16A34A),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          isVirtual ? 'Virtual Master (No Physical Hardware Linked)' : 'Linked to AWS IoT Device${linkedDevName != null ? ' ($linkedDevName)' : ''}',
-                                          style: TextStyle(
-                                            fontSize: 11.5,
-                                            fontWeight: FontWeight.bold,
-                                            color: isVirtual ? const Color(0xFF92400E) : const Color(0xFF166534),
-                                          ),
-                                        ),
-                                        Text(
-                                          isVirtual
-                                              ? 'Tap to link provisioned edge hardware at any time'
-                                              : 'Receiving live gate operations from AWS IoT Core',
-                                          style: TextStyle(
-                                            fontSize: 10.5,
-                                            color: isVirtual ? const Color(0xFFB45309) : const Color(0xFF15803D),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-
                             // Component 1: Master Unit (ESP Gateway) & Its Uploaded Evidence Photo
                             _buildDeviceEvidenceCard(
                               title: 'Master Gateway Unit (ESP)',

@@ -47,6 +47,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   bool _isLoadingDeviceMapping = false;
   final TextEditingController _mappingSearchCtrl = TextEditingController();
   String _mappingSearchQuery = '';
+  String _mappingGateFilterType = 'all'; // 'all' | 'assigned' | 'unassigned'
 
   // 2. Clusters & Hierarchy Selection
   List<dynamic> _clusters = [];
@@ -106,9 +107,14 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _isDeveloper = widget.user['role'] == 'Developer' ||
+    final role = widget.user['role'];
+    final roleStr = (role is Map ? (role['name'] ?? '') : (role ?? '')).toString().toLowerCase();
+    _isDeveloper = roleStr == 'developer' ||
         widget.user['roleId'] == 1 ||
-        (widget.user['role'] is String && widget.user['role'].toString().toLowerCase() == 'developer');
+        widget.user['id'] == 1;
+    if (!_isDeveloper && _reportType == 'device_mapping') {
+      _reportType = 'count';
+    }
     final now = DateTime.now();
     _dateRange = DateTimeRange(
       start: now.subtract(const Duration(days: 7)),
@@ -216,7 +222,12 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     } else if (_reportType == 'holistic') {
       await _fetchHolisticAnalytics();
     } else if (_reportType == 'device_mapping') {
-      await _fetchDeviceMapping(forceReload: forceReload);
+      if (_isDeveloper) {
+        await _fetchDeviceMapping(forceReload: forceReload);
+      } else {
+        setState(() => _reportType = 'count');
+        await _fetchCountAnalytics();
+      }
     } else {
       await _fetchRecords(forceReload: forceReload);
     }
@@ -224,7 +235,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
 
   // Fetch Developer Device & IoT Mapping Registry
   Future<void> _fetchDeviceMapping({bool forceReload = false}) async {
-    if (!mounted) return;
+    if (!mounted || !_isDeveloper) return;
     setState(() => _isLoadingDeviceMapping = true);
     try {
       final uri = Uri.parse('$baseUrl/reports/device-mapping');
@@ -877,6 +888,10 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     required Set<String> selectedCols,
   }) async {
     Navigator.pop(parentCtx);
+    if (selectedReportType == 'device_mapping' && !_isDeveloper) {
+      AppFeedback.showError(context, 'Device Mapping export is restricted to Developer role.');
+      return;
+    }
     setState(() => _isExporting = true);
 
     double progress = 0.05;
@@ -1066,6 +1081,9 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   // 4. Generate Report Modal (Excel & PDF)
   void _showGenerateModal() {
     String selectedReportType = _reportType;
+    if (!_isDeveloper && selectedReportType == 'device_mapping') {
+      selectedReportType = 'count';
+    }
     String selectedFormat = 'xlsx';
     final Set<String> selectedCols = _reportColumns.map((c) => c['key']!).toSet();
 
@@ -1675,7 +1693,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                     _buildCountReportView(),
                   ] else if (_reportType == 'holistic') ...[
                     _buildHolisticReportView(),
-                  ] else if (_reportType == 'device_mapping') ...[
+                  ] else if (_reportType == 'device_mapping' && _isDeveloper) ...[
                     _buildDeviceMappingReportView(),
                   ] else ...[
                     _buildCycleAnalyticsView(),
@@ -2728,27 +2746,27 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
 
     final rawRows = (_deviceMappingData?['rows'] as List?) ?? [];
     final totalMapped = _deviceMappingData?['totalDevices'] ?? rawRows.length;
+    final assignedCount = rawRows.where((r) => (r['lcGateNumber'] ?? '').toString().toLowerCase() != 'unassigned').length;
+    final unassignedCount = rawRows.where((r) => (r['lcGateNumber'] ?? '').toString().toLowerCase() == 'unassigned').length;
 
-    // Filter by search query
+    // Filter strictly by LC Gate (number or location name)
     final query = _mappingSearchQuery.toLowerCase().trim();
-    final rows = query.isEmpty
-        ? rawRows
-        : rawRows.where((r) {
-            final gate = (r['lcGateNumber'] ?? '').toString().toLowerCase();
-            final master = (r['masterSerialNumber'] ?? '').toString().toLowerCase();
-            final thing = (r['awsIotThingName'] ?? '').toString().toLowerCase();
-            final iccid = (r['iccid'] ?? '').toString().toLowerCase();
-            final sim = (r['simDetails'] ?? '').toString().toLowerCase();
-            final div = (r['division'] ?? '').toString().toLowerCase();
-            final zone = (r['zone'] ?? '').toString().toLowerCase();
-            return gate.contains(query) ||
-                master.contains(query) ||
-                thing.contains(query) ||
-                iccid.contains(query) ||
-                sim.contains(query) ||
-                div.contains(query) ||
-                zone.contains(query);
-          }).toList();
+    final rows = rawRows.where((r) {
+      final gateNumber = (r['lcGateNumber'] ?? '').toString().toLowerCase();
+      final locationName = (r['locationName'] ?? '').toString().toLowerCase();
+      final isUnassigned = gateNumber == 'unassigned';
+
+      // 1. Quick Gate Status Filter (all, assigned, unassigned)
+      if (_mappingGateFilterType == 'assigned' && isUnassigned) return false;
+      if (_mappingGateFilterType == 'unassigned' && !isUnassigned) return false;
+
+      // 2. Strict LC Gate Query Match (matches only gate number or location name)
+      if (query.isNotEmpty) {
+        final matchesGate = gateNumber.contains(query) || locationName.contains(query);
+        if (!matchesGate) return false;
+      }
+      return true;
+    }).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2759,10 +2777,10 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFD97706).withOpacity(0.3)),
+            border: Border.all(color: const Color(0xFFD97706).withValues(alpha: 0.3)),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.02),
+                color: Colors.black.withValues(alpha: 0.02),
                 blurRadius: 6,
                 offset: const Offset(0, 2),
               ),
@@ -2776,7 +2794,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                   Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFD97706).withOpacity(0.1),
+                      color: const Color(0xFFD97706).withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: const Icon(Icons.developer_board, color: Color(0xFFD97706), size: 22),
@@ -2808,7 +2826,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF003580).withOpacity(0.08),
+                      color: const Color(0xFF003580).withValues(alpha: 0.08),
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
@@ -2863,7 +2881,34 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         ),
         const SizedBox(height: 10),
 
-        // 2. Search Filter Input
+        // 1.5. Quick Gate Status Filter Chips
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              _buildMappingFilterChip(
+                label: 'All Gates ($totalMapped)',
+                isActive: _mappingGateFilterType == 'all',
+                onTap: () => setState(() => _mappingGateFilterType = 'all'),
+              ),
+              const SizedBox(width: 8),
+              _buildMappingFilterChip(
+                label: 'Assigned Gates ($assignedCount)',
+                isActive: _mappingGateFilterType == 'assigned',
+                onTap: () => setState(() => _mappingGateFilterType = 'assigned'),
+              ),
+              const SizedBox(width: 8),
+              _buildMappingFilterChip(
+                label: 'Unassigned ($unassignedCount)',
+                isActive: _mappingGateFilterType == 'unassigned',
+                onTap: () => setState(() => _mappingGateFilterType = 'unassigned'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+
+        // 2. Search Filter Input (Strictly Gate Filter)
         Container(
           height: 42,
           decoration: BoxDecoration(
@@ -2874,7 +2919,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
           child: TextField(
             controller: _mappingSearchCtrl,
             decoration: InputDecoration(
-              hintText: 'Filter by Gate, Serial, AWS Thing, ICCID...',
+              hintText: 'Filter by LC Gate (e.g. LC-63, Satara)...',
               hintStyle: const TextStyle(fontSize: 12),
               prefixIcon: const Icon(Icons.search, size: 18, color: Colors.grey),
               suffixIcon: _mappingSearchQuery.isNotEmpty
@@ -2906,9 +2951,30 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: Colors.grey.shade200),
             ),
-            child: Text(
-              query.isEmpty ? 'No controllers found in registry.' : 'No controllers match "$query".',
-              style: const TextStyle(fontSize: 13, color: Colors.grey),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.search_off_rounded, size: 36, color: Colors.grey),
+                const SizedBox(height: 8),
+                Text(
+                  query.isEmpty ? 'No LC gates found for selected filter.' : 'No LC gates match "$query".',
+                  style: const TextStyle(fontSize: 13, color: Colors.grey),
+                ),
+                if (query.isNotEmpty || _mappingGateFilterType != 'all') ...[
+                  const SizedBox(height: 10),
+                  TextButton.icon(
+                    icon: const Icon(Icons.refresh, size: 16),
+                    label: const Text('Reset Gate Filter'),
+                    onPressed: () {
+                      _mappingSearchCtrl.clear();
+                      setState(() {
+                        _mappingSearchQuery = '';
+                        _mappingGateFilterType = 'all';
+                      });
+                    },
+                  ),
+                ],
+              ],
             ),
           )
         else
@@ -2918,7 +2984,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: Colors.grey.shade200),
               boxShadow: [
-                BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 4, offset: const Offset(0, 1)),
+                BoxShadow(color: Colors.black.withValues(alpha: 0.02), blurRadius: 4, offset: const Offset(0, 1)),
               ],
             ),
             clipBehavior: Clip.antiAlias,
@@ -2969,7 +3035,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF046A38).withOpacity(0.1),
+                            color: const Color(0xFF046A38).withValues(alpha: 0.1),
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Text(
@@ -2989,6 +3055,36 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
             ),
           ),
       ],
+    );
+  }
+
+  Widget _buildMappingFilterChip({
+    required String label,
+    required bool isActive,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: isActive ? const Color(0xFFD97706) : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isActive ? const Color(0xFFD97706) : Colors.grey.shade300,
+            width: 1.2,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: isActive ? FontWeight.bold : FontWeight.w500,
+            color: isActive ? Colors.white : const Color(0xFF334155),
+          ),
+        ),
+      ),
     );
   }
 

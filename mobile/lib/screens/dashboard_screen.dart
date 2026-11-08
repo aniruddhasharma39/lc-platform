@@ -1531,9 +1531,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     if (raw is! Map) return const SizedBox.shrink();
                     final gate = Map<String, dynamic>.from(raw);
                     final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
-                    final lcNumber = (gate['hasMaster'] == true && gate['masterSerialNumber'] != null && gate['masterSerialNumber'] != 'Unassigned')
-                        ? gate['masterSerialNumber'].toString()
-                        : (gate['lcNumber']?.toString() ?? 'LC-GATE');
+                    final lcNumber = gate['lcNumber']?.toString() ?? 'LC-GATE';
                     final location = gate['locationName'] ?? '';
                     final zone = gate['zone'] ?? '';
                     final division = gate['division'] ?? '';

@@ -1108,7 +1108,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
                                                        ),
                                                        icon: const Icon(Icons.wifi_tethering, size: 14, color: AppColors.primary),
-                                                       label: const Text('Ping Device', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                                                       label: const Text('Check Connection', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary)),
                                                        onPressed: () => _pingGateDevice(gate),
                                                      ),
                                                 ],
@@ -1126,13 +1126,13 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
     );
   }
 
-  // Direct AWS IoT Health Check Ping
+  // Direct Hardware Connection Check
   Future<void> _pingGateDevice(dynamic gate) async {
     final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
     if (gateId == 0) return;
     final lcNumber = gate['lcNumber'] ?? 'LC Gate';
 
-    AppFeedback.showInfo(context, 'Pinging $lcNumber hardware over AWS IoT...');
+    AppFeedback.showInfo(context, 'Checking connection for $lcNumber hardware...');
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/lcgate/$gateId/health-check'),
@@ -1149,19 +1149,19 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           AppFeedback.showSuccess(
             context,
             isDelivered
-                ? 'Ping delivered over AWS IoT Core for $lcNumber: Device is ONLINE & HEALTHY'
-                : 'Ping registered for $lcNumber: Status is HEALTHY',
+                ? 'Connection verified: $lcNumber hardware is ONLINE & HEALTHY'
+                : 'Connection check registered for $lcNumber: Status is HEALTHY',
           );
           _fetchGates();
         }
       } else {
         if (mounted) {
-          AppFeedback.showError(context, 'Health ping failed (HTTP ${res.statusCode})');
+          AppFeedback.showError(context, 'Connection check failed (HTTP ${res.statusCode})');
         }
       }
     } catch (e) {
       if (mounted) {
-        AppFeedback.showError(context, 'Ping error: $e');
+        AppFeedback.showError(context, 'Connection error: $e');
       }
     }
   }
