@@ -942,15 +942,17 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
         orderBy: { receivedAt: 'desc' },
       });
 
-      // 5. Parse current and previous reported gate status
+      // 5. Parse current and previous reported gate status (evaluates Status, LimitSwitch, and general status reliably)
       let currentState: 'OPEN' | 'CLOSED' | null = null;
       if (payload.Status !== undefined) {
         const s = String(payload.Status).trim().toUpperCase();
         if (s === 'CLOSED') currentState = 'CLOSED';
         else if (s === 'OPEN' || s === 'NOT_CLOSED') currentState = 'OPEN';
-      } else if (payload.LimitSwitchClosed !== undefined) {
+      }
+      if (!currentState && payload.LimitSwitchClosed !== undefined) {
         currentState = payload.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
-      } else if (payload.status !== undefined) {
+      }
+      if (!currentState && payload.status !== undefined) {
         const s = String(payload.status).trim().toUpperCase();
         if (s === 'CLOSED') currentState = 'CLOSED';
         else if (s === 'OPEN' || s === 'NOT_CLOSED') currentState = 'OPEN';
@@ -963,9 +965,11 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
           const s = String(prevP.Status).trim().toUpperCase();
           if (s === 'CLOSED') previousState = 'CLOSED';
           else if (s === 'OPEN' || s === 'NOT_CLOSED') previousState = 'OPEN';
-        } else if (prevP.LimitSwitchClosed !== undefined) {
+        }
+        if (!previousState && prevP.LimitSwitchClosed !== undefined) {
           previousState = prevP.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
-        } else if (prevP.status !== undefined) {
+        }
+        if (!previousState && prevP.status !== undefined) {
           const s = String(prevP.status).trim().toUpperCase();
           if (s === 'CLOSED') previousState = 'CLOSED';
           else if (s === 'OPEN' || s === 'NOT_CLOSED') previousState = 'OPEN';
@@ -1053,24 +1057,29 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
       });
     }
 
-    // Trigger DLT SMS dispatch if state genuinely transitioned between OPEN and CLOSED
-    if (currentState && previousState && currentState !== previousState && telemetry) {
-      console.log(`⚡ [STATE TRANSITION DETECTED] Gate "${device.thingName}": ${previousState} ➔ ${currentState}`);
-      checkAndDispatchGateStateAlert({
-        deviceId: device.id,
-        gateId: device.gateId,
-        thingName: device.thingName,
-        serialNumber: device.serialNumber,
-        newState: currentState,
-        timestamp: telemetry.receivedAt,
-      }).catch(err => console.error('Error dispatching gate state SMS alert:', err));
+    // Trigger operational event recording and state transition alerts
+    if (currentState && telemetry) {
+      if (!previousState || currentState !== previousState) {
+        console.log(`⚡ [STATE DETECTED] Gate "${device.thingName}": ${previousState || 'INITIAL'} ➔ ${currentState}`);
 
-      recordGateTelemetryTransition({
-        gateId: device.gateId,
-        thingName: device.thingName,
-        newState: currentState,
-        timestamp: telemetry.receivedAt,
-      }).catch(err => console.error('Error recording telemetry event for reports:', err));
+        if (previousState && currentState !== previousState) {
+          checkAndDispatchGateStateAlert({
+            deviceId: device.id,
+            gateId: device.gateId,
+            thingName: device.thingName,
+            serialNumber: device.serialNumber,
+            newState: currentState,
+            timestamp: telemetry.receivedAt,
+          }).catch(err => console.error('Error dispatching gate state SMS alert:', err));
+        }
+
+        recordGateTelemetryTransition({
+          gateId: device.gateId,
+          thingName: device.thingName,
+          newState: currentState,
+          timestamp: telemetry.receivedAt,
+        }).catch(err => console.error('Error recording telemetry event for reports:', err));
+      }
     }
 
     // Broadcast live telemetry update over WebSocket to any connected clients

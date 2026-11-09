@@ -108,7 +108,7 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
             if (isManualRetry) {
               AppFeedback.showSuccess(
                 context,
-                'Master sequence synchronized: Master #$nextSeq',
+                'Master sequence synchronized: Master Unit $nextSeq',
               );
             }
           }

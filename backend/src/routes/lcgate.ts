@@ -871,7 +871,9 @@ router.get('/status-summary', authenticate, async (req: any, res, next) => {
       }
 
       const gateThingNames = new Set([
+        gate.lcNumber,
         ...gate.masters.map(m => m.serialNumber),
+        ...gate.masters.map(m => (m as any).awsThingName).filter(Boolean),
         ...gate.deviceRegistries.map(d => d.thingName),
         ...gate.deviceRegistries.map(d => d.serialNumber).filter(Boolean) as string[],
       ]);
@@ -1060,7 +1062,7 @@ router.get('/', authenticate, async (req: any, res, next) => {
 
     // 65-Minute Rule: evaluate device online/offline status per gate
     const nowMs = Date.now();
-    const ONLINE_CUTOFF_MS = 5 * 60 * 1000; // 5-minute strict heartbeat window
+    const ONLINE_CUTOFF_MS = 65 * 60 * 1000; // 65-minute heartbeat tolerance window
 
     const allThingNames: string[] = [];
     gates.forEach(g => {
@@ -1106,7 +1108,9 @@ router.get('/', authenticate, async (req: any, res, next) => {
       }
 
       const gateThingNames = new Set([
+        gate.lcNumber,
         ...gate.masters.map(m => m.serialNumber),
+        ...gate.masters.map(m => (m as any).awsThingName).filter(Boolean),
         ...gate.deviceRegistries.map(d => d.thingName),
         ...gate.deviceRegistries.map(d => d.serialNumber).filter(Boolean) as string[],
       ]);
@@ -1219,7 +1223,7 @@ const createMasterSchema = z.object({
 
 // Add a Master to an LC Gate with mandatory AWS IoT registry association & standard slave creation
 
-async function syncDeviceHistoryToGate(gateId: number, thingName: string, tx: any) {
+export async function syncDeviceHistoryToGate(gateId: number, thingName: string, tx: any = prisma) {
   try {
     const telemetries = await tx.deviceTelemetry.findMany({
       where: {

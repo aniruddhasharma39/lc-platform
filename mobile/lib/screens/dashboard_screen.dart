@@ -2338,6 +2338,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   if (kLower.contains('password')) return false;
                   // Skip raw role ID fields from being dumped as generic attributes
                   if (kLower == 'roleid' || kLower == 'requestedroleid' || kLower == 'role') return false;
+                  // Skip internal system fields and null/empty attributes
+                  if (kLower == 'stationid' || kLower == 'gateids' || kLower == 'gateid' ||
+                      kLower == 'declarationconfirmed' || kLower == 'confirm' ||
+                      kLower == 'declaration' || kLower == 'agreed' || kLower == 'terms' ||
+                      kLower == 'idcard' || kLower == 'form') return false;
+                  final valStr = e.value?.toString().trim() ?? '';
+                  if (valStr.isEmpty || valStr == 'null' || valStr == '[]') return false;
+                  if (e.value is List && (e.value as List).isEmpty) return false;
                   return true;
                 }).map((e) {
                   final fieldInfo = _resolveFieldInfo(form, e.key);
@@ -2915,22 +2923,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         final normK = k.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
                         if (seenKeys.contains(normK)) return;
 
+                        // Skip internal system fields, confirmations, and empty/null values
+                        if (normK == 'stationid' || normK == 'declarationconfirmed' ||
+                            normK == 'confirm' || normK == 'declaration' || normK == 'agreed' ||
+                            normK == 'terms' || normK == 'idcard' || normK == 'form') {
+                          seenKeys.add(normK);
+                          return;
+                        }
+
+                        final valStr = v?.toString().trim() ?? '';
+                        if (valStr.isEmpty || valStr == 'null' || valStr == '[]') {
+                          seenKeys.add(normK);
+                          return;
+                        }
+
                         // Handle gateIds cleanly so divisional officers do not see "Gate Ids: []"
                         if (normK == 'gateids' || normK == 'gateid') {
                           seenKeys.add(normK);
-                          if (v is List && v.isEmpty) {
+                          if (v is List && v.isNotEmpty) {
+                            addMetaRow('Assigned Gate(s)', v.map((g) => 'Gate $g').join(', '));
+                          } else {
                             final userDiv = u['division'] ?? u['zone'];
                             if (userDiv != null && userDiv.toString().trim().isNotEmpty) {
                               addMetaRow('Jurisdiction Scope', 'All Gates in $userDiv Division (Automatic Access)');
                             }
-                          } else if (v is List && v.isNotEmpty) {
-                            addMetaRow('Assigned Gate(s)', v.map((g) => 'Gate $g').join(', '));
                           }
                           return;
                         }
-
-                        // Skip raw declarationConfirmed boolean
-                        if (normK == 'declarationconfirmed') return;
 
                         final displayKey = _humanizeKey(k);
                         final normDisplay = displayKey.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');

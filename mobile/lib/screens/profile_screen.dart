@@ -174,11 +174,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
       'email', 'emailaddress',
       'employeeid', 'empid',
       'department', 'dept',
-      'role', 'roleid', 'password', 'status', 'id'
+      'role', 'roleid', 'password', 'status', 'id',
+      // Internal system fields & confirmations
+      'stationid', 'station', 'gateids', 'gateid',
+      'declarationconfirmed', 'declaration', 'confirm', 'agreed', 'terms',
+      'idcard', 'form'
     };
     final customEntries = metadata.entries.where((e) {
       final normK = e.key.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
-      return !normK.contains('password') && !coreExclude.contains(normK);
+      if (normK.contains('password') || coreExclude.contains(normK)) return false;
+      final valStr = e.value?.toString().trim() ?? '';
+      if (valStr.isEmpty || valStr == 'null' || valStr == '[]') return false;
+      if (e.value is List && (e.value as List).isEmpty) return false;
+      return true;
     }).toList();
 
     return Scaffold(

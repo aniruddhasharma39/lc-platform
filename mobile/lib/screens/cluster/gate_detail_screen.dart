@@ -1220,7 +1220,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text('View Evidence Gallery', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
-                          Text('Master #${master['masterSequence']} (${master['serialNumber']})', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                          Text('Master Unit ${master['masterSequence']} (${(master['serialNumber'] ?? '').toString().replaceAll(RegExp(r'^#+'), '')})', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
                         ],
                       ),
                       IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx)),
@@ -1272,7 +1272,8 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                           final childId = child['id'] is int ? child['id'] as int : int.tryParse(child['id']?.toString() ?? '');
                           final childType = child['type']?.toString() ?? 'LIMIT_SWITCH';
                           final childEv = findEv(childType, childId);
-                          final title = 'Slave #${child['deviceSequence']}: ${getSlaveName(childType)} (${child['serialNumber']})';
+                          final cleanChildSerial = (child['serialNumber'] ?? '').toString().replaceAll(RegExp(r'^#+'), '');
+                          final title = 'Sensor Unit ${child['deviceSequence']}: ${getSlaveName(childType)} ($cleanChildSerial)';
                           final subtitle = getSlaveSubtitle(childType);
 
                           return Padding(
@@ -1564,12 +1565,12 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
                                       Text(
-                                        'Master #${master['masterSequence'] ?? (index + 1)}',
+                                        'Master Unit ${master['masterSequence'] ?? (index + 1)}',
                                         style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary, letterSpacing: 0.5),
                                       ),
                                       const SizedBox(height: 2),
                                       Text(
-                                        master['serialNumber'] ?? 'Master Unit',
+                                        (master['serialNumber'] ?? 'Master Unit').toString().replaceAll(RegExp(r'^#+'), ''),
                                         style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
                                         overflow: TextOverflow.ellipsis,
                                       ),
@@ -1655,7 +1656,8 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                       final lat = childEv?['latitude'];
                                       final lng = childEv?['longitude'];
                                       final date = childEv?['createdAt']?.toString();
-                                      final slaveTitle = 'Slave #$dSeq: $slaveName ($dSerial)';
+                                      final cleanDSerial = dSerial.replaceAll(RegExp(r'^#+'), '');
+                                      final slaveTitle = 'Sensor Unit $dSeq: $slaveName ($cleanDSerial)';
 
                                       return Container(
                                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -1685,7 +1687,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                                         children: [
                                                           Expanded(
                                                             child: Text(
-                                                              'Slave #$dSeq: $dSerial',
+                                                              'Sensor Unit $dSeq: $cleanDSerial',
                                                               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
                                                               overflow: TextOverflow.ellipsis,
                                                             ),

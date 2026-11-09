@@ -868,7 +868,10 @@ export default function Dashboard({ user, onLogout }: Props) {
                       'email', 'emailaddress',
                       'employeeid', 'empid',
                       'department', 'dept',
-                      'role', 'roleid', 'password', 'status', 'id'
+                      'role', 'roleid', 'password', 'status', 'id',
+                      'stationid', 'station', 'gateids', 'gateid',
+                      'declarationconfirmed', 'declaration', 'confirm', 'agreed', 'terms',
+                      'idcard', 'form'
                     ];
                     const seenLabels = new Set<string>();
                     const seenVals = new Set<string>();

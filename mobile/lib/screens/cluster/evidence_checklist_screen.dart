@@ -94,7 +94,7 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
     final type = dev['type']?.toString() ?? 'SLAVE';
     final seq = dev['deviceSequence']?.toString() ?? '';
     final serial = dev['serialNumber']?.toString() ?? '';
-    final seqStr = seq.isNotEmpty ? 'Slave #$seq' : 'Slave';
+    final seqStr = seq.isNotEmpty ? 'Sensor Unit $seq' : 'Sensor';
     return '$seqStr: ${_getSlaveName(type)} ($serial)';
   }
 

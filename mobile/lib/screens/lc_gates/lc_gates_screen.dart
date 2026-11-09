@@ -568,7 +568,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
                           ),
                           Text(
-                            'Master #${masterSeq ?? 1}${deviceSeq != null ? ' • Slave #$deviceSeq' : ''}',
+                            'Master Unit ${masterSeq ?? 1}${deviceSeq != null ? ' • Sensor $deviceSeq' : ''}',
                             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: AppColors.primary),
                           ),
                         ],
@@ -1899,7 +1899,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                     children: [
                                       Expanded(
                                         child: Text(
-                                          'Master #${master['masterSequence']}: ${master['serialNumber']}',
+                                          'Master Unit ${master['masterSequence']}: ${masterSerial.replaceAll(RegExp(r'^#+'), '')}',
                                           style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
                                           overflow: TextOverflow.ellipsis,
                                         ),
@@ -2066,7 +2066,8 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                             slaveDesc = 'Sensors: Wired hardware slave unit';
                                             slaveLetter = 'A';
                                         }
-                                        final slaveTitle = 'Slave #$cSeq: $slaveName ($cSerial)';
+                                        final cleanSlaveSerial = cSerial.replaceAll(RegExp(r'^#+'), '');
+                                        final slaveTitle = 'Sensor Unit $cSeq: $slaveName ($cleanSlaveSerial)';
 
                                         return Container(
                                           decoration: BoxDecoration(
@@ -2097,7 +2098,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                                               children: [
                                                                 Expanded(
                                                                   child: Text(
-                                                                    'Slave #$cSeq: $cSerial',
+                                                                    'Sensor Unit $cSeq: $cleanSlaveSerial',
                                                                     style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
                                                                     overflow: TextOverflow.ellipsis,
                                                                   ),

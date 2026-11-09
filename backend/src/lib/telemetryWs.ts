@@ -90,11 +90,17 @@ export async function getGateTelemetryPayload(gateId: number) {
     };
   }
 
-  // Only query telemetry for explicitly registered master hardware
+  // Query telemetry for explicitly registered master hardware, linked registries, and gate LC number
   const masterSerials = gate.masters.map(m => m.serialNumber).filter(Boolean);
-  const linkedRegistryThings = gate.deviceRegistries.filter(d => d.masterId !== null).map(d => d.thingName).filter(Boolean);
-  const thingIdentifiers = Array.from(new Set([...masterSerials, ...linkedRegistryThings]));
-  const deviceRegistryIds = gate.deviceRegistries.filter(d => d.masterId !== null).map(d => d.id);
+  const masterAwsThings = gate.masters.map((m: any) => m.awsThingName).filter(Boolean);
+  const linkedRegistryThings = gate.deviceRegistries.map(d => d.thingName).filter(Boolean);
+  const thingIdentifiers = Array.from(new Set([
+    gate.lcNumber,
+    ...masterSerials,
+    ...masterAwsThings,
+    ...linkedRegistryThings
+  ]));
+  const deviceRegistryIds = gate.deviceRegistries.map(d => d.id);
 
   // Fetch real device telemetry, health checks, and operational cycles from database
   const [telemetries, healthChecks, rawEvents] = await Promise.all([
@@ -268,8 +274,8 @@ export async function getGateTelemetryPayload(gateId: number) {
 
   const primaryThingName = gate.masters[0]?.serialNumber || 'Unassigned';
 
-  // 5-Minute strict heartbeat rule: determine live device connectivity from actual telemetry
-  const ONLINE_CUTOFF_MS = 5 * 60 * 1000;
+  // 65-Minute heartbeat rule: determine live device connectivity from actual telemetry
+  const ONLINE_CUTOFF_MS = 65 * 60 * 1000;
   const latestPacketTime = deduplicatedPayloads[0]?.receivedAt ? new Date(deduplicatedPayloads[0].receivedAt).getTime() : 0;
   const isDeviceOnline = hasHardware && latestPacketTime > 0 && (nowMs - latestPacketTime <= ONLINE_CUTOFF_MS);
   const deviceStatus: 'ONLINE' | 'OFFLINE' | 'UNCONFIGURED' = hasHardware ? (isDeviceOnline ? 'ONLINE' : 'OFFLINE') : 'UNCONFIGURED';

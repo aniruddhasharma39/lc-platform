@@ -48,31 +48,49 @@ export async function recordGateTelemetryTransition(params: {
 
     // 1. Resolve gate ID
     let targetGateId = gateId;
+    let foundDev: any = null;
     if (!targetGateId) {
       // Find gate by thingName or serialNumber in DeviceRegistry
-      const dev = await prisma.deviceRegistry.findFirst({
+      foundDev = await prisma.deviceRegistry.findFirst({
         where: {
           OR: [
             { thingName },
             { serialNumber: thingName }
           ]
         },
-        select: { gateId: true }
+        select: { id: true, gateId: true }
       });
-      if (dev?.gateId) {
-        targetGateId = dev.gateId;
+      if (foundDev?.gateId) {
+        targetGateId = foundDev.gateId;
       } else {
-        // Fallback: match by LC number
-        const gate = await prisma.lCGate.findFirst({
-          where: {
-            OR: [
-              { lcNumber: thingName },
-              { name: thingName }
-            ]
-          },
-          select: { id: true }
+        // Fallback: match by MasterUnit
+        const master = await prisma.masterUnit.findFirst({
+          where: { serialNumber: thingName },
+          select: { gateId: true }
         });
-        if (gate) targetGateId = gate.id;
+        if (master?.gateId) {
+          targetGateId = master.gateId;
+        } else {
+          // Fallback: match by LC number
+          const gate = await prisma.lCGate.findFirst({
+            where: {
+              OR: [
+                { lcNumber: thingName },
+                { name: thingName }
+              ]
+            },
+            select: { id: true }
+          });
+          if (gate) targetGateId = gate.id;
+        }
+      }
+
+      // Auto-heal: If gate is resolved, link the device registry row
+      if (targetGateId && foundDev && !foundDev.gateId) {
+        await prisma.deviceRegistry.update({
+          where: { id: foundDev.id },
+          data: { gateId: targetGateId }
+        }).catch(() => {});
       }
     }
 
