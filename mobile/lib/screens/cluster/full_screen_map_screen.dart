@@ -124,9 +124,14 @@ class _FullScreenMapScreenState extends State<FullScreenMapScreen> {
 
   void _showGateDetails(Map<String, dynamic> gate) {
     final gateId = gate['id'] as int;
-    final lcNumber = (gate['hasMaster'] == true && gate['masterSerialNumber'] != null && gate['masterSerialNumber'] != 'Unassigned')
-        ? gate['masterSerialNumber'].toString()
-        : (gate['lcNumber']?.toString() ?? 'LC-GATE');
+    final lcNumber = (gate['lcNumber'] != null && gate['lcNumber'].toString().trim().isNotEmpty)
+        ? gate['lcNumber'].toString().replaceAll(RegExp(r'^#+'), '')
+        : ((gate['masterSerialNumber'] != null && gate['masterSerialNumber'] != 'Unassigned')
+            ? gate['masterSerialNumber'].toString().replaceAll(RegExp(r'^#+'), '')
+            : 'LC-GATE');
+    final rawMasterSerial = (gate['masterSerialNumber'] != null && gate['masterSerialNumber'] != 'Unassigned')
+        ? gate['masterSerialNumber'].toString().replaceAll(RegExp(r'^#+'), '')
+        : null;
     final location = gate['locationName'] ?? '';
     final zone = gate['zone'] ?? '';
     final division = gate['division'] ?? '';
@@ -173,6 +178,25 @@ class _FullScreenMapScreenState extends State<FullScreenMapScreen> {
                           ),
                         ),
                       ),
+                      if (rawMasterSerial != null) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE0F2FE),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: const Color(0xFFBAE6FD)),
+                          ),
+                          child: Text(
+                            'Master: $rawMasterSerial',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF0369A1),
+                            ),
+                          ),
+                        ),
+                      ],
                       if (isSolar) ...[
                         const SizedBox(width: 8),
                         Container(
@@ -288,8 +312,8 @@ class _FullScreenMapScreenState extends State<FullScreenMapScreen> {
                 children: [
                   Expanded(
                     child: ElevatedButton.icon(
-                      icon: const Icon(Icons.developer_board, size: 16),
-                      label: const Text('Telemetry', style: TextStyle(fontWeight: FontWeight.bold)),
+                      icon: const Icon(Icons.history_rounded, size: 16),
+                      label: const Text('Operational Records', style: TextStyle(fontWeight: FontWeight.bold)),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF0284C7),
                         foregroundColor: Colors.white,
@@ -395,9 +419,11 @@ class _FullScreenMapScreenState extends State<FullScreenMapScreen> {
                   final color = isUnconfigured
                       ? const Color(0xFFD97706)
                       : (isOpen ? const Color(0xFFDC2626) : const Color(0xFF059669));
-                  final lcNumber = (g['hasMaster'] == true && g['masterSerialNumber'] != null && g['masterSerialNumber'] != 'Unassigned')
-                      ? g['masterSerialNumber'].toString()
-                      : (g['lcNumber']?.toString() ?? 'LC');
+                  final lcNumber = (g['lcNumber'] != null && g['lcNumber'].toString().trim().isNotEmpty)
+                      ? g['lcNumber'].toString().replaceAll(RegExp(r'^#+'), '')
+                      : ((g['masterSerialNumber'] != null && g['masterSerialNumber'] != 'Unassigned')
+                          ? g['masterSerialNumber'].toString().replaceAll(RegExp(r'^#+'), '')
+                          : 'LC');
                   final isSelected = _selectedLcNumber == lcNumber;
 
                   return Marker(

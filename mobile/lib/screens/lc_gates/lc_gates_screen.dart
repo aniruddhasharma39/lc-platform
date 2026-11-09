@@ -2372,9 +2372,11 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         (gate['events'] as List?) ??
         [];
 
-    final lcNumber = (gate['masterSerialNumber'] != null && gate['masterSerialNumber'] != 'Unassigned')
-        ? gate['masterSerialNumber'].toString()
-        : (gate['lcNumber']?.toString() ?? 'LC-GATE');
+    final lcNumber = (gate['lcNumber'] != null && gate['lcNumber'].toString().trim().isNotEmpty)
+        ? gate['lcNumber'].toString().replaceAll(RegExp(r'^#+'), '')
+        : ((gate['masterSerialNumber'] != null && gate['masterSerialNumber'] != 'Unassigned')
+            ? gate['masterSerialNumber'].toString().replaceAll(RegExp(r'^#+'), '')
+            : 'LC-GATE');
     final locationName = gate['name'] ?? gate['locationName'] ?? '';
 
     return Column(
