@@ -290,20 +290,39 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
       mappedMetadata[label] = v;
     }
     
-// Resolve role for designation if not explicitly provided
-    let finalRoleId = data.roleId;
+    // Role assignment authorization:
+    // Only Developer / Admin has the right to explicitly select/override a role.
+    // Non-developer approvers strictly approve the applicant's requested role.
+    const isApproverDeveloper = req.user?.role === 'Developer' || req.user?.role?.name === 'Developer' || req.user?.roleId === 1;
     const reqDesig = request.designation || formData.designation;
-    if (reqDesig) {
-      const desigCfg = getDesignationConfig(reqDesig);
-      if (desigCfg) {
-        const matchedRole = await prisma.role.findFirst({
-          where: { name: desigCfg.defaultRoleName }
-        });
-        if (matchedRole) finalRoleId = matchedRole.id;
+    let finalRoleId: number | null = null;
+
+    if (isApproverDeveloper && data.roleId && data.roleId > 0) {
+      // Developer explicitly selected/assigned this role
+      finalRoleId = data.roleId;
+    } else {
+      // For all other users (or Developer approving default): strictly honor applicant's requested role
+      if (request.requestedRoleId) {
+        finalRoleId = request.requestedRoleId;
+      } else if (reqDesig) {
+        const desigCfg = getDesignationConfig(reqDesig);
+        if (desigCfg) {
+          const matchedRole = await prisma.role.findFirst({
+            where: { name: desigCfg.defaultRoleName }
+          });
+          if (matchedRole) finalRoleId = matchedRole.id;
+        }
+      }
+      if (!finalRoleId && data.roleId) {
+        finalRoleId = data.roleId;
       }
     }
 
-    // Create the actual user
+    if (!finalRoleId) {
+      return res.status(400).json({ error: 'Cannot approve: Unable to resolve a valid role for this registration request.' });
+    }
+
+    // Create the actual user with relation to role included
     let user;
     try {
       user = await prisma.user.create({
@@ -314,7 +333,7 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
           employeeId: targetEmpId,
           department: request.department || targetDept,
           designation: reqDesig || null,
-          requestedRoleId: request.requestedRoleId,
+          requestedRoleId: request.requestedRoleId || finalRoleId,
           roleId: finalRoleId,
           zone: request.zone || data.zone || null,
           division: request.division || data.division || null,
@@ -325,6 +344,10 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
             : await bcrypt.hash('123456', 10),
           status: 'APPROVED',
           metadata: JSON.stringify(mappedMetadata)
+        },
+        include: {
+          role: true,
+          station: { select: { id: true, name: true, code: true } }
         }
       });
 
@@ -338,27 +361,15 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
         });
       }
 
-      // Dispatch Official Registration Approval Email (Strictly Email only, zero SMS)
+      // Dispatch Official Registration Approval Email (Strictly Email only, clean & direct)
       if (user.email && user.email.includes('@') && user.email.includes('.')) {
         (async () => {
           try {
-            const assignedGates = gateIdsToAssign.length > 0
-              ? await prisma.lCGate.findMany({
-                  where: { id: { in: gateIdsToAssign } },
-                  select: { lcNumber: true, locationName: true }
-                })
-              : [];
-            const assignedGateNumbers = assignedGates.map(g => "Gate " + g.lcNumber + (g.locationName ? " (" + g.locationName + ")" : ""));
-            const roleObj = await prisma.role.findUnique({
-              where: { id: user.roleId || 0 },
-              select: { name: true }
-            });
-
             await sendRegistrationApprovalEmail({
               toEmail: user.email.trim(),
               recipientName: user.fullName || 'Railway Staff',
-              assignedGateNumbers,
-              roleName: roleObj?.name || user.designation || 'Staff',
+              roleName: user.role?.name || user.designation || 'Officer',
+              department: user.department || 'Engineering',
               division: user.division || '-',
               zone: user.zone || '-'
             });

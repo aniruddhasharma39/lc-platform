@@ -346,14 +346,13 @@ export async function sendEmailOtp(toEmail: string, otp: string, recipientName?:
 export async function sendRegistrationApprovalEmail(params: {
   toEmail: string;
   recipientName: string;
-  assignedGateNumbers?: string[];
   roleName?: string;
+  department?: string;
   division?: string;
   zone?: string;
 }): Promise<SendEmailResult> {
-  const { toEmail, recipientName, assignedGateNumbers = [], roleName = 'Staff', division = '-', zone = '-' } = params;
+  const { toEmail, recipientName, roleName = 'Officer', department = 'Railway Operations', division = '-', zone = '-' } = params;
   const greeting = recipientName ? `Welcome, ${recipientName}!` : 'Welcome!';
-  const gateText = assignedGateNumbers.length > 0 ? assignedGateNumbers.join(', ') : 'Pending Assignment';
 
   const htmlContent = `
     <!DOCTYPE html>
@@ -367,30 +366,31 @@ export async function sendRegistrationApprovalEmail(params: {
         </div>
         <div style="padding: 32px 28px; color: #1e293b;">
           <div style="display: inline-block; background-color: #dcfce7; color: #166534; font-weight: bold; font-size: 12px; padding: 4px 12px; border-radius: 20px; margin-bottom: 16px;">
-            ✓ ACCOUNT APPROVED
+            ✓ REGISTRATION APPROVED
           </div>
           <p style="font-size: 18px; font-weight: 700; margin: 0 0 12px 0; color: #0f172a;">${greeting}</p>
           <p style="font-size: 14px; line-height: 1.6; color: #475569; margin: 0 0 20px 0;">
-            Your registration request for the Indian Railways Level Crossing Platform has been <strong>approved</strong> by your superior officer.
+            Your registration request for the Indian Railways Level Crossing Platform has been <strong>approved</strong>.
           </p>
           <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
-            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
               <tr>
-                <td style="padding: 6px 0; color: #64748b; font-weight: 500; width: 140px;">Official Role:</td>
-                <td style="padding: 6px 0; color: #0f172a; font-weight: 700;">${roleName}</td>
+                <td style="padding: 8px 0; color: #64748b; font-weight: 500; width: 140px;">Officer Name:</td>
+                <td style="padding: 8px 0; color: #0f172a; font-weight: 700;">${recipientName}</td>
               </tr>
               <tr>
-                <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Assigned Gate(s):</td>
-                <td style="padding: 6px 0; color: #003580; font-weight: 700;">${gateText}</td>
+                <td style="padding: 8px 0; color: #64748b; font-weight: 500;">Approved Role:</td>
+                <td style="padding: 8px 0; color: #003580; font-weight: 700; font-size: 15px;">${roleName}</td>
               </tr>
+              ${division && division !== '-' ? `
               <tr>
-                <td style="padding: 6px 0; color: #64748b; font-weight: 500;">Division / Zone:</td>
-                <td style="padding: 6px 0; color: #0f172a; font-weight: 600;">${division} · ${zone}</td>
-              </tr>
+                <td style="padding: 8px 0; color: #64748b; font-weight: 500;">Division / Zone:</td>
+                <td style="padding: 8px 0; color: #0f172a; font-weight: 600;">${division}${zone && zone !== '-' ? ` · ${zone}` : ''}</td>
+              </tr>` : ''}
             </table>
           </div>
           <p style="font-size: 14px; line-height: 1.6; color: #475569; margin: 0 0 24px 0;">
-            You can now log in to the <strong>LC Platform Mobile Application</strong> or web portal using your registered mobile number and password.
+            You can now log in to the <strong>LC Platform Mobile Application</strong> using your registered mobile number and password.
           </p>
         </div>
         <div style="background-color: #f8fafc; padding: 18px 24px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 12px; color: #64748b;">
@@ -406,7 +406,7 @@ export async function sendRegistrationApprovalEmail(params: {
     toEmail,
     toName: recipientName,
     subject: `Registration Approved — Indian Railways LC Platform`,
-    textContent: `Welcome ${recipientName}! Your registration request for the Indian Railways Level Crossing Platform has been approved. Assigned Gate(s): ${gateText}. You can now log in using your registered mobile number and password.`,
+    textContent: `Welcome ${recipientName}! Your registration request for the Indian Railways Level Crossing Platform has been approved as ${roleName}. You can now log in using your registered mobile number and password.`,
     htmlContent,
   });
 }

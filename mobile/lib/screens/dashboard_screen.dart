@@ -115,6 +115,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _userSearchQuery = '';
   String _userStatusFilter = 'ALL';
   final Map<int, int> _pendingRoleSelections = {};
+  final Map<int, String> _requestApprovalStates = {}; // 'PENDING' | 'APPROVING' | 'APPROVED' | 'REJECTING'
 
   // Notifications State
   List<dynamic> _notifications = [];
@@ -845,6 +846,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     String? targetName,
     String? roleName,
   ]) async {
+    if (isRequest && mounted) {
+      setState(() {
+        _requestApprovalStates[id] = action == 'approve' ? 'APPROVING' : 'REJECTING';
+      });
+    }
+
     final token = await _getToken();
     final endpoint = isRequest ? 'request/$id/$action' : '$id/$action';
     try {
@@ -854,23 +861,53 @@ class _DashboardScreenState extends State<DashboardScreen> {
         body: body != null ? json.encode(body) : null
       );
       if (res.statusCode >= 200 && res.statusCode < 300) {
-        _fetchAuxiliaryData(force: true);
+        dynamic resData;
+        try {
+          resData = json.decode(res.body);
+        } catch (_) {}
+
+        final confirmedName = (resData is Map && resData['fullName'] != null && resData['fullName'].toString().trim().isNotEmpty)
+            ? resData['fullName'].toString().trim()
+            : (targetName != null && targetName.trim().isNotEmpty ? targetName.trim() : 'User');
+
+        final confirmedRole = (resData is Map && resData['role'] is Map && resData['role']['name'] != null)
+            ? resData['role']['name'].toString()
+            : (resData is Map && resData['designation'] != null
+                ? resData['designation'].toString()
+                : (roleName ?? 'Official Role'));
+
+        if (isRequest && action == 'approve' && mounted) {
+          setState(() {
+            _requestApprovalStates[id] = 'APPROVED';
+          });
+        }
+
         if (mounted) {
-          final name = targetName != null && targetName.trim().isNotEmpty ? targetName.trim() : 'User';
           if (action == 'approve') {
-            final roleSuffix = roleName != null && roleName.isNotEmpty ? ' with role "$roleName"' : '';
-            AppFeedback.showSuccess(context, 'Registration for "$name" approved successfully$roleSuffix!');
+            AppFeedback.showSuccess(context, 'Registration for "$confirmedName" approved successfully as "$confirmedRole"!');
           } else if (action == 'reject') {
-            AppFeedback.showInfo(context, 'Registration request for "$name" has been rejected.');
+            AppFeedback.showInfo(context, 'Registration request for "$confirmedName" has been rejected.');
           } else if (action == 'deactivate') {
-            AppFeedback.showWarning(context, 'User "$name" has been deactivated and access revoked.');
+            AppFeedback.showWarning(context, 'User "$confirmedName" has been deactivated and access revoked.');
           } else if (action == 'reactivate') {
-            AppFeedback.showSuccess(context, 'User "$name" has been reactivated successfully.');
+            AppFeedback.showSuccess(context, 'User "$confirmedName" has been reactivated successfully.');
           } else {
-            AppFeedback.showSuccess(context, 'Action completed for "$name".');
+            AppFeedback.showSuccess(context, 'Action completed for "$confirmedName".');
           }
         }
+
+        if (isRequest && action == 'approve') {
+          // Pause 650ms to let the user see the green APPROVED ✓ state before removing
+          await Future.delayed(const Duration(milliseconds: 650));
+        }
+
+        _fetchAuxiliaryData(force: true);
       } else {
+        if (isRequest && mounted) {
+          setState(() {
+            _requestApprovalStates.remove(id);
+          });
+        }
         String errMsg = 'Failed to perform $action on user (HTTP ${res.statusCode})';
         try {
           final data = json.decode(res.body);
@@ -883,6 +920,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       }
     } catch (e) {
+      if (isRequest && mounted) {
+        setState(() {
+          _requestApprovalStates.remove(id);
+        });
+      }
       if (mounted) {
         AppFeedback.showError(context, 'Failed to perform $action on user: $e');
       }
@@ -2128,6 +2170,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       itemCount: pending.length,
       itemBuilder: (c, i) {
         final req = pending[i];
+        final reqId = req['id'];
         final reqData = json.decode(req['data'] ?? '{}');
         final form = req['form'] is Map ? Map<String, dynamic>.from(req['form'] as Map) : null;
 
@@ -2151,23 +2194,80 @@ class _DashboardScreenState extends State<DashboardScreen> {
             reqRoleName = found['name'];
           }
         }
+        if (reqRoleName == null && req['designation'] != null) {
+          reqRoleName = req['designation'];
+        }
 
         // Resolve allowed assignable roles for the current viewer
         final allowedRoles = _getAllowedAssignableRoles(req);
 
-        // Determine currently selected role: use tracked selection, or default to requested role if allowed, or first allowed role
-        int? selectedRole = _pendingRoleSelections[req['id']];
+        // Determine currently selected role: strictly default to requested role (e.g. Senior DEN)
+        int? selectedRole = _pendingRoleSelections[reqId];
         if (selectedRole == null || !allowedRoles.any((r) => r['id'] == selectedRole)) {
           if (reqRoleId != null && allowedRoles.any((r) => r['id'] == reqRoleId)) {
             selectedRole = reqRoleId;
           } else if (allowedRoles.isNotEmpty) {
-            selectedRole = allowedRoles[0]['id'];
+            // Match by name or default to requested role before index 0
+            final match = allowedRoles.firstWhere(
+              (r) => reqRoleName != null && (r['name'] ?? '').toString().toLowerCase().trim() == reqRoleName.toLowerCase().trim(),
+              orElse: () => null,
+            );
+            selectedRole = match != null ? match['id'] : allowedRoles[0]['id'];
           } else {
             selectedRole = null;
           }
-          if (selectedRole != null) {
-            _pendingRoleSelections[req['id']] = selectedRole;
+          if (selectedRole != null && reqId != null) {
+            _pendingRoleSelections[reqId] = selectedRole;
           }
+        }
+
+        // Track in-flight approval status for smooth Pending -> Approving -> Approved transition
+        final reqState = _requestApprovalStates[reqId] ?? 'PENDING';
+        final isProcessing = reqState == 'APPROVING' || reqState == 'APPROVED' || reqState == 'REJECTING';
+
+        Widget statusBadge;
+        if (reqState == 'APPROVING') {
+          statusBadge = Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(color: Colors.blue.shade100, borderRadius: BorderRadius.circular(16)),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 10,
+                  height: 10,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue.shade900),
+                ),
+                const SizedBox(width: 6),
+                Text('APPROVING...', style: TextStyle(color: Colors.blue.shade900, fontSize: 10, fontWeight: FontWeight.bold)),
+              ],
+            ),
+          );
+        } else if (reqState == 'APPROVED') {
+          statusBadge = Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(color: Colors.green.shade100, borderRadius: BorderRadius.circular(16)),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.check_circle_rounded, size: 12, color: Colors.green.shade900),
+                const SizedBox(width: 4),
+                Text('APPROVED ✓', style: TextStyle(color: Colors.green.shade900, fontSize: 10, fontWeight: FontWeight.bold)),
+              ],
+            ),
+          );
+        } else if (reqState == 'REJECTING') {
+          statusBadge = Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(color: Colors.red.shade100, borderRadius: BorderRadius.circular(16)),
+            child: Text('REJECTING...', style: TextStyle(color: Colors.red.shade900, fontSize: 10, fontWeight: FontWeight.bold)),
+          );
+        } else {
+          statusBadge = Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(color: Colors.orange.shade100, borderRadius: BorderRadius.circular(16)),
+            child: Text('PENDING', style: TextStyle(color: Colors.orange.shade900, fontSize: 10, fontWeight: FontWeight.bold)),
+          );
         }
 
         // Find best display name for user
@@ -2196,12 +2296,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(displayName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: AppColors.primary)),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(color: Colors.orange.shade100, borderRadius: BorderRadius.circular(16)),
-                      child: Text('PENDING', style: TextStyle(color: Colors.orange.shade900, fontSize: 10, fontWeight: FontWeight.bold)),
+                    Expanded(
+                      child: Text(displayName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: AppColors.primary)),
                     ),
+                    statusBadge,
                   ],
                 ),
                 if (form != null && form['name'] != null)
@@ -2263,10 +2361,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   );
                 }),
                 const SizedBox(height: 8),
-                if (reqRoleId != null || reqRoleName != null) ...[
+
+                // Role approval section:
+                // Admin only can change/assign a role. Other users strictly approve the requested role.
+                if (_isDeveloper && allowedRoles.isNotEmpty) ...[
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     decoration: BoxDecoration(
                       color: const Color(0xFFEFF6FF),
                       borderRadius: BorderRadius.circular(8),
@@ -2276,10 +2378,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       children: [
                         const Icon(Icons.verified_user_outlined, size: 18, color: Color(0xFF1D4ED8)),
                         const SizedBox(width: 8),
-                        Text(
-                          'Requested Role: ',
-                          style: TextStyle(fontSize: 13, color: Colors.grey.shade700, fontWeight: FontWeight.w600),
-                        ),
+                        Text('Requested Role: ', style: TextStyle(fontSize: 13, color: Colors.grey.shade700, fontWeight: FontWeight.w600)),
                         Expanded(
                           child: Text(
                             reqRoleName ?? 'Role #$reqRoleId',
@@ -2289,44 +2388,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 14),
-                ],
-                if (allowedRoles.isNotEmpty) ...[
                   DropdownButtonFormField<int>(
                     value: selectedRole,
                     decoration: InputDecoration(
-                      labelText: 'Assign Role',
+                      labelText: 'Assign Role (Admin Override)',
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                       contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8)
                     ),
                     items: allowedRoles.map((e) => DropdownMenuItem<int>(
-                      value: e['id'], 
+                      value: e['id'],
                       child: Text('${e['name']}${e['id'] == reqRoleId ? ' (Requested)' : ''}'),
                     )).toList(),
-                    onChanged: (v) {
+                    onChanged: isProcessing ? null : (v) {
                       if (v != null) {
                         setState(() {
-                          _pendingRoleSelections[req['id']] = v;
+                          _pendingRoleSelections[reqId] = v;
                         });
                       }
                     },
                   ),
                 ] else ...[
+                  // Non-admin approvers: Locked to requested role, zero dropdown tampering
                   Container(
-                    padding: const EdgeInsets.all(10),
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                     decoration: BoxDecoration(
-                      color: Colors.amber.shade50,
+                      color: const Color(0xFFEFF6FF),
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.amber.shade300),
+                      border: Border.all(color: const Color(0xFFBFDBFE)),
                     ),
                     child: Row(
                       children: [
-                        Icon(Icons.info_outline, color: Colors.amber.shade900, size: 18),
-                        const SizedBox(width: 8),
+                        const Icon(Icons.verified_user_rounded, size: 20, color: Color(0xFF1D4ED8)),
+                        const SizedBox(width: 10),
+                        Text(
+                          'Role to Approve: ',
+                          style: TextStyle(fontSize: 13, color: Colors.grey.shade700, fontWeight: FontWeight.w600),
+                        ),
                         Expanded(
                           child: Text(
-                            'You do not have hierarchical authority to assign roles for this request.',
-                            style: TextStyle(color: Colors.amber.shade900, fontSize: 12),
+                            reqRoleName ?? 'Requested Official Role',
+                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8)),
                           ),
                         ),
                       ],
@@ -2336,53 +2438,77 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const SizedBox(height: 20),
                 Row(
                   children: [
-                    Expanded(child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: (req['hasConflict'] == true || allowedRoles.isEmpty) ? Colors.grey : AppColors.success, 
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)), 
-                        padding: const EdgeInsets.symmetric(vertical: 12)
+                    Expanded(
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: (req['hasConflict'] == true || isProcessing) ? Colors.grey : AppColors.success,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          padding: const EdgeInsets.symmetric(vertical: 12)
+                        ),
+                        onPressed: isProcessing ? null : () {
+                          if (req['hasConflict'] == true) {
+                            final reasons = ((req['conflictReasons'] as List?) ?? []).join('; ');
+                            AppFeedback.showError(
+                              context,
+                              'Cannot approve: $reasons. Please reject this request or resolve the duplicate user first.',
+                            );
+                            return;
+                          }
+                          final targetRoleToAssign = _isDeveloper ? (selectedRole ?? reqRoleId) : reqRoleId;
+                          String assignedRoleName = reqRoleName ?? 'Official Role';
+                          if (_isDeveloper && selectedRole != null) {
+                            final matchedRole = allowedRoles.firstWhere((r) => r['id'] == selectedRole, orElse: () => null);
+                            if (matchedRole != null && matchedRole['name'] != null) {
+                              assignedRoleName = matchedRole['name'];
+                            }
+                          }
+                          _actionUser(reqId, 'approve', {'roleId': targetRoleToAssign}, true, displayName, assignedRoleName);
+                        },
+                        child: reqState == 'APPROVING'
+                            ? Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: const [
+                                  SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+                                  SizedBox(width: 8),
+                                  Text('Approving...', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                                ],
+                              )
+                            : (reqState == 'APPROVED'
+                                ? Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: const [
+                                      Icon(Icons.check_circle_rounded, size: 16, color: Colors.white),
+                                      SizedBox(width: 6),
+                                      Text('Approved ✓', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                                    ],
+                                  )
+                                : const Text('Approve', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white))),
                       ),
-                      onPressed: () {
-                        if (allowedRoles.isEmpty || selectedRole == null) {
-                          AppFeedback.showError(
-                            context,
-                            'Cannot approve: You do not have hierarchical authority to assign a subordinate role.',
-                          );
-                          return;
-                        }
-                        if (req['hasConflict'] == true) {
-                          final reasons = ((req['conflictReasons'] as List?) ?? []).join('; ');
-                          AppFeedback.showError(
-                            context,
-                            'Cannot approve: $reasons. Please reject this request or resolve the duplicate user first.',
-                          );
-                          return;
-                        }
-                        String assignedRoleName = 'Selected Role';
-                        final matchedRole = allowedRoles.firstWhere((r) => r['id'] == selectedRole, orElse: () => null);
-                        if (matchedRole != null && matchedRole['name'] != null) {
-                          assignedRoleName = matchedRole['name'];
-                        }
-                        _actionUser(req['id'], 'approve', {'roleId': selectedRole}, true, displayName, assignedRoleName);
-                      },
-                      child: const Text('Approve', style: TextStyle(fontWeight: FontWeight.bold)),
-                    )),
+                    ),
                     const SizedBox(width: 12),
-                    Expanded(child: OutlinedButton(
-                      style: OutlinedButton.styleFrom(foregroundColor: AppColors.danger, side: const BorderSide(color: AppColors.danger), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)), padding: const EdgeInsets.symmetric(vertical: 12)),
-                      onPressed: () => _actionUser(req['id'], 'reject', {'reason': 'Rejected by admin'}, true, displayName),
-                      child: const Text('Reject', style: TextStyle(fontWeight: FontWeight.bold)),
-                    )),
+                    Expanded(
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.danger,
+                          side: const BorderSide(color: AppColors.danger),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          padding: const EdgeInsets.symmetric(vertical: 12)
+                        ),
+                        onPressed: isProcessing ? null : () => _actionUser(reqId, 'reject', {'reason': 'Rejected by admin'}, true, displayName),
+                        child: reqState == 'REJECTING'
+                            ? const Text('Rejecting...', style: TextStyle(fontWeight: FontWeight.bold))
+                            : const Text('Reject', style: TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
                   ],
                 ),
               ],
             ),
-          )
+          ),
         );
       }
     );
   }
-
   Map<String, dynamic> _resolveFieldInfo(Map<String, dynamic>? form, String key) {
     if (form != null && form['schema'] != null) {
       try {
@@ -2788,6 +2914,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         if (k.toLowerCase().contains('password')) return;
                         final normK = k.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
                         if (seenKeys.contains(normK)) return;
+
+                        // Handle gateIds cleanly so divisional officers do not see "Gate Ids: []"
+                        if (normK == 'gateids' || normK == 'gateid') {
+                          seenKeys.add(normK);
+                          if (v is List && v.isEmpty) {
+                            final userDiv = u['division'] ?? u['zone'];
+                            if (userDiv != null && userDiv.toString().trim().isNotEmpty) {
+                              addMetaRow('Jurisdiction Scope', 'All Gates in $userDiv Division (Automatic Access)');
+                            }
+                          } else if (v is List && v.isNotEmpty) {
+                            addMetaRow('Assigned Gate(s)', v.map((g) => 'Gate $g').join(', '));
+                          }
+                          return;
+                        }
+
+                        // Skip raw declarationConfirmed boolean
+                        if (normK == 'declarationconfirmed') return;
+
                         final displayKey = _humanizeKey(k);
                         final normDisplay = displayKey.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
                         if (seenKeys.contains(normDisplay)) return;
