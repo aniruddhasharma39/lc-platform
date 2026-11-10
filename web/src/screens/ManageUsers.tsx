@@ -370,6 +370,12 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
 
   const handleRejectRequest = async () => {
     if (!rejectModal) return;
+    const trimmedReason = rejectionReason.trim();
+    if (!trimmedReason) {
+      toastWarning('Please specify a clear rejection reason so the applicant receives it via email.', 'Reason Required');
+      return;
+    }
+
     const { id, name } = rejectModal;
 
     setActionLoading({ id, action: 'reject' });
@@ -381,12 +387,18 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ reason: rejectionReason.trim() }),
+        body: JSON.stringify({ reason: trimmedReason }),
       });
 
       if (res.ok) {
-        const reasonMsg = rejectionReason.trim() ? ` (Reason: ${rejectionReason.trim()})` : '';
-        toastInfo(`Registration request for "${name}" has been rejected${reasonMsg}.`, 'Request Rejected');
+        const resData = await res.json().catch(() => ({}));
+        const emailNote = resData?.emailSent && resData?.recipientEmail
+          ? ` Rejection email sent to ${resData.recipientEmail}.`
+          : '';
+        toastInfo(
+          `Registration request for "${name}" has been rejected and cleared (${trimmedReason}).${emailNote}`,
+          'Request Rejected'
+        );
         setRejectModal(null);
         setRejectionReason('');
         await fetchAllData();
@@ -1408,11 +1420,11 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
             </div>
             <div className="users-modal-body">
               <p>
-                Specify the reason for rejecting registration request from <strong>"{rejectModal.name}"</strong>:
+                Specify why you are rejecting <strong>"{rejectModal.name}"</strong>. This reason will be emailed to the applicant and their pending application will be cleared so they can register again with corrected details:
               </p>
               <textarea
                 className="modal-textarea"
-                placeholder="e.g. Incomplete ID card documentation, Invalid employee credentials..."
+                placeholder="e.g. Wrong station / gate selected, Invalid Employee ID, Unclear ID card photo..."
                 value={rejectionReason}
                 onChange={(e) => setRejectionReason(e.target.value)}
                 autoFocus
@@ -1434,7 +1446,7 @@ export default function ManageUsers({ user, onUserUpdate }: Props) {
                 disabled={actionLoading?.id === rejectModal.id}
               >
                 {actionLoading?.id === rejectModal.id ? <FaSpinner className="spin" /> : <FaTimes />}
-                <span>Confirm Rejection</span>
+                <span>Reject &amp; Send Email</span>
               </button>
             </div>
           </div>

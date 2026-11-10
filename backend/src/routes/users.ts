@@ -7,7 +7,7 @@ import { extractRegistrationUserFields } from '../lib/userExtract';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
 import { canApproveRequest, canAssignRole, getAllowedRoleNamesForApprover, getDesignationConfig, DESIGNATIONS, buildUserManagementWhereClause, verifyUserManagementAccess } from '../lib/railwayHierarchy';
-import { sendRegistrationApprovalEmail } from '../lib/emailService';
+import { sendRegistrationApprovalEmail, sendRegistrationRejectionEmail } from '../lib/emailService';
 
 const router = Router();
 
@@ -417,11 +417,15 @@ router.put('/request/:id/reject', requireModule('manage-users'), async (req: any
     const id = parseInt(req.params.id, 10);
     const data = rejectSchema.parse(req.body);
 
-    if (!data.reason || data.reason.trim().length === 0) {
+    const reasonText = data.reason?.trim() || '';
+    if (reasonText.length === 0) {
       return res.status(400).json({ error: 'A specific reason is mandatory for rejecting an employee registration.' });
     }
 
-    const request = await prisma.registrationRequest.findUnique({ where: { id } });
+    const request = await prisma.registrationRequest.findUnique({
+      where: { id },
+      include: { form: true },
+    });
     if (!request || request.status !== 'PENDING') {
       return res.status(404).json({ error: 'Request not found or already processed.' });
     }
@@ -440,29 +444,87 @@ router.put('/request/:id/reject', requireModule('manage-users'), async (req: any
       });
     }
 
-    const locked = await prisma.registrationRequest.updateMany({
+    let reqData: any = {};
+    try {
+      reqData = JSON.parse(request.data || '{}');
+    } catch (_) {}
+
+    const extracted = extractRegistrationUserFields(reqData, request.form?.schema);
+    const applicantName = (extracted.fullName || reqData.fullName || reqData.name || 'Applicant').toString().trim();
+    const applicantEmail = (extracted.email || reqData.email || '').toString().trim();
+    const applicantMobile = (extracted.mobile || reqData.mobile || '').toString().replace(/\D/g, '').slice(-10);
+    const applicantEmpId = (extracted.employeeId || reqData.employeeId || '').toString().trim();
+    const applicantDept = (request.department || extracted.department || reqData.department || 'Railway Operations').toString().trim();
+
+    let resolvedRoleName = request.designation || '';
+    const effectiveRoleId = request.requestedRoleId || (reqData.roleId ? parseInt(reqData.roleId, 10) : (reqData.requestedRoleId ? parseInt(reqData.requestedRoleId, 10) : null));
+    if (!resolvedRoleName && effectiveRoleId && !isNaN(effectiveRoleId)) {
+      const roleRow = await prisma.role.findUnique({ where: { id: effectiveRoleId }, select: { name: true } });
+      if (roleRow?.name) resolvedRoleName = roleRow.name;
+    }
+    if (!resolvedRoleName) resolvedRoleName = 'Applicant';
+
+    // Atomically delete PENDING request so the applicant is immediately unblocked to submit a brand-new application
+    const deleted = await prisma.registrationRequest.deleteMany({
       where: { id, status: 'PENDING' },
-      data: {
-        status: 'REJECTED',
-        rejectionReason: data.reason.trim(),
-        approvedByUserId: req.user.id,
-        approvedAt: new Date()
-      }
     });
 
-    if (locked.count === 0) {
+    if (deleted.count === 0) {
       return res.status(409).json({ error: 'This request was already decided by another officer.' });
     }
 
+    // Clear stale OTP verifications for this mobile number so re-registration starts completely fresh
+    if (applicantMobile.length === 10) {
+      await prisma.otpVerification.deleteMany({
+        where: { identifier: applicantMobile, type: 'PHONE' },
+      }).catch(() => {});
+    }
+
+    // Preserve permanent audit record before returning
     await prisma.auditLog.create({
       data: {
         userId: req.user.id,
         action: 'REJECT_USER_REQUEST',
-        details: `Rejected registration request ${id} for "${request.designation || 'applicant'}": ${data.reason}`,
+        details: `Rejected and cleared registration request #${id} for "${applicantName}" (${resolvedRoleName}, Mobile: ${applicantMobile || 'N/A'}, Email: ${applicantEmail || 'N/A'}, EmpID: ${applicantEmpId || 'N/A'}). Reason: ${reasonText}`,
       },
     });
 
-    res.json({ success: true, message: 'Registration request rejected.' });
+    // Dispatch official Rejection Email explaining the exact reason
+    let emailSent = false;
+    let emailError: string | null = null;
+    if (applicantEmail && applicantEmail.includes('@') && applicantEmail.includes('.')) {
+      try {
+        const mailResult = await sendRegistrationRejectionEmail({
+          toEmail: applicantEmail,
+          recipientName: applicantName,
+          rejectionReason: reasonText,
+          roleName: resolvedRoleName,
+          department: applicantDept,
+          division: request.division || reqData.division || '-',
+          zone: request.zone || reqData.zone || '-',
+        });
+        emailSent = mailResult.success;
+        if (!mailResult.success) {
+          emailError = mailResult.error || 'Email delivery failed';
+          console.warn(`⚠️ [REGISTRATION REJECTION] Could not deliver rejection email to ${applicantEmail}:`, emailError);
+        } else {
+          console.log(`✉️ [REGISTRATION REJECTION] Sent rejection email to ${applicantEmail} (${applicantName})`);
+        }
+      } catch (emailErr: any) {
+        emailError = emailErr?.message || 'Unexpected email dispatch error';
+        console.error('⚠️ [REGISTRATION REJECTION] Error sending rejection email:', emailError);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: emailSent
+        ? `Registration rejected and cleared. Rejection email sent to ${applicantEmail}.`
+        : 'Registration rejected and cleared.',
+      emailSent,
+      recipientEmail: applicantEmail || null,
+      emailError,
+    });
   } catch (error) {
     next(error);
   }

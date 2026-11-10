@@ -161,19 +161,12 @@ router.post('/register/otp/send', async (req, res, next) => {
       });
     }
 
-    // 2. Check if a pending or escalated registration request already exists
+    // 2. Check if an active pending or escalated registration request already exists
     const pendingMatch = await findMatchingRegistrationRequest(cleanDigits);
-    if (pendingMatch) {
-      if (pendingMatch.req.status === 'PENDING' || pendingMatch.req.status === 'ESCALATED') {
-        return res.status(409).json({
-          error: 'A registration request with this mobile number has already been submitted and is pending supervisor approval.'
-        });
-      }
-      if (pendingMatch.req.status === 'REJECTED') {
-        return res.status(409).json({
-          error: `A previous registration request for this mobile number was rejected.${pendingMatch.req.rejectionReason ? ` Reason: ${pendingMatch.req.rejectionReason}` : ''} Please contact your railway supervisor.`
-        });
-      }
+    if (pendingMatch && (pendingMatch.req.status === 'PENDING' || pendingMatch.req.status === 'ESCALATED')) {
+      return res.status(409).json({
+        error: 'A registration request with this mobile number has already been submitted and is pending supervisor approval.'
+      });
     }
 
     // 3. Generate 6-digit OTP & 10-minute expiry
@@ -569,7 +562,7 @@ async function findMatchingRegistrationRequest(identifier: string) {
 
   const requests = await prisma.registrationRequest.findMany({
     where: {
-      status: { in: ['PENDING', 'REJECTED', 'ESCALATED'] }
+      status: { in: ['PENDING', 'ESCALATED'] }
     },
     orderBy: { createdAt: 'desc' }
   });
@@ -678,13 +671,6 @@ router.post('/login', async (req, res, next) => {
             applicantName: pData.fullName || 'Applicant'
           });
         }
-        if (matchReq.status === 'REJECTED') {
-          return res.status(403).json({
-            error: `Your registration request was rejected by your supervisor.${matchReq.rejectionReason ? ` Reason: ${matchReq.rejectionReason}` : ''}`,
-            registrationRejected: true,
-            rejectionReason: matchReq.rejectionReason
-          });
-        }
       }
       return res.status(401).json({ error: 'Invalid credentials. If you are a new applicant, please register first.' });
     }
@@ -770,19 +756,11 @@ router.post('/otp/send', async (req, res, next) => {
 
       if (!user) {
         const pendingMatch = await findMatchingRegistrationRequest(cleanId);
-        if (pendingMatch) {
-          if (pendingMatch.req.status === 'PENDING' || pendingMatch.req.status === 'ESCALATED') {
-            return res.status(403).json({
-              error: 'Your registration is currently pending supervisor approval. You will be able to log in once approved.',
-              registrationPending: true
-            });
-          }
-          if (pendingMatch.req.status === 'REJECTED') {
-            return res.status(403).json({
-              error: `Your registration request was rejected by your supervisor.${pendingMatch.req.rejectionReason ? ` Reason: ${pendingMatch.req.rejectionReason}` : ''}`,
-              registrationRejected: true
-            });
-          }
+        if (pendingMatch && (pendingMatch.req.status === 'PENDING' || pendingMatch.req.status === 'ESCALATED')) {
+          return res.status(403).json({
+            error: 'Your registration is currently pending supervisor approval. You will be able to log in once approved.',
+            registrationPending: true
+          });
         }
 
         return res.status(404).json({
@@ -807,19 +785,11 @@ router.post('/otp/send', async (req, res, next) => {
 
       if (!user) {
         const pendingMatch = await findMatchingRegistrationRequest(digitsOnly);
-        if (pendingMatch) {
-          if (pendingMatch.req.status === 'PENDING' || pendingMatch.req.status === 'ESCALATED') {
-            return res.status(403).json({
-              error: 'Your registration is currently pending supervisor approval. You will be able to log in once approved.',
-              registrationPending: true
-            });
-          }
-          if (pendingMatch.req.status === 'REJECTED') {
-            return res.status(403).json({
-              error: `Your registration request was rejected by your supervisor.${pendingMatch.req.rejectionReason ? ` Reason: ${pendingMatch.req.rejectionReason}` : ''}`,
-              registrationRejected: true
-            });
-          }
+        if (pendingMatch && (pendingMatch.req.status === 'PENDING' || pendingMatch.req.status === 'ESCALATED')) {
+          return res.status(403).json({
+            error: 'Your registration is currently pending supervisor approval. You will be able to log in once approved.',
+            registrationPending: true
+          });
         }
 
         return res.status(404).json({

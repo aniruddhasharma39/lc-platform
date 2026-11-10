@@ -886,7 +886,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
           if (action == 'approve') {
             AppFeedback.showSuccess(context, 'Registration for "$confirmedName" approved successfully as "$confirmedRole"!');
           } else if (action == 'reject') {
-            AppFeedback.showInfo(context, 'Registration request for "$confirmedName" has been rejected.');
+            final emailSent = resData is Map && resData['emailSent'] == true;
+            final recipientEmail = (resData is Map ? resData['recipientEmail']?.toString() : null) ?? '';
+            final rejectToast = emailSent && recipientEmail.isNotEmpty
+                ? 'Registration for "$confirmedName" rejected and cleared. Notification email sent to $recipientEmail.'
+                : 'Registration request for "$confirmedName" rejected and cleared.';
+            AppFeedback.showInfo(context, rejectToast);
           } else if (action == 'deactivate') {
             AppFeedback.showWarning(context, 'User "$confirmedName" has been deactivated and access revoked.');
           } else if (action == 'reactivate') {
@@ -899,6 +904,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
         if (isRequest && action == 'approve') {
           // Pause 650ms to let the user see the green APPROVED ✓ state before removing
           await Future.delayed(const Duration(milliseconds: 650));
+        }
+
+        if (isRequest && mounted) {
+          setState(() {
+            _requestApprovalStates.remove(id);
+          });
         }
 
         _fetchAuxiliaryData(force: true);
@@ -928,6 +939,104 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (mounted) {
         AppFeedback.showError(context, 'Failed to perform $action on user: $e');
       }
+    }
+  }
+
+  Future<void> _showRejectRequestDialog(int reqId, String displayName) async {
+    final reasonCtrl = TextEditingController();
+    final quickReasons = [
+      'Incorrect Station / Gate selected',
+      'Invalid Employee ID',
+      'Wrong Role / Designation selected',
+      'Unclear ID card photo',
+    ];
+
+    final submittedReason = await showDialog<String>(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (context, setModalState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          title: Row(
+            children: const [
+              Icon(Icons.cancel_outlined, color: AppColors.danger, size: 22),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Reject Registration Request',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Specify why you are rejecting "$displayName". An email with this reason will be sent so they can register again with corrected details.',
+                  style: const TextStyle(fontSize: 12.5, color: Color(0xFF475569), height: 1.4),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: quickReasons.map((r) => ActionChip(
+                    label: Text(r, style: const TextStyle(fontSize: 11)),
+                    backgroundColor: const Color(0xFFF8FAFC),
+                    side: const BorderSide(color: Color(0xFFE2E8F0)),
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+                    onPressed: () {
+                      setModalState(() {
+                        reasonCtrl.text = r;
+                      });
+                    },
+                  )).toList(),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: reasonCtrl,
+                  maxLines: 3,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    labelText: 'Rejection Reason *',
+                    hintText: 'Enter specific reason for applicant...',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    isDense: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx, null),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.danger,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: () {
+                final text = reasonCtrl.text.trim();
+                if (text.isEmpty) {
+                  AppFeedback.showWarning(context, 'Please enter a rejection reason.');
+                  return;
+                }
+                Navigator.pop(dialogCtx, text);
+              },
+              child: const Text('Reject & Send Email', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    reasonCtrl.dispose();
+    if (submittedReason != null && submittedReason.isNotEmpty) {
+      await _actionUser(reqId, 'reject', {'reason': submittedReason}, true, displayName);
     }
   }
 
@@ -2502,7 +2611,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                           padding: const EdgeInsets.symmetric(vertical: 12)
                         ),
-                        onPressed: isProcessing ? null : () => _actionUser(reqId, 'reject', {'reason': 'Rejected by admin'}, true, displayName),
+                        onPressed: isProcessing ? null : () => _showRejectRequestDialog(reqId, displayName),
                         child: reqState == 'REJECTING'
                             ? const Text('Rejecting...', style: TextStyle(fontWeight: FontWeight.bold))
                             : const Text('Reject', style: TextStyle(fontWeight: FontWeight.bold)),
