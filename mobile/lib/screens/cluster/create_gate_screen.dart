@@ -5,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
+import '../../components/action_feedback_widgets.dart';
 import 'railway_data.dart';
 import 'station_search_sheet.dart';
 
@@ -146,6 +147,7 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
     }
 
     setState(() => _isLoading = true);
+    AppFeedback.showLoading(context, 'Creating LC Gate...');
     try {
       final cleanLc = rawLc.toUpperCase().startsWith('LC-')
           ? rawLc.toUpperCase()
@@ -177,7 +179,7 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
 
       if (res.statusCode == 201) {
         if (mounted) {
-          AppFeedback.showSuccess(context, 'LC Gate "$cleanLc" created successfully.');
+          AppFeedback.showSuccess(context, 'LC Gate created successfully.');
           Navigator.pop(context, true);
         }
       } else {
@@ -209,9 +211,12 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
   Widget build(BuildContext context) {
     final divisions = _zone != null ? (_divisionsByZone[_zone] ?? <String>[]) : <String>[];
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Create LC Gate', style: TextStyle(fontWeight: FontWeight.bold)),
+    return PopScope(
+      canPop: !_isLoading,
+      child: Scaffold(
+        appBar: AppBar(
+          automaticallyImplyLeading: !_isLoading,
+          title: const Text('Create LC Gate', style: TextStyle(fontWeight: FontWeight.bold)),
         elevation: 0,
       ),
       body: _loadingReference
@@ -443,12 +448,17 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
                             onPressed: _isLoading ? null : _submit,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: AppColors.primary,
+                              disabledBackgroundColor: AppColors.primary.withValues(alpha: 0.75),
+                              disabledForegroundColor: Colors.white,
                               padding: const EdgeInsets.symmetric(vertical: 14),
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                             ),
-                            child: _isLoading
-                                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                                : const Text('Create LC Gate', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white)),
+                            child: ActionButtonContent(
+                              isLoading: _isLoading,
+                              loadingLabel: 'Creating LC Gate...',
+                              idleLabel: 'Create LC Gate',
+                              textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                            ),
                           ),
                         ],
                       ),
@@ -457,6 +467,7 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
                 ),
               ),
             ),
+      ),
     );
   }
 }

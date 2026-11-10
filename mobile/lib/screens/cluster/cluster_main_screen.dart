@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
+import '../../components/action_feedback_widgets.dart';
 import 'railway_data.dart';
 import '../../services/lc_gates_cache_service.dart';
 
@@ -27,6 +28,8 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
   String? _errorMessage;
   String _token = '';
   String _userId = 'user';
+  final Set<dynamic> _deletingGateIds = {};
+  final Set<int> _pingingGateIds = {};
 
   // Zone/Division reference data
   List<String> _zones = RailwayData.zones;
@@ -544,77 +547,112 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
   }
 
   Future<void> _deleteGate(Map gate) async {
+    final gateId = gate['id'];
+    if (gateId == null || _deletingGateIds.contains(gateId)) return;
+
     final ctrl = TextEditingController();
     final targetName = (gate['name'] ?? gate['lcNumber'] ?? 'Gate').toString();
-    bool confirm = await showDialog(
+    bool isDeleting = false;
+
+    await showDialog<bool>(
       context: context,
-      builder: (dialogCtx) => AlertDialog(
-        title: const Text('Are you absolutely sure?', style: TextStyle(color: Colors.red)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('This action cannot be undone. It will permanently delete this LC Gate and all associated Master units, Slave devices, and photographic evidence.'),
-            const SizedBox(height: 16),
-            Text('Please type "$targetName" to confirm:'),
-            const SizedBox(height: 8),
-            TextField(
-              controller: ctrl,
-              decoration: const InputDecoration(border: OutlineInputBorder()),
-            )
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogCtx, false), child: const Text('Cancel')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () {
-              if (ctrl.text.trim() == targetName) {
-                Navigator.pop(dialogCtx, true);
-              } else {
-                AppFeedback.showWarning(context, 'Entered name does not match "$targetName". Deletion aborted.');
-              }
-            },
-            child: const Text('Delete this gate', style: TextStyle(color: Colors.white))
+      barrierDismissible: false,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (context, setDialogState) => PopScope(
+          canPop: !isDeleting,
+          child: AlertDialog(
+            title: const Text('Are you absolutely sure?', style: TextStyle(color: Colors.red)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('This action cannot be undone. It will permanently delete this LC Gate and all associated Master units, Slave devices, and photographic evidence.'),
+                const SizedBox(height: 16),
+                Text('Please type "$targetName" to confirm:'),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: ctrl,
+                  enabled: !isDeleting,
+                  decoration: const InputDecoration(border: OutlineInputBorder()),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: isDeleting ? null : () => Navigator.pop(dialogCtx, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  disabledBackgroundColor: Colors.red.shade300,
+                  disabledForegroundColor: Colors.white,
+                ),
+                onPressed: isDeleting
+                    ? null
+                    : () async {
+                        if (ctrl.text.trim() != targetName) {
+                          AppFeedback.showWarning(
+                            this.context,
+                            'Entered name does not match "$targetName". Deletion aborted.',
+                          );
+                          return;
+                        }
+                        setDialogState(() => isDeleting = true);
+                        if (mounted) {
+                          setState(() => _deletingGateIds.add(gateId));
+                          AppFeedback.showLoading(this.context, 'Deleting LC Gate...');
+                        }
+                        try {
+                          final res = await http.delete(
+                            Uri.parse('$baseUrl/lcgate/$gateId'),
+                            headers: {'Authorization': 'Bearer $_token'},
+                          );
+                          if (res.statusCode == 204 || res.statusCode == 200) {
+                            await LCGatesCacheService.instance.removeGateAcrossAllScopes(_userId, gateId);
+                            if (mounted) {
+                              setState(() {
+                                _gates.removeWhere((g) => g['id'] == gateId);
+                                _deletingGateIds.remove(gateId);
+                              });
+                            }
+                            if (dialogCtx.mounted) Navigator.pop(dialogCtx, true);
+                            if (mounted) {
+                              AppFeedback.showSuccess(this.context, 'LC Gate deleted successfully.');
+                            }
+                          } else {
+                            String errMsg = 'Failed to delete LC Gate';
+                            try {
+                              final err = json.decode(res.body);
+                              if (err['error'] != null) errMsg = err['error'];
+                            } catch (_) {}
+                            if (mounted) {
+                              setState(() => _deletingGateIds.remove(gateId));
+                              AppFeedback.showError(this.context, errMsg);
+                            }
+                            if (dialogCtx.mounted) setDialogState(() => isDeleting = false);
+                          }
+                        } catch (e) {
+                          if (mounted) {
+                            setState(() => _deletingGateIds.remove(gateId));
+                            AppFeedback.showError(this.context, 'Network error deleting LC Gate: $e');
+                          }
+                          if (dialogCtx.mounted) setDialogState(() => isDeleting = false);
+                        }
+                      },
+                child: ActionButtonContent(
+                  isLoading: isDeleting,
+                  loadingLabel: 'Deleting LC Gate...',
+                  idleLabel: 'Delete this gate',
+                  textStyle: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
           ),
-        ],
-      )
-    ) ?? false;
-
-    if (!confirm) return;
-
-    // Optimistic UI: remove the gate instantly from the list
-    final gateId = gate['id'];
-    setState(() {
-      _gates.removeWhere((g) => g['id'] == gateId);
-    });
-    AppFeedback.showSuccess(context, 'LC Gate "$targetName" is being deleted...');
-
-    // Backend deletion runs in the background; UI is already updated
-    http.delete(
-      Uri.parse('$baseUrl/lcgate/$gateId'),
-      headers: {'Authorization': 'Bearer $_token'},
-    ).then((res) async {
-      if (res.statusCode == 204 || res.statusCode == 200) {
-        await LCGatesCacheService.instance.removeGateAcrossAllScopes(_userId, gateId);
-        if (mounted) AppFeedback.showSuccess(context, 'LC Gate "$targetName" permanently deleted.');
-      } else {
-        String errMsg = 'Failed to delete LC Gate';
-        try {
-          final err = json.decode(res.body);
-          if (err['error'] != null) errMsg = err['error'];
-        } catch (_) {}
-        if (mounted) {
-          AppFeedback.showError(context, errMsg);
-          await _fetchGates();
-        }
-      }
-    }).catchError((e) {
-      if (mounted) {
-        AppFeedback.showError(context, 'Network error deleting LC Gate: $e');
-        _fetchGates();
-      }
-    });
+        ),
+      ),
+    );
+    ctrl.dispose();
   }
 
 
@@ -688,9 +726,6 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           if (result == true) {
             await LCGatesCacheService.instance.markAllStale(_userId);
             await _fetchGates();
-            if (context.mounted) {
-              AppFeedback.showSuccess(context, 'New LC Gate created and added to cluster list.');
-            }
           }
         },
       ),
@@ -1038,9 +1073,15 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                                                   ),
                                                   IconButton(
                                                     visualDensity: VisualDensity.compact,
-                                                    icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                                                    icon: _deletingGateIds.contains(gate['id'])
+                                                        ? const SizedBox(
+                                                            width: 18,
+                                                            height: 18,
+                                                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red),
+                                                          )
+                                                        : const Icon(Icons.delete_outline, color: Colors.red, size: 20),
                                                     tooltip: 'Delete Gate',
-                                                    onPressed: () => _deleteGate(gate),
+                                                    onPressed: _deletingGateIds.contains(gate['id']) ? null : () => _deleteGate(gate),
                                                   ),
                                                 ],
                                               ),
@@ -1129,10 +1170,11 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
   // Direct Hardware Connection Check
   Future<void> _pingGateDevice(dynamic gate) async {
     final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
-    if (gateId == 0) return;
+    if (gateId == 0 || _pingingGateIds.contains(gateId)) return;
     final lcNumber = gate['lcNumber'] ?? 'LC Gate';
 
-    AppFeedback.showInfo(context, 'Checking connection for $lcNumber hardware...');
+    setState(() => _pingingGateIds.add(gateId));
+    AppFeedback.showLoading(context, 'Checking connection for $lcNumber hardware...');
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/lcgate/$gateId/health-check'),
@@ -1163,6 +1205,8 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
       if (mounted) {
         AppFeedback.showError(context, 'Connection error: $e');
       }
+    } finally {
+      if (mounted) setState(() => _pingingGateIds.remove(gateId));
     }
   }
 

@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
+import '../../components/action_feedback_widgets.dart';
 
 class CreateMasterScreen extends StatefulWidget {
   final String token;
@@ -33,15 +34,29 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
   // SIM Card Photo Attachment
   XFile? _simImage;
   final ImagePicker _picker = ImagePicker();
+  bool _isCapturingSimPhoto = false;
+  String _submitPhaseLabel = 'Creating Master Unit...';
 
   Future<void> _pickSimImage(ImageSource source) async {
+    if (_isLoading || _isCapturingSimPhoto) return;
+    setState(() => _isCapturingSimPhoto = true);
+    AppFeedback.showLoading(context, 'Capturing Photo...');
     try {
       final img = await _picker.pickImage(source: source, imageQuality: 85);
-      if (img != null && mounted) {
+      if (!mounted) return;
+      if (img != null) {
         setState(() => _simImage = img);
+        AppFeedback.showSuccess(context, 'Photo captured successfully.');
+      } else {
+        AppFeedback.hide(context);
       }
     } catch (e) {
       debugPrint('Error picking SIM image: $e');
+      if (mounted) {
+        AppFeedback.showError(context, 'Failed to capture photo: $e');
+      }
+    } finally {
+      if (mounted) setState(() => _isCapturingSimPhoto = false);
     }
   }
 
@@ -145,7 +160,11 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
           )
         : null;
 
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _submitPhaseLabel = 'Creating Master Unit...';
+    });
+    AppFeedback.showLoading(context, 'Creating Master Unit...');
 
     try {
       final seqNum = int.tryParse(_seqCtrl.text);
@@ -172,8 +191,13 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
       if (res.statusCode == 201) {
         final masterData = json.decode(res.body);
         final createdMasterId = masterData['id'];
+        bool simUploadFailed = false;
 
         if (_simImage != null && createdMasterId != null) {
+          if (mounted) {
+            setState(() => _submitPhaseLabel = 'Uploading Photo...');
+            AppFeedback.showLoading(context, 'Uploading Photo...');
+          }
           try {
             final bytes = await _simImage!.readAsBytes();
             final base64Img = 'data:image/jpeg;base64,${base64Encode(bytes)}';
@@ -191,7 +215,7 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
               lng = double.tryParse((widget.gate['longitude'] ?? '0').toString());
             }
 
-            await http.post(
+            final evRes = await http.post(
               Uri.parse('$baseUrl/evidence'),
               headers: {
                 'Content-Type': 'application/json',
@@ -205,18 +229,29 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
                 'longitude': lng ?? 0.0,
               }),
             );
+            if (evRes.statusCode != 201 && evRes.statusCode != 200) {
+              simUploadFailed = true;
+            }
           } catch (e) {
             debugPrint('Failed to upload SIM card evidence: $e');
+            simUploadFailed = true;
           }
         }
 
         if (mounted) {
-          final createdSerial = masterData['serialNumber']?.toString() ??
-              (_serialCtrl.text.trim().isNotEmpty ? _serialCtrl.text.trim() : 'Master Unit');
-          final identifier = chosenDevice != null
-              ? '$createdSerial (${chosenDevice['thingName']})'
-              : createdSerial;
-          AppFeedback.showSuccess(context, 'Master Unit "$identifier" added successfully${_simImage != null ? ' with SIM photo' : ''}.');
+          if (simUploadFailed) {
+            AppFeedback.showWarning(
+              context,
+              'Master Unit created successfully, but SIM photo upload failed. Please upload it in the Evidence Checklist.',
+            );
+          } else {
+            AppFeedback.showSuccess(
+              context,
+              _simImage != null
+                  ? 'Master Unit created and SIM photo uploaded successfully.'
+                  : 'Master Unit created successfully.',
+            );
+          }
           Navigator.pop(context, true);
         }
       } else {
@@ -244,8 +279,14 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
         ? _deviceList.firstWhere((d) => d['id'].toString() == _selectedDeviceId, orElse: () => null)
         : null;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Add Master Unit', style: TextStyle(fontWeight: FontWeight.bold)), elevation: 0),
+    return PopScope(
+      canPop: !_isLoading && !_isCapturingSimPhoto,
+      child: Scaffold(
+        appBar: AppBar(
+          automaticallyImplyLeading: !_isLoading && !_isCapturingSimPhoto,
+          title: const Text('Add Master Unit', style: TextStyle(fontWeight: FontWeight.bold)),
+          elevation: 0,
+        ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Center(
@@ -491,9 +532,14 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
                             SizedBox(
                               width: double.infinity,
                               child: OutlinedButton.icon(
-                                icon: const Icon(Icons.camera_alt_outlined, size: 16),
-                                label: const Text('Capture Live Photo (Camera)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                                onPressed: () => _pickSimImage(ImageSource.camera),
+                                icon: _isCapturingSimPhoto
+                                    ? const SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2))
+                                    : const Icon(Icons.camera_alt_outlined, size: 16),
+                                label: Text(
+                                  _isCapturingSimPhoto ? 'Capturing Photo...' : 'Capture Live Photo (Camera)',
+                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                ),
+                                onPressed: (_isLoading || _isCapturingSimPhoto) ? null : () => _pickSimImage(ImageSource.camera),
                                 style: OutlinedButton.styleFrom(
                                   padding: const EdgeInsets.symmetric(vertical: 10),
                                 ),
@@ -506,15 +552,20 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
 
                     // 5. Submit Button
                     ElevatedButton(
-                      onPressed: _isLoading ? null : _submit,
+                      onPressed: (_isLoading || _isCapturingSimPhoto) ? null : _submit,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.primary,
+                        disabledBackgroundColor: AppColors.primary.withValues(alpha: 0.75),
+                        disabledForegroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
-                      child: _isLoading
-                          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                          : const Text('Create Master Unit', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white)),
+                      child: ActionButtonContent(
+                        isLoading: _isLoading,
+                        loadingLabel: _submitPhaseLabel,
+                        idleLabel: 'Create Master Unit',
+                        textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
                     ),
                   ],
                 ),
@@ -522,6 +573,7 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
             ),
           ),
         ),
+      ),
       ),
     );
   }

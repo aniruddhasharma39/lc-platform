@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'upload_evidence_screen.dart';
 import '../../config.dart';
 import '../../utils/app_feedback.dart';
+import '../../components/action_feedback_widgets.dart';
 
 class EvidenceChecklistScreen extends StatefulWidget {
   final String token;
@@ -19,6 +20,7 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
   late List evidences;
   late Map currentMaster;
   late List childDevices;
+  final Set<String> _deletingEvidenceIds = {};
 
   @override
   void initState() {
@@ -189,58 +191,90 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
   }
 
   Future<void> _deleteEvidence(Map evidence, String itemTitle) async {
-    bool confirm = await showDialog(
-      context: context,
-      builder: (dialogCtx) => AlertDialog(
-        title: Text('Delete Photo for "$itemTitle"?'),
-        content: const Text('Are you sure you want to delete this uploaded photo? This cannot be undone.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogCtx, false), child: const Text('Cancel')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(dialogCtx, true),
-            child: const Text('Delete', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    ) ?? false;
+    final evId = evidence['id'];
+    final evKey = evId?.toString() ?? itemTitle;
+    if (_deletingEvidenceIds.contains(evKey)) return;
 
-    if (!confirm) return;
-    try {
-      final evId = evidence['id'];
-      http.Response res = await http.delete(
-        Uri.parse('$baseUrl/evidence/$evId'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
-      );
-      if (res.statusCode != 204 && res.statusCode != 200) {
-        // Fallback for proxies
-        res = await http.post(
-          Uri.parse('$baseUrl/evidence/$evId/delete'),
-          headers: {'Authorization': 'Bearer ${widget.token}'},
-        );
-      }
-      if (res.statusCode == 204 || res.statusCode == 200) {
-        setState(() {
-          evidences.removeWhere((e) => e is Map && e['id']?.toString() == evId?.toString());
-        });
-        if (mounted) {
-          AppFeedback.showSuccess(
-            context,
-            'Photo for "$itemTitle" deleted successfully.',
-          );
-        }
-        _fetchEvidences(isManual: false);
-      } else {
-        String msg = res.body;
-        if (mounted) {
-          AppFeedback.showError(context, 'Failed to delete photo: $msg');
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        AppFeedback.showError(context, 'Network error deleting photo: $e');
-      }
-    }
+    bool isDeleting = false;
+    await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (context, setDialogState) => PopScope(
+          canPop: !isDeleting,
+          child: AlertDialog(
+            title: Text('Delete Photo for "$itemTitle"?'),
+            content: const Text('Are you sure you want to delete this uploaded photo? This cannot be undone.'),
+            actions: [
+              TextButton(
+                onPressed: isDeleting ? null : () => Navigator.pop(dialogCtx, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  disabledBackgroundColor: Colors.red.shade300,
+                  disabledForegroundColor: Colors.white,
+                ),
+                onPressed: isDeleting
+                    ? null
+                    : () async {
+                        setDialogState(() => isDeleting = true);
+                        if (mounted) {
+                          setState(() => _deletingEvidenceIds.add(evKey));
+                          AppFeedback.showLoading(this.context, 'Deleting Photo...');
+                        }
+                        try {
+                          http.Response res = await http.delete(
+                            Uri.parse('$baseUrl/evidence/$evId'),
+                            headers: {'Authorization': 'Bearer ${widget.token}'},
+                          );
+                          if (res.statusCode != 204 && res.statusCode != 200) {
+                            res = await http.post(
+                              Uri.parse('$baseUrl/evidence/$evId/delete'),
+                              headers: {'Authorization': 'Bearer ${widget.token}'},
+                            );
+                          }
+                          if (res.statusCode == 204 || res.statusCode == 200) {
+                            if (mounted) {
+                              setState(() {
+                                evidences.removeWhere((e) => e is Map && e['id']?.toString() == evId?.toString());
+                                _deletingEvidenceIds.remove(evKey);
+                              });
+                            }
+                            if (dialogCtx.mounted) Navigator.pop(dialogCtx, true);
+                            if (mounted) {
+                              AppFeedback.showSuccess(this.context, 'Photo deleted successfully.');
+                            }
+                            _fetchEvidences(isManual: false);
+                          } else {
+                            String msg = res.body;
+                            if (mounted) {
+                              setState(() => _deletingEvidenceIds.remove(evKey));
+                              AppFeedback.showError(this.context, 'Failed to delete photo: $msg');
+                            }
+                            if (dialogCtx.mounted) setDialogState(() => isDeleting = false);
+                          }
+                        } catch (e) {
+                          if (mounted) {
+                            setState(() => _deletingEvidenceIds.remove(evKey));
+                            AppFeedback.showError(this.context, 'Network error deleting photo: $e');
+                          }
+                          if (dialogCtx.mounted) setDialogState(() => isDeleting = false);
+                        }
+                      },
+                child: ActionButtonContent(
+                  isLoading: isDeleting,
+                  loadingLabel: 'Deleting Photo...',
+                  idleLabel: 'Delete',
+                  textStyle: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   void _viewPhoto(Map evidence) {
@@ -273,7 +307,7 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
     );
   }
 
-  void _navigateToUpload(String category, String name, [int? childId]) async {
+  void _navigateToUpload(String category, String name, [int? childId, bool isReupload = false]) async {
     final result = await Navigator.push(context, MaterialPageRoute(
       builder: (_) => UploadEvidenceScreen(
         token: widget.token,
@@ -281,12 +315,12 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
         childDeviceId: childId,
         category: category,
         targetName: name,
+        isReupload: isReupload,
       )
     ));
     if (!mounted) return;
     if (result != null && result is Map) {
       _onUploadSuccess(result);
-      AppFeedback.showSuccess(context, 'Checklist updated: photo recorded for "$name".');
     }
   }
 
@@ -330,7 +364,7 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
               description: 'Photo showing the ESP installation',
               isDone: hasMaster,
               evidence: _findEvidence('MASTER'),
-              onUpload: () => _navigateToUpload('MASTER', 'Master ESP'),
+              onUpload: () => _navigateToUpload('MASTER', 'Master ESP', null, hasMaster),
             ),
 
             _buildChecklistItem(
@@ -338,7 +372,7 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
               description: 'Photo showing the installed SIM card & ICCID number',
               isDone: hasSim,
               evidence: _findEvidence('SIM_CARD'),
-              onUpload: () => _navigateToUpload('SIM_CARD', 'SIM Card'),
+              onUpload: () => _navigateToUpload('SIM_CARD', 'SIM Card', null, hasSim),
             ),
             
             _buildChecklistItem(
@@ -346,7 +380,7 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
               description: 'Photo verifying the power installation',
               isDone: hasPower,
               evidence: _findEvidence('POWER_SOURCE'),
-              onUpload: () => _navigateToUpload('POWER_SOURCE', 'Power Source'),
+              onUpload: () => _navigateToUpload('POWER_SOURCE', 'Power Source', null, hasPower),
             ),
 
             if (childList.isNotEmpty) ...[
@@ -370,7 +404,7 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
                   description: desc,
                   isDone: hasDev,
                   evidence: _findEvidence(devType, devId),
-                  onUpload: () => _navigateToUpload(devType, title, devId),
+                  onUpload: () => _navigateToUpload(devType, title, devId, hasDev),
                 );
               }),
             ],
@@ -468,17 +502,19 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
                 IconButton(
                   icon: const Icon(Icons.visibility_outlined, color: Color(0xFF0B3C7A)),
                   tooltip: 'View Photo',
-                  onPressed: () => _viewPhoto(evidence!),
+                  onPressed: _deletingEvidenceIds.contains(evidence?['id']?.toString() ?? title) ? null : () => _viewPhoto(evidence!),
                 ),
                 IconButton(
                   icon: const Icon(Icons.refresh, color: Color(0xFF0E9AA7)),
                   tooltip: 'Re-upload',
-                  onPressed: onUpload,
+                  onPressed: _deletingEvidenceIds.contains(evidence?['id']?.toString() ?? title) ? null : onUpload,
                 ),
                 IconButton(
-                  icon: const Icon(Icons.delete_outline, color: Colors.red),
+                  icon: _deletingEvidenceIds.contains(evidence?['id']?.toString() ?? title)
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red))
+                      : const Icon(Icons.delete_outline, color: Colors.red),
                   tooltip: 'Delete Photo',
-                  onPressed: () => _deleteEvidence(evidence!, title),
+                  onPressed: _deletingEvidenceIds.contains(evidence?['id']?.toString() ?? title) ? null : () => _deleteEvidence(evidence!, title),
                 ),
               ],
             )

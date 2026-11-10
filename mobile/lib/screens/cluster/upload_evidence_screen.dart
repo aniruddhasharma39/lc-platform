@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
 import '../../config.dart';
 import '../../utils/app_feedback.dart';
+import '../../components/action_feedback_widgets.dart';
 
 class UploadEvidenceScreen extends StatefulWidget {
   final String token;
@@ -16,6 +17,7 @@ class UploadEvidenceScreen extends StatefulWidget {
   final int? childDeviceId;
   final String category; // 'MASTER', 'DEVICE_1', 'DEVICE_2', 'POWER_SOURCE'
   final String targetName; // e.g., 'Master 123'
+  final bool isReupload;
 
   const UploadEvidenceScreen({
     super.key,
@@ -24,6 +26,7 @@ class UploadEvidenceScreen extends StatefulWidget {
     this.childDeviceId,
     required this.category,
     required this.targetName,
+    this.isReupload = false,
   });
 
   @override
@@ -35,6 +38,7 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
   Uint8List? _imageBytes;
   final ImagePicker _picker = ImagePicker();
   bool _isLoading = false;
+  bool _isCapturing = false;
   double _uploadProgress = 0.0;
   String _progressStatus = '';
   String _sourceLabel = 'Camera';
@@ -351,46 +355,57 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
   }
 
   Future<void> _pickImage(ImageSource source) async {
+    if (_isLoading || _isCapturing) return;
+    setState(() => _isCapturing = true);
+    AppFeedback.showLoading(context, 'Capturing Photo...');
     try {
       final XFile? photo = await _picker.pickImage(source: source, imageQuality: 70);
       if (photo != null) {
         final bytes = await photo.readAsBytes();
+        if (!mounted) return;
         setState(() {
           _image = photo;
           _imageBytes = bytes;
           _sourceLabel = 'Live Camera';
         });
-        if (mounted) {
-          AppFeedback.showSuccess(context, 'Photo captured via Live Camera.');
-        }
+        AppFeedback.showSuccess(context, 'Photo captured successfully.');
         _refreshLocationStatus();
+      } else if (mounted) {
+        AppFeedback.hide(context);
       }
     } catch (e) {
-      if (mounted) AppFeedback.showError(context, 'Failed to pick image: $e');
+      if (mounted) AppFeedback.showError(context, 'Failed to capture photo: $e');
+    } finally {
+      if (mounted) setState(() => _isCapturing = false);
     }
   }
 
   Future<void> _upload() async {
+    if (_isLoading || _isCapturing) return;
     if (_imageBytes == null && _image != null) {
       try {
         _imageBytes = await _image!.readAsBytes();
       } catch (_) {}
+      if (!mounted) return;
     }
 
     if (_imageBytes == null) {
-      AppFeedback.showWarning(context, 'Please capture or select a photo first.');
+      AppFeedback.showWarning(context, 'Please capture a photo first.');
       return;
     }
 
+    final inProgressMsg = widget.isReupload ? 'Re-uploading Photo...' : 'Uploading Photo...';
     setState(() {
       _isLoading = true;
       _uploadProgress = 0.10;
       _progressStatus = 'Verifying GPS location...';
     });
+    AppFeedback.showLoading(context, 'Verifying GPS location...');
 
     final position = await _requireLocation();
     if (position == null) {
       if (mounted) {
+        AppFeedback.hide(context);
         setState(() => _isLoading = false);
       }
       return;
@@ -400,7 +415,7 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
       // Step 2: Read image to base64
       setState(() {
         _uploadProgress = 0.40;
-        _progressStatus = 'Preparing and optimizing photo...';
+        _progressStatus = 'Preparing photo...';
       });
 
       final base64Image = 'data:image/jpeg;base64,${base64Encode(_imageBytes!)}';
@@ -408,8 +423,9 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
       // Step 3: Preparing payload & starting upload
       setState(() {
         _uploadProgress = 0.60;
-        _progressStatus = 'Uploading photo with GPS stamp...';
+        _progressStatus = inProgressMsg;
       });
+      if (mounted) AppFeedback.showLoading(context, inProgressMsg);
 
       final body = <String, dynamic>{
         'masterId': widget.masterId,
@@ -460,12 +476,12 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
       if (res.statusCode == 201) {
         setState(() {
           _uploadProgress = 1.0;
-          _progressStatus = 'Upload complete!';
+          _progressStatus = widget.isReupload ? 'Photo re-uploaded successfully.' : 'Photo uploaded successfully.';
         });
         if (mounted) {
           AppFeedback.showSuccess(
             context,
-            'Evidence for "${widget.targetName}" uploaded with verified GPS coordinates!',
+            widget.isReupload ? 'Photo re-uploaded successfully.' : 'Photo uploaded successfully.',
           );
         }
         await Future.delayed(const Duration(milliseconds: 300));
@@ -629,44 +645,56 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text('Upload Photo: ${widget.targetName}')),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              // Live Location Status Banner
-              _buildLocationStatusCard(),
+    final busy = _isLoading || _isCapturing;
+    return PopScope(
+      canPop: !busy,
+      child: Scaffold(
+        appBar: AppBar(
+          automaticallyImplyLeading: !busy,
+          title: Text('${widget.isReupload ? "Re-upload" : "Upload"} Photo: ${widget.targetName}'),
+        ),
+        body: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // Live Location Status Banner
+                _buildLocationStatusCard(),
 
-              if (_imageBytes != null) ...[
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Image.memory(_imageBytes!, height: 260, fit: BoxFit.contain),
-                ),
-                const SizedBox(height: 12),
-                Text('Source: $_sourceLabel', style: const TextStyle(color: Colors.grey, fontSize: 13)),
-                const SizedBox(height: 16),
-              ],
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  icon: const Icon(Icons.camera_alt, size: 20),
-                  label: Text(
-                    _imageBytes == null ? 'Capture Live Photo (Camera Only)' : 'Retake Live Photo (Camera)',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                if (_imageBytes != null) ...[
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.memory(_imageBytes!, height: 260, fit: BoxFit.contain),
                   ),
-                  onPressed: _isLoading ? null : () => _pickImage(ImageSource.camera),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF0B3C7A),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    elevation: 1,
+                  const SizedBox(height: 12),
+                  Text('Source: $_sourceLabel', style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                  const SizedBox(height: 16),
+                ],
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    icon: _isCapturing
+                        ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2.2, color: Colors.white))
+                        : const Icon(Icons.camera_alt, size: 20),
+                    label: Text(
+                      _isCapturing
+                          ? 'Capturing Photo...'
+                          : (_imageBytes == null ? 'Capture Live Photo (Camera Only)' : 'Retake Live Photo (Camera)'),
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    onPressed: busy ? null : () => _pickImage(ImageSource.camera),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF0B3C7A),
+                      foregroundColor: Colors.white,
+                      disabledBackgroundColor: const Color(0xFF0B3C7A).withValues(alpha: 0.7),
+                      disabledForegroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      elevation: 1,
+                    ),
                   ),
                 ),
-              ),
               const SizedBox(height: 8),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -789,24 +817,31 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
               ],
 
               if (_imageBytes != null || _image != null)
-                ElevatedButton.icon(
-                  icon: _isLoading
-                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
-                      : const Icon(Icons.cloud_upload),
-                  label: Text(_isLoading ? 'Uploading (${(_uploadProgress * 100).toInt()}%)...' : 'Upload Evidence'),
-                  onPressed: _isLoading ? null : _upload,
+                ElevatedButton(
+                  onPressed: busy ? null : _upload,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green.shade700,
-                    disabledBackgroundColor: Colors.green.shade300,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.green.shade400,
                     disabledForegroundColor: Colors.white,
                     minimumSize: const Size(240, 50),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  child: ActionButtonContent(
+                    isLoading: _isLoading,
+                    loadingLabel: widget.isReupload
+                        ? 'Re-uploading Photo (${(_uploadProgress * 100).toInt()}%)...'
+                        : 'Uploading Photo (${(_uploadProgress * 100).toInt()}%)...',
+                    idleLabel: widget.isReupload ? 'Re-upload Photo' : 'Upload Photo',
+                    idleIcon: Icons.cloud_upload,
+                    textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5, color: Colors.white),
                   ),
                 ),
             ],
           ),
         ),
       ),
+    ),
     );
   }
 }

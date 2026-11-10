@@ -6,6 +6,7 @@ import {
   FaExclamationTriangle,
   FaInfoCircle,
   FaTimes,
+  FaSpinner,
 } from 'react-icons/fa';
 import './Toast.css';
 
@@ -17,6 +18,8 @@ const getToastIcon = (type: ToastType) => {
       return <FaTimesCircle />;
     case 'warning':
       return <FaExclamationTriangle />;
+    case 'loading':
+      return <FaSpinner className="toast-spinner" />;
     case 'info':
     default:
       return <FaInfoCircle />;
@@ -31,6 +34,8 @@ const getDefaultTitle = (type: ToastType) => {
       return 'Action Failed';
     case 'warning':
       return 'Attention';
+    case 'loading':
+      return 'In Progress';
     case 'info':
     default:
       return 'Notice';

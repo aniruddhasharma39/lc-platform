@@ -6,6 +6,7 @@ enum FeedbackType {
   error,
   warning,
   info,
+  loading,
 }
 
 class AppFeedback {
@@ -89,6 +90,22 @@ class AppFeedback {
     );
   }
 
+  /// Displays a persistent in-progress acknowledgment with an animated spinner.
+  static void showLoading(
+    BuildContext context,
+    String message, {
+    String? title,
+    Duration duration = const Duration(minutes: 2),
+  }) {
+    show(
+      context,
+      message: message,
+      title: title,
+      type: FeedbackType.loading,
+      duration: duration,
+    );
+  }
+
   /// Master method for displaying styled contextual floating SnackBars.
   static void show(
     BuildContext context, {
@@ -115,6 +132,8 @@ class AppFeedback {
           break;
         case FeedbackType.info:
           HapticFeedback.selectionClick();
+          break;
+        case FeedbackType.loading:
           break;
       }
     } catch (_) {}
@@ -145,6 +164,11 @@ class AppFeedback {
         iconColor = const Color(0xFF60A5FA); // Crisp sky blue
         icon = Icons.info_rounded;
         break;
+      case FeedbackType.loading:
+        backgroundColor = const Color(0xFF0F294A); // Deep navy dark
+        iconColor = const Color(0xFF38BDF8); // Crisp sky cyan
+        icon = Icons.hourglass_top_rounded;
+        break;
     }
 
     final messenger = ScaffoldMessenger.of(context);
@@ -172,7 +196,16 @@ class AppFeedback {
                 color: iconColor.withValues(alpha: 0.15),
                 shape: BoxShape.circle,
               ),
-              child: Icon(icon, color: iconColor, size: 20),
+              child: type == FeedbackType.loading
+                  ? SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.4,
+                        valueColor: AlwaysStoppedAnimation<Color>(iconColor),
+                      ),
+                    )
+                  : Icon(icon, color: iconColor, size: 20),
             ),
             const SizedBox(width: 12),
             Expanded(

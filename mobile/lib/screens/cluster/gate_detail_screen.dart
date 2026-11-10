@@ -12,6 +12,7 @@ import 'upload_evidence_screen.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
+import '../../components/action_feedback_widgets.dart';
 import '../../services/lc_gates_cache_service.dart';
 
 class GateDetailScreen extends StatefulWidget {
@@ -27,6 +28,12 @@ class GateDetailScreen extends StatefulWidget {
 class _GateDetailScreenState extends State<GateDetailScreen> {
   late Map gate;
   bool _isLoading = false;
+  String _busyMessage = '';
+  final Set<String> _deletingEvidenceIds = {};
+  final Set<int> _unassigningMasterIds = {};
+  final Set<int> _deletingDeviceIds = {};
+  final Set<int> _pingingMasterIds = {};
+  bool _isPingingGate = false;
 
   @override
   void initState() {
@@ -37,10 +44,20 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     Future<void> _pingGateDevice({int? masterId, String? thingName, String? unitLabel}) async {
     final gateId = gate['id'];
     if (gateId == null) return;
+    if (masterId != null && _pingingMasterIds.contains(masterId)) return;
+    if (masterId == null && _isPingingGate) return;
+
     final lcNumber = gate['lcNumber'] ?? 'LC Gate';
     final targetDesc = unitLabel != null ? '$lcNumber · $unitLabel' : '$lcNumber hardware';
 
-    AppFeedback.showInfo(context, 'Checking connection for $targetDesc...');
+    setState(() {
+      if (masterId != null) {
+        _pingingMasterIds.add(masterId);
+      } else {
+        _isPingingGate = true;
+      }
+    });
+    AppFeedback.showLoading(context, 'Pinging $targetDesc...');
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/lcgate/$gateId/health-check'),
@@ -74,6 +91,16 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     } catch (e) {
       if (mounted) {
         AppFeedback.showError(context, 'Connection error: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          if (masterId != null) {
+            _pingingMasterIds.remove(masterId);
+          } else {
+            _isPingingGate = false;
+          }
+        });
       }
     }
   }
@@ -126,47 +153,87 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
   }
 
   Future<void> _deleteEvidence(Map evidence, String itemTitle, [VoidCallback? onDeleted]) async {
-    bool confirm = await showDialog(
-      context: context,
-      builder: (dialogCtx) => AlertDialog(
-        title: Text('Delete Photo for "$itemTitle"?'),
-        content: const Text('Are you sure you want to delete this uploaded photo? This cannot be undone.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogCtx, false), child: const Text('Cancel')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(dialogCtx, true),
-            child: const Text('Delete', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    ) ?? false;
+    final evId = evidence['id'];
+    final evKey = evId?.toString() ?? itemTitle;
+    if (_deletingEvidenceIds.contains(evKey)) return;
 
-    if (!confirm) return;
-    try {
-      final evId = evidence['id'];
-      http.Response res = await http.delete(
-        Uri.parse('$baseUrl/evidence/$evId'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
-      );
-      if (res.statusCode != 204 && res.statusCode != 200) {
-        res = await http.post(
-          Uri.parse('$baseUrl/evidence/$evId/delete'),
-          headers: {'Authorization': 'Bearer ${widget.token}'},
-        );
-      }
-      if (res.statusCode == 200 || res.statusCode == 204) {
-        if (mounted) {
-          AppFeedback.showSuccess(context, 'Photo for "$itemTitle" deleted successfully.');
-        }
-        await _refresh();
-        if (onDeleted != null) onDeleted();
-      } else {
-        if (mounted) AppFeedback.showError(context, 'Failed to delete photo: ${res.body}');
-      }
-    } catch (e) {
-      if (mounted) AppFeedback.showError(context, 'Error deleting photo: $e');
-    }
+    bool isDeleting = false;
+    await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (context, setDialogState) => PopScope(
+          canPop: !isDeleting,
+          child: AlertDialog(
+            title: Text('Delete Photo for "$itemTitle"?'),
+            content: const Text('Are you sure you want to delete this uploaded photo? This cannot be undone.'),
+            actions: [
+              TextButton(
+                onPressed: isDeleting ? null : () => Navigator.pop(dialogCtx, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  disabledBackgroundColor: Colors.red.shade300,
+                  disabledForegroundColor: Colors.white,
+                ),
+                onPressed: isDeleting
+                    ? null
+                    : () async {
+                        setDialogState(() => isDeleting = true);
+                        if (mounted) {
+                          setState(() => _deletingEvidenceIds.add(evKey));
+                          AppFeedback.showLoading(this.context, 'Deleting Photo...');
+                        }
+                        try {
+                          http.Response res = await http.delete(
+                            Uri.parse('$baseUrl/evidence/$evId'),
+                            headers: {'Authorization': 'Bearer ${widget.token}'},
+                          );
+                          if (res.statusCode != 204 && res.statusCode != 200) {
+                            res = await http.post(
+                              Uri.parse('$baseUrl/evidence/$evId/delete'),
+                              headers: {'Authorization': 'Bearer ${widget.token}'},
+                            );
+                          }
+                          if (res.statusCode == 200 || res.statusCode == 204) {
+                            await _refresh();
+                            if (mounted) {
+                              setState(() => _deletingEvidenceIds.remove(evKey));
+                            }
+                            if (dialogCtx.mounted) Navigator.pop(dialogCtx, true);
+                            if (onDeleted != null) onDeleted();
+                            if (mounted) {
+                              AppFeedback.showSuccess(this.context, 'Photo deleted successfully.');
+                            }
+                          } else {
+                            if (mounted) {
+                              setState(() => _deletingEvidenceIds.remove(evKey));
+                              AppFeedback.showError(this.context, 'Failed to delete photo: ${res.body}');
+                            }
+                            if (dialogCtx.mounted) setDialogState(() => isDeleting = false);
+                          }
+                        } catch (e) {
+                          if (mounted) {
+                            setState(() => _deletingEvidenceIds.remove(evKey));
+                            AppFeedback.showError(this.context, 'Error deleting photo: $e');
+                          }
+                          if (dialogCtx.mounted) setDialogState(() => isDeleting = false);
+                        }
+                      },
+                child: ActionButtonContent(
+                  isLoading: isDeleting,
+                  loadingLabel: 'Deleting Photo...',
+                  idleLabel: 'Delete',
+                  textStyle: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _markCacheStale() async {
@@ -204,8 +271,11 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
 
     await showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (dialogCtx) => StatefulBuilder(
-        builder: (context, setModalState) => AlertDialog(
+        builder: (context, setModalState) => PopScope(
+          canPop: !isSubmitting,
+          child: AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: Row(
             children: const [
@@ -338,14 +408,19 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
               child: const Text('Cancel'),
             ),
             ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                disabledBackgroundColor: AppColors.primary.withValues(alpha: 0.75),
+                disabledForegroundColor: Colors.white,
+              ),
               onPressed: isSubmitting ? null : () async {
                 final lcNum = lcCtrl.text.trim();
                 if (lcNum.isEmpty) {
-                  AppFeedback.showWarning(context, 'LC Gate Number is required.');
+                  AppFeedback.showWarning(this.context, 'LC Gate Number is required.');
                   return;
                 }
                 setModalState(() => isSubmitting = true);
+                AppFeedback.showLoading(this.context, 'Updating LC Gate...');
                 try {
                   final stObj = stations.cast<StationReference?>().firstWhere(
                     (s) => s?.code == selectedStationCode,
@@ -377,10 +452,12 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                     final updated = json.decode(res.body);
                     if (mounted) {
                       setState(() => gate = updated);
-                      Navigator.pop(dialogCtx);
-                      AppFeedback.showSuccess(context, 'LC Gate updated successfully.');
-                      await _refresh();
-                      await _markCacheStale();
+                    }
+                    await _refresh();
+                    await _markCacheStale();
+                    if (dialogCtx.mounted) Navigator.pop(dialogCtx);
+                    if (mounted) {
+                      AppFeedback.showSuccess(this.context, 'LC Gate updated successfully.');
                     }
                   } else {
                     String err = 'Failed to update LC Gate';
@@ -388,26 +465,33 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                       final b = json.decode(res.body);
                       if (b['error'] != null) err = b['error'];
                     } catch (_) {}
-                    if (mounted) AppFeedback.showError(context, err);
-                    setModalState(() => isSubmitting = false);
+                    if (mounted) AppFeedback.showError(this.context, err);
+                    if (dialogCtx.mounted) setModalState(() => isSubmitting = false);
                   }
                 } catch (e) {
-                  if (mounted) AppFeedback.showError(context, 'Network error updating gate: $e');
-                  setModalState(() => isSubmitting = false);
+                  if (mounted) AppFeedback.showError(this.context, 'Network error updating gate: $e');
+                  if (dialogCtx.mounted) setModalState(() => isSubmitting = false);
                 }
               },
-              child: isSubmitting
-                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Text('Save Changes', style: TextStyle(color: Colors.white)),
+              child: ActionButtonContent(
+                isLoading: isSubmitting,
+                loadingLabel: 'Updating LC Gate...',
+                idleLabel: 'Save Changes',
+                textStyle: const TextStyle(color: Colors.white),
+              ),
             ),
           ],
         ),
+      ),
       ),
     );
   }
 
   Future<void> _showAssignModalForMaster(Map<String, dynamic> master) async {
-    setState(() => _isLoading = true);
+    setState(() {
+      _busyMessage = 'Loading available AWS IoT Things...';
+      _isLoading = true;
+    });
     List unassignedDevices = [];
     try {
       final res = await http.get(
@@ -421,17 +505,26 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
         }
       }
     } catch (_) {}
-    if (mounted) setState(() => _isLoading = false);
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+        _busyMessage = '';
+      });
+    }
 
     String? selectedDeviceId;
+    bool isAssigning = false;
     final mSeq = master['masterSequence'] ?? 1;
 
     if (!mounted) return;
 
     await showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (dialogCtx) => StatefulBuilder(
-        builder: (context, setModalState) => AlertDialog(
+        builder: (context, setModalState) => PopScope(
+          canPop: !isAssigning,
+          child: AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: Row(
             children: [
@@ -481,7 +574,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                       value: d['id'].toString(),
                       child: Text('${d['thingName']} (Type: ${d['deviceType'] ?? 'MASTER'})', style: const TextStyle(fontSize: 12.5), overflow: TextOverflow.ellipsis),
                     )).toList(),
-                    onChanged: (val) => setModalState(() => selectedDeviceId = val),
+                    onChanged: isAssigning ? null : (val) => setModalState(() => selectedDeviceId = val),
                   ),
                 ],
               ],
@@ -489,7 +582,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(dialogCtx),
+              onPressed: isAssigning ? null : () => Navigator.pop(dialogCtx),
               child: const Text('Cancel'),
             ),
             if (unassignedDevices.isNotEmpty)
@@ -497,10 +590,14 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.primary,
                   foregroundColor: Colors.white,
+                  disabledBackgroundColor: AppColors.primary.withValues(alpha: 0.7),
+                  disabledForegroundColor: Colors.white,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
-                onPressed: selectedDeviceId == null ? null : () async {
+                onPressed: (isAssigning || selectedDeviceId == null) ? null : () async {
                   final chosenDev = unassignedDevices.firstWhere((d) => d['id'].toString() == selectedDeviceId);
+                  setModalState(() => isAssigning = true);
+                  AppFeedback.showLoading(this.context, 'Assigning AWS IoT Thing...');
                   try {
                     final res = await http.post(
                       Uri.parse('$baseUrl/lcgate/${gate['id']}/assign-device'),
@@ -508,20 +605,33 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                       body: json.encode({'deviceId': chosenDev['id'], 'masterId': master['id']}),
                     );
                     if (res.statusCode == 200) {
-                      Navigator.pop(dialogCtx);
                       await _refresh();
                       await _markCacheStale();
-                      if (mounted) AppFeedback.showSuccess(context, 'AWS IoT Thing "${chosenDev['thingName']}" linked to Master Unit $mSeq.');
+                      if (dialogCtx.mounted) Navigator.pop(dialogCtx);
+                      if (mounted) AppFeedback.showSuccess(this.context, 'AWS IoT Thing assigned successfully.');
                     } else {
-                      if (mounted) AppFeedback.showError(context, 'Failed to assign device to master unit.');
+                      String err = 'Failed to assign AWS IoT Thing.';
+                      try {
+                        final b = json.decode(res.body);
+                        if (b['error'] != null) err = b['error'];
+                      } catch (_) {}
+                      if (mounted) AppFeedback.showError(this.context, err);
+                      if (dialogCtx.mounted) setModalState(() => isAssigning = false);
                     }
                   } catch (e) {
-                    if (mounted) AppFeedback.showError(context, 'Error assigning: $e');
+                    if (mounted) AppFeedback.showError(this.context, 'Error assigning AWS IoT Thing: $e');
+                    if (dialogCtx.mounted) setModalState(() => isAssigning = false);
                   }
                 },
-                child: const Text('Assign to Master'),
+                child: ActionButtonContent(
+                  isLoading: isAssigning,
+                  loadingLabel: 'Assigning AWS IoT Thing...',
+                  idleLabel: 'Assign to Master',
+                  textStyle: const TextStyle(color: Colors.white),
+                ),
               ),
           ],
+          ),
         ),
       ),
     );
@@ -529,159 +639,262 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
 
   Future<void> _unassignMasterDevice(Map<String, dynamic> dev, Map<String, dynamic> master) async {
     final mSeq = master['masterSequence'] ?? 1;
-    final confirm = await showDialog<bool>(
+    final mId = master['id'] is int ? master['id'] as int : int.tryParse(master['id']?.toString() ?? '');
+    if (mId != null && _unassigningMasterIds.contains(mId)) return;
+
+    bool isUnassigning = false;
+    await showDialog<bool>(
       context: context,
-      builder: (c) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: const Text('Unassign Hardware Device?'),
-        content: Text('Unassign physical AWS IoT Thing "${dev['thingName']}" from Master Unit $mSeq?\n\nThe physical device will return to the unassigned registry pool.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-            onPressed: () => Navigator.pop(c, true),
-            child: const Text('Unassign'),
+      barrierDismissible: false,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (c, setModalState) => PopScope(
+          canPop: !isUnassigning,
+          child: AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            title: const Text('Unassign Hardware Device?'),
+            content: Text('Unassign physical AWS IoT Thing "${dev['thingName']}" from Master Unit $mSeq?\n\nThe physical device will return to the unassigned registry pool.'),
+            actions: [
+              TextButton(
+                onPressed: isUnassigning ? null : () => Navigator.pop(dialogCtx, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: Colors.red.shade300,
+                  disabledForegroundColor: Colors.white,
+                ),
+                onPressed: isUnassigning
+                    ? null
+                    : () async {
+                        setModalState(() => isUnassigning = true);
+                        if (mounted && mId != null) {
+                          setState(() => _unassigningMasterIds.add(mId));
+                        }
+                        AppFeedback.showLoading(context, 'Unassigning AWS IoT Thing...');
+                        try {
+                          final res = await http.post(
+                            Uri.parse('$baseUrl/lcgate/${gate['id']}/unassign-device'),
+                            headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${widget.token}'},
+                            body: json.encode({'deviceId': dev['id']}),
+                          );
+                          if (res.statusCode == 200) {
+                            await _refresh();
+                            await _markCacheStale();
+                            if (mounted && mId != null) {
+                              setState(() => _unassigningMasterIds.remove(mId));
+                            }
+                            if (dialogCtx.mounted) Navigator.pop(dialogCtx, true);
+                            if (mounted) AppFeedback.showSuccess(context, 'AWS IoT Thing unassigned successfully.');
+                          } else {
+                            if (mounted && mId != null) {
+                              setState(() => _unassigningMasterIds.remove(mId));
+                            }
+                            if (mounted) AppFeedback.showError(context, 'Failed to unassign AWS IoT Thing.');
+                            if (dialogCtx.mounted) setModalState(() => isUnassigning = false);
+                          }
+                        } catch (e) {
+                          if (mounted && mId != null) {
+                            setState(() => _unassigningMasterIds.remove(mId));
+                          }
+                          if (mounted) AppFeedback.showError(context, 'Error unassigning AWS IoT Thing: $e');
+                          if (dialogCtx.mounted) setModalState(() => isUnassigning = false);
+                        }
+                      },
+                child: ActionButtonContent(
+                  isLoading: isUnassigning,
+                  loadingLabel: 'Unassigning AWS IoT Thing...',
+                  idleLabel: 'Unassign',
+                  textStyle: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
-
-    if (confirm == true) {
-      try {
-        final res = await http.post(
-          Uri.parse('$baseUrl/lcgate/${gate['id']}/unassign-device'),
-          headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${widget.token}'},
-          body: json.encode({'deviceId': dev['id']}),
-        );
-        if (res.statusCode == 200) {
-          await _refresh();
-          await _markCacheStale();
-          if (mounted) AppFeedback.showSuccess(context, 'Hardware unassigned from Master Unit $mSeq.');
-        } else {
-          if (mounted) AppFeedback.showError(context, 'Failed to unassign device');
-        }
-      } catch (e) {
-        if (mounted) AppFeedback.showError(context, 'Error unassigning: $e');
-      }
-    }
   }
 
   Future<void> _deleteMaster(Map master) async {
     final ctrl = TextEditingController();
     final serial = (master['serialNumber'] ?? '').toString();
-    bool confirm = await showDialog(
-      context: context,
-      builder: (dialogCtx) => AlertDialog(
-        title: const Text('Delete Master Unit?', style: TextStyle(color: Colors.red)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('This action cannot be undone. This will permanently delete the Master Unit, and all of its Slave Devices and evidence.'),
-            const SizedBox(height: 16),
-            Text('Please type "$serial" to confirm:'),
-            const SizedBox(height: 8),
-            TextField(controller: ctrl, decoration: const InputDecoration(border: OutlineInputBorder()))
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogCtx, false), child: const Text('Cancel')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () {
-              if (ctrl.text.trim() == serial) {
-                Navigator.pop(dialogCtx, true);
-              } else {
-                AppFeedback.showWarning(context, 'Serial number does not match "$serial". Deletion aborted.');
-              }
-            }, 
-            child: const Text('Delete Master Unit', style: TextStyle(color: Colors.white))
-          ),
-        ],
-      )
-    ) ?? false;
+    bool isDeleting = false;
 
-    if (!confirm) return;
-    setState(() => _isLoading = true);
-    try {
-      final res = await http.delete(
-        Uri.parse('$baseUrl/lcgate/masters/${master['id']}'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
-      );
-      if (res.statusCode == 204 || res.statusCode == 200) {
-        await _refresh();
-        await _markCacheStale();
-        if (mounted) {
-          AppFeedback.showSuccess(context, 'Master Unit "$serial" permanently deleted.');
-        }
-      } else {
-        String errMsg = 'Failed to delete Master Unit';
-        try {
-          final err = json.decode(res.body);
-          if (err['error'] != null) errMsg = err['error'];
-        } catch (_) {}
-        if (mounted) {
-          AppFeedback.showError(context, errMsg);
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        AppFeedback.showError(context, 'Network error deleting Master Unit: $e');
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
+    await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (context, setModalState) => PopScope(
+          canPop: !isDeleting,
+          child: AlertDialog(
+            title: const Text('Delete Master Unit?', style: TextStyle(color: Colors.red)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('This action cannot be undone. This will permanently delete the Master Unit, and all of its Slave Devices and evidence.'),
+                const SizedBox(height: 16),
+                Text('Please type "$serial" to confirm:'),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: ctrl,
+                  enabled: !isDeleting,
+                  decoration: const InputDecoration(border: OutlineInputBorder()),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: isDeleting ? null : () => Navigator.pop(dialogCtx, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  disabledBackgroundColor: Colors.red.shade300,
+                  disabledForegroundColor: Colors.white,
+                ),
+                onPressed: isDeleting
+                    ? null
+                    : () async {
+                        if (ctrl.text.trim() != serial) {
+                          AppFeedback.showWarning(
+                            this.context,
+                            'Serial number does not match "$serial". Deletion aborted.',
+                          );
+                          return;
+                        }
+                        setModalState(() => isDeleting = true);
+                        AppFeedback.showLoading(this.context, 'Deleting Master Unit...');
+                        try {
+                          final res = await http.delete(
+                            Uri.parse('$baseUrl/lcgate/masters/${master['id']}'),
+                            headers: {'Authorization': 'Bearer ${widget.token}'},
+                          );
+                          if (res.statusCode == 204 || res.statusCode == 200) {
+                            await _refresh();
+                            await _markCacheStale();
+                            if (dialogCtx.mounted) Navigator.pop(dialogCtx, true);
+                            if (mounted) {
+                              AppFeedback.showSuccess(this.context, 'Master Unit deleted successfully.');
+                            }
+                          } else {
+                            String errMsg = 'Failed to delete Master Unit';
+                            try {
+                              final err = json.decode(res.body);
+                              if (err['error'] != null) errMsg = err['error'];
+                            } catch (_) {}
+                            if (mounted) AppFeedback.showError(this.context, errMsg);
+                            if (dialogCtx.mounted) setModalState(() => isDeleting = false);
+                          }
+                        } catch (e) {
+                          if (mounted) {
+                            AppFeedback.showError(this.context, 'Network error deleting Master Unit: $e');
+                          }
+                          if (dialogCtx.mounted) setModalState(() => isDeleting = false);
+                        }
+                      },
+                child: ActionButtonContent(
+                  isLoading: isDeleting,
+                  loadingLabel: 'Deleting Master Unit...',
+                  idleLabel: 'Delete Master Unit',
+                  textStyle: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    ctrl.dispose();
   }
 
   Future<void> _deleteDevice(Map device) async {
+    final devId = device['id'] is int ? device['id'] as int : int.tryParse(device['id']?.toString() ?? '');
+    if (devId != null && _deletingDeviceIds.contains(devId)) return;
+
     final serial = (device['serialNumber'] ?? 'Unknown').toString();
     final deviceTypeName = device['type'] == 'DEVICE_1' ? 'Device 1 (Hall Effect + Limit Switch)' : 'Device 2 (Tilt Sensor)';
-    bool confirm = await showDialog(
-      context: context,
-      builder: (dialogCtx) => AlertDialog(
-        title: Text('Delete Slave Device "$serial"?'),
-        content: Text('Are you sure you want to permanently delete this $deviceTypeName?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogCtx, false), child: const Text('Cancel')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(dialogCtx, true), 
-            child: const Text('Delete', style: TextStyle(color: Colors.white))
-          ),
-        ],
-      )
-    ) ?? false;
+    bool isDeleting = false;
 
-    if (!confirm) return;
-    setState(() => _isLoading = true);
-    try {
-      final res = await http.delete(
-        Uri.parse('$baseUrl/lcgate/devices/${device['id']}'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
-      );
-      if (res.statusCode == 204 || res.statusCode == 200) {
-        await _refresh();
-        await _markCacheStale();
-        if (mounted) {
-          AppFeedback.showSuccess(context, 'Slave Device "$serial" deleted successfully.');
-        }
-      } else {
-        String errMsg = 'Failed to delete slave device';
-        try {
-          final err = json.decode(res.body);
-          if (err['error'] != null) errMsg = err['error'];
-        } catch (_) {}
-        if (mounted) {
-          AppFeedback.showError(context, errMsg);
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        AppFeedback.showError(context, 'Network error deleting slave device: $e');
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
+    await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (context, setModalState) => PopScope(
+          canPop: !isDeleting,
+          child: AlertDialog(
+            title: Text('Delete Slave Device "$serial"?'),
+            content: Text('Are you sure you want to permanently delete this $deviceTypeName?'),
+            actions: [
+              TextButton(
+                onPressed: isDeleting ? null : () => Navigator.pop(dialogCtx, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  disabledBackgroundColor: Colors.red.shade300,
+                  disabledForegroundColor: Colors.white,
+                ),
+                onPressed: isDeleting
+                    ? null
+                    : () async {
+                        setModalState(() => isDeleting = true);
+                        if (mounted && devId != null) {
+                          setState(() => _deletingDeviceIds.add(devId));
+                        }
+                        AppFeedback.showLoading(this.context, 'Deleting Slave Device...');
+                        try {
+                          final res = await http.delete(
+                            Uri.parse('$baseUrl/lcgate/devices/${device['id']}'),
+                            headers: {'Authorization': 'Bearer ${widget.token}'},
+                          );
+                          if (res.statusCode == 204 || res.statusCode == 200) {
+                            await _refresh();
+                            await _markCacheStale();
+                            if (mounted && devId != null) {
+                              setState(() => _deletingDeviceIds.remove(devId));
+                            }
+                            if (dialogCtx.mounted) Navigator.pop(dialogCtx, true);
+                            if (mounted) {
+                              AppFeedback.showSuccess(this.context, 'Slave Device deleted successfully.');
+                            }
+                          } else {
+                            String errMsg = 'Failed to delete slave device';
+                            try {
+                              final err = json.decode(res.body);
+                              if (err['error'] != null) errMsg = err['error'];
+                            } catch (_) {}
+                            if (mounted && devId != null) {
+                              setState(() => _deletingDeviceIds.remove(devId));
+                            }
+                            if (mounted) AppFeedback.showError(this.context, errMsg);
+                            if (dialogCtx.mounted) setModalState(() => isDeleting = false);
+                          }
+                        } catch (e) {
+                          if (mounted && devId != null) {
+                            setState(() => _deletingDeviceIds.remove(devId));
+                          }
+                          if (mounted) {
+                            AppFeedback.showError(this.context, 'Network error deleting slave device: $e');
+                          }
+                          if (dialogCtx.mounted) setModalState(() => isDeleting = false);
+                        }
+                      },
+                child: ActionButtonContent(
+                  isLoading: isDeleting,
+                  loadingLabel: 'Deleting Slave Device...',
+                  idleLabel: 'Delete',
+                  textStyle: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   String getSlaveLetter(String? type) {
@@ -765,6 +978,8 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
       text: calcLocalSeq('LIMIT_SWITCH').toString().padLeft(2, '0'),
     );
     bool isSyncing = false;
+    bool isAdding = false;
+    bool isCapturingPhoto = false;
     XFile? slavePhoto;
     final ImagePicker picker = ImagePicker();
 
@@ -790,226 +1005,256 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
       }
     }
 
-    bool? add = await showDialog(
+    await showDialog<bool>(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Add Slave Device', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text(
-                  'Select slave sensor type and attach optional installation proof photo.',
-                  style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-                ),
-                const SizedBox(height: 14),
-
-                // 1. Slave Type Dropdown
-                DropdownButtonFormField<String>(
-                  value: selectedType,
-                  decoration: const InputDecoration(
-                    labelText: 'Slave Device Type *',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                    prefixIcon: Icon(Icons.sensors, color: AppColors.primary),
+      barrierDismissible: false,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (context, setDialogState) => PopScope(
+          canPop: !isAdding && !isCapturingPhoto,
+          child: AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Text('Add Slave Device', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'Select slave sensor type and attach optional installation proof photo.',
+                    style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                   ),
-                  items: const [
-                    DropdownMenuItem(
-                      value: 'LIMIT_SWITCH',
-                      child: Text('A - Limit Switch', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                    ),
-                    DropdownMenuItem(
-                      value: 'HALL_EFFECT',
-                      child: Text('B - Hall Effect Sensor', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                    ),
-                    DropdownMenuItem(
-                      value: 'TILT_SENSOR',
-                      child: Text('C - Tilt Sensor', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                    ),
-                  ],
-                  onChanged: (val) {
-                    if (val != null) {
-                      final newType = val;
-                      final nextLocal = calcLocalSeq(newType);
-                      setDialogState(() {
-                        selectedType = newType;
-                        seqCtrl.text = nextLocal.toString().padLeft(2, '0');
-                        isSyncing = true;
-                      });
-                      fetchSeq(newType, setDialogState);
-                    }
-                  },
-                ),
-                const SizedBox(height: 14),
+                  const SizedBox(height: 14),
 
-                // 2. Sequential Identifier Display
-                TextField(
-                  controller: seqCtrl,
-                  readOnly: true,
-                  decoration: InputDecoration(
-                    labelText: 'Sequential Serial Identifier *',
-                    isDense: true,
-                    border: const OutlineInputBorder(),
-                    prefixText: '${master['serialNumber']}-${getSlaveLetter(selectedType)}-',
-                    prefixStyle: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primary),
-                    suffixIcon: isSyncing
-                        ? const Padding(
-                            padding: EdgeInsets.all(12),
-                            child: SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                          )
-                        : null,
-                    helperText: 'Hardware wired unit under Master ${master['serialNumber']}',
-                  ),
-                ),
-                const SizedBox(height: 14),
-
-                // 3. Photo Upload Section
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF8FAFC),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: const Color(0xFFE2E8F0)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Row(
-                        children: [
-                          Icon(Icons.camera_alt_outlined, size: 16, color: Color(0xFF475569)),
-                          SizedBox(width: 6),
-                          Text('Installation Photo (Optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF334155))),
-                        ],
+                  // 1. Slave Type Dropdown
+                  DropdownButtonFormField<String>(
+                    value: selectedType,
+                    decoration: const InputDecoration(
+                      labelText: 'Slave Device Type *',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                      prefixIcon: Icon(Icons.sensors, color: AppColors.primary),
+                    ),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'LIMIT_SWITCH',
+                        child: Text('A - Limit Switch', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
                       ),
-                      const SizedBox(height: 8),
-                      if (slavePhoto == null) ...[
-                        SizedBox(
-                          width: double.infinity,
-                          child: OutlinedButton.icon(
-                            onPressed: () async {
-                              try {
-                                final img = await picker.pickImage(source: ImageSource.camera, imageQuality: 80);
-                                if (img != null) {
-                                  setDialogState(() => slavePhoto = img);
-                                }
-                              } catch (e) {
-                                debugPrint('Camera error: $e');
-                              }
-                            },
-                            icon: const Icon(Icons.camera_alt, size: 16, color: Color(0xFF0B3C7A)),
-                            label: const Text('Capture Live Photo (Camera)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0B3C7A))),
-                            style: OutlinedButton.styleFrom(
-                              side: const BorderSide(color: Color(0xFF0B3C7A)),
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                            ),
-                          ),
-                        ),
-                      ] else ...[
-                        Row(
+                      DropdownMenuItem(
+                        value: 'HALL_EFFECT',
+                        child: Text('B - Hall Effect Sensor', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                      ),
+                      DropdownMenuItem(
+                        value: 'TILT_SENSOR',
+                        child: Text('C - Tilt Sensor', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                      ),
+                    ],
+                    onChanged: isAdding
+                        ? null
+                        : (val) {
+                            if (val != null) {
+                              final newType = val;
+                              final nextLocal = calcLocalSeq(newType);
+                              setDialogState(() {
+                                selectedType = newType;
+                                seqCtrl.text = nextLocal.toString().padLeft(2, '0');
+                                isSyncing = true;
+                              });
+                              fetchSeq(newType, setDialogState);
+                            }
+                          },
+                  ),
+                  const SizedBox(height: 14),
+
+                  // 2. Sequential Identifier Display
+                  TextField(
+                    controller: seqCtrl,
+                    readOnly: true,
+                    decoration: InputDecoration(
+                      labelText: 'Sequential Serial Identifier *',
+                      isDense: true,
+                      border: const OutlineInputBorder(),
+                      prefixText: '${master['serialNumber']}-${getSlaveLetter(selectedType)}-',
+                      prefixStyle: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primary),
+                      suffixIcon: isSyncing
+                          ? const Padding(
+                              padding: EdgeInsets.all(12),
+                              child: SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            )
+                          : null,
+                      helperText: 'Hardware wired unit under Master ${master['serialNumber']}',
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+
+                  // 3. Photo Upload Section
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Row(
                           children: [
-                            const Icon(Icons.check_circle, color: Color(0xFF059669), size: 18),
-                            const SizedBox(width: 6),
-                            const Expanded(
-                              child: Text('Photo attached', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF065F46))),
-                            ),
-                            TextButton(
-                              style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
-                              onPressed: () => setDialogState(() => slavePhoto = null),
-                              child: const Text('Remove', style: TextStyle(fontSize: 12, color: Colors.red)),
-                            ),
+                            Icon(Icons.camera_alt_outlined, size: 16, color: Color(0xFF475569)),
+                            SizedBox(width: 6),
+                            Text('Installation Photo (Optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF334155))),
                           ],
                         ),
+                        const SizedBox(height: 8),
+                        if (slavePhoto == null) ...[
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: (isAdding || isCapturingPhoto)
+                                  ? null
+                                  : () async {
+                                      setDialogState(() => isCapturingPhoto = true);
+                                      AppFeedback.showLoading(this.context, 'Capturing Photo...');
+                                      try {
+                                        final img = await picker.pickImage(source: ImageSource.camera, imageQuality: 80);
+                                        if (img != null) {
+                                          if (dialogCtx.mounted) setDialogState(() => slavePhoto = img);
+                                          if (mounted) AppFeedback.showSuccess(this.context, 'Photo captured successfully.');
+                                        } else if (mounted) {
+                                          AppFeedback.hide(this.context);
+                                        }
+                                      } catch (e) {
+                                        debugPrint('Camera error: $e');
+                                        if (mounted) AppFeedback.showError(this.context, 'Failed to capture photo: $e');
+                                      } finally {
+                                        if (dialogCtx.mounted) setDialogState(() => isCapturingPhoto = false);
+                                      }
+                                    },
+                              icon: isCapturingPhoto
+                                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                                  : const Icon(Icons.camera_alt, size: 16, color: Color(0xFF0B3C7A)),
+                              label: Text(
+                                isCapturingPhoto ? 'Capturing Photo...' : 'Capture Live Photo (Camera)',
+                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0B3C7A)),
+                              ),
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(color: Color(0xFF0B3C7A)),
+                                padding: const EdgeInsets.symmetric(vertical: 10),
+                              ),
+                            ),
+                          ),
+                        ] else ...[
+                          Row(
+                            children: [
+                              const Icon(Icons.check_circle, color: Color(0xFF059669), size: 18),
+                              const SizedBox(width: 6),
+                              const Expanded(
+                                child: Text('Photo captured & ready', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF065F46))),
+                              ),
+                              TextButton(
+                                style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                                onPressed: isAdding ? null : () => setDialogState(() => slavePhoto = null),
+                                child: const Text('Remove', style: TextStyle(fontSize: 12, color: Colors.red)),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: (isAdding || isCapturingPhoto) ? null : () => Navigator.pop(dialogCtx, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: (isAdding || isCapturingPhoto || isSyncing || seqCtrl.text.isEmpty)
+                    ? null
+                    : () async {
+                        setDialogState(() => isAdding = true);
+                        AppFeedback.showLoading(this.context, 'Adding Slave Device...');
+                        try {
+                          String? base64Img;
+                          double? photoLat;
+                          double? photoLng;
+                          if (slavePhoto != null) {
+                            final bytes = await slavePhoto!.readAsBytes();
+                            base64Img = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+                            try {
+                              final pos = await Geolocator.getCurrentPosition(
+                                locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium, timeLimit: Duration(seconds: 4)),
+                              );
+                              photoLat = pos.latitude;
+                              photoLng = pos.longitude;
+                            } catch (_) {
+                              photoLat = double.tryParse((gate['latitude'] ?? '0').toString());
+                              photoLng = double.tryParse((gate['longitude'] ?? '0').toString());
+                            }
+                          }
+
+                          final res = await http.post(
+                            Uri.parse('$baseUrl/lcgate/masters/${master['id']}/devices'),
+                            headers: {
+                              'Content-Type': 'application/json',
+                              'Authorization': 'Bearer ${widget.token}',
+                            },
+                            body: json.encode({
+                              'type': selectedType,
+                              'deviceSequence': int.tryParse(seqCtrl.text) ?? calcLocalSeq(selectedType),
+                              if (base64Img != null) 'imageBase64': base64Img,
+                              if (photoLat != null) 'latitude': photoLat,
+                              if (photoLng != null) 'longitude': photoLng,
+                            }),
+                          );
+                          if (res.statusCode == 201) {
+                            await _refresh();
+                            await _markCacheStale();
+                            if (dialogCtx.mounted) Navigator.pop(dialogCtx, true);
+                            if (mounted) {
+                              AppFeedback.showSuccess(
+                                this.context,
+                                'Slave Device added successfully.',
+                              );
+                            }
+                          } else {
+                            String err = 'Failed to add slave device';
+                            try {
+                              final body = json.decode(res.body);
+                              if (body['error'] != null) err = body['error'];
+                            } catch (_) {}
+                            if (mounted) AppFeedback.showError(this.context, err);
+                            if (dialogCtx.mounted) setDialogState(() => isAdding = false);
+                          }
+                        } catch (e) {
+                          if (mounted) AppFeedback.showError(this.context, 'Network error adding slave device: $e');
+                          if (dialogCtx.mounted) setDialogState(() => isAdding = false);
+                        }
+                      },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: AppColors.primary.withValues(alpha: 0.7),
+                  disabledForegroundColor: Colors.white,
                 ),
-              ],
-            ),
+                child: ActionButtonContent(
+                  isLoading: isAdding,
+                  loadingLabel: 'Adding Slave Device...',
+                  idleLabel: 'Add Slave Unit',
+                  textStyle: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-            ElevatedButton(
-              onPressed: (isSyncing || seqCtrl.text.isEmpty)
-                  ? null
-                  : () => Navigator.pop(context, true),
-              style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
-              child: const Text('Add Slave Unit'),
-            ),
-          ],
         ),
       ),
     );
-
-    if (add == true) {
-      setState(() => _isLoading = true);
-      try {
-        String? base64Img;
-        double? photoLat;
-        double? photoLng;
-        if (slavePhoto != null) {
-          final bytes = await slavePhoto!.readAsBytes();
-          base64Img = 'data:image/jpeg;base64,${base64Encode(bytes)}';
-          try {
-            final pos = await Geolocator.getCurrentPosition(
-              locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium, timeLimit: Duration(seconds: 4)),
-            );
-            photoLat = pos.latitude;
-            photoLng = pos.longitude;
-          } catch (_) {
-            photoLat = double.tryParse((gate['latitude'] ?? '0').toString());
-            photoLng = double.tryParse((gate['longitude'] ?? '0').toString());
-          }
-        }
-
-        final res = await http.post(
-          Uri.parse('$baseUrl/lcgate/masters/${master['id']}/devices'),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ${widget.token}',
-          },
-          body: json.encode({
-            'type': selectedType,
-            'deviceSequence': int.tryParse(seqCtrl.text) ?? calcLocalSeq(selectedType),
-            if (base64Img != null) 'imageBase64': base64Img,
-            if (photoLat != null) 'latitude': photoLat,
-            if (photoLng != null) 'longitude': photoLng,
-          }),
-        );
-        if (res.statusCode == 201) {
-          await _refresh();
-          await _markCacheStale();
-          if (mounted) {
-            final typeLabel = getSlaveName(selectedType);
-            AppFeedback.showSuccess(
-              context,
-              'Slave device "$typeLabel" added successfully${base64Img != null ? ' with installation photo' : ''}!',
-            );
-          }
-        } else {
-          String err = 'Failed to add slave device';
-          try {
-            final body = json.decode(res.body);
-            if (body['error'] != null) err = body['error'];
-          } catch (_) {}
-          if (mounted) {
-            AppFeedback.showError(context, err);
-          }
-        }
-      } catch (e) {
-        if (mounted) {
-          AppFeedback.showError(context, 'Network error adding slave device: $e');
-        }
-      } finally {
-        if (mounted) setState(() => _isLoading = false);
-      }
-    }
+    seqCtrl.dispose();
   }
 
   String _fullImageUrl(String? url) {
@@ -1144,7 +1389,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
           }
           final powerEv = findEv('POWER_SOURCE');
 
-          Future<void> launchUpload(String category, String targetName, [int? childId]) async {
+          Future<void> launchUpload(String category, String targetName, [int? childId, bool isReupload = false]) async {
             final res = await Navigator.push(context, MaterialPageRoute(
               builder: (_) => UploadEvidenceScreen(
                 token: widget.token,
@@ -1152,6 +1397,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                 childDeviceId: childId,
                 category: category,
                 targetName: targetName,
+                isReupload: isReupload,
               ),
             ));
             if (res != null && res is Map) {
@@ -1210,7 +1456,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         subtitle: 'Serial: ${master['serialNumber']}',
                         icon: Icons.memory,
                         evidence: masterEv,
-                        onUpload: () => launchUpload('MASTER', 'Master ESP'),
+                        onUpload: () => launchUpload('MASTER', 'Master ESP', null, masterEv != null),
                         onDelete: masterEv != null ? () => _deleteEvidence(masterEv, 'Master ESP', () => removeEvFromSheet(masterEv)) : null,
                       ),
                       const SizedBox(height: 10),
@@ -1219,7 +1465,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         subtitle: 'SIM Card & ICCID Hardware Proof',
                         icon: Icons.sim_card_outlined,
                         evidence: simEv,
-                        onUpload: () => launchUpload('SIM_CARD', 'SIM Card'),
+                        onUpload: () => launchUpload('SIM_CARD', 'SIM Card', null, simEv != null),
                         onDelete: simEv != null ? () => _deleteEvidence(simEv!, 'SIM Card', () => removeEvFromSheet(simEv)) : null,
                       ),
                       const SizedBox(height: 10),
@@ -1228,7 +1474,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         subtitle: master['powerSource'] == 'SOLAR' ? 'Panels & Battery Installation' : 'Grid AC Power Supply',
                         icon: master['powerSource'] == 'SOLAR' ? Icons.wb_sunny_outlined : Icons.bolt,
                         evidence: powerEv,
-                        onUpload: () => launchUpload('POWER_SOURCE', 'Power Source'),
+                        onUpload: () => launchUpload('POWER_SOURCE', 'Power Source', null, powerEv != null),
                         onDelete: powerEv != null ? () => _deleteEvidence(powerEv, 'Power Source', () => removeEvFromSheet(powerEv)) : null,
                       ),
                       const SizedBox(height: 14),
@@ -1256,7 +1502,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                               subtitle: subtitle,
                               icon: Icons.sensors,
                               evidence: childEv,
-                              onUpload: () => launchUpload(childType, title, childId),
+                              onUpload: () => launchUpload(childType, title, childId, childEv != null),
                               onDelete: childEv != null ? () => _deleteEvidence(childEv, title, () => removeEvFromSheet(childEv)) : null,
                             ),
                           );
@@ -1438,7 +1684,10 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
   Widget build(BuildContext context) {
     List masters = gate['masters'] ?? [];
 
-    return Scaffold(
+    return ActionBusyOverlay(
+      isBusy: _isLoading,
+      message: _busyMessage.isNotEmpty ? _busyMessage : 'Loading...',
+      child: Scaffold(
       appBar: AppBar(
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1467,9 +1716,11 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
 
           if (masters.isNotEmpty)
             IconButton(
-              icon: const Icon(Icons.wifi_tethering, color: AppColors.primary),
+              icon: _isPingingGate
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.wifi_tethering, color: AppColors.primary),
               tooltip: 'Check Connection',
-              onPressed: _pingGateDevice,
+              onPressed: _isPingingGate ? null : _pingGateDevice,
             ),
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -1489,16 +1740,12 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
           if (result == true) {
             await _refresh();
             await _markCacheStale();
-            if (!context.mounted) return;
-            AppFeedback.showSuccess(context, 'New Master Unit created and linked to this gate.');
           }
         },
         icon: const Icon(Icons.add),
         label: const Text('Add Master'),
       ),
-      body: _isLoading 
-        ? const Center(child: CircularProgressIndicator())
-        : RefreshIndicator(
+      body: RefreshIndicator(
             onRefresh: () => _refresh(isManual: true),
             child: masters.isEmpty
               ? ListView(
@@ -1654,42 +1901,58 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                             ],
                                           ),
                                         ),
-                                        Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            OutlinedButton.icon(
-                                              style: OutlinedButton.styleFrom(
-                                                foregroundColor: const Color(0xFF0284C7),
-                                                side: const BorderSide(color: Color(0xFFBAE6FD)),
-                                                backgroundColor: Colors.white,
-                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                                                minimumSize: Size.zero,
-                                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                                              ),
-                                              onPressed: () => _pingGateDevice(
-                                                masterId: master['id'] is int ? master['id'] : int.tryParse(master['id']?.toString() ?? ''),
-                                                thingName: matchingDev['thingName']?.toString(),
-                                                unitLabel: 'Master ${master['masterSequence'] ?? ''} (${matchingDev['thingName'] ?? ''})',
-                                              ),
-                                              icon: const Icon(Icons.wifi_tethering, size: 13),
-                                              label: const Text('Ping', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                                            ),
-                                            const SizedBox(width: 6),
-                                            OutlinedButton(
-                                              style: OutlinedButton.styleFrom(
-                                                foregroundColor: const Color(0xFFDC2626),
-                                                side: const BorderSide(color: Color(0xFFFECACA)),
-                                                backgroundColor: Colors.white,
-                                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                                minimumSize: Size.zero,
-                                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                                              ),
-                                              onPressed: () => _unassignMasterDevice(matchingDev, master),
-                                              child: const Text('Unassign', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                                            ),
-                                          ],
+                                        Builder(
+                                          builder: (context) {
+                                            final mIdInt = master['id'] is int ? master['id'] as int : int.tryParse(master['id']?.toString() ?? '');
+                                            final isPinging = mIdInt != null && _pingingMasterIds.contains(mIdInt);
+                                            final isUnassigning = mIdInt != null && _unassigningMasterIds.contains(mIdInt);
+                                            return Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                OutlinedButton.icon(
+                                                  style: OutlinedButton.styleFrom(
+                                                    foregroundColor: const Color(0xFF0284C7),
+                                                    side: const BorderSide(color: Color(0xFFBAE6FD)),
+                                                    backgroundColor: Colors.white,
+                                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                                    minimumSize: Size.zero,
+                                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                                  ),
+                                                  onPressed: (isPinging || isUnassigning)
+                                                      ? null
+                                                      : () => _pingGateDevice(
+                                                            masterId: mIdInt,
+                                                            thingName: matchingDev['thingName']?.toString(),
+                                                            unitLabel: 'Master ${master['masterSequence'] ?? ''} (${matchingDev['thingName'] ?? ''})',
+                                                          ),
+                                                  icon: isPinging
+                                                      ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+                                                      : const Icon(Icons.wifi_tethering, size: 13),
+                                                  label: Text(isPinging ? 'Pinging...' : 'Ping', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                                                ),
+                                                const SizedBox(width: 6),
+                                                OutlinedButton(
+                                                  style: OutlinedButton.styleFrom(
+                                                    foregroundColor: const Color(0xFFDC2626),
+                                                    side: const BorderSide(color: Color(0xFFFECACA)),
+                                                    backgroundColor: Colors.white,
+                                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                                    minimumSize: Size.zero,
+                                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                                  ),
+                                                  onPressed: (isUnassigning || isPinging)
+                                                      ? null
+                                                      : () => _unassignMasterDevice(matchingDev, master),
+                                                  child: Text(
+                                                    isUnassigning ? 'Unassigning...' : 'Unassign',
+                                                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                                  ),
+                                                ),
+                                              ],
+                                            );
+                                          },
                                         ),
                                       ],
                                     ),
@@ -1973,6 +2236,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                                               childDeviceId: dId,
                                                               category: dType,
                                                               targetName: slaveTitle,
+                                                              isReupload: true,
                                                             ),
                                                           ),
                                                         );
@@ -2008,6 +2272,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                                               childDeviceId: dId,
                                                               category: dType,
                                                               targetName: slaveTitle,
+                                                              isReupload: false,
                                                             ),
                                                           ),
                                                         );
@@ -2065,8 +2330,6 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                       ));
                                       if (!context.mounted) return;
                                       await _refresh();
-                                      if (!context.mounted) return;
-                                      AppFeedback.showInfo(context, 'Evidence checklist status updated.');
                                     },
                                   ),
                                 ),
@@ -2079,6 +2342,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                   },
                 ),
           ),
+      ),
     );
   }
 }

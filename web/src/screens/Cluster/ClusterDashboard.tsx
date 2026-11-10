@@ -38,7 +38,7 @@ const SORT_OPTIONS = [
 ];
 
 export default function ClusterDashboard(_props: Props) {
-  const { success: toastSuccess, error: toastError, warning: toastWarning, info: toastInfo } = useToast();
+  const { warning: toastWarning, info: toastInfo, loading: toastLoading, resolveToast } = useToast();
   const [gates, setGates] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -244,6 +244,7 @@ export default function ClusterDashboard(_props: Props) {
   const hasActiveFilters = activeFilterCount > 0;
 
   const handleDeleteGate = async () => {
+    if (deletingGate) return;
     if (deleteConfirmText !== selectedGate.name && deleteConfirmText !== selectedGate.lcNumber) {
       toastWarning("Confirmation text does not match gate name or LC number.", "Verification Failed");
       return;
@@ -251,16 +252,8 @@ export default function ClusterDashboard(_props: Props) {
     const gateLabel = selectedGate.name || selectedGate.lcNumber;
     const gateId = selectedGate.id;
 
-    // Optimistic UI: remove gate instantly
-    setGates(prev => prev.filter(g => g.id !== gateId));
-    setShowDeleteModal(false);
-    setDeleteConfirmText('');
-    setSelectedGate(null);
-    setView('list');
-    toastSuccess(`Gate "${gateLabel}" is being deleted...`, "Gate Deleted");
-
-    // Backend deletion runs in the background
     setDeletingGate(true);
+    const toastId = toastLoading(`Deleting LC Gate "${gateLabel}"...`, "Deleting LC Gate");
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/${gateId}`, {
         method: 'DELETE',
@@ -269,17 +262,20 @@ export default function ClusterDashboard(_props: Props) {
       if (res.ok) {
         clusterCacheService.invalidate(getCacheUserId(_props.user));
         lcGatesCacheService.removeGate(getCacheUserId(_props.user), gateId);
+        setGates(prev => prev.filter(g => g.id !== gateId));
+        setShowDeleteModal(false);
+        setDeleteConfirmText('');
+        setSelectedGate(null);
+        setView('list');
+        resolveToast(toastId, 'LC Gate deleted successfully.', 'success', 'LC Gate Deleted');
         fetchGates(true);
-        toastSuccess(`Gate "${gateLabel}" permanently deleted.`, "Gate Deleted");
       } else {
         const err = await res.json().catch(() => ({}));
-        toastError(err.error || 'Failed to delete gate from server.', 'Delete Error');
-        fetchGates(true);
+        resolveToast(toastId, err.error || 'Failed to delete LC Gate from server.', 'error', 'Delete Failed');
       }
     } catch (e: any) {
       console.error(e);
-      toastError(e.message || 'Network error while deleting gate.', 'Network Error');
-      fetchGates(true);
+      resolveToast(toastId, e.message || 'Network error while deleting LC Gate.', 'error', 'Network Error');
     } finally {
       setDeletingGate(false);
     }
@@ -612,17 +608,18 @@ export default function ClusterDashboard(_props: Props) {
             <input 
               type="text" 
               className="glass-input w-full mb-4" 
+              disabled={deletingGate}
               value={deleteConfirmText}
               onChange={(e) => setDeleteConfirmText(e.target.value)}
             />
             <div className="flex gap-4 justify-end">
-              <button className="btn-outline" onClick={() => setShowDeleteModal(false)}>Cancel</button>
+              <button className="btn-outline" disabled={deletingGate} onClick={() => setShowDeleteModal(false)}>Cancel</button>
               <button 
                 className="btn-danger" 
-                 disabled={deletingGate || deleteConfirmText !== (selectedGate.name || selectedGate.lcNumber)}
+                disabled={deletingGate || deleteConfirmText !== (selectedGate.name || selectedGate.lcNumber)}
                 onClick={handleDeleteGate}
               >
-                 {deletingGate ? 'Deleting...' : 'I understand the consequences, delete this gate'}
+                {deletingGate ? 'Deleting LC Gate...' : 'I understand the consequences, delete this gate'}
               </button>
             </div>
           </div>
@@ -643,7 +640,7 @@ export default function ClusterDashboard(_props: Props) {
 }
 
 function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
-  const { success: toastSuccess, error: toastError, warning: toastWarning } = useToast();
+  const { success: toastSuccess, error: toastError, warning: toastWarning, loading: toastLoading, resolveToast } = useToast();
   const [name, setName] = useState('');
   const [lcNumber, setLcNumber] = useState('');
   const [locationName, setLocationName] = useState('');
@@ -684,8 +681,9 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit || submitting) return;
     setSubmitting(true);
+    const toastId = toastLoading('Creating LC Gate...', 'Creating LC Gate');
     try {
       const raw = lcNumber.trim();
       const cleanLc = raw.toUpperCase().startsWith('LC-')
@@ -713,15 +711,15 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
       });
       if (res.ok) {
         lcGatesCacheService.markStale(getCacheUserId());
-        toastSuccess(`LC Gate "${cleanLc}" created successfully.`, 'Gate Created');
+        resolveToast(toastId, 'LC Gate created successfully.', 'success', 'LC Gate Created');
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
-        toastError(err.error || 'Failed to create gate', 'Creation Failed');
+        resolveToast(toastId, err.error || 'Failed to create LC Gate', 'error', 'Creation Failed');
       }
     } catch (e: any) {
       console.error(e);
-      toastError(e.message || 'Network error occurred while creating gate.', 'Network Error');
+      resolveToast(toastId, e.message || 'Network error occurred while creating LC Gate.', 'error', 'Network Error');
     }
     setSubmitting(false);
   };
@@ -730,7 +728,7 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
     <div className="glass-card max-w-lg mx-auto slide-up">
       <div className="flex justify-between items-center mb-6">
         <h3 className="title-gradient m-0">Create New LC Gate</h3>
-        <button className="btn-icon" onClick={onCancel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FaTimes size={16} /></button>
+        <button className="btn-icon" disabled={submitting} onClick={onCancel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FaTimes size={16} /></button>
       </div>
       
       <form onSubmit={handleSubmit} className="flex-col gap-4">
@@ -804,7 +802,7 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
         </div>
 
         <button type="submit" className="btn-primary w-full mt-4 py-3 text-lg" disabled={submitting || !canSubmit}>
-          {submitting ? 'Creating...' : 'Create Gate'}
+          {submitting ? 'Creating LC Gate...' : 'Create Gate'}
         </button>
       </form>
     </div>
@@ -812,7 +810,7 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
 }
 
 function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: any) {
-  const { success: toastSuccess, error: toastError } = useToast();
+  const { loading: toastLoading, resolveToast } = useToast();
   const [addingMaster, setAddingMaster] = useState(false);
   const [addingDeviceToMaster, setAddingDeviceToMaster] = useState<number | null>(null);
   const [uploadingEvidenceFor, setUploadingEvidenceFor] = useState<any>(null);
@@ -824,12 +822,16 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
   const [showAssignDeviceModal, setShowAssignDeviceModal] = useState(false);
   const [editingMaster, setEditingMaster] = useState<any>(null);
   const [unassigningDeviceId, setUnassigningDeviceId] = useState<number | null>(null);
+  const [deletingMasterId, setDeletingMasterId] = useState<number | null>(null);
+  const [deletingDeviceId, setDeletingDeviceId] = useState<number | null>(null);
 
   const handleUnassignDevice = async (deviceId: number) => {
-    if (!window.confirm('Are you sure you want to unassign this AWS IoT device from this LC Gate? The hardware record will be preserved in Device Registry.')) {
+    if (unassigningDeviceId === deviceId) return;
+    if (!window.confirm('Are you sure you want to unassign this AWS IoT Thing from this LC Gate? The hardware record will be preserved in Device Registry.')) {
       return;
     }
     setUnassigningDeviceId(deviceId);
+    const toastId = toastLoading('Unassigning AWS IoT Thing...', 'Unassigning Device');
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/${gate.id}/unassign-device`, {
         method: 'POST',
@@ -837,20 +839,23 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
         body: JSON.stringify({ deviceId }),
       });
       if (res.ok) {
-        toastSuccess('Physical AWS IoT device unassigned successfully.', 'Device Unassigned');
+        resolveToast(toastId, 'AWS IoT Thing unassigned successfully.', 'success', 'Device Unassigned');
         onUpdate();
       } else {
         const err = await res.json().catch(() => ({}));
-        toastError(err.error || 'Failed to unassign device', 'Unassign Failed');
+        resolveToast(toastId, err.error || 'Failed to unassign AWS IoT Thing', 'error', 'Unassign Failed');
       }
     } catch (e: any) {
-      toastError(e.message || 'Error occurred while unassigning device.', 'Network Error');
+      resolveToast(toastId, e.message || 'Error occurred while unassigning AWS IoT Thing.', 'error', 'Network Error');
     } finally {
       setUnassigningDeviceId(null);
     }
   };
 
   const executeDeleteMaster = async (masterId: number) => {
+    if (deletingMasterId !== null) return;
+    setDeletingMasterId(masterId);
+    const toastId = toastLoading('Deleting Master Unit...', 'Deleting Master');
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/masters/${masterId}`, {
         method: 'DELETE',
@@ -860,20 +865,25 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
         lcGatesCacheService.markStale(getCacheUserId());
         setMasterToDelete(null);
         setDeleteConfirmText('');
-        toastSuccess('Master unit deleted successfully.', 'Hardware Updated');
+        resolveToast(toastId, 'Master Unit deleted successfully.', 'success', 'Master Deleted');
         onUpdate();
       } else {
         const err = await res.json().catch(() => ({}));
-        toastError(err.error || 'Failed to delete master unit', 'Delete Failed');
+        resolveToast(toastId, err.error || 'Failed to delete Master Unit', 'error', 'Delete Failed');
       }
     } catch (e: any) {
       console.error(e);
-      toastError(e.message || 'Network error while deleting master unit.', 'Network Error');
+      resolveToast(toastId, e.message || 'Network error while deleting Master Unit.', 'error', 'Network Error');
+    } finally {
+      setDeletingMasterId(null);
     }
   };
 
   const executeDeleteDevice = async (deviceId: number) => {
+    if (deletingDeviceId !== null) return;
     if (!window.confirm("Are you sure you want to delete this Slave Device?")) return;
+    setDeletingDeviceId(deviceId);
+    const toastId = toastLoading('Deleting Slave Device...', 'Deleting Slave Device');
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/devices/${deviceId}`, {
         method: 'DELETE',
@@ -881,15 +891,17 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
       });
       if (res.ok) {
         lcGatesCacheService.markStale(getCacheUserId());
-        toastSuccess('Slave device removed successfully.', 'Hardware Updated');
+        resolveToast(toastId, 'Slave Device deleted successfully.', 'success', 'Slave Deleted');
         onUpdate();
       } else {
         const err = await res.json().catch(() => ({}));
-        toastError(err.error || 'Failed to delete slave device', 'Delete Failed');
+        resolveToast(toastId, err.error || 'Failed to delete Slave Device', 'error', 'Delete Failed');
       }
     } catch (e: any) {
       console.error(e);
-      toastError(e.message || 'Network error while deleting slave device.', 'Network Error');
+      resolveToast(toastId, e.message || 'Network error while deleting Slave Device.', 'error', 'Network Error');
+    } finally {
+      setDeletingDeviceId(null);
     }
   };
 
@@ -992,9 +1004,9 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
                       style={{ padding: '5px 10px', fontSize: '0.75rem', borderColor: '#fca5a5', color: '#dc2626', cursor: 'pointer', background: '#ffffff' }}
                       onClick={() => handleUnassignDevice(dev.id)}
                       disabled={unassigningDeviceId === dev.id}
-                      title="Unassign hardware device from gate"
+                      title="Unassign AWS IoT Thing from gate"
                     >
-                      <FaTimes size={10} /> {unassigningDeviceId === dev.id ? '...' : 'Unassign'}
+                      <FaTimes size={10} /> {unassigningDeviceId === dev.id ? 'Unassigning...' : 'Unassign'}
                     </button>
                   </div>
                 ))}
@@ -1123,11 +1135,23 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
                               </div>
                               <button 
                                 className="transition flex items-center justify-center rounded-md flex-shrink-0" 
-                                style={{ width: '28px', height: '28px', backgroundColor: 'transparent', border: '1px solid #ef4444', color: '#ef4444', cursor: 'pointer' }}
+                                style={{
+                                  width: deletingDeviceId === dev.id ? 'auto' : '28px',
+                                  height: '28px',
+                                  padding: deletingDeviceId === dev.id ? '0 8px' : undefined,
+                                  backgroundColor: 'transparent',
+                                  border: '1px solid #ef4444',
+                                  color: '#ef4444',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 700,
+                                  cursor: deletingDeviceId === dev.id ? 'not-allowed' : 'pointer',
+                                  opacity: deletingDeviceId === dev.id ? 0.7 : 1,
+                                }}
+                                disabled={deletingDeviceId === dev.id}
                                 onClick={() => executeDeleteDevice(dev.id)}
                                 title="Delete slave device"
                               >
-                                <FaTrash style={{ fontSize: '0.85rem' }} />
+                                {deletingDeviceId === dev.id ? 'Deleting...' : <FaTrash style={{ fontSize: '0.85rem' }} />}
                               </button>
                             </div>
                             <div className="flex justify-between items-center text-xs" style={{ borderTop: '1px solid var(--border)', paddingTop: '10px' }}>
@@ -1164,17 +1188,18 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
             <input 
               type="text" 
               className="glass-input w-full mb-4" 
+              disabled={deletingMasterId !== null}
               value={deleteConfirmText}
               onChange={(e) => setDeleteConfirmText(e.target.value)}
             />
             <div className="flex gap-4 justify-end">
-              <button className="btn-outline" onClick={() => { setMasterToDelete(null); setDeleteConfirmText(''); }}>Cancel</button>
+              <button className="btn-outline" disabled={deletingMasterId !== null} onClick={() => { setMasterToDelete(null); setDeleteConfirmText(''); }}>Cancel</button>
               <button 
                 className="btn-danger" 
-                disabled={deleteConfirmText !== masterToDelete.serialNumber}
+                disabled={deletingMasterId !== null || deleteConfirmText !== masterToDelete.serialNumber}
                 onClick={() => executeDeleteMaster(masterToDelete.id)}
               >
-                Delete Master Unit
+                {deletingMasterId === masterToDelete.id ? 'Deleting Master Unit...' : 'Delete Master Unit'}
               </button>
             </div>
           </div>
@@ -1422,7 +1447,7 @@ function EvidenceCardViewer({ title, subtitle, evidence, onPreview }: { title: s
 
 // ── Standalone Form to Edit / Update Existing LC Gate ──
 function UpdateGateForm({ gate, onCancel, onSuccess, zones, divisionsByZone }: any) {
-  const { success: toastSuccess, error: toastError, warning: toastWarning } = useToast();
+  const { success: toastSuccess, error: toastError, warning: toastWarning, loading: toastLoading, resolveToast } = useToast();
   const [name, setName] = useState(gate.name || '');
   const [lcNumber, setLcNumber] = useState(gate.lcNumber || '');
   const [locationName, setLocationName] = useState(gate.locationName || '');
@@ -1474,8 +1499,9 @@ function UpdateGateForm({ gate, onCancel, onSuccess, zones, divisionsByZone }: a
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit || submitting) return;
     setSubmitting(true);
+    const toastId = toastLoading('Updating LC Gate...', 'Updating LC Gate');
     try {
       const raw = lcNumber.trim();
       const cleanLc = raw.toUpperCase().startsWith('LC-')
@@ -1504,15 +1530,15 @@ function UpdateGateForm({ gate, onCancel, onSuccess, zones, divisionsByZone }: a
       if (res.ok) {
         const updated = await res.json();
         lcGatesCacheService.markStale(getCacheUserId());
-        toastSuccess(`LC Gate "${cleanLc}" updated successfully.`, 'Gate Updated');
+        resolveToast(toastId, 'LC Gate updated successfully.', 'success', 'LC Gate Updated');
         onSuccess(updated);
       } else {
         const err = await res.json().catch(() => ({}));
-        toastError(err.error || 'Failed to update gate', 'Update Failed');
+        resolveToast(toastId, err.error || 'Failed to update LC Gate', 'error', 'Update Failed');
       }
     } catch (e: any) {
       console.error(e);
-      toastError(e.message || 'Network error occurred while updating gate.', 'Network Error');
+      resolveToast(toastId, e.message || 'Network error occurred while updating LC Gate.', 'error', 'Network Error');
     }
     setSubmitting(false);
   };
@@ -1524,7 +1550,7 @@ function UpdateGateForm({ gate, onCancel, onSuccess, zones, divisionsByZone }: a
           <h3 className="title-gradient m-0">Edit LC Gate Details</h3>
           <p className="text-xs text-muted m-0 mt-1">Update railway organizational mapping &amp; configuration</p>
         </div>
-        <button className="btn-icon" onClick={onCancel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FaTimes size={16} /></button>
+        <button className="btn-icon" disabled={submitting} onClick={onCancel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FaTimes size={16} /></button>
       </div>
       
       <form onSubmit={handleSubmit} className="flex-col gap-4">
@@ -1594,11 +1620,11 @@ function UpdateGateForm({ gate, onCancel, onSuccess, zones, divisionsByZone }: a
         </div>
 
         <div className="flex gap-3 justify-end mt-4">
-          <button type="button" className="btn-outline flex-1 py-2.5" onClick={onCancel}>
+          <button type="button" className="btn-outline flex-1 py-2.5" disabled={submitting} onClick={onCancel}>
             Cancel
           </button>
           <button type="submit" className="btn-primary flex-1 py-2.5" disabled={submitting || !canSubmit}>
-            {submitting ? 'Saving...' : 'Save Changes'}
+            {submitting ? 'Updating LC Gate...' : 'Save Changes'}
           </button>
         </div>
       </form>
@@ -1608,7 +1634,7 @@ function UpdateGateForm({ gate, onCancel, onSuccess, zones, divisionsByZone }: a
 
 // ── Modal to Assign Registered AWS IoT Device to LC Gate ──
 function AssignDeviceModal({ gate, onClose, onSuccess }: any) {
-  const { success: toastSuccess, error: toastError } = useToast();
+  const { error: toastError, loading: toastLoading, resolveToast } = useToast();
   const [unassignedDevices, setUnassignedDevices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
@@ -1631,11 +1657,13 @@ function AssignDeviceModal({ gate, onClose, onSuccess }: any) {
 
   const handleAssign = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (assigning) return;
     if (!selectedDeviceId) {
-      toastError('Please choose a device to assign.', 'Selection Required');
+      toastError('Please choose an AWS IoT Thing to assign.', 'Selection Required');
       return;
     }
     setAssigning(true);
+    const toastId = toastLoading('Assigning AWS IoT Thing...', 'Assigning Device');
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/${gate.id}/assign-device`, {
         method: 'POST',
@@ -1646,14 +1674,14 @@ function AssignDeviceModal({ gate, onClose, onSuccess }: any) {
         }),
       });
       if (res.ok) {
-        toastSuccess('Device assigned successfully to this LC Gate.', 'Device Assigned');
+        resolveToast(toastId, 'AWS IoT Thing assigned successfully.', 'success', 'Device Assigned');
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
-        toastError(err.error || 'Failed to assign device', 'Assignment Failed');
+        resolveToast(toastId, err.error || 'Failed to assign AWS IoT Thing', 'error', 'Assignment Failed');
       }
     } catch (e: any) {
-      toastError(e.message || 'Error assigning device.', 'Network Error');
+      resolveToast(toastId, e.message || 'Error assigning AWS IoT Thing.', 'error', 'Network Error');
     } finally {
       setAssigning(false);
     }
@@ -1669,7 +1697,7 @@ function AssignDeviceModal({ gate, onClose, onSuccess }: any) {
             </h3>
             <p className="text-xs text-muted m-0 mt-0.5">Map physical hardware to LC Gate {gate.lcNumber}</p>
           </div>
-          <button className="btn-icon" onClick={onClose}><FaTimes size={16} /></button>
+          <button className="btn-icon" disabled={assigning} onClick={onClose}><FaTimes size={16} /></button>
         </div>
 
         <form onSubmit={handleAssign} className="flex flex-col gap-4">
@@ -1678,11 +1706,11 @@ function AssignDeviceModal({ gate, onClose, onSuccess }: any) {
             <select
               className="glass-input font-mono text-sm"
               required
-              disabled={loading}
+              disabled={loading || assigning}
               value={selectedDeviceId}
               onChange={e => setSelectedDeviceId(e.target.value)}
             >
-              <option value="">{loading ? 'Loading devices…' : (unassignedDevices.length === 0 ? 'No unassigned devices available' : '-- Select AWS IoT Thing --')}</option>
+              <option value="">{loading ? 'Loading AWS IoT Things…' : (unassignedDevices.length === 0 ? 'No unassigned devices available' : '-- Select AWS IoT Thing --')}</option>
               {unassignedDevices.map(d => (
                 <option key={d.id} value={d.id.toString()}>
                   {d.thingName} {d.serialNumber && d.serialNumber !== d.thingName ? `(${d.serialNumber})` : ''} - {d.deviceType}
@@ -1696,6 +1724,7 @@ function AssignDeviceModal({ gate, onClose, onSuccess }: any) {
               <label className="text-xs font-bold text-slate-700 uppercase">Link to Master Unit (Optional)</label>
               <select
                 className="glass-input text-sm"
+                disabled={assigning}
                 value={selectedMasterId}
                 onChange={e => setSelectedMasterId(e.target.value)}
               >
@@ -1710,11 +1739,11 @@ function AssignDeviceModal({ gate, onClose, onSuccess }: any) {
           )}
 
           <div className="flex gap-3 justify-end mt-4">
-            <button type="button" className="btn-outline flex-1 py-2" onClick={onClose}>
+            <button type="button" className="btn-outline flex-1 py-2" disabled={assigning} onClick={onClose}>
               Cancel
             </button>
             <button type="submit" className="btn-primary flex-1 py-2" disabled={assigning || !selectedDeviceId}>
-              {assigning ? 'Assigning...' : 'Assign Device'}
+              {assigning ? 'Assigning AWS IoT Thing...' : 'Assign Device'}
             </button>
           </div>
         </form>
@@ -1725,7 +1754,7 @@ function AssignDeviceModal({ gate, onClose, onSuccess }: any) {
 
 // ── Modal to Edit Existing Master Unit Configuration (Power source & Device link) ──
 function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
-  const { success: toastSuccess, error: toastError } = useToast();
+  const { error: toastError, loading: toastLoading, resolveToast } = useToast();
   const [serialNumber, setSerialNumber] = useState(master.serialNumber || '');
   const [powerSource, setPowerSource] = useState(master.powerSource || 'SOLAR');
   const [deviceList, setDeviceList] = useState<any[]>([]);
@@ -1755,12 +1784,14 @@ function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     if (!serialNumber.trim()) {
       toastError('Master Serial Identifier is required.', 'Validation Error');
       return;
     }
 
     setSubmitting(true);
+    const toastId = toastLoading('Updating Master Unit...', 'Updating Master');
     try {
       const devIdNum = selectedDeviceId ? parseInt(selectedDeviceId, 10) : null;
       const unassign = initiallyAssignedDevice && !devIdNum;
@@ -1777,14 +1808,14 @@ function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
       });
 
       if (res.ok) {
-        toastSuccess('Master unit configuration updated successfully.', 'Master Updated');
+        resolveToast(toastId, 'Master Unit updated successfully.', 'success', 'Master Updated');
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
-        toastError(err.error || 'Failed to update master unit', 'Update Failed');
+        resolveToast(toastId, err.error || 'Failed to update Master Unit', 'error', 'Update Failed');
       }
     } catch (e: any) {
-      toastError(e.message || 'Error updating master unit.', 'Network Error');
+      resolveToast(toastId, e.message || 'Error updating Master Unit.', 'error', 'Network Error');
     } finally {
       setSubmitting(false);
     }
@@ -1800,7 +1831,7 @@ function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
             </h3>
             <p className="text-xs text-muted m-0 mt-0.5">Master #{master.masterSequence} for LC Gate {gate.lcNumber}</p>
           </div>
-          <button className="btn-icon" onClick={onClose}><FaTimes size={16} /></button>
+          <button className="btn-icon" disabled={submitting} onClick={onClose}><FaTimes size={16} /></button>
         </div>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
@@ -1809,6 +1840,7 @@ function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
             <input
               type="text"
               required
+              disabled={submitting}
               className="glass-input font-mono font-bold"
               value={serialNumber}
               onChange={e => setSerialNumber(e.target.value)}
@@ -1819,6 +1851,7 @@ function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
             <label className="text-xs font-bold text-slate-700 uppercase">Power Source *</label>
             <select
               className="glass-input"
+              disabled={submitting}
               value={powerSource}
               onChange={e => setPowerSource(e.target.value)}
             >
@@ -1834,7 +1867,7 @@ function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
             <select
               className="glass-input font-mono text-sm mt-1"
               value={selectedDeviceId}
-              disabled={loadingDevices}
+              disabled={loadingDevices || submitting}
               onChange={e => setSelectedDeviceId(e.target.value)}
             >
               <option value="">-- No Device Assigned (Virtual / Decoupled) --</option>
@@ -1850,11 +1883,11 @@ function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
           </div>
 
           <div className="flex gap-3 justify-end mt-4">
-            <button type="button" className="btn-outline flex-1 py-2" onClick={onClose}>
+            <button type="button" className="btn-outline flex-1 py-2" disabled={submitting} onClick={onClose}>
               Cancel
             </button>
             <button type="submit" className="btn-primary flex-1 py-2" disabled={submitting}>
-              {submitting ? 'Saving...' : 'Save Changes'}
+              {submitting ? 'Updating Master Unit...' : 'Save Changes'}
             </button>
           </div>
         </form>
@@ -1864,12 +1897,14 @@ function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
 }
 
 function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
-  const { success: toastSuccess, error: toastError } = useToast();
+  const { loading: toastLoading, resolveToast } = useToast();
   const [masterSequence, setMasterSequence] = useState('');
   const [powerSource, setPowerSource] = useState('SOLAR');
   const [customSerial, setCustomSerial] = useState<string>('');
   const [loadingSeq, setLoadingSeq] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [submitStage, setSubmitStage] = useState('Creating Master Unit...');
+  const [capturingSimPhoto, setCapturingSimPhoto] = useState(false);
 
   // Device Registry Integration
   const [deviceList, setDeviceList] = useState<any[]>([]);
@@ -1881,11 +1916,19 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
   const handleSimFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setCapturingSimPhoto(true);
+    const capToastId = toastLoading('Capturing Photo...', 'Preparing SIM Photo');
     const reader = new FileReader();
     reader.onloadend = () => {
       const result = reader.result as string;
       setSimPhotoBase64(result);
       setSimPhotoPreview(result);
+      setCapturingSimPhoto(false);
+      resolveToast(capToastId, 'Photo captured successfully.', 'success', 'Photo Captured');
+    };
+    reader.onerror = () => {
+      setCapturingSimPhoto(false);
+      resolveToast(capToastId, 'Failed to capture photo.', 'error', 'Capture Failed');
     };
     reader.readAsDataURL(file);
   };
@@ -1935,12 +1978,15 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting || capturingSimPhoto) return;
     const chosen = selectedDeviceId ? deviceList.find(d => d.id.toString() === selectedDeviceId) : null;
     const seqInt = parseInt(masterSequence, 10);
     const defaultSerial = masterSequence ? `${gate.lcNumber}-${masterSequence.padStart(2, '0')}` : '';
     const serialToUse = (customSerial.trim() || defaultSerial).trim();
 
     setSubmitting(true);
+    setSubmitStage('Creating Master Unit...');
+    const toastId = toastLoading('Creating Master Unit...', 'Creating Master');
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/${gate.id}/masters`, {
         method: 'POST',
@@ -1959,10 +2005,12 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
       if (res.ok) {
         const createdMaster = await res.json().catch(() => ({}));
         const masterIdToUse = createdMaster?.id;
-        const confirmedSerial = createdMaster?.serialNumber || serialToUse || 'Master Unit';
+        let simUploadFailed = false;
 
         // If SIM photo was selected, upload evidence immediately
         if (simPhotoBase64 && masterIdToUse) {
+          setSubmitStage('Uploading Photo...');
+          resolveToast(toastId, 'Uploading Photo...', 'loading', 'Uploading SIM Photo', 0);
           try {
             let lat = gate.latitude || 0;
             let lng = gate.longitude || 0;
@@ -1975,7 +2023,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
                 lng = pos.coords.longitude;
               }
             }
-            await fetch(`${API_URL}/api/v1/evidence`, {
+            const evRes = await fetch(`${API_URL}/api/v1/evidence`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -1989,21 +2037,39 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
                 longitude: lng
               })
             });
+            if (!evRes.ok) {
+              simUploadFailed = true;
+            }
           } catch (evErr) {
             console.warn('Failed to upload SIM photo on creation:', evErr);
+            simUploadFailed = true;
           }
         }
 
         lcGatesCacheService.markStale(getCacheUserId());
-        toastSuccess(`Master Unit ${confirmedSerial} added successfully${simPhotoBase64 ? ' with SIM photo' : ''}.`, 'Master Unit Added');
+        if (simUploadFailed) {
+          resolveToast(
+            toastId,
+            'Master Unit created successfully, but SIM photo upload failed. Please retry in the Evidence Checklist.',
+            'warning',
+            'Master Created (SIM Photo Failed)'
+          );
+        } else {
+          resolveToast(
+            toastId,
+            simPhotoBase64 ? 'Master Unit created and SIM photo uploaded successfully.' : 'Master Unit created successfully.',
+            'success',
+            'Master Unit Created'
+          );
+        }
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
-        toastError(err.error || 'Failed to add master unit', 'Hardware Error');
+        resolveToast(toastId, err.error || 'Failed to add Master Unit', 'error', 'Hardware Error');
       }
     } catch (e: any) {
       console.error(e);
-      toastError(e.message || 'Network error while creating master unit.', 'Network Error');
+      resolveToast(toastId, e.message || 'Network error while creating Master Unit.', 'error', 'Network Error');
     }
     setSubmitting(false);
   };
@@ -2012,7 +2078,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
     <div className="glass-card max-w-lg mx-auto slide-up">
       <div className="flex justify-between items-center mb-6">
         <h3 className="m-0 title-gradient">Add Master Unit</h3>
-        <button className="btn-icon" onClick={onCancel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FaTimes size={16} /></button>
+        <button className="btn-icon" disabled={submitting} onClick={onCancel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FaTimes size={16} /></button>
       </div>
       <form onSubmit={handleSubmit} className="flex-col gap-4">
         {/* Device Registry Dropdown (Optional) */}
@@ -2022,6 +2088,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
           </label>
           <select 
             className="glass-input" 
+            disabled={submitting}
             value={selectedDeviceId}
             onChange={(e) => setSelectedDeviceId(e.target.value)}
           >
@@ -2060,7 +2127,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
         </div>
         <div className="form-group">
           <label>Power Source *</label>
-          <select className="glass-input" value={powerSource} onChange={e => setPowerSource(e.target.value)}>
+          <select className="glass-input" disabled={submitting} value={powerSource} onChange={e => setPowerSource(e.target.value)}>
             <option value="SOLAR">Solar Power</option>
             <option value="DIRECT">Direct Current Supply</option>
           </select>
@@ -2074,21 +2141,25 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
           <input 
             type="file" 
             accept="image/*" 
+            disabled={submitting || capturingSimPhoto}
             className="glass-input mt-2" 
             onChange={handleSimFileChange} 
           />
+          {capturingSimPhoto && (
+            <small className="mt-1 block font-semibold" style={{ color: '#0284c7' }}>Capturing Photo...</small>
+          )}
           {simPhotoPreview && (
             <div className="mt-2 flex items-center gap-3">
               <img src={simPhotoPreview} alt="SIM Preview" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '2px solid #10b981' }} />
-              <button type="button" className="btn-secondary text-xs" onClick={clearSimPhoto} style={{ padding: '4px 8px' }}>Remove</button>
+              <button type="button" className="btn-secondary text-xs" disabled={submitting} onClick={clearSimPhoto} style={{ padding: '4px 8px' }}>Remove</button>
             </div>
           )}
           <small className="text-muted mt-1 block">
             Attach photo of the installed SIM card & ICCID number. You can also view or update it anytime in the Evidence Checklist.
           </small>
         </div>
-        <button type="submit" className="btn-primary w-full mt-4 py-3" disabled={submitting}>
-          {submitting ? 'Saving...' : 'Create Master Unit'}
+        <button type="submit" className="btn-primary w-full mt-4 py-3" disabled={submitting || capturingSimPhoto}>
+          {submitting ? submitStage : 'Create Master Unit'}
         </button>
       </form>
     </div>
@@ -2096,9 +2167,10 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
 }
 
 function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
-  const { success: toastSuccess, error: toastError } = useToast();
+  const { loading: toastLoading, resolveToast } = useToast();
   const [type, setType] = useState('LIMIT_SWITCH');
   const [submitting, setSubmitting] = useState(false);
+  const [capturingPhoto, setCapturingPhoto] = useState(false);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
 
@@ -2156,10 +2228,18 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
+      setCapturingPhoto(true);
+      const capToastId = toastLoading('Capturing Photo...', 'Preparing Photo');
       setImageFile(file);
       const reader = new FileReader();
       reader.onload = (ev) => {
         setImagePreview(ev.target?.result as string);
+        setCapturingPhoto(false);
+        resolveToast(capToastId, 'Photo captured successfully.', 'success', 'Photo Captured');
+      };
+      reader.onerror = () => {
+        setCapturingPhoto(false);
+        resolveToast(capToastId, 'Failed to capture photo.', 'error', 'Capture Failed');
       };
       reader.readAsDataURL(file);
     }
@@ -2167,7 +2247,12 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting || capturingPhoto) return;
     setSubmitting(true);
+    const toastId = toastLoading(
+      imageFile ? 'Uploading Photo & Adding Slave Device...' : 'Adding Slave Device...',
+      'Adding Slave Device'
+    );
     try {
       let imageBase64: string | undefined = undefined;
       if (imageFile) {
@@ -2194,15 +2279,20 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
       });
       if (res.ok) {
         lcGatesCacheService.markStale(getCacheUserId());
-        toastSuccess(`Slave Unit ${derivedSerial} (${getTypeName(type)}) created successfully${imageBase64 ? ' with installation photo' : ''}.`, 'Slave Created');
+        resolveToast(
+          toastId,
+          imageBase64 ? 'Slave Device and photo added successfully.' : 'Slave Device added successfully.',
+          'success',
+          'Slave Device Added'
+        );
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
-        toastError(err.error || 'Failed to add slave device', 'Hardware Error');
+        resolveToast(toastId, err.error || 'Failed to add Slave Device', 'error', 'Hardware Error');
       }
     } catch (e: any) {
       console.error(e);
-      toastError(e.message || 'Network error while creating slave device.', 'Network Error');
+      resolveToast(toastId, e.message || 'Network error while adding Slave Device.', 'error', 'Network Error');
     }
     setSubmitting(false);
   };
@@ -2211,7 +2301,7 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
     <div className="glass-card max-w-lg mx-auto slide-up">
       <div className="flex justify-between items-center mb-6">
         <h3 className="m-0 title-gradient">Add Slave Device</h3>
-        <button className="btn-icon" onClick={onCancel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FaTimes size={16} /></button>
+        <button className="btn-icon" disabled={submitting} onClick={onCancel} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FaTimes size={16} /></button>
       </div>
       <form onSubmit={handleSubmit} className="flex-col gap-4">
         {/* Wired Architecture Notice */}
@@ -2232,7 +2322,7 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
 
         <div className="form-group">
           <label>Slave Device Type *</label>
-          <select className="glass-input" value={type} onChange={e => setType(e.target.value)}>
+          <select className="glass-input" disabled={submitting} value={type} onChange={e => setType(e.target.value)}>
             <option value="LIMIT_SWITCH">A - Limit Switch</option>
             <option value="HALL_EFFECT">B - Hall Effect Sensor</option>
             <option value="TILT_SENSOR">C - Tilt Sensor</option>
@@ -2264,10 +2354,14 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
             type="file" 
             accept="image/*" 
             capture="environment"
+            disabled={submitting || capturingPhoto}
             onChange={handleImageChange}
             className="glass-input"
             style={{ fontSize: '0.85rem', padding: '8px' }}
           />
+          {capturingPhoto && (
+            <small className="mt-1 block font-semibold" style={{ color: '#0284c7' }}>Capturing Photo...</small>
+          )}
           {imagePreview && (
             <div className="mt-3 relative" style={{ width: '120px', height: '90px' }}>
               <img 
@@ -2277,6 +2371,7 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
               />
               <button 
                 type="button" 
+                disabled={submitting}
                 onClick={() => { setImageFile(null); setImagePreview(null); }}
                 className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow"
                 style={{ border: 'none', cursor: 'pointer', lineHeight: 0 }}
@@ -2291,8 +2386,8 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
           </small>
         </div>
 
-        <button type="submit" className="btn-primary w-full mt-2 py-3" disabled={submitting}>
-          {submitting ? 'Connecting...' : `Add ${getTypeName(type)} (${derivedSerial})`}
+        <button type="submit" className="btn-primary w-full mt-2 py-3" disabled={submitting || capturingPhoto}>
+          {submitting ? 'Adding Slave Device...' : `Add ${getTypeName(type)} (${derivedSerial})`}
         </button>
       </form>
     </div>
@@ -2398,31 +2493,66 @@ function CentralizedEvidenceUpload({ master, onClose }: any) {
 }
 
 function EvidenceItem({ title, description, evidence, masterId, childDeviceId, category, onUploaded, onDeleted }: any) {
-  const { success: toastSuccess, error: toastError, warning: toastWarning } = useToast();
-  const [uploading, setUploading] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const { warning: toastWarning, loading: toastLoading, resolveToast } = useToast();
+  const [actionPhase, setActionPhase] = useState<
+    'IDLE' | 'CAPTURING' | 'ACQUIRING_GPS' | 'UPLOADING' | 'REUPLOADING' | 'DELETING'
+  >('IDLE');
+  const isBusy = actionPhase !== 'IDLE';
+  const isReupload = Boolean(evidence);
+
+  const phaseLabel =
+    actionPhase === 'CAPTURING'
+      ? 'Capturing Photo...'
+      : actionPhase === 'ACQUIRING_GPS'
+        ? 'Acquiring GPS...'
+        : actionPhase === 'REUPLOADING'
+          ? 'Re-uploading Photo...'
+          : actionPhase === 'UPLOADING'
+            ? 'Uploading Photo...'
+            : actionPhase === 'DELETING'
+              ? 'Deleting Photo...'
+              : '';
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || isBusy) return;
+    const inputEl = e.target;
 
     if (!('geolocation' in navigator)) {
       toastWarning('Device location is strictly required to upload evidence proof.', 'GPS Required');
-      e.target.value = '';
+      inputEl.value = '';
       return;
     }
 
-    setUploading(true);
+    const reuploadMode = isReupload;
+    setActionPhase('CAPTURING');
+    const toastId = toastLoading('Capturing Photo...', 'Preparing Photo');
 
-    // Strictly verify and acquire device location before uploading
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const latitude = pos.coords.latitude;
-        const longitude = pos.coords.longitude;
+    const reader = new FileReader();
+    reader.onerror = () => {
+      setActionPhase('IDLE');
+      inputEl.value = '';
+      resolveToast(toastId, 'Failed to read captured photo.', 'error', 'Capture Failed');
+    };
+    reader.onloadend = () => {
+      const base64String = reader.result as string;
+      resolveToast(toastId, 'Photo captured successfully.', 'success', 'Photo Captured', 2000);
 
-        const reader = new FileReader();
-        reader.onloadend = async () => {
-          const base64String = reader.result as string;
+      setActionPhase('ACQUIRING_GPS');
+      const uploadToastId = toastLoading('Acquiring GPS location...', 'GPS Verification');
+
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          const latitude = pos.coords.latitude;
+          const longitude = pos.coords.longitude;
+          setActionPhase(reuploadMode ? 'REUPLOADING' : 'UPLOADING');
+          resolveToast(
+            uploadToastId,
+            reuploadMode ? 'Re-uploading Photo...' : 'Uploading Photo...',
+            'loading',
+            reuploadMode ? 'Re-uploading Evidence' : 'Uploading Evidence',
+            0
+          );
 
           try {
             const res = await fetch(`${API_URL}/api/v1/evidence`, {
@@ -2443,60 +2573,96 @@ function EvidenceItem({ title, description, evidence, masterId, childDeviceId, c
 
             if (res.ok) {
               const saved = await res.json();
-              toastSuccess(`Evidence photo for "${title}" uploaded successfully.`, 'Evidence Uploaded');
               onUploaded(saved);
+              resolveToast(
+                uploadToastId,
+                reuploadMode ? 'Photo re-uploaded successfully.' : 'Photo uploaded successfully.',
+                'success',
+                reuploadMode ? 'Photo Re-uploaded' : 'Photo Uploaded'
+              );
             } else {
               const err = await res.json().catch(() => ({}));
-              toastError(err.message || err.error || 'Upload failed', 'Upload Failed');
+              resolveToast(
+                uploadToastId,
+                err.message || err.error || (reuploadMode ? 'Photo re-upload failed.' : 'Photo upload failed.'),
+                'error',
+                reuploadMode ? 'Re-upload Failed' : 'Upload Failed'
+              );
             }
           } catch (err: any) {
             console.error(err);
-            toastError('Upload failed: ' + (err.message || 'Network error'), 'Network Error');
+            resolveToast(
+              uploadToastId,
+              `${reuploadMode ? 'Re-upload' : 'Upload'} failed: ${err.message || 'Network error'}`,
+              'error',
+              'Network Error'
+            );
           } finally {
-            setUploading(false);
-            if (e.target) e.target.value = '';
+            setActionPhase('IDLE');
+            inputEl.value = '';
           }
-        };
-        reader.readAsDataURL(file);
-      },
-      (err) => {
-        setUploading(false);
-        if (e.target) e.target.value = '';
+        },
+        (err) => {
+          setActionPhase('IDLE');
+          inputEl.value = '';
 
-        if (err.code === 1) { // PERMISSION_DENIED
-          toastError('GPS location is strictly required to verify installation proof. Please allow location access in your browser settings.', 'Location Access Denied');
-        } else if (err.code === 2) { // POSITION_UNAVAILABLE
-          toastWarning('Please turn ON your device location / GPS in system settings before uploading evidence.', 'Location Turned Off');
-        } else if (err.code === 3) { // TIMEOUT
-          toastWarning('Could not acquire GPS coordinates in time. Please check your GPS signal and try again.', 'GPS Timed Out');
-        } else {
-          toastError(`Location Error: ${err.message || 'Unable to get location'}`, 'Location Error');
-        }
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
+          if (err.code === 1) {
+            resolveToast(
+              uploadToastId,
+              'GPS location is strictly required to verify installation proof. Please allow location access in your browser settings.',
+              'error',
+              'Location Access Denied'
+            );
+          } else if (err.code === 2) {
+            resolveToast(
+              uploadToastId,
+              'Please turn ON your device location / GPS in system settings before uploading evidence.',
+              'warning',
+              'Location Turned Off'
+            );
+          } else if (err.code === 3) {
+            resolveToast(
+              uploadToastId,
+              'Could not acquire GPS coordinates in time. Please check your GPS signal and try again.',
+              'warning',
+              'GPS Timed Out'
+            );
+          } else {
+            resolveToast(
+              uploadToastId,
+              `Location Error: ${err.message || 'Unable to get location'}`,
+              'error',
+              'Location Error'
+            );
+          }
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleDelete = async () => {
-    if (!evidence) return;
+    if (!evidence || isBusy) return;
     if (!window.confirm(`Delete the uploaded photo for "${title}"? This cannot be undone.`)) return;
-    setDeleting(true);
+    setActionPhase('DELETING');
+    const toastId = toastLoading('Deleting Photo...', 'Removing Evidence');
     try {
       const res = await fetch(`${API_URL}/api/v1/evidence/${evidence.id}`, {
         method: 'DELETE',
         headers: authHeaders()
       });
       if (res.ok) {
-        toastSuccess(`Evidence photo for "${title}" deleted successfully.`, 'Evidence Removed');
         onDeleted(evidence.id);
+        resolveToast(toastId, 'Photo deleted successfully.', 'success', 'Photo Deleted');
       } else {
-        toastError('Failed to delete evidence photo from server.', 'Delete Failed');
+        resolveToast(toastId, 'Failed to delete photo from server.', 'error', 'Delete Failed');
       }
     } catch (err) {
       console.error(err);
-      toastError('Network error while deleting evidence.', 'Network Error');
+      resolveToast(toastId, 'Network error while deleting photo.', 'error', 'Network Error');
     } finally {
-      setDeleting(false);
+      setActionPhase('IDLE');
     }
   };
 
@@ -2510,12 +2676,12 @@ function EvidenceItem({ title, description, evidence, masterId, childDeviceId, c
         <p className="text-sm text-muted m-0 mt-1">{description}</p>
       </div>
       <div className="flex items-center gap-3">
-        {uploading ? (
-          <div className="flex flex-col gap-1 items-end" style={{ minWidth: '130px' }}>
+        {actionPhase === 'CAPTURING' || actionPhase === 'ACQUIRING_GPS' || actionPhase === 'UPLOADING' || actionPhase === 'REUPLOADING' ? (
+          <div className="flex flex-col gap-1 items-end" style={{ minWidth: '150px' }}>
             <div style={{ width: '100%', height: '6px', background: 'rgba(59, 130, 246, 0.2)', borderRadius: '4px', overflow: 'hidden' }}>
               <div style={{ height: '100%', width: '100%', background: '#3b82f6', animation: 'pulse 1.2s infinite' }} />
             </div>
-            <span style={{ fontSize: '0.75rem', color: '#60a5fa' }}>Uploading…</span>
+            <span style={{ fontSize: '0.75rem', color: '#0284c7', fontWeight: 700 }}>{phaseLabel}</span>
           </div>
         ) : evidence ? (
           <>
@@ -2524,28 +2690,40 @@ function EvidenceItem({ title, description, evidence, masterId, childDeviceId, c
               target="_blank" 
               rel="noreferrer" 
               className="btn-secondary py-1 px-3 text-xs flex items-center gap-1"
-              style={{ textDecoration: 'none' }}
+              style={{ textDecoration: 'none', pointerEvents: isBusy ? 'none' : 'auto', opacity: isBusy ? 0.6 : 1 }}
             >
               <FaSearchPlus /> View
             </a>
-            <label className="btn-small btn-outline cursor-pointer flex items-center gap-1" style={{ cursor: 'pointer', fontSize: '0.75rem', padding: '4px 10px' }}>
+            <label
+              className="btn-small btn-outline flex items-center gap-1"
+              style={{
+                cursor: isBusy ? 'not-allowed' : 'pointer',
+                fontSize: '0.75rem',
+                padding: '4px 10px',
+                opacity: isBusy ? 0.6 : 1,
+                pointerEvents: isBusy ? 'none' : 'auto',
+              }}
+            >
               <FaRedo size={11} /> Re-upload
-              <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleFileChange} />
+              <input type="file" accept="image/*" capture="environment" disabled={isBusy} style={{ display: 'none' }} onChange={handleFileChange} />
             </label>
             <button 
               className="btn-small btn-outline flex items-center gap-1"
-              style={{ color: '#ef4444', borderColor: '#ef4444', fontSize: '0.75rem', padding: '4px 10px', cursor: 'pointer' }}
+              style={{ color: '#ef4444', borderColor: '#ef4444', fontSize: '0.75rem', padding: '4px 10px', cursor: isBusy ? 'not-allowed' : 'pointer' }}
               onClick={handleDelete}
-              disabled={deleting}
+              disabled={isBusy}
               title="Delete Photo"
             >
-              {deleting ? '…' : <><FaTrash size={11} /> Delete</>}
+              {actionPhase === 'DELETING' ? 'Deleting Photo...' : <><FaTrash size={11} /> Delete</>}
             </button>
           </>
         ) : (
-          <label className="btn-primary cursor-pointer">
+          <label
+            className="btn-primary cursor-pointer"
+            style={{ pointerEvents: isBusy ? 'none' : 'auto', opacity: isBusy ? 0.6 : 1 }}
+          >
             Upload
-            <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleFileChange} />
+            <input type="file" accept="image/*" capture="environment" disabled={isBusy} style={{ display: 'none' }} onChange={handleFileChange} />
           </label>
         )}
       </div>

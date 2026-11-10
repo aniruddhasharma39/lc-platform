@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 
-export type ToastType = 'success' | 'error' | 'warning' | 'info';
+export type ToastType = 'success' | 'error' | 'warning' | 'info' | 'loading';
 
 export interface ToastItem {
   id: string;
@@ -12,11 +12,13 @@ export interface ToastItem {
 
 export interface ToastContextType {
   toasts: ToastItem[];
-  showToast: (message: string, type?: ToastType, options?: { title?: string; duration?: number }) => void;
-  success: (message: string, title?: string) => void;
-  error: (message: string, title?: string) => void;
-  warning: (message: string, title?: string) => void;
-  info: (message: string, title?: string) => void;
+  showToast: (message: string, type?: ToastType, options?: { title?: string; duration?: number }) => string;
+  success: (message: string, title?: string) => string;
+  error: (message: string, title?: string) => string;
+  warning: (message: string, title?: string) => string;
+  info: (message: string, title?: string) => string;
+  loading: (message: string, title?: string) => string;
+  resolveToast: (id: string, message: string, type: ToastType, title?: string, duration?: number) => void;
   dismiss: (id: string) => void;
 }
 
@@ -55,9 +57,9 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const showToast = useCallback(
-    (message: string, type: ToastType = 'info', options?: { title?: string; duration?: number }) => {
+    (message: string, type: ToastType = 'info', options?: { title?: string; duration?: number }): string => {
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      const duration = options?.duration ?? 4500;
+      const duration = options?.duration ?? (type === 'loading' ? 0 : 4500);
       const newToast: ToastItem = {
         id,
         message,
@@ -78,6 +80,42 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }, duration);
         timersRef.current.set(id, timer);
       }
+      return id;
+    },
+    [dismiss]
+  );
+
+  const resolveToast = useCallback(
+    (
+      id: string,
+      message: string,
+      type: ToastType,
+      title?: string,
+      duration?: number
+    ) => {
+      const effectiveDuration = duration ?? (type === 'loading' ? 0 : 4500);
+      const existingTimer = timersRef.current.get(id);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        timersRef.current.delete(id);
+      }
+
+      setToasts(prev => {
+        const exists = prev.some(t => t.id === id);
+        if (!exists) {
+          const fallbackToast: ToastItem = { id, message, type, title, duration: effectiveDuration };
+          const updated = [...prev, fallbackToast];
+          return updated.length > 5 ? updated.slice(updated.length - 5) : updated;
+        }
+        return prev.map(t => (t.id === id ? { ...t, message, type, title, duration: effectiveDuration } : t));
+      });
+
+      if (effectiveDuration > 0) {
+        const timer = setTimeout(() => {
+          dismiss(id);
+        }, effectiveDuration);
+        timersRef.current.set(id, timer);
+      }
     },
     [dismiss]
   );
@@ -86,6 +124,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const error = useCallback((message: string, title?: string) => showToast(message, 'error', { title }), [showToast]);
   const warning = useCallback((message: string, title?: string) => showToast(message, 'warning', { title }), [showToast]);
   const info = useCallback((message: string, title?: string) => showToast(message, 'info', { title }), [showToast]);
+  const loading = useCallback((message: string, title?: string) => showToast(message, 'loading', { title, duration: 0 }), [showToast]);
 
   // Listen for non-React static toast dispatches from window
   useEffect(() => {
@@ -120,7 +159,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   return (
-    <ToastContext.Provider value={{ toasts, showToast, success, error, warning, info, dismiss }}>
+    <ToastContext.Provider value={{ toasts, showToast, success, error, warning, info, loading, resolveToast, dismiss }}>
       {children}
     </ToastContext.Provider>
   );
