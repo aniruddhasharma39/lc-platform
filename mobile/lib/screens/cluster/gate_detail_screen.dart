@@ -401,27 +401,25 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     );
   }
 
-  Future<void> _showDeviceAssignmentDialog() async {
+  Future<void> _showAssignModalForMaster(Map<String, dynamic> master) async {
     setState(() => _isLoading = true);
-    List<dynamic> allDevices = [];
+    List unassignedDevices = [];
     try {
       final res = await http.get(
-        Uri.parse('$baseUrl/devices?limit=100'),
+        Uri.parse('$baseUrl/devices?limit=100&deviceType=MASTER&unassigned=true'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         if (data is Map && data['devices'] is List) {
-          allDevices = data['devices'];
+          unassignedDevices = (data['devices'] as List).where((d) => d['masterId'] == null).toList();
         }
       }
     } catch (_) {}
     if (mounted) setState(() => _isLoading = false);
 
-    final assignedDevices = allDevices.where((d) => d['gateId'] == gate['id']).toList();
-    final unassignedDevices = allDevices.where((d) => d['gateId'] == null).toList();
-
-    String? selectedUnassignedId;
+    String? selectedDeviceId;
+    final mSeq = master['masterSequence'] ?? 1;
 
     if (!mounted) return;
 
@@ -431,166 +429,136 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
         builder: (context, setModalState) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: Row(
-            children: const [
-              Icon(Icons.developer_board, color: AppColors.primary),
-              SizedBox(width: 8),
-              Text('AWS IoT Device Assignment', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            children: [
+              const Icon(Icons.memory, color: AppColors.primary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text('Assign Hardware: Master Unit $mSeq', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              ),
             ],
           ),
           content: SizedBox(
-            width: 460,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    'Assign or unassign AWS IoT registered hardware devices for Gate ${gate['lcNumber']}.',
-                    style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text('CURRENTLY ASSIGNED DEVICES', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF475569))),
-                  const SizedBox(height: 6),
-                  if (assignedDevices.isEmpty)
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(color: const Color(0xFFF8FAFC), borderRadius: BorderRadius.circular(8), border: Border.all(color: const Color(0xFFE2E8F0))),
-                      child: const Text('No physical AWS IoT devices assigned to this gate. It operates as a virtual LC gate.', style: TextStyle(fontSize: 12, color: Color(0xFF64748B))),
-                    )
-                  else
-                    ...assignedDevices.map((dev) => Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFFCBD5E1)),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.memory, size: 18, color: AppColors.primary),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(dev['thingName'] ?? 'Device', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
-                                Text('Type: ${dev['deviceType'] ?? 'MASTER'} • Serial: ${dev['serialNumber'] ?? '-'}', style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
-                              ],
-                            ),
-                          ),
-                          TextButton(
-                            style: TextButton.styleFrom(foregroundColor: Colors.red, visualDensity: VisualDensity.compact),
-                            onPressed: () async {
-                              final confirm = await showDialog<bool>(
-                                context: context,
-                                builder: (c) => AlertDialog(
-                                  title: const Text('Unassign Hardware Device?'),
-                                  content: Text('Unassign ${dev['thingName']} from this LC Gate? The physical device will return to the unassigned registry pool.'),
-                                  actions: [
-                                    TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')),
-                                    ElevatedButton(
-                                      style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                                      onPressed: () => Navigator.pop(c, true),
-                                      child: const Text('Unassign', style: TextStyle(color: Colors.white)),
-                                    ),
-                                  ],
-                                ),
-                              );
-                              if (confirm == true) {
-                                try {
-                                  final res = await http.post(
-                                    Uri.parse('$baseUrl/lcgate/${gate['id']}/unassign-device'),
-                                    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${widget.token}'},
-                                    body: json.encode({'deviceId': dev['id']}),
-                                  );
-                                  if (res.statusCode == 200) {
-                                    setModalState(() {
-                                      assignedDevices.removeWhere((d) => d['id'] == dev['id']);
-                                      unassignedDevices.add(dev);
-                                    });
-                                    await _refresh();
-                                    await _markCacheStale();
-                                    if (mounted) AppFeedback.showSuccess(context, 'Device unassigned from gate.');
-                                  } else {
-                                    if (mounted) AppFeedback.showError(context, 'Failed to unassign device');
-                                  }
-                                } catch (e) {
-                                  if (mounted) AppFeedback.showError(context, 'Error unassigning: $e');
-                                }
-                              }
-                            },
-                            child: const Text('Unassign', style: TextStyle(fontSize: 12)),
-                          ),
-                        ],
-                      ),
-                    )),
-                  const SizedBox(height: 16),
-                  const Text('LINK NEW HARDWARE DEVICE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF475569))),
-                  const SizedBox(height: 6),
-                  if (unassignedDevices.isEmpty)
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(color: const Color(0xFFFFFBEB), borderRadius: BorderRadius.circular(8), border: Border.all(color: const Color(0xFFFDE68A))),
-                      child: const Text('No unassigned devices currently available in AWS IoT Registry.', style: TextStyle(fontSize: 11.5, color: Color(0xFF92400E))),
-                    )
-                  else
-                    Row(
-                      children: [
-                        Expanded(
-                          child: DropdownButtonFormField<String>(
-                            value: selectedUnassignedId,
-                            isExpanded: true,
-                            hint: const Text('Select AWS IoT Device', style: TextStyle(fontSize: 12)),
-                            decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
-                            items: unassignedDevices.map((d) => DropdownMenuItem<String>(
-                              value: d['id'].toString(),
-                              child: Text('${d['thingName']} (${d['deviceType']})', style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis),
-                            )).toList(),
-                            onChanged: (val) => setModalState(() => selectedUnassignedId = val),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, visualDensity: VisualDensity.compact),
-                          onPressed: selectedUnassignedId == null ? null : () async {
-                            final chosenDev = unassignedDevices.firstWhere((d) => d['id'].toString() == selectedUnassignedId);
-                            try {
-                              final res = await http.post(
-                                Uri.parse('$baseUrl/lcgate/${gate['id']}/assign-device'),
-                                headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${widget.token}'},
-                                body: json.encode({'deviceId': chosenDev['id']}),
-                              );
-                              if (res.statusCode == 200) {
-                                setModalState(() {
-                                  unassignedDevices.removeWhere((d) => d['id'] == chosenDev['id']);
-                                  assignedDevices.add(chosenDev);
-                                  selectedUnassignedId = null;
-                                });
-                                await _refresh();
-                                await _markCacheStale();
-                                if (mounted) AppFeedback.showSuccess(context, 'Device assigned to LC Gate successfully.');
-                              } else {
-                                if (mounted) AppFeedback.showError(context, 'Failed to assign device.');
-                              }
-                            } catch (e) {
-                              if (mounted) AppFeedback.showError(context, 'Error assigning: $e');
-                            }
-                          },
-                          child: const Text('Assign', style: TextStyle(color: Colors.white, fontSize: 12)),
-                        ),
-                      ],
+            width: 440,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Select an unassigned AWS IoT Thing from the registry to link with Master Unit $mSeq of Gate ${gate['lcNumber']}.',
+                  style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                ),
+                const SizedBox(height: 16),
+                if (unassignedDevices.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFFBEB),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFFDE68A)),
                     ),
+                    child: const Text(
+                      'No unassigned Master hardware devices available in AWS IoT Registry. Please provision a Thing in AWS IoT Core first.',
+                      style: TextStyle(fontSize: 12, color: Color(0xFF92400E)),
+                    ),
+                  )
+                else ...[
+                  const Text('AVAILABLE AWS IOT MASTER THINGS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF475569))),
+                  const SizedBox(height: 6),
+                  DropdownButtonFormField<String>(
+                    value: selectedDeviceId,
+                    isExpanded: true,
+                    hint: const Text('Select AWS IoT Thing', style: TextStyle(fontSize: 12.5)),
+                    decoration: InputDecoration(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    items: unassignedDevices.map((d) => DropdownMenuItem<String>(
+                      value: d['id'].toString(),
+                      child: Text('${d['thingName']} (Type: ${d['deviceType'] ?? 'MASTER'})', style: const TextStyle(fontSize: 12.5), overflow: TextOverflow.ellipsis),
+                    )).toList(),
+                    onChanged: (val) => setModalState(() => selectedDeviceId = val),
+                  ),
                 ],
-              ),
+              ],
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogCtx), child: const Text('Close')),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx),
+              child: const Text('Cancel'),
+            ),
+            if (unassignedDevices.isNotEmpty)
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                onPressed: selectedDeviceId == null ? null : () async {
+                  final chosenDev = unassignedDevices.firstWhere((d) => d['id'].toString() == selectedDeviceId);
+                  try {
+                    final res = await http.post(
+                      Uri.parse('$baseUrl/lcgate/${gate['id']}/assign-device'),
+                      headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${widget.token}'},
+                      body: json.encode({'deviceId': chosenDev['id'], 'masterId': master['id']}),
+                    );
+                    if (res.statusCode == 200) {
+                      Navigator.pop(dialogCtx);
+                      await _refresh();
+                      await _markCacheStale();
+                      if (mounted) AppFeedback.showSuccess(context, 'AWS IoT Thing "${chosenDev['thingName']}" linked to Master Unit $mSeq.');
+                    } else {
+                      if (mounted) AppFeedback.showError(context, 'Failed to assign device to master unit.');
+                    }
+                  } catch (e) {
+                    if (mounted) AppFeedback.showError(context, 'Error assigning: $e');
+                  }
+                },
+                child: const Text('Assign to Master'),
+              ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _unassignMasterDevice(Map<String, dynamic> dev, Map<String, dynamic> master) async {
+    final mSeq = master['masterSequence'] ?? 1;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('Unassign Hardware Device?'),
+        content: Text('Unassign physical AWS IoT Thing "${dev['thingName']}" from Master Unit $mSeq?\n\nThe physical device will return to the unassigned registry pool.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Unassign'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        final res = await http.post(
+          Uri.parse('$baseUrl/lcgate/${gate['id']}/unassign-device'),
+          headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${widget.token}'},
+          body: json.encode({'deviceId': dev['id']}),
+        );
+        if (res.statusCode == 200) {
+          await _refresh();
+          await _markCacheStale();
+          if (mounted) AppFeedback.showSuccess(context, 'Hardware unassigned from Master Unit $mSeq.');
+        } else {
+          if (mounted) AppFeedback.showError(context, 'Failed to unassign device');
+        }
+      } catch (e) {
+        if (mounted) AppFeedback.showError(context, 'Error unassigning: $e');
+      }
+    }
   }
 
   Future<void> _deleteMaster(Map master) async {
@@ -1491,11 +1459,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
             tooltip: 'Edit LC Gate',
             onPressed: _showEditGateDialog,
           ),
-          IconButton(
-            icon: const Icon(Icons.link_outlined),
-            tooltip: 'Assign / Unassign Devices',
-            onPressed: _showDeviceAssignmentDialog,
-          ),
+
           if (masters.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.wifi_tethering, color: AppColors.primary),
@@ -1604,7 +1568,168 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                 ),
                               ],
                             ),
-                            const SizedBox(height: 16),
+                            const SizedBox(height: 14),
+
+                            // Master AWS IoT Hardware Assignment Card
+                            Builder(
+                              builder: (context) {
+                                final masterDevs = (master['deviceRegistries'] as List?) ?? [];
+                                final gateDevs = (gate['deviceRegistries'] as List?) ?? [];
+                                final matchingDev = masterDevs.isNotEmpty
+                                    ? masterDevs.first
+                                    : gateDevs.firstWhere(
+                                        (d) => d is Map && (
+                                          (d['masterId'] != null && d['masterId'] == master['id']) ||
+                                          (d['thingName'] != null && (
+                                            d['thingName'] == master['serialNumber'] ||
+                                            d['thingName'] == master['serialNumber']?.toString().replaceAll(RegExp(r'^#+'), '')
+                                          ))
+                                        ),
+                                        orElse: () => null,
+                                      );
+
+                                if (matchingDev != null) {
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 14),
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFF0FDF4),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: const Color(0xFFBBF7D0)),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.all(6),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFDCFCE7),
+                                            borderRadius: BorderRadius.circular(6),
+                                          ),
+                                          child: const Icon(Icons.memory, size: 18, color: Color(0xFF16A34A)),
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  const Text(
+                                                    'ASSIGNED AWS IOT THING',
+                                                    style: TextStyle(
+                                                      fontSize: 10,
+                                                      fontWeight: FontWeight.w800,
+                                                      letterSpacing: 0.5,
+                                                      color: Color(0xFF15803D),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 6),
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                                    decoration: BoxDecoration(
+                                                      color: const Color(0xFFDCFCE7),
+                                                      borderRadius: BorderRadius.circular(4),
+                                                    ),
+                                                    child: Text(
+                                                      (matchingDev['status'] ?? 'ONLINE').toString().toUpperCase(),
+                                                      style: const TextStyle(fontSize: 8.5, fontWeight: FontWeight.bold, color: Color(0xFF15803D)),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                '${matchingDev['thingName'] ?? 'Unknown'}',
+                                                style: const TextStyle(
+                                                  fontSize: 13.5,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Color(0xFF0F172A),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        OutlinedButton(
+                                          style: OutlinedButton.styleFrom(
+                                            foregroundColor: const Color(0xFFDC2626),
+                                            side: const BorderSide(color: Color(0xFFFECACA)),
+                                            backgroundColor: Colors.white,
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                            minimumSize: Size.zero,
+                                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                          ),
+                                          onPressed: () => _unassignMasterDevice(matchingDev, master),
+                                          child: const Text('Unassign', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }
+
+                                return Container(
+                                  margin: const EdgeInsets.only(bottom: 14),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFF8FAFC),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.all(6),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFF1F5F9),
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: const Icon(Icons.developer_board_off, size: 18, color: Color(0xFF64748B)),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: const [
+                                            Text(
+                                              'VIRTUAL MASTER UNIT',
+                                              style: TextStyle(
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.w800,
+                                                letterSpacing: 0.5,
+                                                color: Color(0xFF64748B),
+                                              ),
+                                            ),
+                                            SizedBox(height: 1),
+                                            Text(
+                                              'No physical AWS IoT Thing linked',
+                                              style: TextStyle(
+                                                fontSize: 11.5,
+                                                color: Color(0xFF475569),
+                                                fontWeight: FontWeight.w500,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      ElevatedButton.icon(
+                                        icon: const Icon(Icons.add_link, size: 14),
+                                        label: const Text('Assign Thing', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: AppColors.primary,
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                          minimumSize: Size.zero,
+                                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                          elevation: 0,
+                                        ),
+                                        onPressed: () => _showAssignModalForMaster(master),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
                             
                             // Connected Slave Devices
                             Container(

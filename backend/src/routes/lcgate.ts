@@ -274,6 +274,9 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
     gates.forEach(g => {
       g.masters.forEach(m => {
         if (m.serialNumber) allThingNames.push(m.serialNumber);
+        ((m as any).deviceRegistries || []).forEach((d: any) => {
+          if (d.thingName) allThingNames.push(d.thingName);
+        });
       });
       g.deviceRegistries.forEach(d => {
         if (d.masterId !== null && d.thingName) allThingNames.push(d.thingName);
@@ -408,7 +411,12 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       }
 
       // Gate status resolution strictly from configured master hardware
-      const latestTele = latestTeleMap.get(primaryMaster);
+      const masterThingNames = [
+        ...gate.masters.flatMap((m: any) => (m.deviceRegistries || []).map((d: any) => d.thingName)),
+        ...gate.deviceRegistries.filter(d => d.masterId !== null).map(d => d.thingName),
+        primaryMaster,
+      ].filter(Boolean);
+      const latestTele = masterThingNames.map(tn => latestTeleMap.get(tn)).find(Boolean);
       const telePayload = latestTele?.payload as any;
       const rawTeleStatus = telePayload?.Status ? String(telePayload.Status).trim().toUpperCase() : null;
 
@@ -731,6 +739,14 @@ router.post('/:id/assign-device', authenticate, async (req: any, res, next) => {
     }
 
     const updated = await prisma.$transaction(async (tx) => {
+      // Enforce strict 1-to-1 binding per Master Unit
+      if (targetMasterId) {
+        await tx.deviceRegistry.updateMany({
+          where: { masterId: targetMasterId, id: { not: dev.id } },
+          data: { gateId: null, masterId: null, childDeviceId: null },
+        });
+      }
+
       const devUpdated = await tx.deviceRegistry.update({
         where: { id: dev.id },
         data: {
@@ -745,6 +761,9 @@ router.post('/:id/assign-device', authenticate, async (req: any, res, next) => {
 
       return devUpdated;
     });
+
+    clusterCacheManager.clear();
+    broadcastGateTelemetry(gateId).catch(console.warn);
 
     res.json({ success: true, message: 'Device assigned successfully', device: updated });
   } catch (error) {
@@ -778,6 +797,9 @@ router.post('/:id/unassign-device', authenticate, async (req: any, res, next) =>
 
       return devUpdated;
     });
+
+    clusterCacheManager.clear();
+    broadcastGateTelemetry(gateId).catch(console.warn);
 
     res.json({ success: true, message: 'Device unassigned successfully', device: updated });
   } catch (error) {
@@ -1054,7 +1076,8 @@ router.get('/', authenticate, async (req: any, res, next) => {
               orderBy: { deviceSequence: 'asc' },
               include: { evidences: true }
             },
-            evidences: true
+            evidences: true,
+            deviceRegistries: true
           }
         }
       },
@@ -1253,7 +1276,7 @@ export async function syncDeviceHistoryToGate(gateId: number, thingName: string,
       if (!isClosed && !currentOpen) {
         currentOpen = {
           openedAt: new Date(t.receivedAt),
-          openedBy: `AWS IoT / ${thingName}`
+          openedBy: 'Automated'
         };
       } else if (isClosed && currentOpen) {
         const closedAt = new Date(t.receivedAt);
@@ -1265,7 +1288,7 @@ export async function syncDeviceHistoryToGate(gateId: number, thingName: string,
           durationSeconds,
           status: durationSeconds > 900 ? 'EXTENDED_DELAY' : 'CLOSED',
           openedBy: currentOpen.openedBy,
-          closedBy: `AWS IoT / ${thingName}`,
+          closedBy: 'Automated',
           remarks: 'Physical LimitSwitch transition detected via AWS IoT Telemetry'
         });
         currentOpen = null;
@@ -1859,7 +1882,8 @@ router.get('/:id', authenticate, async (req: any, res, next) => {
               orderBy: { deviceSequence: 'asc' },
               include: { evidences: true }
             },
-            evidences: true
+            evidences: true,
+            deviceRegistries: true
           }
         }
       }
@@ -2030,7 +2054,8 @@ router.get('/:id/telemetry', authenticate, async (req: any, res, next) => {
               orderBy: { deviceSequence: 'asc' },
               include: { evidences: true }
             },
-            evidences: true
+            evidences: true,
+            deviceRegistries: true
           }
         }
       }

@@ -876,17 +876,14 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
           return { ignored: true, device: null, wasOffline: false, affectedScopeIds: [], isGlobal: false, telemetry: null, healthCheck: null, isHealthResponse: false, currentState: null, previousState: null };
         }
 
-        const resolved = await resolveGateAssociations(thingName, null, tx);
-
-        // Deterministic transaction-safe native upsert using PostgreSQL (xmax = 0)
-        // (xmax = 0) evaluates to true if and only if PostgreSQL executed a fresh INSERT.
-        // If a concurrent request already inserted the row, (xmax = 0) evaluates to false on conflict update.
+        // Strict 1-to-1 Isolation: Newly discovered AWS IoT Things start strictly UNASSIGNED.
+        // They must be explicitly assigned to a Master Unit by an authorized user.
         const insertedRows: any[] = await tx.$queryRaw`
           INSERT INTO "DeviceRegistry" (
             "thingName", "serialNumber", "status", "gateId", "masterId", "childDeviceId", "deviceType", "firmwareVersion", "lastSeenAt", "createdAt", "updatedAt"
           )
           VALUES (
-            ${thingName}, ${thingName}, 'ONLINE', ${resolved.gateId}, ${resolved.masterId}, ${resolved.childDeviceId},
+            ${thingName}, ${thingName}, 'ONLINE', NULL, NULL, NULL,
             ${payload.DeviceType || 'MASTER'}, ${fwVersion || null}, NOW(), NOW(), NOW()
           )
           ON CONFLICT ("thingName") DO UPDATE
@@ -901,18 +898,13 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
         wasOffline = Boolean(dev.is_inserted);
       } else {
         wasOffline = !dev.lastSeenAt || (Date.now() - new Date(dev.lastSeenAt).getTime() > 65 * 60 * 1000);
-        let gateIdToUpdate = dev.gateId;
-        if (!gateIdToUpdate) {
-          const resolved = await resolveGateAssociations(dev.serialNumber || dev.thingName, null, tx);
-          gateIdToUpdate = resolved.gateId;
-        }
+        // Preserve user-configured gate/master linkage; never auto-reassign or guess gate on heartbeat
         dev = await tx.deviceRegistry.update({
           where: { id: dev.id },
           data: {
             lastSeenAt: new Date(),
             status: 'ONLINE',
             firmwareVersion: fwVersion || dev.firmwareVersion,
-            gateId: gateIdToUpdate || undefined,
           }
         });
       }

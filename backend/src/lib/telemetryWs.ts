@@ -37,7 +37,7 @@ export async function getGateTelemetryPayload(gateId: number) {
     include: {
       masters: {
         orderBy: { masterSequence: 'asc' },
-        include: { childDevices: { orderBy: { deviceSequence: 'asc' } } }
+        include: { childDevices: { orderBy: { deviceSequence: 'asc' } }, deviceRegistries: true }
       },
       deviceRegistries: true,
     }
@@ -90,17 +90,22 @@ export async function getGateTelemetryPayload(gateId: number) {
     };
   }
 
-  // Query telemetry for explicitly registered master hardware, linked registries, and gate LC number
+  // Query telemetry strictly for explicitly assigned hardware things and linked registries
+  const assignedMasterThings = gate.masters.flatMap((m: any) =>
+    (m.deviceRegistries || []).map((d: any) => d.thingName)
+  ).filter(Boolean);
+  const gateDirectThings = gate.deviceRegistries.map(d => d.thingName).filter(Boolean);
   const masterSerials = gate.masters.map(m => m.serialNumber).filter(Boolean);
-  const masterAwsThings = gate.masters.map((m: any) => m.awsThingName).filter(Boolean);
-  const linkedRegistryThings = gate.deviceRegistries.map(d => d.thingName).filter(Boolean);
+
   const thingIdentifiers = Array.from(new Set([
-    gate.lcNumber,
+    ...assignedMasterThings,
+    ...gateDirectThings,
     ...masterSerials,
-    ...masterAwsThings,
-    ...linkedRegistryThings
   ]));
-  const deviceRegistryIds = gate.deviceRegistries.map(d => d.id);
+  const deviceRegistryIds = Array.from(new Set([
+    ...gate.deviceRegistries.map(d => d.id),
+    ...gate.masters.flatMap((m: any) => (m.deviceRegistries || []).map((d: any) => d.id))
+  ]));
 
   // Fetch real device telemetry, health checks, and operational cycles from database
   const [telemetries, healthChecks, rawEvents] = await Promise.all([

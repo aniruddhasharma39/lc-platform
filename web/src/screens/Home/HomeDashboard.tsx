@@ -252,9 +252,11 @@ export default function HomeDashboard({
       const statusColor = isUnconfigured ? '#d97706' : (isOpen ? '#ef4444' : '#10b981');
       const statusBg = isUnconfigured ? '#fef3c7' : (isOpen ? '#fef2f2' : '#ecfdf5');
       const statusLabel = isUnconfigured ? 'UNCONFIGURED' : gate.status;
-      const gateLabel = (gate.hasMaster && gate.masterSerialNumber && gate.masterSerialNumber !== 'Unassigned')
-        ? gate.masterSerialNumber
-        : gate.lcNumber;
+      const cleanLcNumber = gate.lcNumber?.replace(/^#+/, '')?.trim();
+      const cleanMasterSerial = (gate.masterSerialNumber && gate.masterSerialNumber !== 'Unassigned')
+        ? gate.masterSerialNumber.replace(/^#+/, '')?.trim()
+        : null;
+      const gateLabel = cleanLcNumber || cleanMasterSerial || 'LC';
 
       // Custom HTML Marker Icon
       const customIcon = L.divIcon({
@@ -295,7 +297,10 @@ export default function HomeDashboard({
       const popupHtml = `
         <div style="font-family: inherit; min-width: 200px; padding: 4px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px;">
-            <strong style="font-size: 14px; color: #0f172a;">${gateLabel}</strong>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <strong style="font-size: 14px; color: #0f172a;">${gateLabel}</strong>
+              ${cleanMasterSerial ? `<span style="font-size: 10px; font-weight: 700; color: #0369a1; background: #e0f2fe; border: 1px solid #bae6fd; border-radius: 4px; padding: 1px 5px;">Master: ${cleanMasterSerial}</span>` : ''}
+            </div>
             <span style="
               padding: 2px 8px;
               border-radius: 12px;
@@ -323,7 +328,7 @@ export default function HomeDashboard({
               font-size: 11px;
               font-weight: 600;
               cursor: pointer;
-            ">Inspect Telemetry</button>
+            ">Operational Records</button>
             <button id="btn-about-${gate.id}" style="
               flex: 1;
               background: #f1f5f9;

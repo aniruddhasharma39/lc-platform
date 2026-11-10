@@ -1785,7 +1785,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                     {operationalCycles[0]?.openedAt ? new Date(operationalCycles[0].openedAt).toLocaleTimeString() : '—'}
                   </div>
                   <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
-                    {operationalCycles[0]?.openedAt ? `${new Date(operationalCycles[0].openedAt).toLocaleDateString()} • ${operationalCycles[0].openedBy || 'IoT Telemetry'}` : 'No cycle recorded'}
+                    {operationalCycles[0]?.openedAt ? `${new Date(operationalCycles[0].openedAt).toLocaleDateString()} • ${operationalCycles[0].openedBy || 'Automated'}` : 'No cycle recorded'}
                   </div>
                 </div>
 
@@ -1995,7 +1995,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                                 {new Date(currentViewingCycle.openedAt).toLocaleTimeString()}
                               </div>
                               <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
-                                By: {currentViewingCycle.openedBy || 'AWS IoT Telemetry'}
+                                By: {currentViewingCycle.openedBy || 'Automated'}
                               </div>
                             </div>
                           </div>
@@ -2031,7 +2031,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                                 {currentViewingCycle.closedAt ? new Date(currentViewingCycle.closedAt).toLocaleTimeString() : 'Awaiting Closure (Active)'}
                               </div>
                               <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
-                                By: {currentViewingCycle.closedBy || (currentViewingCycle.closedAt ? 'AWS IoT Telemetry' : 'In Progress')}
+                                By: {currentViewingCycle.closedBy || (currentViewingCycle.closedAt ? 'Automated' : 'In Progress')}
                               </div>
                             </div>
                           </div>
@@ -2119,7 +2119,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                                       <strong style={{ color: '#0B3C7A' }}>{cycle.formattedDuration}</strong>
                                     </td>
                                     <td>
-                                      <div style={{ fontSize: '0.8rem', color: '#334155' }}>{cycle.openedBy || 'IoT Telemetry'}</div>
+                                      <div style={{ fontSize: '0.8rem', color: '#334155' }}>{cycle.openedBy || 'Automated'}</div>
                                     </td>
                                     <td>
                                       <div style={{ fontSize: '0.78rem', color: '#64748b' }}>

@@ -46,12 +46,10 @@ export async function recordGateTelemetryTransition(params: {
     const { gateId, thingName, newState } = params;
     const timestamp = params.timestamp || new Date();
 
-    // 1. Resolve gate ID
+    // 1. Resolve gate ID strictly from explicit assignment
     let targetGateId = gateId;
-    let foundDev: any = null;
     if (!targetGateId) {
-      // Find gate by thingName or serialNumber in DeviceRegistry
-      foundDev = await prisma.deviceRegistry.findFirst({
+      const foundDev = await prisma.deviceRegistry.findFirst({
         where: {
           OR: [
             { thingName },
@@ -62,40 +60,11 @@ export async function recordGateTelemetryTransition(params: {
       });
       if (foundDev?.gateId) {
         targetGateId = foundDev.gateId;
-      } else {
-        // Fallback: match by MasterUnit
-        const master = await prisma.masterUnit.findFirst({
-          where: { serialNumber: thingName },
-          select: { gateId: true }
-        });
-        if (master?.gateId) {
-          targetGateId = master.gateId;
-        } else {
-          // Fallback: match by LC number
-          const gate = await prisma.lCGate.findFirst({
-            where: {
-              OR: [
-                { lcNumber: thingName },
-                { name: thingName }
-              ]
-            },
-            select: { id: true }
-          });
-          if (gate) targetGateId = gate.id;
-        }
-      }
-
-      // Auto-heal: If gate is resolved, link the device registry row
-      if (targetGateId && foundDev && !foundDev.gateId) {
-        await prisma.deviceRegistry.update({
-          where: { id: foundDev.id },
-          data: { gateId: targetGateId }
-        }).catch(() => {});
       }
     }
 
     if (!targetGateId) {
-      // No gate linked to this device yet
+      // Hardware device is unassigned or virtual. Do not record events for any gate.
       return null;
     }
 
@@ -117,7 +86,7 @@ export async function recordGateTelemetryTransition(params: {
               gateId: targetGateId,
               openedAt: timestamp,
               status: 'OPEN',
-              openedBy: `AWS IoT / ${thingName}`,
+              openedBy: 'Automated',
               remarks: `State transition: OPEN detected by IoT Telemetry`
             }
           });
@@ -149,7 +118,7 @@ export async function recordGateTelemetryTransition(params: {
               closedAt: timestamp,
               durationSeconds,
               status: finalStatus,
-              closedBy: `AWS IoT / ${thingName}`,
+              closedBy: 'Automated',
               remarks: openEvent.remarks ? `${openEvent.remarks} | Closed via IoT Telemetry` : `Closed via IoT Telemetry`
             }
           });
@@ -168,8 +137,8 @@ export async function recordGateTelemetryTransition(params: {
               closedAt: timestamp,
               durationSeconds: 180,
               status: 'CLOSED',
-              openedBy: `AWS IoT / ${thingName}`,
-              closedBy: `AWS IoT / ${thingName}`,
+              openedBy: 'Automated',
+              closedBy: 'Automated',
               remarks: `Direct CLOSED state detected via IoT Telemetry`
             }
           });
@@ -246,7 +215,7 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
                   gateId: dev.gateId!,
                   openedAt: timestamp,
                   status: 'OPEN',
-                  openedBy: `AWS IoT / ${dev.thingName}`,
+                  openedBy: 'Automated',
                   remarks: `State transition: OPEN detected by IoT Telemetry`
                 }
               });
@@ -267,7 +236,7 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
                     closedAt: timestamp,
                     durationSeconds,
                     status: finalStatus,
-                    closedBy: `AWS IoT / ${dev.thingName}`,
+                    closedBy: 'Automated',
                     remarks: `State transition: CLOSED detected by IoT Telemetry`
                   }
                 });
@@ -286,8 +255,8 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
                     closedAt: timestamp,
                     durationSeconds: 180,
                     status: 'CLOSED',
-                    openedBy: `AWS IoT / ${dev.thingName}`,
-                    closedBy: `AWS IoT / ${dev.thingName}`,
+                    openedBy: 'Automated',
+                    closedBy: 'Automated',
                     remarks: `Direct CLOSED state detected via IoT Telemetry`
                   }
                 });

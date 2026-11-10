@@ -2571,7 +2571,13 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               final durationStr = cycle['formattedDuration']?.toString() ??
                   (cycle['durationSeconds'] != null ? '${cycle['durationSeconds']}s' : '—');
               final trainNumber = cycle['trainNumber']?.toString();
-              final operatorName = cycle['openedBy']?.toString() ?? cycle['closedBy']?.toString();
+              final rawOp = cycle['openedBy']?.toString() ?? cycle['closedBy']?.toString();
+              final operatorName = (rawOp != null &&
+                      rawOp.trim().isNotEmpty &&
+                      !rawOp.contains('AWS IoT') &&
+                      !rawOp.toLowerCase().contains('automated'))
+                  ? rawOp.trim()
+                  : null;
 
               return Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
