@@ -21,6 +21,9 @@ export interface ReportMetrics {
 export interface OperationalEventData {
   id: number;
   gateId: number;
+  masterId?: number | null;
+  masterSerial?: string | null;
+  thingName?: string | null;
   status?: string | null;
   openedAt?: Date | null;
   closedAt?: Date | null;
@@ -69,6 +72,9 @@ export async function recordEventChangeInTx(
     data: {
       eventId: event.id,
       gateId: event.gateId,
+      masterId: event.masterId ?? null,
+      masterSerial: event.masterSerial ?? null,
+      thingName: event.thingName ?? null,
       opType,
       gateRevision: revision,
       status: event.status ?? null,

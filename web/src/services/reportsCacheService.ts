@@ -49,6 +49,9 @@ export interface OperationalRecord {
   closedBy?: string | null;
   trainNumber?: string | null;
   remarks?: string | null;
+  masterId?: number | null;
+  masterSerial?: string | null;
+  thingName?: string | null;
 }
 
 export interface ClusterGate {

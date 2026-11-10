@@ -261,6 +261,7 @@ const authHeaders = () => ({
 // Clean column definitions
 const REPORT_COLUMNS = [
   { key: 'lcNumber', label: 'LC Number' },
+  { key: 'masterUnit', label: 'Master Unit' },
   { key: 'locationName', label: 'Location' },
   { key: 'zone', label: 'Zone' },
   { key: 'division', label: 'Division' },
@@ -2298,6 +2299,7 @@ export default function ReportsScreen({ user }: Props) {
                 <tr>
                   {selectedExportColumns.includes('scopeGroup') && <th>Cluster</th>}
                   {selectedExportColumns.includes('lcNumber') && <th>LC Number</th>}
+                  {selectedExportColumns.includes('masterUnit') && <th>Master Unit</th>}
                   {selectedExportColumns.includes('locationName') && <th>Location</th>}
                   {selectedExportColumns.includes('zone') && <th>Zone</th>}
                   {selectedExportColumns.includes('division') && <th>Division</th>}
@@ -2351,6 +2353,13 @@ export default function ReportsScreen({ user }: Props) {
                         {selectedExportColumns.includes('lcNumber') && (
                           <td>
                             <strong className="lc-tag">{rec.lcNumber}</strong>
+                          </td>
+                        )}
+                        {selectedExportColumns.includes('masterUnit') && (
+                          <td>
+                            <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#334155', background: '#f1f5f9', padding: '2px 7px', borderRadius: 4 }}>
+                              {rec.masterSerial || rec.thingName || '-'}
+                            </span>
                           </td>
                         )}
                         {selectedExportColumns.includes('locationName') && <td>{rec.locationName}</td>}

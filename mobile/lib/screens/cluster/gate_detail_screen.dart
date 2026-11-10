@@ -34,12 +34,13 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     gate = widget.gate;
   }
 
-    Future<void> _pingGateDevice() async {
+    Future<void> _pingGateDevice({int? masterId, String? thingName, String? unitLabel}) async {
     final gateId = gate['id'];
     if (gateId == null) return;
     final lcNumber = gate['lcNumber'] ?? 'LC Gate';
+    final targetDesc = unitLabel != null ? '$lcNumber · $unitLabel' : '$lcNumber hardware';
 
-    AppFeedback.showInfo(context, 'Checking connection for $lcNumber hardware...');
+    AppFeedback.showInfo(context, 'Checking connection for $targetDesc...');
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/lcgate/$gateId/health-check'),
@@ -47,6 +48,10 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
         },
+        body: json.encode({
+          if (masterId != null) 'masterId': masterId,
+          if (thingName != null) 'thingName': thingName,
+        }),
       ).timeout(const Duration(seconds: 10));
 
       if (res.statusCode == 200) {
@@ -56,8 +61,8 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
           AppFeedback.showSuccess(
             context,
             isDelivered
-                ? 'Connection verified: $lcNumber hardware is ONLINE & HEALTHY'
-                : 'Connection check registered for $lcNumber: Status is HEALTHY',
+                ? 'Connection verified: $targetDesc is ONLINE & HEALTHY'
+                : 'Connection check registered for $targetDesc: Status is HEALTHY',
           );
           _refresh();
         }
@@ -1649,18 +1654,42 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                             ],
                                           ),
                                         ),
-                                        OutlinedButton(
-                                          style: OutlinedButton.styleFrom(
-                                            foregroundColor: const Color(0xFFDC2626),
-                                            side: const BorderSide(color: Color(0xFFFECACA)),
-                                            backgroundColor: Colors.white,
-                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                            minimumSize: Size.zero,
-                                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                                          ),
-                                          onPressed: () => _unassignMasterDevice(matchingDev, master),
-                                          child: const Text('Unassign', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                                        Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            OutlinedButton.icon(
+                                              style: OutlinedButton.styleFrom(
+                                                foregroundColor: const Color(0xFF0284C7),
+                                                side: const BorderSide(color: Color(0xFFBAE6FD)),
+                                                backgroundColor: Colors.white,
+                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                                minimumSize: Size.zero,
+                                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                              ),
+                                              onPressed: () => _pingGateDevice(
+                                                masterId: master['id'] is int ? master['id'] : int.tryParse(master['id']?.toString() ?? ''),
+                                                thingName: matchingDev['thingName']?.toString(),
+                                                unitLabel: 'Master ${master['masterSequence'] ?? ''} (${matchingDev['thingName'] ?? ''})',
+                                              ),
+                                              icon: const Icon(Icons.wifi_tethering, size: 13),
+                                              label: const Text('Ping', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                                            ),
+                                            const SizedBox(width: 6),
+                                            OutlinedButton(
+                                              style: OutlinedButton.styleFrom(
+                                                foregroundColor: const Color(0xFFDC2626),
+                                                side: const BorderSide(color: Color(0xFFFECACA)),
+                                                backgroundColor: Colors.white,
+                                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                                minimumSize: Size.zero,
+                                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                              ),
+                                              onPressed: () => _unassignMasterDevice(matchingDev, master),
+                                              child: const Text('Unassign', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                                            ),
+                                          ],
                                         ),
                                       ],
                                     ),

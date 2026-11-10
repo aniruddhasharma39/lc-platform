@@ -1865,9 +1865,10 @@ function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
 
 function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
   const { success: toastSuccess, error: toastError } = useToast();
-  const [masterSequence, setMasterSequence] = useState('1');
+  const [masterSequence, setMasterSequence] = useState('');
   const [powerSource, setPowerSource] = useState('SOLAR');
   const [customSerial, setCustomSerial] = useState<string>('');
+  const [loadingSeq, setLoadingSeq] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
   // Device Registry Integration
@@ -1895,6 +1896,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
   };
 
   useEffect(() => {
+    setLoadingSeq(true);
     fetch(`${API_URL}/api/v1/lcgate/${gate.id}/next-master-sequence`, {
       headers: authHeaders()
     })
@@ -1907,7 +1909,8 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
           setCustomSerial(defaultSerial);
         }
       })
-      .catch(console.error);
+      .catch(console.error)
+      .finally(() => setLoadingSeq(false));
 
     fetch(`${API_URL}/api/v1/devices?limit=100&deviceType=MASTER&unassigned=true`, {
       headers: authHeaders()
@@ -1933,7 +1936,8 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const chosen = selectedDeviceId ? deviceList.find(d => d.id.toString() === selectedDeviceId) : null;
-    const defaultSerial = `${gate.lcNumber}-${masterSequence.padStart(2, '0')}`;
+    const seqInt = parseInt(masterSequence, 10);
+    const defaultSerial = masterSequence ? `${gate.lcNumber}-${masterSequence.padStart(2, '0')}` : '';
     const serialToUse = (customSerial.trim() || defaultSerial).trim();
 
     setSubmitting(true);
@@ -1944,16 +1948,18 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
           'Content-Type': 'application/json',
           ...authHeaders()
         },
-        body: JSON.stringify({ 
-          masterSequence: parseInt(masterSequence, 10), 
+        body: JSON.stringify({
+          ...(seqInt && !isNaN(seqInt) ? { masterSequence: seqInt } : {}),
           powerSource,
-          serialNumber: serialToUse,
+          autoGenerate: true,
+          ...(serialToUse ? { serialNumber: serialToUse } : {}),
           deviceId: chosen ? chosen.id : undefined,
         })
       });
       if (res.ok) {
         const createdMaster = await res.json().catch(() => ({}));
         const masterIdToUse = createdMaster?.id;
+        const confirmedSerial = createdMaster?.serialNumber || serialToUse || 'Master Unit';
 
         // If SIM photo was selected, upload evidence immediately
         if (simPhotoBase64 && masterIdToUse) {
@@ -1989,7 +1995,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
         }
 
         lcGatesCacheService.markStale(getCacheUserId());
-        toastSuccess(`Master Unit ${serialToUse} added successfully${simPhotoBase64 ? ' with SIM photo' : ''}.`, 'Master Unit Added');
+        toastSuccess(`Master Unit ${confirmedSerial} added successfully${simPhotoBase64 ? ' with SIM photo' : ''}.`, 'Master Unit Added');
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
@@ -2032,18 +2038,24 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
         </div>
 
         <div className="form-group">
-          <label>Master Serial Identifier *</label>
+          <div className="flex items-center justify-between mb-1">
+            <label className="m-0">Master Serial Identifier (Auto-Generated)</label>
+            <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '2px 7px', borderRadius: 4, background: '#e0f2fe', color: '#0369a1' }}>
+              AUTO-INCREMENT
+            </span>
+          </div>
           <div className="flex items-center gap-2">
-            <input 
-              className="glass-input flex-1 font-bold font-mono" 
-              type="text" 
-              value={customSerial !== '' ? customSerial : `${gate.lcNumber}-${masterSequence.padStart(2, '0')}`} 
-              onChange={e => setCustomSerial(e.target.value)}
+            <input
+              className="glass-input flex-1 font-bold font-mono"
+              type="text"
+              readOnly
+              value={loadingSeq ? 'Generating next ID...' : (customSerial || (masterSequence ? `${gate.lcNumber}-${masterSequence.padStart(2, '0')}` : ''))}
               placeholder={`e.g. ${gate.lcNumber}-01`}
+              style={{ backgroundColor: '#f1f5f9', cursor: 'not-allowed', color: '#0f172a' }}
             />
           </div>
           <small className="mt-1 block text-muted">
-            {chosenDevice ? `Physical hardware mapped: ${chosenDevice.thingName} (AWS IoT Core)` : 'Gate sequential identifier. AWS IoT hardware can be linked at any time.'}
+            {chosenDevice ? `Physical hardware mapped: ${chosenDevice.thingName} (AWS IoT Core)` : 'Automatically incremented per gate. AWS IoT hardware can be linked anytime.'}
           </small>
         </div>
         <div className="form-group">

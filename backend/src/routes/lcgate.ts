@@ -410,37 +410,48 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
         }
       }
 
-      // Gate status resolution strictly from configured master hardware
-      const masterThingNames = [
+      // Gate status resolution strictly from all configured master hardware (fail-safe: OPEN wins across masters)
+      const masterThingNames = Array.from(new Set([
         ...gate.masters.flatMap((m: any) => (m.deviceRegistries || []).map((d: any) => d.thingName)),
         ...gate.deviceRegistries.filter(d => d.masterId !== null).map(d => d.thingName),
-        primaryMaster,
-      ].filter(Boolean);
-      const latestTele = masterThingNames.map(tn => latestTeleMap.get(tn)).find(Boolean);
-      const telePayload = latestTele?.payload as any;
-      const rawTeleStatus = telePayload?.Status ? String(telePayload.Status).trim().toUpperCase() : null;
+      ].filter(Boolean)));
 
       const activeEvent = gate.events.find(e => e.status === 'OPEN' || !e.closedAt);
 
       const hasHardware = hasMasters && (
         gate.deviceRegistries.some(d => d.masterId !== null) ||
-        gate.masters.some(m => ((m as any).deviceRegistries?.length > 0) || (m.serialNumber && !m.serialNumber.includes('(Virtual Master)')))
+        gate.masters.some(m => ((m as any).deviceRegistries?.length > 0))
       );
 
       let status: 'OPEN' | 'CLOSED' | 'UNCONFIGURED' = hasHardware ? 'CLOSED' : 'UNCONFIGURED';
-      if (rawTeleStatus === 'OPEN' || rawTeleStatus === 'NOT_CLOSED') {
-        status = 'OPEN';
-      } else if (rawTeleStatus === 'CLOSED') {
-        status = 'CLOSED';
-      } else if (telePayload?.LimitSwitchClosed !== undefined) {
-        status = telePayload.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
-      } else if (activeEvent) {
-        status = 'OPEN';
-      } else if (gate.deviceRegistries[0]?.status && gate.deviceRegistries[0]?.masterId !== null) {
-        const devStatus = gate.deviceRegistries[0].status.toUpperCase();
-        status = (devStatus === 'OPEN' || devStatus === 'NOT_CLOSED') ? 'OPEN' : 'CLOSED';
-      } else if (!hasHardware) {
-        status = 'UNCONFIGURED';
+      if (hasHardware) {
+        const masterStates: Array<'OPEN' | 'CLOSED'> = [];
+        for (const tn of masterThingNames) {
+          const t = latestTeleMap.get(tn);
+          const p = t?.payload as any;
+          const rStatus = p?.Status ? String(p.Status).trim().toUpperCase() : null;
+          if (rStatus === 'OPEN' || rStatus === 'NOT_CLOSED') {
+            masterStates.push('OPEN');
+          } else if (rStatus === 'CLOSED') {
+            masterStates.push('CLOSED');
+          } else if (p?.LimitSwitchClosed !== undefined) {
+            masterStates.push(p.LimitSwitchClosed ? 'CLOSED' : 'OPEN');
+          }
+        }
+        if (masterStates.includes('OPEN')) {
+          status = 'OPEN';
+        } else if (masterStates.length > 0) {
+          status = 'CLOSED';
+        } else if (activeEvent) {
+          status = 'OPEN';
+        } else {
+          const anyDevOpen = gate.deviceRegistries.some(d => {
+            if (d.masterId === null || !d.status) return false;
+            const ds = d.status.toUpperCase();
+            return ds === 'OPEN' || ds === 'NOT_CLOSED';
+          });
+          status = anyDevOpen ? 'OPEN' : 'CLOSED';
+        }
       }
 
       if (status === 'OPEN') {
@@ -737,6 +748,7 @@ router.post('/:id/assign-device', authenticate, async (req: any, res, next) => {
     if (!targetMasterId && gate.masters.length > 0) {
       targetMasterId = gate.masters[0].id;
     }
+    const targetMasterObj = targetMasterId ? gate.masters.find(m => m.id === targetMasterId) : null;
 
     const updated = await prisma.$transaction(async (tx) => {
       // Enforce strict 1-to-1 binding per Master Unit
@@ -755,7 +767,13 @@ router.post('/:id/assign-device', authenticate, async (req: any, res, next) => {
           childDeviceId: childDeviceId ? Number(childDeviceId) : null,
         }
       });
-      await syncDeviceHistoryToGate(gate.id, dev.thingName, tx);
+      await syncDeviceHistoryToGate(
+        gate.id,
+        dev.thingName,
+        tx,
+        targetMasterId,
+        targetMasterObj?.serialNumber || null
+      );
 
       await bumpDirectoryRevision([], true, tx);
 
@@ -807,6 +825,80 @@ router.post('/:id/unassign-device', authenticate, async (req: any, res, next) =>
   }
 });
 
+const GATE_ONLINE_CUTOFF_MS = 65 * 60 * 1000; // 65-minute unified heartbeat window
+
+function collectAssignedThingNames(gates: any[]): string[] {
+  const names = new Set<string>();
+  for (const g of gates) {
+    for (const m of g.masters || []) {
+      for (const d of m.deviceRegistries || []) {
+        if (d.thingName) names.add(d.thingName);
+      }
+    }
+    for (const d of g.deviceRegistries || []) {
+      if (d.masterId !== null && d.thingName) names.add(d.thingName);
+    }
+  }
+  return Array.from(names);
+}
+
+function computeGateConnectivity(
+  gate: any,
+  latestTeleByThing: Map<string, any>,
+  nowMs: number
+) {
+  const masters = gate.masters || [];
+  const gateRegs = gate.deviceRegistries || [];
+  const hardwareThings: string[] = [];
+
+  for (const m of masters) {
+    const reg = (m.deviceRegistries && m.deviceRegistries[0]) || gateRegs.find((d: any) => d.masterId === m.id);
+    if (reg?.thingName) {
+      hardwareThings.push(reg.thingName);
+    }
+  }
+
+  if (hardwareThings.length === 0) {
+    return {
+      hasHardware: false,
+      isOnline: false,
+      deviceStatus: null as 'ONLINE' | 'PARTIAL' | 'OFFLINE' | null,
+      lastSeenAt: null as string | null,
+      onlineMastersCount: 0,
+      hardwareMastersCount: 0,
+    };
+  }
+
+  let onlineMastersCount = 0;
+  let maxPacketMs = 0;
+
+  for (const tn of hardwareThings) {
+    const tele = latestTeleByThing.get(tn);
+    const packetMs = tele?.receivedAt ? new Date(tele.receivedAt).getTime() : 0;
+    if (packetMs > maxPacketMs) maxPacketMs = packetMs;
+    if (packetMs > 0 && nowMs - packetMs <= GATE_ONLINE_CUTOFF_MS) {
+      onlineMastersCount++;
+    }
+  }
+
+  const isOnline = onlineMastersCount > 0;
+  const deviceStatus: 'ONLINE' | 'PARTIAL' | 'OFFLINE' =
+    onlineMastersCount === 0
+      ? 'OFFLINE'
+      : onlineMastersCount < hardwareThings.length
+        ? 'PARTIAL'
+        : 'ONLINE';
+
+  return {
+    hasHardware: true,
+    isOnline,
+    deviceStatus,
+    lastSeenAt: maxPacketMs > 0 ? new Date(maxPacketMs).toISOString() : null,
+    onlineMastersCount,
+    hardwareMastersCount: hardwareThings.length,
+  };
+}
+
 // GET /status-summary - Dedicated, lightweight real-time connectivity status for accessible gates
 router.get('/status-summary', authenticate, async (req: any, res, next) => {
   try {
@@ -827,15 +919,14 @@ router.get('/status-summary', authenticate, async (req: any, res, next) => {
       whereClause = { ...whereClause, ...designationClause };
     }
 
-
-    // 2. Query accessible gates and their identifiers without full joins
+    // 2. Query accessible gates and their assigned master hardware
     const gates = await prisma.lCGate.findMany({
       where: whereClause,
       select: {
         id: true,
         lcNumber: true,
         masters: {
-          select: { id: true, serialNumber: true }
+          select: { id: true, serialNumber: true, deviceRegistries: { select: { id: true, thingName: true } } }
         },
         deviceRegistries: {
           select: { id: true, thingName: true, serialNumber: true, lastSeenAt: true, status: true, masterId: true }
@@ -844,21 +935,8 @@ router.get('/status-summary', authenticate, async (req: any, res, next) => {
     });
 
     const nowMs = Date.now();
-    const ONLINE_CUTOFF_MS = 5 * 60 * 1000; // 5-minute strict heartbeat window
-
-    const allThingNames: string[] = [];
-    gates.forEach(g => {
-      if (g.lcNumber) allThingNames.push(g.lcNumber);
-      g.masters.forEach(m => {
-        if (m.serialNumber) allThingNames.push(m.serialNumber);
-      });
-      g.deviceRegistries.forEach(d => {
-        if (d.thingName) allThingNames.push(d.thingName);
-        if (d.serialNumber) allThingNames.push(d.serialNumber);
-      });
-    });
-
-    const cutoffDate = new Date(nowMs - ONLINE_CUTOFF_MS);
+    const allThingNames = collectAssignedThingNames(gates);
+    const cutoffDate = new Date(nowMs - GATE_ONLINE_CUTOFF_MS);
 
     const recentTelemetries = allThingNames.length > 0
       ? await prisma.deviceTelemetry.findMany({
@@ -874,43 +952,18 @@ router.get('/status-summary', authenticate, async (req: any, res, next) => {
         }).catch(() => [])
       : [];
 
+    const latestTeleByThing = new Map(recentTelemetries.map(t => [t.thingName, t]));
+
     const statuses = gates.map(gate => {
-      const hasHardware = gate.masters.length > 0 && (
-        gate.deviceRegistries.some(d => d.masterId !== null) ||
-        gate.masters.some(m => ((m as any).deviceRegistries?.length > 0) || (m.serialNumber && !m.serialNumber.includes('(Virtual Master)')))
-      );
-
-      if (!hasHardware) {
-        return {
-          gateId: gate.id,
-          lcNumber: gate.lcNumber,
-          isOnline: false,
-          deviceStatus: null,
-          lastSeenAt: null,
-          hasMaster: gate.masters.length > 0,
-          mastersCount: gate.masters.length,
-        };
-      }
-
-      const gateThingNames = new Set([
-        gate.lcNumber,
-        ...gate.masters.map(m => m.serialNumber),
-        ...gate.masters.map(m => (m as any).awsThingName).filter(Boolean),
-        ...gate.deviceRegistries.map(d => d.thingName),
-        ...gate.deviceRegistries.map(d => d.serialNumber).filter(Boolean) as string[],
-      ]);
-
-      const latestTele = recentTelemetries.find(t => gateThingNames.has(t.thingName));
-      const latestPacketTime = latestTele?.receivedAt ? new Date(latestTele.receivedAt).getTime() : 0;
-      const isOnline = latestPacketTime > 0 && (nowMs - latestPacketTime <= ONLINE_CUTOFF_MS);
-      const deviceStatus: 'ONLINE' | 'OFFLINE' = isOnline ? 'ONLINE' : 'OFFLINE';
-
+      const conn = computeGateConnectivity(gate, latestTeleByThing, nowMs);
       return {
         gateId: gate.id,
         lcNumber: gate.lcNumber,
-        isOnline,
-        deviceStatus,
-        lastSeenAt: latestPacketTime > 0 ? new Date(latestPacketTime).toISOString() : null,
+        isOnline: conn.isOnline,
+        deviceStatus: conn.deviceStatus,
+        lastSeenAt: conn.lastSeenAt,
+        onlineMastersCount: conn.onlineMastersCount,
+        hardwareMastersCount: conn.hardwareMastersCount,
         hasMaster: gate.masters.length > 0,
         mastersCount: gate.masters.length,
       };
@@ -1083,22 +1136,10 @@ router.get('/', authenticate, async (req: any, res, next) => {
       },
     });
 
-    // 65-Minute Rule: evaluate device online/offline status per gate
+    // 65-Minute Rule: evaluate device online/offline status per gate and per master
     const nowMs = Date.now();
-    const ONLINE_CUTOFF_MS = 65 * 60 * 1000; // 65-minute heartbeat tolerance window
-
-    const allThingNames: string[] = [];
-    gates.forEach(g => {
-      if (g.lcNumber) allThingNames.push(g.lcNumber);
-      g.masters.forEach(m => {
-        if (m.serialNumber) allThingNames.push(m.serialNumber);
-      });
-      g.deviceRegistries.forEach(d => {
-        if (d.thingName) allThingNames.push(d.thingName);
-        if (d.serialNumber) allThingNames.push(d.serialNumber);
-      });
-    });
-
+    const ONLINE_CUTOFF_MS = GATE_ONLINE_CUTOFF_MS;
+    const allThingNames = collectAssignedThingNames(gates);
     const cutoffDate = new Date(nowMs - ONLINE_CUTOFF_MS);
 
     const recentTelemetries = allThingNames.length > 0
@@ -1115,39 +1156,17 @@ router.get('/', authenticate, async (req: any, res, next) => {
         }).catch(() => [])
       : [];
 
+    const latestTeleByThing = new Map(recentTelemetries.map(t => [t.thingName, t]));
+
     const enrichedGates = gates.map(gate => {
-      const hasHardware = gate.masters.length > 0 && (
-        gate.deviceRegistries.some((d: any) => d.masterId !== null) ||
-        gate.masters.some((m: any) => ((m as any).deviceRegistries?.length > 0) || (m.serialNumber && !m.serialNumber.includes('(Virtual Master)')))
-      );
-
-      if (!hasHardware) {
-        return {
-          ...gate,
-          isOnline: false,
-          deviceStatus: null,
-          lastSeenAt: null,
-        };
-      }
-
-      const gateThingNames = new Set([
-        gate.lcNumber,
-        ...gate.masters.map(m => m.serialNumber),
-        ...gate.masters.map(m => (m as any).awsThingName).filter(Boolean),
-        ...gate.deviceRegistries.map(d => d.thingName),
-        ...gate.deviceRegistries.map(d => d.serialNumber).filter(Boolean) as string[],
-      ]);
-
-      const latestTele = recentTelemetries.find(t => gateThingNames.has(t.thingName));
-      const latestPacketTime = latestTele?.receivedAt ? new Date(latestTele.receivedAt).getTime() : 0;
-      const isOnline = latestPacketTime > 0 && (nowMs - latestPacketTime <= ONLINE_CUTOFF_MS);
-      const deviceStatus: 'ONLINE' | 'OFFLINE' = isOnline ? 'ONLINE' : 'OFFLINE';
-
+      const conn = computeGateConnectivity(gate, latestTeleByThing, nowMs);
       return {
         ...gate,
-        isOnline,
-        deviceStatus,
-        lastSeenAt: latestPacketTime > 0 ? new Date(latestPacketTime).toISOString() : null,
+        isOnline: conn.isOnline,
+        deviceStatus: conn.deviceStatus,
+        lastSeenAt: conn.lastSeenAt,
+        onlineMastersCount: conn.onlineMastersCount,
+        hardwareMastersCount: conn.hardwareMastersCount,
       };
     });
 
@@ -1199,7 +1218,40 @@ router.get('/', authenticate, async (req: any, res, next) => {
   }
 });
 
-// Get next available master sequence for a gate
+async function computeNextMasterIdentifier(client: any, gateId: number, lcNumber: string) {
+  const existingMasters = await client.masterUnit.findMany({
+    where: { gateId },
+    select: { masterSequence: true, serialNumber: true },
+    orderBy: { masterSequence: 'asc' },
+  });
+
+  const takenSequences = new Set(existingMasters.map((m: any) => m.masterSequence));
+  const maxSeq = existingMasters.reduce((max: number, m: any) => Math.max(max, Number(m.masterSequence) || 0), 0);
+  let nextSeq = maxSeq + 1;
+
+  while (true) {
+    while (takenSequences.has(nextSeq)) {
+      nextSeq++;
+    }
+    const seqStr = nextSeq.toString().padStart(2, '0');
+    const candidateSerial = `${lcNumber}-${seqStr}`;
+    const conflict = await client.masterUnit.findUnique({
+      where: { serialNumber: candidateSerial },
+      select: { id: true },
+    });
+    if (!conflict) {
+      return {
+        nextSequence: nextSeq,
+        formattedSequence: seqStr,
+        nextSerialNumber: candidateSerial,
+      };
+    }
+    takenSequences.add(nextSeq);
+    nextSeq++;
+  }
+}
+
+// Get next available master sequence & auto-generated identifier for a gate
 router.get('/:gateId/next-master-sequence', authenticate, async (req, res, next) => {
   try {
     const gateId = parseInt(req.params.gateId);
@@ -1208,24 +1260,10 @@ router.get('/:gateId/next-master-sequence', authenticate, async (req, res, next)
     const gate = await prisma.lCGate.findUnique({ where: { id: gateId } });
     if (!gate) return res.status(404).json({ error: 'LC Gate not found' });
 
-    const existingMasters = await prisma.masterUnit.findMany({
-      where: { gateId },
-      orderBy: { masterSequence: 'asc' }
-    });
-
-    const takenSequences = new Set(existingMasters.map(m => m.masterSequence));
-    let nextSeq = 1;
-    while (takenSequences.has(nextSeq)) {
-      nextSeq++;
-    }
-
-    const seqStr = nextSeq.toString().padStart(2, '0');
-    const nextSerialNumber = `${gate.lcNumber}-${seqStr}`;
+    const nextInfo = await computeNextMasterIdentifier(prisma, gateId, gate.lcNumber);
 
     res.json({
-      nextSequence: nextSeq,
-      formattedSequence: seqStr,
-      nextSerialNumber,
+      ...nextInfo,
       gateLcNumber: gate.lcNumber,
     });
   } catch (error) {
@@ -1238,16 +1276,33 @@ const createMasterSchema = z.object({
   masterSequence: z.number().int().min(1).max(99).optional(),
   powerSource: z.enum(['SOLAR', 'DIRECT']),
   serialNumber: z.string().optional(),
+  autoGenerate: z.boolean().optional(),
   deviceId: z.preprocess(
     (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
     z.number().int().optional().nullable()
   ),
 });
 
-// Add a Master to an LC Gate with mandatory AWS IoT registry association & standard slave creation
-
-export async function syncDeviceHistoryToGate(gateId: number, thingName: string, tx: any = prisma) {
+// Synchronize historical telemetry transitions for one specific Master Unit & AWS IoT Thing (without deleting other Masters' events)
+export async function syncDeviceHistoryToGate(
+  gateId: number,
+  thingName: string,
+  tx: any = prisma,
+  masterId?: number | null,
+  masterSerial?: string | null
+) {
   try {
+    let resolvedMasterId = masterId ?? null;
+    let resolvedMasterSerial = masterSerial ?? null;
+    if (!resolvedMasterId || !resolvedMasterSerial) {
+      const reg = await tx.deviceRegistry.findFirst({
+        where: { thingName },
+        select: { masterId: true, master: { select: { serialNumber: true } } },
+      });
+      if (!resolvedMasterId && reg?.masterId) resolvedMasterId = reg.masterId;
+      if (!resolvedMasterSerial && reg?.master?.serialNumber) resolvedMasterSerial = reg.master.serialNumber;
+    }
+
     const telemetries = await tx.deviceTelemetry.findMany({
       where: {
         thingName,
@@ -1283,24 +1338,32 @@ export async function syncDeviceHistoryToGate(gateId: number, thingName: string,
         const durationSeconds = Math.max(1, Math.round((closedAt.getTime() - currentOpen.openedAt.getTime()) / 1000));
         eventsToCreate.push({
           gateId,
+          masterId: resolvedMasterId,
+          masterSerial: resolvedMasterSerial,
+          thingName,
           openedAt: currentOpen.openedAt,
           closedAt,
           durationSeconds,
           status: durationSeconds > 900 ? 'EXTENDED_DELAY' : 'CLOSED',
           openedBy: currentOpen.openedBy,
           closedBy: 'Automated',
-          remarks: 'Physical LimitSwitch transition detected via AWS IoT Telemetry'
+          remarks: resolvedMasterSerial
+            ? `Physical LimitSwitch transition (${resolvedMasterSerial})`
+            : 'Physical LimitSwitch transition detected via AWS IoT Telemetry'
         });
         currentOpen = null;
       }
     }
 
     if (eventsToCreate.length > 0) {
-      // Clear any prior events for this gate and replace with the genuine device transitions
-      await tx.lCGateEvent.deleteMany({ where: { gateId } });
+      // Clear ONLY prior events belonging strictly to this specific Master Unit / Thing (never wipe other Masters)
+      const deleteScope = resolvedMasterId
+        ? { gateId, masterId: resolvedMasterId }
+        : { gateId, thingName };
+      await tx.lCGateEvent.deleteMany({ where: deleteScope });
       await tx.lCGateEvent.createMany({ data: eventsToCreate });
       await bumpReportRevisionInTx(tx, gateId);
-      console.log(`[syncDeviceHistoryToGate] Synced ${eventsToCreate.length} genuine cycles from ${thingName} into Gate #${gateId}`);
+      console.log(`[syncDeviceHistoryToGate] Synced ${eventsToCreate.length} cycles from ${thingName} into Gate #${gateId} (Master #${resolvedMasterId || 'N/A'})`);
     }
   } catch (err) {
     console.warn('[syncDeviceHistoryToGate] Error synchronizing telemetry cycles:', err);
@@ -1330,34 +1393,22 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
       }
     }
 
-    const existingMasters = await prisma.masterUnit.findMany({
-      where: { gateId },
-      select: { masterSequence: true }
-    });
-    const takenSequences = new Set(existingMasters.map(m => m.masterSequence));
-
-    let targetSequence = data.masterSequence;
-    if (!targetSequence || takenSequences.has(targetSequence)) {
-      let nextSeq = 1;
-      while (takenSequences.has(nextSeq)) {
-        nextSeq++;
-      }
-      targetSequence = nextSeq;
-    }
-
-    const seqStr = targetSequence.toString().padStart(2, '0');
-    const defaultSerial = `${gate.lcNumber}-${seqStr}`;
-    let serialNumber = data.serialNumber ? data.serialNumber.trim() : defaultSerial;
-    if (!serialNumber || serialNumber.endsWith('(Virtual Master)')) {
-      serialNumber = defaultSerial;
-    }
-
-    const existing = await prisma.masterUnit.findUnique({ where: { serialNumber } });
-    if (existing) {
-      return res.status(400).json({ error: `Master Unit with serial number "${serialNumber}" already exists in the system.` });
-    }
-
     const master = await prisma.$transaction(async (tx) => {
+      // Compute next auto-incremented sequence and unique serial identifier atomically
+      const autoNext = await computeNextMasterIdentifier(tx, gateId, gate.lcNumber);
+      let targetSequence = autoNext.nextSequence;
+      let serialNumber = autoNext.nextSerialNumber;
+
+      // Only respect a manually supplied serial if caller did not ask for auto-generation AND it isn't conflicting
+      const requestedSerial = data.serialNumber ? data.serialNumber.trim() : '';
+      const useAuto = data.autoGenerate === true || !requestedSerial || requestedSerial.endsWith('(Virtual Master)');
+      if (!useAuto && requestedSerial !== autoNext.nextSerialNumber) {
+        const dup = await tx.masterUnit.findUnique({ where: { serialNumber: requestedSerial }, select: { id: true } });
+        if (!dup) {
+          serialNumber = requestedSerial;
+        }
+      }
+
       const created = await tx.masterUnit.create({
         data: {
           serialNumber,
@@ -1376,18 +1427,16 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
           where: { id: data.deviceId },
           data: { masterId: created.id, gateId: created.gateId }
         }).catch(console.warn);
-        await syncDeviceHistoryToGate(gateId, dev.thingName, tx);
+        await syncDeviceHistoryToGate(gateId, dev.thingName, tx, created.id, created.serialNumber);
       }
 
-      // Bump revision for gate's assigned scope groups
+      // Bump revision for gate directory
       await bumpDirectoryRevision([], true, tx);
 
       return created;
     });
 
-    // Master Unit is created without auto-generating slaves.
-    // Slave devices (Barrier A, Barrier B, etc.) are explicitly added by the user as needed.
-
+    clusterCacheManager.clear();
     res.status(201).json(master);
   } catch (error: any) {
     if (error?.code === 'P2002') {
@@ -1460,7 +1509,7 @@ router.put('/masters/:id', authenticate, async (req, res, next) => {
           data: { masterId: id, gateId: existing.gateId }
         });
         if (linkedDev) {
-          await syncDeviceHistoryToGate(existing.gateId, linkedDev.thingName, tx);
+          await syncDeviceHistoryToGate(existing.gateId, linkedDev.thingName, tx, id, serialNumber);
         }
 
         // If current serial is virtual or unmodified, adopt the linked device thingName
@@ -1970,7 +2019,7 @@ function buildGateTelemetry(gate: any) {
 
   const slavesList: any[] = [];
   masterList.forEach((m: any) => {
-    const reg = regMap.get(m.serialNumber);
+    const reg = registeredDevices.find((d: any) => d.masterId === m.id) || regMap.get(m.serialNumber);
     const manifestSlaves = reg?.attributes?.slaves || reg?.components || [];
     (m.childDevices || []).forEach((c: any) => {
       const manifestSlave = Array.isArray(manifestSlaves)
@@ -2096,60 +2145,104 @@ router.post('/:id/health-check', authenticate, async (req, res, next) => {
 
     if (!gate) return res.status(404).json({ error: 'Gate not found' });
 
-    const primaryThingName =
-      gate.deviceRegistries[0]?.thingName ||
-      gate.masters[0]?.deviceRegistries?.[0]?.thingName ||
-      gate.masters[0]?.serialNumber ||
-      gate.lcNumber;
-    const topic = `lc-gate/${primaryThingName}/health/request`;
-    const requestId = `hc_${Date.now()}`;
-    const commandPayload = {
-      action: 'HEALTH_CHECK',
-      MasterDeviceId: primaryThingName,
-      gateId: gate.id,
-      lcNumber: gate.lcNumber,
-      requestId,
-      timestamp: new Date().toISOString(),
-    };
+    const reqMasterId = req.body?.masterId ? Number(req.body.masterId) : null;
+    const reqThingName = req.body?.thingName ? String(req.body.thingName).trim() : null;
 
-    // Publish to AWS IoT Core MQTT broker
-    const mqttResult = await publishMqttMessage(topic, commandPayload);
-
-    // Record request into common telemetry table
-    const record = await prisma.deviceTelemetry.create({
-      data: {
-        thingName: primaryThingName,
-        topic,
-        payload: {
-          ...commandPayload,
-          Status: 'HEALTHY',
-          DeviceType: 'LC_GATE_MASTER',
-          NetworkStrength: '-68 dBm (Optimal)',
-          BatteryPercentage: '98%',
-          FirmwareVersion: '1.0.3',
-          ResponseLatency: '42 ms',
-          TimeStampMs: Date.now(),
-          mqttDelivery: mqttResult.success ? 'PUBLISHED_TO_BROKER' : 'QUEUED_LOCAL',
-          mqttError: mqttResult.error || null,
-        },
-        status: 'REQUESTED',
-        deviceRegistryId: gate.deviceRegistries[0]?.id || gate.masters[0]?.deviceRegistries?.[0]?.id || null,
-        receivedAt: new Date(),
+    // Collect target hardware Things (strictly targeted if masterId/thingName supplied, else all linked Masters on gate)
+    const targetList: Array<{ thingName: string; deviceRegistryId: number | null; masterId: number | null }> = [];
+    for (const m of gate.masters) {
+      const reg = (m.deviceRegistries && m.deviceRegistries[0]) || gate.deviceRegistries.find(d => d.masterId === m.id);
+      if (reqMasterId && m.id !== reqMasterId) continue;
+      if (reqThingName && reg?.thingName !== reqThingName) continue;
+      if (reg?.thingName) {
+        targetList.push({ thingName: reg.thingName, deviceRegistryId: reg.id, masterId: m.id });
       }
-    });
+    }
+
+    if (targetList.length === 0 && !reqMasterId) {
+      for (const d of gate.deviceRegistries) {
+        if (reqThingName && d.thingName !== reqThingName) continue;
+        targetList.push({ thingName: d.thingName, deviceRegistryId: d.id, masterId: d.masterId });
+      }
+    }
+
+    if (targetList.length === 0) {
+      const fallbackThing = reqThingName || gate.masters[0]?.serialNumber || gate.lcNumber;
+      targetList.push({ thingName: fallbackThing, deviceRegistryId: null, masterId: reqMasterId || gate.masters[0]?.id || null });
+    }
+
+    const pingResults: any[] = [];
+    let firstRecord: any = null;
+    let firstRequestId = '';
+    let firstTopic = '';
+    let anyMqttSuccess = false;
+    let lastMqttError: string | null = null;
+
+    for (const target of targetList) {
+      const topic = `lc-gate/${target.thingName}/health/request`;
+      const requestId = `hc_${Date.now()}_${target.masterId || '0'}`;
+      const commandPayload = {
+        action: 'HEALTH_CHECK',
+        MasterDeviceId: target.thingName,
+        gateId: gate.id,
+        masterId: target.masterId,
+        lcNumber: gate.lcNumber,
+        requestId,
+        timestamp: new Date().toISOString(),
+      };
+
+      const mqttResult = await publishMqttMessage(topic, commandPayload);
+      if (mqttResult.success) anyMqttSuccess = true;
+      else if (mqttResult.error) lastMqttError = mqttResult.error;
+
+      const record = await prisma.deviceTelemetry.create({
+        data: {
+          thingName: target.thingName,
+          topic,
+          payload: {
+            ...commandPayload,
+            Status: 'HEALTHY',
+            DeviceType: 'LC_GATE_MASTER',
+            TimeStampMs: Date.now(),
+            mqttDelivery: mqttResult.success ? 'PUBLISHED_TO_BROKER' : 'QUEUED_LOCAL',
+            mqttError: mqttResult.error || null,
+          },
+          status: 'REQUESTED',
+          deviceRegistryId: target.deviceRegistryId,
+          receivedAt: new Date(),
+        }
+      });
+
+      if (!firstRecord) {
+        firstRecord = record;
+        firstRequestId = requestId;
+        firstTopic = topic;
+      }
+
+      pingResults.push({
+        thingName: target.thingName,
+        masterId: target.masterId,
+        topic,
+        requestId,
+        mqttDelivered: mqttResult.success,
+        mqttError: mqttResult.error || null,
+      });
+    }
 
     // Broadcast live telemetry update over WebSocket
     broadcastGateTelemetry(gate.id).catch(console.warn);
 
+    const targetNamesStr = pingResults.map(p => p.thingName).join(', ');
     res.json({
-      message: mqttResult.success
-        ? `Health check command published over AWS IoT MQTT to ${topic}`
-        : `Health check request registered for ${primaryThingName} (MQTT: ${mqttResult.error || 'broker offline'})`,
-      topic,
-      requestId,
-      mqttDelivered: mqttResult.success,
-      mqttError: mqttResult.error || null,
-      record,
+      message: anyMqttSuccess
+        ? `Health check command published over AWS IoT MQTT to ${targetNamesStr}`
+        : `Health check request registered for ${targetNamesStr} (MQTT: ${lastMqttError || 'broker offline'})`,
+      topic: firstTopic,
+      requestId: firstRequestId,
+      mqttDelivered: anyMqttSuccess,
+      mqttError: lastMqttError,
+      record: firstRecord,
+      pingedTargets: pingResults,
     });
   } catch (err) {
     next(err);

@@ -4,10 +4,12 @@ export interface GateStatusItem {
   gateId: number;
   lcNumber: string;
   isOnline: boolean;
-  deviceStatus: 'ONLINE' | 'OFFLINE';
+  deviceStatus: 'ONLINE' | 'PARTIAL' | 'OFFLINE' | 'UNCONFIGURED';
   lastSeenAt: string | null;
   hasMaster: boolean;
   mastersCount: number;
+  onlineMastersCount?: number;
+  hardwareMastersCount?: number;
 }
 
 export interface LCGatesCachePayload {

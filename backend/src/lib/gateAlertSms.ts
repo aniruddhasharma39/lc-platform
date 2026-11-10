@@ -1,6 +1,6 @@
 import { prisma } from './prisma';
 import { resolveGateAlertRecipients } from './railwayHierarchy';
-import { checkAndDispatchGateStateEmailAlert } from './emailService';
+import { checkAndDispatchGateStateEmailAlert, GateEmailAlertOptions } from './emailService';
 
 export { checkAndDispatchGateStateEmailAlert };
 
@@ -192,6 +192,8 @@ export async function sendGateStateSms(
 export interface GateStateAlertOptions {
   deviceId?: number | null;
   gateId?: number | null;
+  masterId?: number | null;
+  masterSerial?: string | null;
   thingName: string;
   serialNumber?: string | null;
   newState: 'OPEN' | 'CLOSED';
@@ -199,46 +201,73 @@ export interface GateStateAlertOptions {
 }
 
 /**
- * Checks scope groups mapped to this gate/device.
- * Only users assigned to scope groups where allowSms === true receive the SMS alert.
- * Strictly enforces user authorization and deduplicates recipients.
+ * Checks authorized recipients mapped to this gate/device.
+ * Strictly dispatches alerts only when the device is assigned to an LC Gate.
  */
 export async function checkAndDispatchGateStateAlert(options: GateStateAlertOptions) {
-  const { deviceId, gateId, thingName, serialNumber, newState, timestamp = new Date() } = options;
+  const { deviceId, gateId, masterId, masterSerial, thingName, serialNumber, newState, timestamp = new Date() } = options;
 
   console.log(`🔔 [GATE STATE ALERT] Evaluating state change: Device "${thingName}" -> Status: ${newState}`);
 
-  // 1. Resolve LC Gate
-  let gate = gateId ? await prisma.lCGate.findUnique({ where: { id: gateId } }) : null;
+  // 1. Resolve LC Gate strictly from explicit assignment (no fuzzy fallback guessing)
+  let resolvedGateId = gateId ?? null;
+  let resolvedMasterId = masterId ?? null;
+  let resolvedMasterSerial = masterSerial ?? null;
 
-  if (!gate) {
-    // Try matching lcNumber with thingName or serialNumber
-    const lookupKey = (thingName.startsWith('LC-') ? thingName : (serialNumber || thingName));
-    gate = await prisma.lCGate.findFirst({
-      where: {
-        OR: [
-          { lcNumber: lookupKey },
-          { lcNumber: lookupKey.replace(/-M-/, '-') },
-          { name: { contains: lookupKey, mode: 'insensitive' } }
-        ]
+  if (!resolvedGateId) {
+    const foundDev = await prisma.deviceRegistry.findFirst({
+      where: deviceId ? { id: deviceId } : { thingName },
+      select: {
+        gateId: true,
+        masterId: true,
+        master: { select: { serialNumber: true } },
       }
     });
+    if (foundDev?.gateId) resolvedGateId = foundDev.gateId;
+    if (!resolvedMasterId && foundDev?.masterId) resolvedMasterId = foundDev.masterId;
+    if (!resolvedMasterSerial && foundDev?.master?.serialNumber) resolvedMasterSerial = foundDev.master.serialNumber;
   }
 
-  const effectiveGateId = gate?.id || gateId || null;
-  const effectiveLcNumber = gate?.lcNumber || (thingName.startsWith('LC-') ? thingName : `LC-${thingName}`);
+  if (!resolvedGateId) {
+    console.log(`ℹ️ [GATE STATE ALERT] Device "${thingName}" is unassigned; skipping gate alerts.`);
+    return { dispatched: 0, dispatchedEmails: 0, reason: 'DEVICE_UNASSIGNED', emailResults: [] };
+  }
+
+  const gate = await prisma.lCGate.findUnique({
+    where: { id: resolvedGateId },
+    include: { masters: { select: { id: true, serialNumber: true } } }
+  });
+  if (!gate) {
+    return { dispatched: 0, dispatchedEmails: 0, reason: 'GATE_NOT_FOUND', emailResults: [] };
+  }
+
+  if (!resolvedMasterSerial && resolvedMasterId) {
+    const m = gate.masters.find(x => x.id === resolvedMasterId);
+    if (m?.serialNumber) resolvedMasterSerial = m.serialNumber;
+  }
+
+  const isMultiMaster = gate.masters.length > 1;
+  const effectiveGateId = gate.id;
+  // Use Master Serial (e.g. LC-47-01) when multiple masters exist on a single gate so DLT variable identifies which unit moved
+  const smsIdentifier = (isMultiMaster && resolvedMasterSerial) ? resolvedMasterSerial : gate.lcNumber;
+  const effectiveLcNumber = gate.lcNumber;
   const dateTimeStr = formatIstDateTime(timestamp);
 
   // 2. Resolve authorized recipients using Indian Railways hierarchy
-  const recipientsData = effectiveGateId
-    ? await resolveGateAlertRecipients(effectiveGateId, prisma)
-    : null;
+  const recipientsData = await resolveGateAlertRecipients(effectiveGateId, prisma);
 
   const smsRecipients = recipientsData?.smsRecipients || [];
 
+  const enrichedEmailOptions: GateEmailAlertOptions = {
+    ...options,
+    gateId: effectiveGateId,
+    masterId: resolvedMasterId,
+    masterSerial: resolvedMasterSerial,
+  };
+
   if (smsRecipients.length === 0) {
     console.log(`⚠️ [GATE STATE ALERT] No eligible APPROVED users with valid mobile numbers found for gate ${effectiveLcNumber}.`);
-    const emailAlertResult = await checkAndDispatchGateStateEmailAlert(options).catch((err) => {
+    const emailAlertResult = await checkAndDispatchGateStateEmailAlert(enrichedEmailOptions).catch((err) => {
       console.error("❌ [GATE STATE ALERT] Error dispatching email alerts:", err?.message || err);
       return null;
     });
@@ -253,17 +282,17 @@ export async function checkAndDispatchGateStateAlert(options: GateStateAlertOpti
   console.log(`🔔 [GATE STATE ALERT] Found ${smsRecipients.length} authorized SMS recipient(s) across Railway Hierarchy.`);
   // 5. Dispatch SMS and record audit trail for each recipient
   const results = [];
-  const messageText = `Mirtha Technologies: Level Crossing ${effectiveLcNumber} status changed to ${newState} at ${dateTimeStr}. This is an automated monitoring alert.`;
+  const messageText = `Mirtha Technologies: Level Crossing ${smsIdentifier} status changed to ${newState} at ${dateTimeStr}. This is an automated monitoring alert.`;
 
   for (const recipient of smsRecipients) {
     try {
-      const sendResult = await sendGateStateSms(recipient.phone, effectiveLcNumber, newState, dateTimeStr);
+      const sendResult = await sendGateStateSms(recipient.phone, smsIdentifier, newState, dateTimeStr);
 
       // Record in GateStateAlertLog table
       await prisma.gateStateAlertLog.create({
         data: {
           gateId: effectiveGateId,
-          lcNumber: effectiveLcNumber,
+          lcNumber: smsIdentifier,
           status: newState,
           recipientMobile: recipient.phone,
           recipientName: recipient.fullName,
@@ -290,8 +319,8 @@ export async function checkAndDispatchGateStateAlert(options: GateStateAlertOpti
     }
   }
 
-  // Also dispatch Brevo email alerts in parallel for authorized scope group users with email
-  const emailAlertResult = await checkAndDispatchGateStateEmailAlert(options).catch((err) => {
+  // Also dispatch Brevo email alerts in parallel for authorized users with email
+  const emailAlertResult = await checkAndDispatchGateStateEmailAlert(enrichedEmailOptions).catch((err) => {
     console.error("❌ [GATE STATE ALERT] Error dispatching email alerts:", err?.message || err);
     return null;
   });

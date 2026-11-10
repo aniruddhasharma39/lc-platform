@@ -533,6 +533,7 @@ export async function sendGateStateEmail(params: {
   toEmail: string;
   toName: string;
   lcNumber: string;
+  masterLabel?: string | null;
   locationName?: string | null;
   zone?: string | null;
   division?: string | null;
@@ -544,6 +545,7 @@ export async function sendGateStateEmail(params: {
     toEmail,
     toName,
     lcNumber,
+    masterLabel,
     locationName = 'N/A',
     zone,
     division,
@@ -615,6 +617,11 @@ export async function sendGateStateEmail(params: {
                 <td style="padding: 10px 12px; font-weight: 600; color: #64748b; width: 40%;">LC Gate Identification:</td>
                 <td style="padding: 10px 12px; font-weight: 700; color: #003580; font-size: 15px;">${lcNumber}</td>
               </tr>
+              ${masterLabel ? `
+              <tr style="border-bottom: 1px solid #f1f5f9; background-color: #f8fafc;">
+                <td style="padding: 10px 12px; font-weight: 600; color: #64748b;">Master Unit:</td>
+                <td style="padding: 10px 12px; font-weight: 700; color: #0369a1;">${escapeHtml(masterLabel)}</td>
+              </tr>` : ''}
               <tr style="border-bottom: 1px solid #f1f5f9; background-color: #f8fafc;">
                 <td style="padding: 10px 12px; font-weight: 600; color: #64748b;">Location Name:</td>
                 <td style="padding: 10px 12px; font-weight: 600; color: #1e293b;">${locationName || 'N/A'}</td>
@@ -648,8 +655,9 @@ export async function sendGateStateEmail(params: {
   `;
 
   const subjectPrefix = isOpen ? '⚠️ [ALERT - GATE OPEN]' : '🔒 [ALERT - GATE CLOSED]';
-  const subject = `${subjectPrefix} Level Crossing ${lcNumber} is now ${status} (${timestampStr})`;
-  const textContent = `Indian Railways Alert: Level Crossing ${lcNumber} (${locationName}) transitioned to ${status} in ${effectiveZone} at ${timestampStr} IST.`;
+  const subjectUnit = masterLabel ? ` (${masterLabel})` : '';
+  const subject = `${subjectPrefix} Level Crossing ${lcNumber}${subjectUnit} is now ${status} (${timestampStr})`;
+  const textContent = `Indian Railways Alert: Level Crossing ${lcNumber}${subjectUnit} (${locationName}) transitioned to ${status} in ${effectiveZone} at ${timestampStr} IST.`;
 
   return sendEmail({
     toEmail,
@@ -663,6 +671,8 @@ export async function sendGateStateEmail(params: {
 export interface GateEmailAlertOptions {
   deviceId?: number | null;
   gateId?: number | null;
+  masterId?: number | null;
+  masterSerial?: string | null;
   thingName: string;
   serialNumber?: string | null;
   newState: 'OPEN' | 'CLOSED';
@@ -670,39 +680,60 @@ export interface GateEmailAlertOptions {
 }
 
 /**
- * Checks scope groups mapped to this gate/device.
- * Resolves all APPROVED users in those scope groups with valid email addresses.
+ * Resolves all APPROVED users mapped to this LC Gate with valid email addresses.
  * Dispatches branded Brevo email alerts and records an audit log.
  */
 export async function checkAndDispatchGateStateEmailAlert(options: GateEmailAlertOptions) {
-  const { deviceId, gateId, thingName, serialNumber, newState, timestamp = new Date() } = options;
+  const { deviceId, gateId, masterId, masterSerial, thingName, newState, timestamp = new Date() } = options;
 
   console.log(`✉️ [GATE STATE EMAIL ALERT] Evaluating email alert: Device "${thingName}" -> Status: ${newState}`);
 
-  // 1. Resolve LC Gate details
-  let gate = gateId ? await prisma.lCGate.findUnique({ where: { id: gateId } }) : null;
+  // 1. Resolve LC Gate strictly from explicit assignment (no fuzzy fallback guessing)
+  let resolvedGateId = gateId ?? null;
+  let resolvedMasterId = masterId ?? null;
+  let resolvedMasterSerial = masterSerial ?? null;
 
-  if (!gate) {
-    const lookupKey = thingName.startsWith('LC-') ? thingName : (serialNumber || thingName);
-    gate = await prisma.lCGate.findFirst({
-      where: {
-        OR: [
-          { lcNumber: lookupKey },
-          { lcNumber: lookupKey.replace(/-M-/, '-') },
-          { name: { contains: lookupKey, mode: 'insensitive' } },
-        ],
+  if (!resolvedGateId) {
+    const foundDev = await prisma.deviceRegistry.findFirst({
+      where: deviceId ? { id: deviceId } : { thingName },
+      select: {
+        gateId: true,
+        masterId: true,
+        master: { select: { serialNumber: true } },
       },
     });
+    if (foundDev?.gateId) resolvedGateId = foundDev.gateId;
+    if (!resolvedMasterId && foundDev?.masterId) resolvedMasterId = foundDev.masterId;
+    if (!resolvedMasterSerial && foundDev?.master?.serialNumber) resolvedMasterSerial = foundDev.master.serialNumber;
   }
 
-  const effectiveGateId = gate?.id || gateId || null;
-  const effectiveLcNumber = gate?.lcNumber || (thingName.startsWith('LC-') ? thingName : `LC-${thingName}`);
+  if (!resolvedGateId) {
+    return { dispatched: 0, reason: 'DEVICE_UNASSIGNED' };
+  }
+
+  const gate = await prisma.lCGate.findUnique({
+    where: { id: resolvedGateId },
+    include: { masters: { select: { id: true, serialNumber: true, masterSequence: true } } },
+  });
+
+  if (!gate) {
+    return { dispatched: 0, reason: 'GATE_NOT_FOUND' };
+  }
+
+  let masterLabel: string | null = null;
+  if (gate.masters.length > 1 && resolvedMasterId) {
+    const m = gate.masters.find(x => x.id === resolvedMasterId);
+    const seq = m?.masterSequence;
+    const ser = resolvedMasterSerial || m?.serialNumber;
+    if (ser) masterLabel = seq ? `Master ${seq} (${ser})` : ser;
+  }
+
+  const effectiveGateId = gate.id;
+  const effectiveLcNumber = gate.lcNumber;
   const dateTimeStr = formatIstDateTime(timestamp);
 
   // 2. Resolve authorized email recipients using Indian Railways hierarchy
-  const recipientsData = effectiveGateId
-    ? await resolveGateAlertRecipients(effectiveGateId, prisma)
-    : null;
+  const recipientsData = await resolveGateAlertRecipients(effectiveGateId, prisma);
 
   const emailRecipients = recipientsData?.emailRecipients || [];
 
@@ -721,6 +752,7 @@ export async function checkAndDispatchGateStateEmailAlert(options: GateEmailAler
         toEmail: recipient.email,
         toName: recipient.fullName,
         lcNumber: effectiveLcNumber,
+        masterLabel,
         locationName: gate?.locationName || null,
         zone: gate?.zone || 'Indian Railways',
         division: gate?.division || 'Operations',
@@ -739,7 +771,7 @@ export async function checkAndDispatchGateStateEmailAlert(options: GateEmailAler
             recipientMobile: recipient.email,
             recipientName: recipient.fullName,
             scopeGroupId: null,
-            message: `[BREVO EMAIL ALERT] Gate ${effectiveLcNumber} status changed to ${newState}`,
+            message: `[BREVO EMAIL ALERT] Gate ${effectiveLcNumber}${masterLabel ? ` (${masterLabel})` : ''} status changed to ${newState}`,
             provider: emailResult.provider || 'BREVO_API',
             statusResult: emailResult.success ? 'SENT' : 'FAILED',
             details: `Email: ${recipient.email} | Result: ${emailResult.messageId || emailResult.error || 'OK'}`,

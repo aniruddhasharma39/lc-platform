@@ -198,6 +198,10 @@ router.get('/gates', async (req: AuthRequest, res, next) => {
         locationName: true,
         zone: true,
         division: true,
+        masters: {
+          orderBy: { masterSequence: 'asc' },
+          select: { id: true, masterSequence: true, serialNumber: true }
+        }
       },
       orderBy: { lcNumber: 'asc' }
     });
@@ -293,6 +297,10 @@ async function fetchFilteredOperationalEvents(req: AuthRequest, dbClient: any = 
     };
   }
 
+  const masterIdParam = typeof req.query.masterId === 'string' && req.query.masterId !== 'all'
+    ? parseInt(req.query.masterId, 10)
+    : null;
+
   const whereClause: any = {
     gateId: { in: targetGateIds },
     openedAt: {
@@ -300,6 +308,10 @@ async function fetchFilteredOperationalEvents(req: AuthRequest, dbClient: any = 
       lte: endUtc
     }
   };
+
+  if (masterIdParam && !isNaN(masterIdParam)) {
+    whereClause.masterId = masterIdParam;
+  }
 
   if (statusFilter !== 'ALL') {
     whereClause.status = statusFilter;
@@ -349,8 +361,10 @@ async function fetchFilteredOperationalEvents(req: AuthRequest, dbClient: any = 
       const matchLc = ev.gate.lcNumber.toLowerCase().includes(searchQuery);
       const matchLoc = (ev.gate.locationName || '').toLowerCase().includes(searchQuery);
       const matchName = (ev.gate.name || '').toLowerCase().includes(searchQuery);
+      const matchMaster = (ev.masterSerial || '').toLowerCase().includes(searchQuery);
+      const matchThing = (ev.thingName || '').toLowerCase().includes(searchQuery);
 
-      if (!matchLc && !matchLoc && !matchName) {
+      if (!matchLc && !matchLoc && !matchName && !matchMaster && !matchThing) {
         return false;
       }
     }
@@ -574,6 +588,9 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
         return {
           id: ev.id,
           gateId: ev.gateId,
+          masterId: ev.masterId || null,
+          masterSerial: ev.masterSerial || null,
+          thingName: ev.thingName || null,
           lcNumber: ev.gate.lcNumber,
           gateName: ev.gate.name || ev.gate.locationName,
           locationName: ev.gate.locationName,
@@ -774,6 +791,9 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
           events.push({
             id: rec.eventId,
             gateId: rec.gateId,
+            masterId: rec.masterId || null,
+            masterSerial: rec.masterSerial || null,
+            thingName: rec.thingName || null,
             lcNumber: g?.lcNumber || 'LC-GATE',
             gateName: g?.name || g?.locationName || 'Gate',
             locationName: g?.locationName || 'Location',
@@ -1423,6 +1443,7 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
     const ALL_COLUMNS = [
       { key: 'scopeGroup', label: 'Cluster / Scope Group' },
       { key: 'lcNumber', label: 'LC Number' },
+      { key: 'masterUnit', label: 'Master Unit' },
       { key: 'locationName', label: 'Location Name' },
       { key: 'zone', label: 'Zone' },
       { key: 'division', label: 'Division' },

@@ -891,7 +891,7 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
               "status" = 'ONLINE',
               "firmwareVersion" = COALESCE(${fwVersion || null}, "DeviceRegistry"."firmwareVersion"),
               "updatedAt" = NOW()
-          RETURNING id, "thingName", "serialNumber", "gateId", "lastSeenAt", "firmwareVersion", "status", (xmax = 0) AS is_inserted
+          RETURNING id, "thingName", "serialNumber", "gateId", "masterId", "lastSeenAt", "firmwareVersion", "status", (xmax = 0) AS is_inserted
         `;
         dev = insertedRows[0];
         // Deterministic check: only genuine first-time insertion triggers OFFLINE->ONLINE directory invalidation
@@ -1058,6 +1058,7 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
           checkAndDispatchGateStateAlert({
             deviceId: device.id,
             gateId: device.gateId,
+            masterId: device.masterId,
             thingName: device.thingName,
             serialNumber: device.serialNumber,
             newState: currentState,
@@ -1067,6 +1068,7 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
 
         recordGateTelemetryTransition({
           gateId: device.gateId,
+          masterId: device.masterId,
           thingName: device.thingName,
           newState: currentState,
           timestamp: telemetry.receivedAt,

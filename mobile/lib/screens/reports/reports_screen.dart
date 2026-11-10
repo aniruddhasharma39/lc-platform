@@ -93,6 +93,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
 
   final List<Map<String, String>> _reportColumns = [
     {'key': 'lcNumber', 'label': 'LC Number'},
+    {'key': 'masterUnit', 'label': 'Master Unit'},
     {'key': 'locationName', 'label': 'Location Name'},
     {'key': 'zone', 'label': 'Zone'},
     {'key': 'division', 'label': 'Division'},
@@ -2263,7 +2264,36 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(rec['lcNumber'] ?? 'LC', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14.5, color: AppColors.primary)),
+              Expanded(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        rec['lcNumber'] ?? 'LC',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14.5, color: AppColors.primary),
+                      ),
+                    ),
+                    if (rec['masterSerial'] != null && rec['masterSerial'].toString().trim().isNotEmpty) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE0E7FF),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(color: const Color(0xFFC7D2FE)),
+                        ),
+                        child: Text(
+                          rec['masterSerial'].toString().replaceAll(RegExp(r'^#+'), ''),
+                          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: Color(0xFF3730A3)),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(color: statusBg, borderRadius: BorderRadius.circular(12)),

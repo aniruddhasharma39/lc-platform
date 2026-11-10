@@ -9,10 +9,12 @@ class GateStatusItem {
   final int gateId;
   final String lcNumber;
   final bool isOnline;
-  final String? deviceStatus; // ONLINE, OFFLINE, or null if unconfigured
+  final String? deviceStatus; // ONLINE, PARTIAL, OFFLINE, or null if unconfigured
   final String? lastSeenAt;
   final bool hasMaster;
   final int mastersCount;
+  final int onlineMastersCount;
+  final int hardwareMastersCount;
 
   GateStatusItem({
     required this.gateId,
@@ -22,6 +24,8 @@ class GateStatusItem {
     this.lastSeenAt,
     this.hasMaster = false,
     this.mastersCount = 0,
+    this.onlineMastersCount = 0,
+    this.hardwareMastersCount = 0,
   });
 
   factory GateStatusItem.fromJson(Map<String, dynamic> json) {
@@ -37,6 +41,12 @@ class GateStatusItem {
       mastersCount: json['mastersCount'] is int
           ? json['mastersCount']
           : int.tryParse(json['mastersCount']?.toString() ?? '0') ?? 0,
+      onlineMastersCount: json['onlineMastersCount'] is int
+          ? json['onlineMastersCount']
+          : int.tryParse(json['onlineMastersCount']?.toString() ?? '0') ?? 0,
+      hardwareMastersCount: json['hardwareMastersCount'] is int
+          ? json['hardwareMastersCount']
+          : int.tryParse(json['hardwareMastersCount']?.toString() ?? '0') ?? 0,
     );
   }
 
@@ -48,6 +58,8 @@ class GateStatusItem {
     'lastSeenAt': lastSeenAt,
     'hasMaster': hasMaster,
     'mastersCount': mastersCount,
+    'onlineMastersCount': onlineMastersCount,
+    'hardwareMastersCount': hardwareMastersCount,
   };
 }
 

@@ -32,6 +32,9 @@ export interface CompleteLogReportData {
   events: Array<{
     id: number;
     gateId: number;
+    masterId?: number | null;
+    masterSerial?: string | null;
+    thingName?: string | null;
     openedAt: Date;
     closedAt: Date | null;
     durationSeconds: number | null;
@@ -57,6 +60,33 @@ export interface CompleteLogReportData {
 export interface ActiveColumn {
   key: string;
   label: string;
+}
+
+function buildCompleteLogRowMap(
+  ev: CompleteLogReportData['events'][number],
+  gate: { scopeGroupName: string; lcNumber: string; locationName: string; zone: string | null; division: string | null }
+): Record<string, any> {
+  const openedDateObj = new Date(ev.openedAt);
+  const openedDateStr = openedDateObj.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const openedTimeStr = openedDateObj.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+  const closedTimeStr = ev.closedAt
+    ? new Date(ev.closedAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
+    : 'STILL OPEN';
+
+  return {
+    scopeGroup: gate.scopeGroupName,
+    lcNumber: gate.lcNumber,
+    masterUnit: ev.masterSerial || ev.thingName || '-',
+    locationName: gate.locationName,
+    zone: gate.zone || '-',
+    division: gate.division || '-',
+    openedDate: openedDateStr,
+    openedTime: openedTimeStr,
+    closedTime: closedTimeStr,
+    durationFormatted: ev.durationSeconds ? formatDurationHuman(ev.durationSeconds) : 'In Progress',
+    durationSeconds: ev.durationSeconds ? String(ev.durationSeconds) : '-',
+    status: ev.status,
+  };
 }
 
 // Color Palette
@@ -373,26 +403,7 @@ export async function exportCompleteLogExcel(
       // Data Rows
       for (let eIdx = 0; eIdx < dg.events.length; eIdx++) {
         const ev = dg.events[eIdx];
-        const openedDateObj = new Date(ev.openedAt);
-        const openedDateStr = openedDateObj.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
-        const openedTimeStr = openedDateObj.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
-        const closedTimeStr = ev.closedAt
-          ? new Date(ev.closedAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
-          : 'STILL OPEN';
-
-        const rowMap: Record<string, any> = {
-          scopeGroup: sec.gate.scopeGroupName,
-          lcNumber: sec.gate.lcNumber,
-          locationName: sec.gate.locationName,
-          zone: sec.gate.zone || '-',
-          division: sec.gate.division || '-',
-          openedDate: openedDateStr,
-          openedTime: openedTimeStr,
-          closedTime: closedTimeStr,
-          durationFormatted: ev.durationSeconds ? formatDurationHuman(ev.durationSeconds) : 'In Progress',
-          durationSeconds: ev.durationSeconds ?? '-',
-          status: ev.status
-        };
+        const rowMap = buildCompleteLogRowMap(ev, sec.gate);
 
         const rowValues = activeColumns.map(c => rowMap[c.key]);
         const dRow = sheet.getRow(curRow);
@@ -630,26 +641,7 @@ export async function exportCompleteLogPdf(
           yPos += 18;
         }
 
-        const openedDateObj = new Date(ev.openedAt);
-        const openedDateStr = openedDateObj.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
-        const openedTimeStr = openedDateObj.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
-        const closedTimeStr = ev.closedAt
-          ? new Date(ev.closedAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
-          : 'STILL OPEN';
-
-        const rowMap: Record<string, string> = {
-          scopeGroup: sec.gate.scopeGroupName,
-          lcNumber: sec.gate.lcNumber,
-          locationName: sec.gate.locationName,
-          zone: sec.gate.zone || '-',
-          division: sec.gate.division || '-',
-          openedDate: openedDateStr,
-          openedTime: openedTimeStr,
-          closedTime: closedTimeStr,
-          durationFormatted: ev.durationSeconds ? formatDurationHuman(ev.durationSeconds) : 'In Progress',
-          durationSeconds: ev.durationSeconds ? String(ev.durationSeconds) : '-',
-          status: ev.status
-        };
+        const rowMap = buildCompleteLogRowMap(ev, sec.gate);
 
         const isEven = eIdx % 2 === 0;
         doc.rect(36, yPos, doc.page.width - 72, 16).fill(isEven ? '#FFFFFF' : ZEBRA_BG);
@@ -1156,26 +1148,7 @@ export function exportCompleteLogCsv(
   for (const sec of sections) {
     for (const dg of sec.dateGroups) {
       for (const ev of dg.events) {
-        const openedDateObj = new Date(ev.openedAt);
-        const openedDateStr = openedDateObj.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
-        const openedTimeStr = openedDateObj.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
-        const closedTimeStr = ev.closedAt
-          ? new Date(ev.closedAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
-          : 'STILL OPEN';
-
-        const rowMap: Record<string, string> = {
-          scopeGroup: sec.gate.scopeGroupName,
-          lcNumber: sec.gate.lcNumber,
-          locationName: sec.gate.locationName,
-          zone: sec.gate.zone || '-',
-          division: sec.gate.division || '-',
-          openedDate: openedDateStr,
-          openedTime: openedTimeStr,
-          closedTime: closedTimeStr,
-          durationFormatted: ev.durationSeconds ? formatDurationHuman(ev.durationSeconds) : 'In Progress',
-          durationSeconds: ev.durationSeconds ? String(ev.durationSeconds) : '-',
-          status: ev.status
-        };
+        const rowMap = buildCompleteLogRowMap(ev, sec.gate);
 
         rows.push(activeColumns.map(c => escapeCsv(rowMap[c.key])).join(','));
       }

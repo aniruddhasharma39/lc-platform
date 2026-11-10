@@ -22,6 +22,7 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
   final _serialCtrl = TextEditingController();
   String _powerSource = 'SOLAR';
   bool _isLoading = false;
+  bool _isFetchingSeq = true;
   String? _seqError;
 
   // AWS IoT Device Registry Integration
@@ -83,8 +84,10 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
 
   Future<void> _fetchSequence({bool isManualRetry = false}) async {
     setState(() {
+      _isFetchingSeq = true;
       _seqError = null;
       _seqCtrl.text = '';
+      _serialCtrl.text = '';
     });
 
     try {
@@ -100,15 +103,14 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
         if (nextSeq != null) {
           if (mounted) {
             setState(() {
+              _isFetchingSeq = false;
               _seqCtrl.text = nextSeq.toString();
-              if (_serialCtrl.text.isEmpty || _serialCtrl.text.contains('(Virtual Master)')) {
-                _serialCtrl.text = nextSerial;
-              }
+              _serialCtrl.text = nextSerial;
             });
             if (isManualRetry) {
               AppFeedback.showSuccess(
                 context,
-                'Master sequence synchronized: Master Unit $nextSeq',
+                'Master sequence synchronized: $nextSerial',
               );
             }
           }
@@ -120,7 +122,8 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
       debugPrint('Error fetching master sequence: $e');
       if (mounted) {
         setState(() {
-          _seqError = 'Could not load next sequence. Tap to retry.';
+          _isFetchingSeq = false;
+          _seqError = 'Could not load next sequence. Tap retry.';
         });
         if (isManualRetry) {
           AppFeedback.showError(
@@ -145,16 +148,12 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final seqNum = int.tryParse(_seqCtrl.text) ?? 1;
-      final seqStr = seqNum.toString().padLeft(2, '0');
-      final serialNumber = _serialCtrl.text.trim().isNotEmpty
-          ? _serialCtrl.text.trim()
-          : '${widget.gate['lcNumber']}-$seqStr';
-
+      final seqNum = int.tryParse(_seqCtrl.text);
       final body = <String, dynamic>{
-        'masterSequence': seqNum,
+        if (seqNum != null) 'masterSequence': seqNum,
         'powerSource': _powerSource,
-        'serialNumber': serialNumber,
+        'autoGenerate': true,
+        if (_serialCtrl.text.trim().isNotEmpty) 'serialNumber': _serialCtrl.text.trim(),
       };
 
       if (chosenDevice != null) {
@@ -212,9 +211,11 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
         }
 
         if (mounted) {
+          final createdSerial = masterData['serialNumber']?.toString() ??
+              (_serialCtrl.text.trim().isNotEmpty ? _serialCtrl.text.trim() : 'Master Unit');
           final identifier = chosenDevice != null
-              ? (chosenDevice['thingName'] ?? 'Master Unit')
-              : '${widget.gate['lcNumber']}-${seqNum.toString().padLeft(2, '0')} (Virtual)';
+              ? '$createdSerial (${chosenDevice['thingName']})'
+              : createdSerial;
           AppFeedback.showSuccess(context, 'Master Unit "$identifier" added successfully${_simImage != null ? ' with SIM photo' : ''}.');
           Navigator.pop(context, true);
         }
@@ -242,11 +243,6 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
     final dynamic chosenDevice = _selectedDeviceId != null && _selectedDeviceId!.isNotEmpty
         ? _deviceList.firstWhere((d) => d['id'].toString() == _selectedDeviceId, orElse: () => null)
         : null;
-
-    final fallbackSerial = '${widget.gate['lcNumber']}-${_seqCtrl.text.isEmpty ? '01' : _seqCtrl.text.padLeft(2, '0')}';
-    if (_serialCtrl.text.isEmpty) {
-      _serialCtrl.text = fallbackSerial;
-    }
 
     return Scaffold(
       appBar: AppBar(title: const Text('Add Master Unit', style: TextStyle(fontWeight: FontWeight.bold)), elevation: 0),
@@ -371,20 +367,45 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
                     ),
                     const SizedBox(height: 16),
 
-                    // 2. Master Serial Identifier Display
+                    // 2. Auto-Generated Master Serial Identifier Display
                     TextField(
                       controller: _serialCtrl,
+                      readOnly: true,
+                      style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
                       decoration: InputDecoration(
-                        labelText: 'Master Serial Identifier *',
+                        labelText: 'Master Serial Identifier (Auto-Generated)',
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                         prefixIcon: const Icon(Icons.confirmation_number_outlined),
+                        suffixIcon: _isFetchingSeq
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                              )
+                            : (_seqError != null
+                                ? IconButton(
+                                    icon: const Icon(Icons.refresh, color: Colors.orange),
+                                    tooltip: 'Retry sequence fetch',
+                                    onPressed: () => _fetchSequence(isManualRetry: true),
+                                  )
+                                : Container(
+                                    margin: const EdgeInsets.all(8),
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFE0F2FE),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: const Text(
+                                      'AUTO',
+                                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFF0369A1)),
+                                    ),
+                                  )),
                         filled: true,
-                        fillColor: const Color(0xFFF8FAFC),
-                        hintText: 'e.g. ${widget.gate['lcNumber']}-01',
+                        fillColor: const Color(0xFFF1F5F9),
+                        hintText: _isFetchingSeq ? 'Generating next ID...' : 'e.g. ${widget.gate['lcNumber']}-01',
                         helperText: _seqError ??
                             (chosenDevice != null
                                 ? 'Hardware Mapped: ${chosenDevice['thingName']} (AWS IoT Core)'
-                                : 'Gate sequential identifier. AWS IoT hardware can be linked at any time.'),
+                                : 'Automatically incremented per gate. AWS IoT hardware can be linked anytime.'),
                         helperStyle: TextStyle(
                           color: chosenDevice != null ? const Color(0xFF047857) : const Color(0xFF64748B),
                           fontWeight: FontWeight.normal,

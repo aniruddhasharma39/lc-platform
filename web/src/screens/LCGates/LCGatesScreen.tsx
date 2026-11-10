@@ -275,6 +275,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
   const wsRef = useRef<WebSocket | null>(null);
   const [selectedPayloadId, setSelectedPayloadId] = useState<number | null>(null);
   const [selectedCycleId, setSelectedCycleId] = useState<number | null>(null);
+  const [selectedMasterIdForInspect, setSelectedMasterIdForInspect] = useState<number | 'ALL'>('ALL');
   const [inspectSubTab, setInspectSubTab] = useState<'telemetry' | 'manifest' | 'health' | 'all' | 'cycles'>('cycles');
   const [healthCheckStage, setHealthCheckStage] = useState<'IDLE' | 'DISPATCHING' | 'LISTENING' | 'SUCCESS' | 'TIMEOUT'>('IDLE');
   const [telemetryViewMode, setTelemetryViewMode] = useState<'table' | 'raw'>('table');
@@ -341,6 +342,8 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                 isOnline: statusItem.isOnline,
                 deviceStatus: statusItem.deviceStatus,
                 lastSeenAt: statusItem.lastSeenAt,
+                onlineMastersCount: statusItem.onlineMastersCount,
+                hardwareMastersCount: statusItem.hardwareMastersCount,
               };
             }
             return g;
@@ -384,6 +387,8 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                 isOnline: statusItem.isOnline,
                 deviceStatus: statusItem.deviceStatus,
                 lastSeenAt: statusItem.lastSeenAt,
+                onlineMastersCount: statusItem.onlineMastersCount,
+                hardwareMastersCount: statusItem.hardwareMastersCount,
               };
             }
             return g;
@@ -651,6 +656,9 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
   // Open cluster drilldown in "About & Manifest" mode
   const handleOpenClusterAbout = (gate: any) => {
     setSelectedGate(gate);
+    setSelectedMasterIdForInspect('ALL');
+    setSelectedCycleId(null);
+    setSelectedPayloadId(null);
     setClusterTab('about_manifest');
     setViewMode('detail');
     if (gate?.id) {
@@ -661,6 +669,9 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
   // Open cluster drilldown in "AWS Telemetry" mode
   const handleOpenClusterTelemetry = (gate: any) => {
     setSelectedGate(gate);
+    setSelectedMasterIdForInspect('ALL');
+    setSelectedCycleId(null);
+    setSelectedPayloadId(null);
     setClusterTab('telemetry');
     setViewMode('detail');
     if (gate?.id) {
@@ -781,9 +792,27 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
       : 0;
 
     try {
+      const selectedSummary = selectedMasterIdForInspect !== 'ALL'
+        ? (gateTelemetry?.masterSummaries || []).find((m: any) => m.masterId === selectedMasterIdForInspect)
+        : null;
+      const selectedThing = selectedSummary?.thingName ||
+        (selectedMasterIdForInspect !== 'ALL'
+          ? selectedGate?.deviceRegistries?.find((d: any) => d.masterId === selectedMasterIdForInspect)?.thingName
+          : undefined);
+      const targetPayload = selectedMasterIdForInspect !== 'ALL'
+        ? {
+            masterId: selectedMasterIdForInspect,
+            ...(selectedThing ? { thingName: selectedThing } : {}),
+          }
+        : undefined;
+
       const res = await fetch(`${API_URL}/api/v1/lcgate/${selectedGate.id}/health-check`, {
         method: 'POST',
-        headers: authHeaders()
+        headers: {
+          ...authHeaders(),
+          'Content-Type': 'application/json',
+        },
+        ...(targetPayload ? { body: JSON.stringify(targetPayload) } : {}),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -793,7 +822,10 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
         return;
       }
 
-      toastSuccess(`Diagnostic ping sent to ${data.topic || 'AWS IoT Core'}. Awaiting hardware packet...`, 'Command Dispatched');
+      const targetDesc = data.targetsCount > 1
+        ? `${data.targetsCount} Master Units`
+        : (data.topic || 'AWS IoT Core');
+      toastSuccess(`Diagnostic ping sent to ${targetDesc}. Awaiting hardware packet...`, 'Command Dispatched');
       setHealthCheckStage('LISTENING');
 
       let attempts = 0;
@@ -869,12 +901,75 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
     }
   };
 
-  const allHistoricPayloads: any[] = useMemo(() => gateTelemetry?.payloads || [], [gateTelemetry]);
-  const telemetryRecords: any[] = useMemo(() => gateTelemetry?.telemetryRecords || [], [gateTelemetry]);
-  const manifestRecords: any[] = useMemo(() => gateTelemetry?.manifestRecords || [], [gateTelemetry]);
-  const healthRecords: any[] = useMemo(() => gateTelemetry?.healthRecords || [], [gateTelemetry]);
-  const operationalCycles: any[] = useMemo(() => gateTelemetry?.operationalCycles || [], [gateTelemetry]);
+  const masterSummaries: any[] = useMemo(() => gateTelemetry?.masterSummaries || [], [gateTelemetry]);
+  const isMultiMasterInspect = useMemo(() => {
+    const mCount = selectedGate?.masters?.length || 0;
+    return mCount > 1 || masterSummaries.length > 1;
+  }, [selectedGate, masterSummaries]);
+
+  const activeMasterSummary = useMemo(() => {
+    if (selectedMasterIdForInspect === 'ALL') return null;
+    return masterSummaries.find((m: any) => m.masterId === selectedMasterIdForInspect) || null;
+  }, [selectedMasterIdForInspect, masterSummaries]);
+
+  const activeThingNameFilter = useMemo(() => {
+    if (selectedMasterIdForInspect === 'ALL') return null;
+    if (activeMasterSummary?.thingName) return activeMasterSummary.thingName;
+    const matchedMaster = selectedGate?.masters?.find((m: any) => m.id === selectedMasterIdForInspect);
+    return (
+      matchedMaster?.deviceRegistries?.[0]?.thingName ||
+      selectedGate?.deviceRegistries?.find((d: any) => d.masterId === selectedMasterIdForInspect)?.thingName ||
+      null
+    );
+  }, [selectedMasterIdForInspect, activeMasterSummary, selectedGate]);
+
+  const matchesSelectedMaster = useCallback((item: any) => {
+    if (selectedMasterIdForInspect === 'ALL') return true;
+    if (item?.masterId !== undefined && item?.masterId !== null) {
+      return Number(item.masterId) === Number(selectedMasterIdForInspect);
+    }
+    if (activeThingNameFilter) {
+      return item?.thingName === activeThingNameFilter;
+    }
+    return false;
+  }, [selectedMasterIdForInspect, activeThingNameFilter]);
+
+  const rawAllHistoricPayloads: any[] = useMemo(() => gateTelemetry?.payloads || [], [gateTelemetry]);
+  const allHistoricPayloads: any[] = useMemo(
+    () => (selectedMasterIdForInspect === 'ALL' ? rawAllHistoricPayloads : rawAllHistoricPayloads.filter(matchesSelectedMaster)),
+    [rawAllHistoricPayloads, selectedMasterIdForInspect, matchesSelectedMaster]
+  );
+  const telemetryRecords: any[] = useMemo(() => {
+    const list: any[] = gateTelemetry?.telemetryRecords || [];
+    return selectedMasterIdForInspect === 'ALL' ? list : list.filter(matchesSelectedMaster);
+  }, [gateTelemetry, selectedMasterIdForInspect, matchesSelectedMaster]);
+  const manifestRecords: any[] = useMemo(() => {
+    const list: any[] = gateTelemetry?.manifestRecords || [];
+    return selectedMasterIdForInspect === 'ALL' ? list : list.filter(matchesSelectedMaster);
+  }, [gateTelemetry, selectedMasterIdForInspect, matchesSelectedMaster]);
+  const healthRecords: any[] = useMemo(() => {
+    const list: any[] = gateTelemetry?.healthRecords || [];
+    return selectedMasterIdForInspect === 'ALL' ? list : list.filter(matchesSelectedMaster);
+  }, [gateTelemetry, selectedMasterIdForInspect, matchesSelectedMaster]);
+  const operationalCycles: any[] = useMemo(() => {
+    const list: any[] = gateTelemetry?.operationalCycles || [];
+    return selectedMasterIdForInspect === 'ALL' ? list : list.filter(matchesSelectedMaster);
+  }, [gateTelemetry, selectedMasterIdForInspect, matchesSelectedMaster]);
   const currentOperationalState = useMemo(() => gateTelemetry?.currentOperationalState || null, [gateTelemetry]);
+
+  const effectiveCurrentStatus = useMemo(() => {
+    if (selectedMasterIdForInspect !== 'ALL' && activeMasterSummary?.currentStatus) {
+      return activeMasterSummary.currentStatus;
+    }
+    return currentOperationalState?.currentStatus || gateTelemetry?.currentStatus || 'CLOSED';
+  }, [selectedMasterIdForInspect, activeMasterSummary, currentOperationalState, gateTelemetry]);
+
+  const effectiveLastClosedCycle = useMemo(() => {
+    if (selectedMasterIdForInspect !== 'ALL') {
+      return operationalCycles.find((c: any) => Boolean(c.closedAt) && c.status !== 'OPEN') || null;
+    }
+    return currentOperationalState?.lastClosedCycle || null;
+  }, [selectedMasterIdForInspect, operationalCycles, currentOperationalState]);
 
   const currentViewingCycle = useMemo(() => {
     if (selectedCycleId !== null) {
@@ -899,6 +994,11 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
       if (foundInHc) return foundInHc;
     }
     if (activeRecordList.length > 0) return activeRecordList[0];
+    if (selectedMasterIdForInspect !== 'ALL') {
+      if (inspectSubTab === 'manifest') return activeMasterSummary?.latestManifest || null;
+      if (inspectSubTab === 'health') return activeMasterSummary?.latestHealthCheck || null;
+      return activeMasterSummary?.latestTelemetry || null;
+    }
     if (inspectSubTab === 'manifest' && gateTelemetry?.latestManifest) {
       return gateTelemetry.latestManifest;
     }
@@ -906,7 +1006,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
       return gateTelemetry.latestHealthCheck;
     }
     return gateTelemetry?.latestTelemetry || null;
-  }, [selectedPayloadId, allHistoricPayloads, healthRecords, activeRecordList, inspectSubTab, gateTelemetry]);
+  }, [selectedPayloadId, allHistoricPayloads, healthRecords, activeRecordList, inspectSubTab, gateTelemetry, selectedMasterIdForInspect, activeMasterSummary]);
 
   // Helper to extract first evidence photo for a gate
   const getGateInstallationEvidence = (gate: any) => {
@@ -1290,6 +1390,65 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                   </div>
                 </div>
               </div>
+
+              {(selectedGate.masters?.length || 0) > 1 && (
+                <div className="lcg-about-card" style={{ marginBottom: 18 }}>
+                  <h4 className="lcg-about-card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                    <span>Master Units &amp; Linked AWS IoT Hardware ({selectedGate.masters.length})</span>
+                    <span style={{ fontSize: '0.74rem', fontWeight: 600, color: '#64748b' }}>
+                      Multi-Master 1-to-1 Device Assignment
+                    </span>
+                  </h4>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 12 }}>
+                    {selectedGate.masters.map((m: any, idx: number) => {
+                      const matchedDev =
+                        selectedGate.deviceRegistries?.find((d: any) => d.masterId === m.id) ||
+                        m.deviceRegistries?.[0] ||
+                        null;
+                      const isMasterOnline = matchedDev?.status === 'ONLINE';
+                      const isSolarMaster = m.powerSource === 'SOLAR';
+                      return (
+                        <div
+                          key={m.id || idx}
+                          style={{
+                            border: '1px solid #e2e8f0',
+                            borderRadius: 8,
+                            padding: '12px 14px',
+                            background: '#f8fafc',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                            <div style={{ fontWeight: 800, fontSize: '0.88rem', color: '#0f172a' }}>
+                              Master {m.masterSequence ?? idx + 1} · {String(m.serialNumber || '').replace(/^#+/, '') || 'Unassigned'}
+                            </div>
+                            <span className={`lcg-power-pill ${isSolarMaster ? 'solar' : 'direct'}`} style={{ fontSize: '0.7rem' }}>
+                              {isSolarMaster ? <FaSun /> : <FaBolt />} {isSolarMaster ? 'Solar' : 'Direct'}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '0.78rem', color: '#334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                            <span style={{ color: '#64748b', fontWeight: 600 }}>AWS IoT Thing:</span>
+                            {matchedDev ? (
+                              <span style={{ fontWeight: 700, color: '#047857', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                                <span style={{ width: 6, height: 6, borderRadius: '50%', background: isMasterOnline ? '#10b981' : '#ef4444' }} />
+                                {matchedDev.thingName}
+                              </span>
+                            ) : (
+                              <span style={{ color: '#64748b', fontStyle: 'italic' }}>Virtual (Not Linked)</span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: '0.74rem', color: '#64748b', display: 'flex', justifyContent: 'space-between' }}>
+                            <span>Sensors: {m.childDevices?.length || 0}</span>
+                            <span>Firmware: v{matchedDev?.firmwareVersion || m.firmwareVersion || '1.0.6'}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* 2. Physical Device Manifest & Gateway Profile */}
               {selectedGate.masters && selectedGate.masters.length > 0 ? (
@@ -1737,12 +1896,121 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                 </div>
               </div>
 
+              {isMultiMasterInspect && (
+                <div style={{
+                  marginTop: 12,
+                  padding: '10px 12px',
+                  background: '#f8fafc',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: 10,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '0.74rem', fontWeight: 800, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.4px', marginRight: 4 }}>
+                      Inspect Unit:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedMasterIdForInspect('ALL');
+                        setSelectedCycleId(null);
+                        setSelectedPayloadId(null);
+                      }}
+                      style={{
+                        padding: '5px 12px',
+                        borderRadius: 6,
+                        fontSize: '0.78rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        border: selectedMasterIdForInspect === 'ALL' ? '1px solid #0B3C7A' : '1px solid #cbd5e1',
+                        background: selectedMasterIdForInspect === 'ALL' ? '#0B3C7A' : '#ffffff',
+                        color: selectedMasterIdForInspect === 'ALL' ? '#ffffff' : '#334155',
+                      }}
+                    >
+                      All Masters (Fail-Safe)
+                    </button>
+                    {(masterSummaries.length > 0 ? masterSummaries : (selectedGate?.masters || [])).map((m: any, idx: number) => {
+                      const mId = m.masterId ?? m.id;
+                      const mSeq = m.masterSequence ?? idx + 1;
+                      const mSerial = String(m.serialNumber || `Master ${mSeq}`).replace(/^#+/, '');
+                      const hasHw = m.hasHardware ?? Boolean(m.thingName || m.deviceRegistries?.length);
+                      const mOnline = m.isDeviceOnline === true || m.deviceStatus === 'ONLINE';
+                      const mState = String(m.currentStatus || '').toUpperCase();
+                      const isActive = Number(selectedMasterIdForInspect) === Number(mId);
+                      const dotColor = !hasHw ? '#94a3b8' : (mOnline ? '#10b981' : '#ef4444');
+                      return (
+                        <button
+                          key={mId || idx}
+                          type="button"
+                          onClick={() => {
+                            if (mId != null) {
+                              setSelectedMasterIdForInspect(Number(mId));
+                              setSelectedCycleId(null);
+                              setSelectedPayloadId(null);
+                            }
+                          }}
+                          style={{
+                            padding: '5px 11px',
+                            borderRadius: 6,
+                            fontSize: '0.78rem',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            border: isActive ? '1px solid #0B3C7A' : '1px solid #cbd5e1',
+                            background: isActive ? '#0B3C7A' : '#ffffff',
+                            color: isActive ? '#ffffff' : '#1e293b',
+                          }}
+                        >
+                          <span style={{ width: 7, height: 7, borderRadius: '50%', background: isActive ? '#ffffff' : dotColor }} />
+                          <span>M{mSeq} · {mSerial}</span>
+                          {hasHw && (mState === 'OPEN' || mState === 'CLOSED') && (
+                            <span style={{
+                              fontSize: '0.68rem',
+                              fontWeight: 800,
+                              padding: '1px 5px',
+                              borderRadius: 4,
+                              background: isActive
+                                ? 'rgba(255,255,255,0.2)'
+                                : (mState === 'OPEN' ? '#fee2e2' : '#dcfce7'),
+                              color: isActive
+                                ? '#ffffff'
+                                : (mState === 'OPEN' ? '#b91c1c' : '#15803d'),
+                            }}>
+                              {mState}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {(gateTelemetry?.hardwareMastersCount ?? 0) > 1 && (
+                    <span style={{
+                      fontSize: '0.74rem',
+                      fontWeight: 700,
+                      padding: '3px 9px',
+                      borderRadius: 6,
+                      background: gateTelemetry?.deviceStatus === 'PARTIAL' ? '#fffbeb' : gateTelemetry?.deviceStatus === 'ONLINE' ? '#ecfdf5' : '#fef2f2',
+                      color: gateTelemetry?.deviceStatus === 'PARTIAL' ? '#b45309' : gateTelemetry?.deviceStatus === 'ONLINE' ? '#047857' : '#b91c1c',
+                      border: `1px solid ${gateTelemetry?.deviceStatus === 'PARTIAL' ? '#fde68a' : gateTelemetry?.deviceStatus === 'ONLINE' ? '#a7f3d0' : '#fecaca'}`,
+                    }}>
+                      {gateTelemetry.onlineMastersCount}/{gateTelemetry.hardwareMastersCount} Hardware Online
+                    </span>
+                  )}
+                </div>
+              )}
+
               {/* Gate Operational Lifecycle Analytics KPI Banner */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12, marginTop: 14 }}>
                 {/* 1. Live Gate Operational State */}
                 <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '12px 14px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
                   <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 6 }}>
-                    Current Gate Status
+                    {selectedMasterIdForInspect === 'ALL' ? 'Current Gate Status' : `Master Unit ${activeMasterSummary?.masterSequence || ''} Status`}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span
@@ -1754,9 +2022,9 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                         borderRadius: 6,
                         fontWeight: 800,
                         fontSize: '0.88rem',
-                        background: (currentOperationalState?.currentStatus || gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#dcfce7' : '#fee2e2',
-                        color: (currentOperationalState?.currentStatus || gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#15803d' : '#b91c1c',
-                        border: `1px solid ${(currentOperationalState?.currentStatus || gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#86efac' : '#fca5a5'}`
+                        background: String(effectiveCurrentStatus).toUpperCase() === 'CLOSED' ? '#dcfce7' : String(effectiveCurrentStatus).toUpperCase() === 'UNCONFIGURED' ? '#f1f5f9' : '#fee2e2',
+                        color: String(effectiveCurrentStatus).toUpperCase() === 'CLOSED' ? '#15803d' : String(effectiveCurrentStatus).toUpperCase() === 'UNCONFIGURED' ? '#475569' : '#b91c1c',
+                        border: `1px solid ${String(effectiveCurrentStatus).toUpperCase() === 'CLOSED' ? '#86efac' : String(effectiveCurrentStatus).toUpperCase() === 'UNCONFIGURED' ? '#cbd5e1' : '#fca5a5'}`
                       }}
                     >
                       <span
@@ -1765,13 +2033,15 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                           width: 7,
                           height: 7,
                           borderRadius: '50%',
-                          background: (currentOperationalState?.currentStatus || gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#15803d' : '#b91c1c'
+                          background: String(effectiveCurrentStatus).toUpperCase() === 'CLOSED' ? '#15803d' : String(effectiveCurrentStatus).toUpperCase() === 'UNCONFIGURED' ? '#64748b' : '#b91c1c'
                         }}
                       />
-                      {(currentOperationalState?.currentStatus || gateTelemetry?.currentStatus || 'CLOSED').toUpperCase()}
+                      {String(effectiveCurrentStatus).toUpperCase()}
                     </span>
                     <span style={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 600 }}>
-                      {currentOperationalState?.timeInCurrentStateFormatted ? `for ${currentOperationalState.timeInCurrentStateFormatted}` : ''}
+                      {selectedMasterIdForInspect === 'ALL' && currentOperationalState?.timeInCurrentStateFormatted
+                        ? `for ${currentOperationalState.timeInCurrentStateFormatted}`
+                        : (activeThingNameFilter || '')}
                     </span>
                   </div>
                 </div>
@@ -1795,14 +2065,14 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                     Last Closed At
                   </div>
                   <div style={{ fontSize: '0.92rem', fontWeight: 700, color: '#0f172a' }}>
-                    {currentOperationalState?.lastClosedCycle?.closedAt
-                      ? new Date(currentOperationalState.lastClosedCycle.closedAt).toLocaleTimeString()
-                      : (operationalCycles[0]?.closedAt ? new Date(operationalCycles[0].closedAt).toLocaleTimeString() : 'Active (Open)')}
+                    {effectiveLastClosedCycle?.closedAt
+                      ? new Date(effectiveLastClosedCycle.closedAt).toLocaleTimeString()
+                      : (operationalCycles[0]?.closedAt ? new Date(operationalCycles[0].closedAt).toLocaleTimeString() : (operationalCycles.length > 0 ? 'Active (Open)' : '—'))}
                   </div>
                   <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
-                    {currentOperationalState?.lastClosedCycle?.closedAt
-                      ? `${new Date(currentOperationalState.lastClosedCycle.closedAt).toLocaleDateString()} • Closed & Locked`
-                      : 'Awaiting closure'}
+                    {effectiveLastClosedCycle?.closedAt
+                      ? `${new Date(effectiveLastClosedCycle.closedAt).toLocaleDateString()} • Closed & Locked`
+                      : (operationalCycles.length > 0 ? 'Awaiting closure' : 'No cycle recorded')}
                   </div>
                 </div>
 
@@ -1813,26 +2083,26 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0B3C7A' }}>
-                      {currentOperationalState?.lastClosedCycle?.formattedDuration || '—'}
+                      {effectiveLastClosedCycle?.formattedDuration || '—'}
                     </div>
-                    {currentOperationalState?.lastClosedCycle && (
+                    {effectiveLastClosedCycle && (
                       <span
                         style={{
                           fontSize: '0.7rem',
                           padding: '2px 8px',
                           borderRadius: 4,
                           fontWeight: 700,
-                          background: currentOperationalState.lastClosedCycle.status === 'EXTENDED_DELAY' ? '#fef3c7' : '#ecfdf5',
-                          color: currentOperationalState.lastClosedCycle.status === 'EXTENDED_DELAY' ? '#b45309' : '#047857',
-                          border: `1px solid ${currentOperationalState.lastClosedCycle.status === 'EXTENDED_DELAY' ? '#fde68a' : '#a7f3d0'}`
+                          background: effectiveLastClosedCycle.status === 'EXTENDED_DELAY' ? '#fef3c7' : '#ecfdf5',
+                          color: effectiveLastClosedCycle.status === 'EXTENDED_DELAY' ? '#b45309' : '#047857',
+                          border: `1px solid ${effectiveLastClosedCycle.status === 'EXTENDED_DELAY' ? '#fde68a' : '#a7f3d0'}`
                         }}
                       >
-                        {currentOperationalState.lastClosedCycle.status === 'EXTENDED_DELAY' ? 'Extended Delay' : 'Normal'}
+                        {effectiveLastClosedCycle.status === 'EXTENDED_DELAY' ? 'Extended Delay' : 'Normal'}
                       </span>
                     )}
                   </div>
                   <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
-                    {currentOperationalState?.lastClosedCycle?.durationSeconds ? `${currentOperationalState.lastClosedCycle.durationSeconds}s open-to-close` : 'Cycle duration'}
+                    {effectiveLastClosedCycle?.durationSeconds ? `${effectiveLastClosedCycle.durationSeconds}s open-to-close` : 'Cycle duration'}
                   </div>
                 </div>
               </div>
@@ -1954,10 +2224,23 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                     {currentViewingCycle ? (
                       <div style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 8, padding: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                             <span style={{ fontSize: '0.98rem', fontWeight: 800, color: '#0f172a' }}>
                               Cycle #{currentViewingCycle.id} Operational Lifecycle
                             </span>
+                            {isMultiMasterInspect && (currentViewingCycle.masterSerial || currentViewingCycle.thingName) && (
+                              <span style={{
+                                padding: '2px 8px',
+                                borderRadius: 4,
+                                fontWeight: 700,
+                                fontSize: '0.76rem',
+                                background: '#e0e7ff',
+                                color: '#3730a3',
+                                border: '1px solid #c7d2fe'
+                              }}>
+                                {String(currentViewingCycle.masterSerial || currentViewingCycle.thingName).replace(/^#+/, '')}
+                              </span>
+                            )}
                             <span
                               style={{
                                 padding: '3px 10px',
@@ -2062,6 +2345,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                             <thead>
                               <tr style={{ background: '#f8fafc' }}>
                                 <th style={{ width: '45px' }}>Cycle #</th>
+                                {isMultiMasterInspect && <th>Master Unit</th>}
                                 <th>Status</th>
                                 <th>Gate Opened At</th>
                                 <th>Gate Closed At</th>
@@ -2087,6 +2371,20 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                                     }}
                                   >
                                     <td><strong>#{cycle.id}</strong></td>
+                                    {isMultiMasterInspect && (
+                                      <td>
+                                        <span style={{
+                                          padding: '2px 7px',
+                                          borderRadius: 4,
+                                          fontWeight: 700,
+                                          fontSize: '0.74rem',
+                                          background: '#e0e7ff',
+                                          color: '#3730a3',
+                                        }}>
+                                          {cycle.masterSerial ? String(cycle.masterSerial).replace(/^#+/, '') : (cycle.thingName || '—')}
+                                        </span>
+                                      </td>
+                                    )}
                                     <td>
                                       <span
                                         style={{
@@ -2159,7 +2457,15 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                         disabled={triggeringHealthCheck}
                       >
                         <FaPaperPlane size={13} className={triggeringHealthCheck ? 'fa-spin' : ''} />
-                        <span>{triggeringHealthCheck ? 'Testing Hardware...' : 'Trigger Health Check'}</span>
+                        <span>
+                          {triggeringHealthCheck
+                            ? 'Testing Hardware...'
+                            : selectedMasterIdForInspect !== 'ALL'
+                              ? `Ping Master ${activeMasterSummary?.masterSequence || ''}`.trim()
+                              : isMultiMasterInspect
+                                ? 'Ping All Masters'
+                                : 'Trigger Health Check'}
+                        </span>
                       </button>
                     </div>
 
@@ -2675,32 +2981,55 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                         </span>
 
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 5,
-                              padding: '3px 8px',
-                              borderRadius: '6px',
-                              fontSize: '0.74rem',
-                              fontWeight: 700,
-                              letterSpacing: '0.3px',
-                              background: gate.deviceStatus === 'ONLINE' || gate.isOnline ? '#ecfdf5' : '#fef2f2',
-                              color: gate.deviceStatus === 'ONLINE' || gate.isOnline ? '#047857' : '#b91c1c',
-                              border: `1px solid ${gate.deviceStatus === 'ONLINE' || gate.isOnline ? '#a7f3d0' : '#fecaca'}`
-                            }}
-                            title={gate.deviceStatus === 'ONLINE' || gate.isOnline ? 'Edge hardware online & active' : 'No telemetry for > 65 minutes (Offline)'}
-                          >
-                            <span
-                              style={{
-                                width: 7,
-                                height: 7,
-                                borderRadius: '50%',
-                                backgroundColor: gate.deviceStatus === 'ONLINE' || gate.isOnline ? '#10b981' : '#ef4444'
-                              }}
-                            />
-                            {gate.deviceStatus === 'ONLINE' || gate.isOnline ? 'ONLINE' : 'OFFLINE'}
-                          </span>
+                          {(() => {
+                            const isPartial =
+                              gate.deviceStatus === 'PARTIAL' &&
+                              gate.hardwareMastersCount > 1 &&
+                              gate.onlineMastersCount !== undefined;
+                            const isOnline = !isPartial && (gate.deviceStatus === 'ONLINE' || gate.isOnline);
+                            const badgeLabel = isPartial
+                              ? `${gate.onlineMastersCount}/${gate.hardwareMastersCount} ONLINE`
+                              : isOnline
+                                ? 'ONLINE'
+                                : 'OFFLINE';
+                            const bg = isPartial ? '#fffbeb' : isOnline ? '#ecfdf5' : '#fef2f2';
+                            const fg = isPartial ? '#b45309' : isOnline ? '#047857' : '#b91c1c';
+                            const bd = isPartial ? '#fde68a' : isOnline ? '#a7f3d0' : '#fecaca';
+                            const dot = isPartial ? '#d97706' : isOnline ? '#10b981' : '#ef4444';
+                            const tip = isPartial
+                              ? `${gate.onlineMastersCount} of ${gate.hardwareMastersCount} hardware masters online`
+                              : isOnline
+                                ? 'Edge hardware online & active'
+                                : 'No telemetry for > 65 minutes (Offline)';
+                            return (
+                              <span
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 5,
+                                  padding: '3px 8px',
+                                  borderRadius: '6px',
+                                  fontSize: '0.74rem',
+                                  fontWeight: 700,
+                                  letterSpacing: '0.3px',
+                                  background: bg,
+                                  color: fg,
+                                  border: `1px solid ${bd}`
+                                }}
+                                title={tip}
+                              >
+                                <span
+                                  style={{
+                                    width: 7,
+                                    height: 7,
+                                    borderRadius: '50%',
+                                    backgroundColor: dot
+                                  }}
+                                />
+                                {badgeLabel}
+                              </span>
+                            );
+                          })()}
 
                           <span className={`lcg-power-pill ${isSolar ? 'solar' : 'direct'}`}>
                             {isSolar ? <FaSun /> : <FaBolt />} {isSolar ? 'Solar' : 'Direct'}

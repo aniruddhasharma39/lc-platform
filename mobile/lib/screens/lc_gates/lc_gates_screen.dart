@@ -90,6 +90,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   // Manage expandable/collapsible state for multiple devices
   int? _expandedMasterIndex = 0;
   int? _expandedSlaveId;
+  int? _selectedMasterFilterId;
 
   // Data
   List<dynamic> _scopeGroups = [];
@@ -191,10 +192,73 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             'lastSeenAt': statusItem.lastSeenAt,
             'hasMaster': statusItem.hasMaster,
             'mastersCount': statusItem.mastersCount,
+            'onlineMastersCount': statusItem.onlineMastersCount,
+            'hardwareMastersCount': statusItem.hardwareMastersCount,
           };
         }
       }
     }
+  }
+
+  Widget _buildConnectivityBadge({
+    required String? deviceStatus,
+    required bool isOnline,
+    int? onlineMastersCount,
+    int? hardwareMastersCount,
+    double horizontalPadding = 7,
+    double verticalPadding = 3.5,
+    double fontSize = 10,
+  }) {
+    final bool isPartial = deviceStatus == 'PARTIAL' &&
+        hardwareMastersCount != null &&
+        hardwareMastersCount > 1 &&
+        onlineMastersCount != null;
+    final bool showOnline = !isPartial && (deviceStatus == 'ONLINE' || isOnline);
+
+    final Color bgColor = isPartial
+        ? const Color(0xFFFFFBEB)
+        : (showOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2));
+    final Color borderColor = isPartial
+        ? const Color(0xFFFDE68A)
+        : (showOnline ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA));
+    final Color dotColor = isPartial
+        ? const Color(0xFFD97706)
+        : (showOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444));
+    final Color textColor = isPartial
+        ? const Color(0xFF92400E)
+        : (showOnline ? const Color(0xFF047857) : const Color(0xFFB91C1C));
+    final String label = isPartial
+        ? '$onlineMastersCount/$hardwareMastersCount ONLINE'
+        : (showOnline ? 'ONLINE' : 'OFFLINE');
+
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: horizontalPadding, vertical: verticalPadding),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: borderColor),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: dotColor),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: fontSize,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.3,
+              color: textColor,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _fetchData({bool isManual = false}) async {
@@ -450,6 +514,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
       _viewMode = 'detail';
       _expandedMasterIndex = 0;
       _expandedSlaveId = null;
+      _selectedMasterFilterId = null;
     });
     final gateId = gate['id'];
     final idNum = gateId is int ? gateId : int.tryParse(gateId?.toString() ?? '') ?? 0;
@@ -1183,41 +1248,11 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         if (hasHardware) ...[
-                          Builder(
-                            builder: (context) {
-                              final isOnline = gate['deviceStatus'] == 'ONLINE' || gate['isOnline'] == true;
-                              return Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3.5),
-                                decoration: BoxDecoration(
-                                  color: isOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
-                                  borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(color: isOnline ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA)),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Container(
-                                      width: 6,
-                                      height: 6,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        color: isOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      isOnline ? 'ONLINE' : 'OFFLINE',
-                                      style: TextStyle(
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.bold,
-                                        letterSpacing: 0.3,
-                                        color: isOnline ? const Color(0xFF047857) : const Color(0xFFB91C1C),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
+                          _buildConnectivityBadge(
+                            deviceStatus: gate['deviceStatus']?.toString(),
+                            isOnline: gate['isOnline'] == true,
+                            onlineMastersCount: gate['onlineMastersCount'] as int?,
+                            hardwareMastersCount: gate['hardwareMastersCount'] as int?,
                           ),
                           const SizedBox(width: 6),
                         ],
@@ -2368,9 +2403,19 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         gate['deviceStatus'] == 'ONLINE' ||
         gate['isOnline'] == true);
 
-    final operationalCycles = (_gateTelemetry?['operationalCycles'] as List?) ??
+    final masterSummaries = (_gateTelemetry?['masterSummaries'] as List?) ?? const [];
+    final masterStripItems = masterSummaries.isNotEmpty ? masterSummaries : masters;
+    final bool isMultiMaster = masterStripItems.length > 1;
+    final allOperationalCycles = (_gateTelemetry?['operationalCycles'] as List?) ??
         (gate['events'] as List?) ??
         [];
+    final operationalCycles = (isMultiMaster && _selectedMasterFilterId != null)
+        ? allOperationalCycles.where((c) {
+            if (c is! Map) return false;
+            final rawId = c['masterId'];
+            return rawId != null && int.tryParse(rawId.toString()) == _selectedMasterFilterId;
+          }).toList()
+        : allOperationalCycles;
 
     final lcNumber = (gate['lcNumber'] != null && gate['lcNumber'].toString().trim().isNotEmpty)
         ? gate['lcNumber'].toString().replaceAll(RegExp(r'^#+'), '')
@@ -2443,39 +2488,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               ),
               if (hasHardware) ...[
                 const SizedBox(width: 10),
-                // Hardware Online/Offline Status Pill (Only shown if physical hardware is mapped)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: isDeviceOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: isDeviceOnline ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA),
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: isDeviceOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        isDeviceOnline ? 'ONLINE' : 'OFFLINE',
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w800,
-                          color: isDeviceOnline ? const Color(0xFF047857) : const Color(0xFFB91C1C),
-                          letterSpacing: 0.3,
-                        ),
-                      ),
-                    ],
-                  ),
+                _buildConnectivityBadge(
+                  deviceStatus: (_gateTelemetry?['deviceStatus'] ?? gate['deviceStatus'])?.toString(),
+                  isOnline: isDeviceOnline,
+                  onlineMastersCount: (_gateTelemetry?['onlineMastersCount'] ?? gate['onlineMastersCount']) as int?,
+                  hardwareMastersCount: (_gateTelemetry?['hardwareMastersCount'] ?? gate['hardwareMastersCount']) as int?,
+                  horizontalPadding: 12,
+                  verticalPadding: 10,
+                  fontSize: 11.5,
                 ),
               ],
               const SizedBox(width: 8),
@@ -2491,6 +2511,143 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
             ],
           ),
         ),
+        if (isMultiMaster) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFC),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'MASTER UNITS (${masterStripItems.length})',
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF475569),
+                        letterSpacing: 0.4,
+                      ),
+                    ),
+                    Text(
+                      'Tap unit to filter logs',
+                      style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ChoiceChip(
+                      label: Text(
+                        'All (${allOperationalCycles.length})',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          color: _selectedMasterFilterId == null ? Colors.white : const Color(0xFF334155),
+                        ),
+                      ),
+                      selected: _selectedMasterFilterId == null,
+                      selectedColor: AppColors.primary,
+                      backgroundColor: Colors.white,
+                      side: BorderSide(
+                        color: _selectedMasterFilterId == null ? AppColors.primary : const Color(0xFFCBD5E1),
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      onSelected: (_) => setState(() => _selectedMasterFilterId = null),
+                    ),
+                    ...masterStripItems.asMap().entries.map((entry) {
+                      final idx = entry.key;
+                      final item = entry.value is Map ? entry.value as Map : <String, dynamic>{};
+                      final rawId = item['masterId'] ?? item['id'];
+                      final mId = rawId != null ? int.tryParse(rawId.toString()) : null;
+                      final seq = item['masterSequence'] ?? (idx + 1);
+                      final serial = (item['serialNumber'] ?? 'Master $seq')
+                          .toString()
+                          .replaceAll(RegExp(r'^#+'), '');
+                      final mRegistries = item['deviceRegistries'] as List?;
+                      final mHasHw = item['hasHardware'] == true ||
+                          item['thingName'] != null ||
+                          (mRegistries != null && mRegistries.isNotEmpty);
+                      final mOnline = item['isDeviceOnline'] == true || item['deviceStatus'] == 'ONLINE';
+                      final mState = (item['currentStatus'] ?? '').toString().toUpperCase();
+                      final isSelected = mId != null && _selectedMasterFilterId == mId;
+                      final dotColor = !mHasHw
+                          ? const Color(0xFF94A3B8)
+                          : (mOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444));
+                      return ChoiceChip(
+                        selected: isSelected,
+                        selectedColor: AppColors.primary,
+                        backgroundColor: Colors.white,
+                        side: BorderSide(
+                          color: isSelected ? AppColors.primary : const Color(0xFFCBD5E1),
+                        ),
+                        visualDensity: VisualDensity.compact,
+                        label: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 7,
+                              height: 7,
+                              decoration: BoxDecoration(
+                                color: isSelected ? Colors.white : dotColor,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 5),
+                            Text(
+                              'M$seq ($serial)',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w700,
+                                color: isSelected ? Colors.white : const Color(0xFF1E293B),
+                              ),
+                            ),
+                            if (mHasHw && (mState == 'OPEN' || mState == 'CLOSED')) ...[
+                              const SizedBox(width: 5),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: isSelected
+                                      ? Colors.white.withValues(alpha: 0.2)
+                                      : (mState == 'OPEN' ? const Color(0xFFFEE2E2) : const Color(0xFFDCFCE7)),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  mState,
+                                  style: TextStyle(
+                                    fontSize: 9.5,
+                                    fontWeight: FontWeight.w800,
+                                    color: isSelected
+                                        ? Colors.white
+                                        : (mState == 'OPEN' ? const Color(0xFFB91C1C) : const Color(0xFF15803D)),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        onSelected: mId == null
+                            ? null
+                            : (_) => setState(() {
+                                  _selectedMasterFilterId = isSelected ? null : mId;
+                                }),
+                      );
+                    }),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
         const SizedBox(height: 14),
 
         // 2. Operational History Records Header
@@ -2596,14 +2753,46 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          lcNumber,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w800,
-                            fontSize: 14.5,
-                            color: AppColors.primary,
+                        Expanded(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  lcNumber,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                    fontSize: 14.5,
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                              ),
+                              if (isMultiMaster &&
+                                  (raw['masterSerial'] ?? raw['thingName']) != null &&
+                                  (raw['masterSerial'] ?? raw['thingName']).toString().trim().isNotEmpty) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFE0E7FF),
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(color: const Color(0xFFC7D2FE)),
+                                  ),
+                                  child: Text(
+                                    (raw['masterSerial'] ?? raw['thingName']).toString().replaceAll(RegExp(r'^#+'), ''),
+                                    style: const TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFF3730A3),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
                         ),
+                        const SizedBox(width: 8),
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                           decoration: BoxDecoration(

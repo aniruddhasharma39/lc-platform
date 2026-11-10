@@ -162,6 +162,7 @@ model MasterUnit {
   childDevices     ChildDevice[]
   evidences        InstallationEvidence[]
   deviceRegistries DeviceRegistry[]
+  events           LCGateEvent[]
   createdAt        DateTime               @default(now())
   updatedAt        DateTime               @updatedAt
 }
@@ -324,21 +325,26 @@ model GateStateAlertLog {
 }
 
 model LCGateEvent {
-  id              Int       @id @default(autoincrement())
+  id              Int         @id @default(autoincrement())
   gateId          Int
-  gate            LCGate    @relation(fields: [gateId], references: [id], onDelete: Cascade)
+  gate            LCGate      @relation(fields: [gateId], references: [id], onDelete: Cascade)
+  masterId        Int?
+  master          MasterUnit? @relation(fields: [masterId], references: [id], onDelete: SetNull)
+  masterSerial    String?
+  thingName       String?
   openedAt        DateTime
   closedAt        DateTime?
-  durationSeconds Int?      // Precomputed duration in seconds when closed
-  status          String    @default("CLOSED") // OPEN, CLOSED, EXTENDED_DELAY
-  openedBy        String?   // e.g., "Gatesman R. Sharma", "Station Master", "Interlock Auto"
+  durationSeconds Int?        // Precomputed duration in seconds when closed
+  status          String      @default("CLOSED") // OPEN, CLOSED, EXTENDED_DELAY
+  openedBy        String?     // e.g., "Gatesman R. Sharma", "Station Master", "Interlock Auto"
   closedBy        String?
-  trainNumber     String?   // e.g., "12952 Rajdhani Exp", "Freight DN-402", "Routine Road Clearance"
+  trainNumber     String?     // e.g., "12952 Rajdhani Exp", "Freight DN-402", "Routine Road Clearance"
   remarks         String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
 
   @@index([gateId])
+  @@index([gateId, masterId, status])
   @@index([openedAt])
   @@index([status])
 }
@@ -359,6 +365,9 @@ model LCGateEventChangeLog {
   id              BigInt    @id @default(autoincrement())
   eventId         Int
   gateId          Int
+  masterId        Int?
+  masterSerial    String?
+  thingName       String?
   opType          String    // INSERT, UPDATE, DELETE
   gateRevision    BigInt    // Transactionally serialized per-gate revision counter
   status          String?   // OPEN, CLOSED, EXTENDED_DELAY

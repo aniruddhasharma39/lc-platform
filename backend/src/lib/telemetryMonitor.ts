@@ -38,6 +38,8 @@ export function parseGateStateFromPayload(payload: any): 'OPEN' | 'CLOSED' | nul
  */
 export async function recordGateTelemetryTransition(params: {
   gateId?: number | null;
+  masterId?: number | null;
+  masterSerial?: string | null;
   thingName: string;
   newState: 'OPEN' | 'CLOSED';
   timestamp?: Date;
@@ -46,9 +48,12 @@ export async function recordGateTelemetryTransition(params: {
     const { gateId, thingName, newState } = params;
     const timestamp = params.timestamp || new Date();
 
-    // 1. Resolve gate ID strictly from explicit assignment
-    let targetGateId = gateId;
-    if (!targetGateId) {
+    // 1. Resolve gate ID and master unit identity strictly from explicit assignment
+    let targetGateId = gateId ?? null;
+    let targetMasterId: number | null = params.masterId ?? null;
+    let targetMasterSerial: string | null = params.masterSerial ?? null;
+
+    if (!targetGateId || !targetMasterId || !targetMasterSerial) {
       const foundDev = await prisma.deviceRegistry.findFirst({
         where: {
           OR: [
@@ -56,10 +61,21 @@ export async function recordGateTelemetryTransition(params: {
             { serialNumber: thingName }
           ]
         },
-        select: { id: true, gateId: true }
+        select: {
+          id: true,
+          gateId: true,
+          masterId: true,
+          master: { select: { id: true, serialNumber: true } },
+        }
       });
-      if (foundDev?.gateId) {
+      if (!targetGateId && foundDev?.gateId) {
         targetGateId = foundDev.gateId;
+      }
+      if (!targetMasterId && foundDev?.masterId) {
+        targetMasterId = foundDev.masterId;
+      }
+      if (!targetMasterSerial && foundDev?.master?.serialNumber) {
+        targetMasterSerial = foundDev.master.serialNumber;
       }
     }
 
@@ -68,11 +84,15 @@ export async function recordGateTelemetryTransition(params: {
       return null;
     }
 
+    // Scope active open cycle matching by exact masterId (or null for gate-level) so multiple masters never collide
+    const masterWhere = targetMasterId ? { masterId: targetMasterId } : { masterId: null };
+
     if (newState === 'OPEN') {
-      // Check if there is already an open event that hasn't closed yet
+      // Check if this specific Master Unit already has an open event that hasn't closed yet
       const existingOpen = await prisma.lCGateEvent.findFirst({
         where: {
           gateId: targetGateId,
+          ...masterWhere,
           status: 'OPEN',
           closedAt: null
         },
@@ -83,24 +103,30 @@ export async function recordGateTelemetryTransition(params: {
         return await prisma.$transaction(async (tx) => {
           const newEvent = await tx.lCGateEvent.create({
             data: {
-              gateId: targetGateId,
+              gateId: targetGateId!,
+              masterId: targetMasterId,
+              masterSerial: targetMasterSerial,
+              thingName,
               openedAt: timestamp,
               status: 'OPEN',
               openedBy: 'Automated',
-              remarks: `State transition: OPEN detected by IoT Telemetry`
+              remarks: targetMasterSerial
+                ? `State transition: OPEN (${targetMasterSerial})`
+                : `State transition: OPEN detected by IoT Telemetry`
             }
           });
           await recordEventChangeInTx(tx, newEvent, 'INSERT');
-          console.log(`📊 [REPORTS] Logged OPEN event #${newEvent.id} for Gate #${targetGateId} (${thingName})`);
+          console.log(`📊 [REPORTS] Logged OPEN event #${newEvent.id} for Gate #${targetGateId} / Master ${targetMasterSerial || thingName}`);
           return newEvent;
         });
       }
       return existingOpen;
     } else if (newState === 'CLOSED') {
-      // Find latest OPEN event for this gate
+      // Find latest OPEN event strictly for this specific Master Unit on this gate
       const openEvent = await prisma.lCGateEvent.findFirst({
         where: {
           gateId: targetGateId,
+          ...masterWhere,
           status: 'OPEN',
           closedAt: null
         },
@@ -119,11 +145,14 @@ export async function recordGateTelemetryTransition(params: {
               durationSeconds,
               status: finalStatus,
               closedBy: 'Automated',
+              masterId: openEvent.masterId ?? targetMasterId,
+              masterSerial: openEvent.masterSerial ?? targetMasterSerial,
+              thingName: openEvent.thingName ?? thingName,
               remarks: openEvent.remarks ? `${openEvent.remarks} | Closed via IoT Telemetry` : `Closed via IoT Telemetry`
             }
           });
           await recordEventChangeInTx(tx, updated, 'UPDATE');
-          console.log(`📊 [REPORTS] Updated CLOSED event #${updated.id} for Gate #${targetGateId} (${thingName}), duration: ${durationSeconds}s`);
+          console.log(`📊 [REPORTS] Updated CLOSED event #${updated.id} for Gate #${targetGateId} / Master ${targetMasterSerial || thingName}, duration: ${durationSeconds}s`);
           return updated;
         });
       } else {
@@ -132,18 +161,23 @@ export async function recordGateTelemetryTransition(params: {
         return await prisma.$transaction(async (tx) => {
           const newEvent = await tx.lCGateEvent.create({
             data: {
-              gateId: targetGateId,
+              gateId: targetGateId!,
+              masterId: targetMasterId,
+              masterSerial: targetMasterSerial,
+              thingName,
               openedAt: estimatedOpen,
               closedAt: timestamp,
               durationSeconds: 180,
               status: 'CLOSED',
               openedBy: 'Automated',
               closedBy: 'Automated',
-              remarks: `Direct CLOSED state detected via IoT Telemetry`
+              remarks: targetMasterSerial
+                ? `Direct CLOSED state detected (${targetMasterSerial})`
+                : `Direct CLOSED state detected via IoT Telemetry`
             }
           });
           await recordEventChangeInTx(tx, newEvent, 'INSERT');
-          console.log(`📊 [REPORTS] Created completed CLOSED event #${newEvent.id} for Gate #${targetGateId}`);
+          console.log(`📊 [REPORTS] Created completed CLOSED event #${newEvent.id} for Gate #${targetGateId} / Master ${targetMasterSerial || thingName}`);
           return newEvent;
         });
       }
@@ -164,15 +198,16 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
       specificGateId ? { where: { gateId: specificGateId } } : undefined
     );
 
-    // If events already exist and specific gate not forced, skip
-    if (existingEventsCount > 0 && !specificGateId) {
-      return { synced: 0, existing: existingEventsCount };
-    }
-
-    // 1. Fetch devices with their linked gate
+    // 1. Fetch devices with their linked gate and master unit
     const devices = await prisma.deviceRegistry.findMany({
       where: specificGateId ? { gateId: specificGateId } : { gateId: { not: null } },
-      select: { id: true, thingName: true, gateId: true }
+      select: {
+        id: true,
+        thingName: true,
+        gateId: true,
+        masterId: true,
+        master: { select: { id: true, serialNumber: true } },
+      }
     });
 
     if (devices.length === 0) {
@@ -183,6 +218,19 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
 
     for (const dev of devices) {
       if (!dev.gateId) continue;
+
+      // Skip backfill for this specific device/master if it already has events (unless gate explicitly requested)
+      if (!specificGateId) {
+        const masterEventCount = await prisma.lCGateEvent.count({
+          where: {
+            gateId: dev.gateId,
+            ...(dev.masterId ? { masterId: dev.masterId } : { thingName: dev.thingName })
+          }
+        });
+        if (masterEventCount > 0) continue;
+      }
+
+      const masterSerial = dev.master?.serialNumber || null;
 
       const records = await prisma.deviceTelemetry.findMany({
         where: {
@@ -213,10 +261,15 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
               const ev = await tx.lCGateEvent.create({
                 data: {
                   gateId: dev.gateId!,
+                  masterId: dev.masterId,
+                  masterSerial,
+                  thingName: dev.thingName,
                   openedAt: timestamp,
                   status: 'OPEN',
                   openedBy: 'Automated',
-                  remarks: `State transition: OPEN detected by IoT Telemetry`
+                  remarks: masterSerial
+                    ? `State transition: OPEN (${masterSerial})`
+                    : `State transition: OPEN detected by IoT Telemetry`
                 }
               });
               await recordEventChangeInTx(tx, ev, 'INSERT');
@@ -237,7 +290,9 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
                     durationSeconds,
                     status: finalStatus,
                     closedBy: 'Automated',
-                    remarks: `State transition: CLOSED detected by IoT Telemetry`
+                    remarks: masterSerial
+                      ? `State transition: CLOSED (${masterSerial})`
+                      : `State transition: CLOSED detected by IoT Telemetry`
                   }
                 });
                 await recordEventChangeInTx(tx, updated, 'UPDATE');
@@ -251,13 +306,18 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
                 const ev = await tx.lCGateEvent.create({
                   data: {
                     gateId: dev.gateId!,
+                    masterId: dev.masterId,
+                    masterSerial,
+                    thingName: dev.thingName,
                     openedAt: estOpen,
                     closedAt: timestamp,
                     durationSeconds: 180,
                     status: 'CLOSED',
                     openedBy: 'Automated',
                     closedBy: 'Automated',
-                    remarks: `Direct CLOSED state detected via IoT Telemetry`
+                    remarks: masterSerial
+                      ? `Direct CLOSED state detected (${masterSerial})`
+                      : `Direct CLOSED state detected via IoT Telemetry`
                   }
                 });
                 await recordEventChangeInTx(tx, ev, 'INSERT');
@@ -354,13 +414,16 @@ export async function pollTelemetryTransitions() {
       if (prevState && prevState !== currentState) {
         console.log(`⚡ [TELEMETRY MONITOR] State transition detected for "${thingName}": ${prevState} ➔ ${currentState}`);
 
-        // Find device metadata
+        // Find device metadata with linked master
         const device = await prisma.deviceRegistry.findFirst({
           where: {
             OR: [
               { thingName },
               { id: record.deviceRegistryId || undefined }
             ]
+          },
+          include: {
+            master: { select: { id: true, serialNumber: true } }
           }
         });
 
@@ -368,6 +431,8 @@ export async function pollTelemetryTransitions() {
         checkAndDispatchGateStateAlert({
           deviceId: device?.id,
           gateId: device?.gateId,
+          masterId: device?.masterId,
+          masterSerial: device?.master?.serialNumber || null,
           thingName,
           serialNumber: device?.serialNumber || thingName,
           newState: currentState,
@@ -380,6 +445,8 @@ export async function pollTelemetryTransitions() {
         }
         recordGateTelemetryTransition({
           gateId: device?.gateId,
+          masterId: device?.masterId,
+          masterSerial: device?.master?.serialNumber || null,
           thingName,
           newState: currentState,
           timestamp: record.receivedAt || new Date(),
