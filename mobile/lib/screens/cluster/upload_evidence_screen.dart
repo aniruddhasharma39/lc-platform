@@ -357,7 +357,6 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
   Future<void> _pickImage(ImageSource source) async {
     if (_isLoading || _isCapturing) return;
     setState(() => _isCapturing = true);
-    AppFeedback.showLoading(context, 'Capturing Photo...');
     try {
       final XFile? photo = await _picker.pickImage(source: source, imageQuality: 70);
       if (photo != null) {
@@ -370,8 +369,6 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
         });
         AppFeedback.showSuccess(context, 'Photo captured successfully.');
         _refreshLocationStatus();
-      } else if (mounted) {
-        AppFeedback.hide(context);
       }
     } catch (e) {
       if (mounted) AppFeedback.showError(context, 'Failed to capture photo: $e');
@@ -400,12 +397,10 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
       _uploadProgress = 0.10;
       _progressStatus = 'Verifying GPS location...';
     });
-    AppFeedback.showLoading(context, 'Verifying GPS location...');
 
     final position = await _requireLocation();
     if (position == null) {
       if (mounted) {
-        AppFeedback.hide(context);
         setState(() => _isLoading = false);
       }
       return;
@@ -425,7 +420,6 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
         _uploadProgress = 0.60;
         _progressStatus = inProgressMsg;
       });
-      if (mounted) AppFeedback.showLoading(context, inProgressMsg);
 
       final body = <String, dynamic>{
         'masterId': widget.masterId,
@@ -829,9 +823,7 @@ class _UploadEvidenceScreenState extends State<UploadEvidenceScreen> with Widget
                   ),
                   child: ActionButtonContent(
                     isLoading: _isLoading,
-                    loadingLabel: widget.isReupload
-                        ? 'Re-uploading Photo (${(_uploadProgress * 100).toInt()}%)...'
-                        : 'Uploading Photo (${(_uploadProgress * 100).toInt()}%)...',
+                    loadingLabel: 'Please wait...',
                     idleLabel: widget.isReupload ? 'Re-upload Photo' : 'Upload Photo',
                     idleIcon: Icons.cloud_upload,
                     textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5, color: Colors.white),

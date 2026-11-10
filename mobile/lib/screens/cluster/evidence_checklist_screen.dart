@@ -222,7 +222,6 @@ class _EvidenceChecklistScreenState extends State<EvidenceChecklistScreen> {
                         setDialogState(() => isDeleting = true);
                         if (mounted) {
                           setState(() => _deletingEvidenceIds.add(evKey));
-                          AppFeedback.showLoading(this.context, 'Deleting Photo...');
                         }
                         try {
                           http.Response res = await http.delete(

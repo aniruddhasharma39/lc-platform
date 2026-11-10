@@ -601,7 +601,6 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                         setDialogState(() => isDeleting = true);
                         if (mounted) {
                           setState(() => _deletingGateIds.add(gateId));
-                          AppFeedback.showLoading(this.context, 'Deleting LC Gate...');
                         }
                         try {
                           final res = await http.delete(
@@ -1141,17 +1140,28 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                                                     style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                                                   ),
                                                   if (masters.isNotEmpty)
-                                                     OutlinedButton.icon(
-                                                       style: OutlinedButton.styleFrom(
-                                                         visualDensity: VisualDensity.compact,
-                                                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                                         side: const BorderSide(color: Color(0xFFCBD5E1)),
-                                                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                                                       ),
-                                                       icon: const Icon(Icons.wifi_tethering, size: 14, color: AppColors.primary),
-                                                       label: const Text('Check Connection', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary)),
-                                                       onPressed: () => _pingGateDevice(gate),
-                                                     ),
+                                                    Builder(
+                                                      builder: (context) {
+                                                        final gId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '');
+                                                        final isPinging = gId != null && _pingingGateIds.contains(gId);
+                                                        return OutlinedButton.icon(
+                                                          style: OutlinedButton.styleFrom(
+                                                            visualDensity: VisualDensity.compact,
+                                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                                            side: const BorderSide(color: Color(0xFFCBD5E1)),
+                                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                                          ),
+                                                          icon: isPinging
+                                                              ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+                                                              : const Icon(Icons.wifi_tethering, size: 14, color: AppColors.primary),
+                                                          label: Text(
+                                                            isPinging ? 'Checking...' : 'Check Connection',
+                                                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary),
+                                                          ),
+                                                          onPressed: isPinging ? null : () => _pingGateDevice(gate),
+                                                        );
+                                                      },
+                                                    ),
                                                 ],
                                               ),
                                             ],
@@ -1174,7 +1184,6 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
     final lcNumber = gate['lcNumber'] ?? 'LC Gate';
 
     setState(() => _pingingGateIds.add(gateId));
-    AppFeedback.showLoading(context, 'Checking connection for $lcNumber hardware...');
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/lcgate/$gateId/health-check'),

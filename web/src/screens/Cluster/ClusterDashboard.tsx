@@ -38,7 +38,7 @@ const SORT_OPTIONS = [
 ];
 
 export default function ClusterDashboard(_props: Props) {
-  const { warning: toastWarning, info: toastInfo, loading: toastLoading, resolveToast } = useToast();
+  const { success: toastSuccess, error: toastError, warning: toastWarning, info: toastInfo } = useToast();
   const [gates, setGates] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -249,11 +249,9 @@ export default function ClusterDashboard(_props: Props) {
       toastWarning("Confirmation text does not match gate name or LC number.", "Verification Failed");
       return;
     }
-    const gateLabel = selectedGate.name || selectedGate.lcNumber;
     const gateId = selectedGate.id;
 
     setDeletingGate(true);
-    const toastId = toastLoading(`Deleting LC Gate "${gateLabel}"...`, "Deleting LC Gate");
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/${gateId}`, {
         method: 'DELETE',
@@ -267,15 +265,15 @@ export default function ClusterDashboard(_props: Props) {
         setDeleteConfirmText('');
         setSelectedGate(null);
         setView('list');
-        resolveToast(toastId, 'LC Gate deleted successfully.', 'success', 'LC Gate Deleted');
+        toastSuccess('LC Gate deleted successfully.', 'LC Gate Deleted');
         fetchGates(true);
       } else {
         const err = await res.json().catch(() => ({}));
-        resolveToast(toastId, err.error || 'Failed to delete LC Gate from server.', 'error', 'Delete Failed');
+        toastError(err.error || 'Failed to delete LC Gate from server.', 'Delete Failed');
       }
     } catch (e: any) {
       console.error(e);
-      resolveToast(toastId, e.message || 'Network error while deleting LC Gate.', 'error', 'Network Error');
+      toastError(e.message || 'Network error while deleting LC Gate.', 'Network Error');
     } finally {
       setDeletingGate(false);
     }
@@ -640,7 +638,7 @@ export default function ClusterDashboard(_props: Props) {
 }
 
 function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
-  const { success: toastSuccess, error: toastError, warning: toastWarning, loading: toastLoading, resolveToast } = useToast();
+  const { success: toastSuccess, error: toastError, warning: toastWarning } = useToast();
   const [name, setName] = useState('');
   const [lcNumber, setLcNumber] = useState('');
   const [locationName, setLocationName] = useState('');
@@ -683,7 +681,6 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
     e.preventDefault();
     if (!canSubmit || submitting) return;
     setSubmitting(true);
-    const toastId = toastLoading('Creating LC Gate...', 'Creating LC Gate');
     try {
       const raw = lcNumber.trim();
       const cleanLc = raw.toUpperCase().startsWith('LC-')
@@ -711,15 +708,15 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
       });
       if (res.ok) {
         lcGatesCacheService.markStale(getCacheUserId());
-        resolveToast(toastId, 'LC Gate created successfully.', 'success', 'LC Gate Created');
+        toastSuccess('LC Gate created successfully.', 'LC Gate Created');
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
-        resolveToast(toastId, err.error || 'Failed to create LC Gate', 'error', 'Creation Failed');
+        toastError(err.error || 'Failed to create LC Gate', 'Creation Failed');
       }
     } catch (e: any) {
       console.error(e);
-      resolveToast(toastId, e.message || 'Network error occurred while creating LC Gate.', 'error', 'Network Error');
+      toastError(e.message || 'Network error occurred while creating LC Gate.', 'Network Error');
     }
     setSubmitting(false);
   };
@@ -810,7 +807,7 @@ function CreateGateForm({ onCancel, onSuccess, zones, divisionsByZone }: any) {
 }
 
 function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: any) {
-  const { loading: toastLoading, resolveToast } = useToast();
+  const { success: toastSuccess, error: toastError } = useToast();
   const [addingMaster, setAddingMaster] = useState(false);
   const [addingDeviceToMaster, setAddingDeviceToMaster] = useState<number | null>(null);
   const [uploadingEvidenceFor, setUploadingEvidenceFor] = useState<any>(null);
@@ -831,7 +828,6 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
       return;
     }
     setUnassigningDeviceId(deviceId);
-    const toastId = toastLoading('Unassigning AWS IoT Thing...', 'Unassigning Device');
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/${gate.id}/unassign-device`, {
         method: 'POST',
@@ -839,14 +835,14 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
         body: JSON.stringify({ deviceId }),
       });
       if (res.ok) {
-        resolveToast(toastId, 'AWS IoT Thing unassigned successfully.', 'success', 'Device Unassigned');
+        toastSuccess('AWS IoT Thing unassigned successfully.', 'Device Unassigned');
         onUpdate();
       } else {
         const err = await res.json().catch(() => ({}));
-        resolveToast(toastId, err.error || 'Failed to unassign AWS IoT Thing', 'error', 'Unassign Failed');
+        toastError(err.error || 'Failed to unassign AWS IoT Thing', 'Unassign Failed');
       }
     } catch (e: any) {
-      resolveToast(toastId, e.message || 'Error occurred while unassigning AWS IoT Thing.', 'error', 'Network Error');
+      toastError(e.message || 'Error occurred while unassigning AWS IoT Thing.', 'Network Error');
     } finally {
       setUnassigningDeviceId(null);
     }
@@ -855,7 +851,6 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
   const executeDeleteMaster = async (masterId: number) => {
     if (deletingMasterId !== null) return;
     setDeletingMasterId(masterId);
-    const toastId = toastLoading('Deleting Master Unit...', 'Deleting Master');
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/masters/${masterId}`, {
         method: 'DELETE',
@@ -865,15 +860,15 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
         lcGatesCacheService.markStale(getCacheUserId());
         setMasterToDelete(null);
         setDeleteConfirmText('');
-        resolveToast(toastId, 'Master Unit deleted successfully.', 'success', 'Master Deleted');
+        toastSuccess('Master Unit deleted successfully.', 'Master Deleted');
         onUpdate();
       } else {
         const err = await res.json().catch(() => ({}));
-        resolveToast(toastId, err.error || 'Failed to delete Master Unit', 'error', 'Delete Failed');
+        toastError(err.error || 'Failed to delete Master Unit', 'Delete Failed');
       }
     } catch (e: any) {
       console.error(e);
-      resolveToast(toastId, e.message || 'Network error while deleting Master Unit.', 'error', 'Network Error');
+      toastError(e.message || 'Network error while deleting Master Unit.', 'Network Error');
     } finally {
       setDeletingMasterId(null);
     }
@@ -883,7 +878,6 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
     if (deletingDeviceId !== null) return;
     if (!window.confirm("Are you sure you want to delete this Slave Device?")) return;
     setDeletingDeviceId(deviceId);
-    const toastId = toastLoading('Deleting Slave Device...', 'Deleting Slave Device');
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/devices/${deviceId}`, {
         method: 'DELETE',
@@ -891,15 +885,15 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
       });
       if (res.ok) {
         lcGatesCacheService.markStale(getCacheUserId());
-        resolveToast(toastId, 'Slave Device deleted successfully.', 'success', 'Slave Deleted');
+        toastSuccess('Slave Device deleted successfully.', 'Slave Deleted');
         onUpdate();
       } else {
         const err = await res.json().catch(() => ({}));
-        resolveToast(toastId, err.error || 'Failed to delete Slave Device', 'error', 'Delete Failed');
+        toastError(err.error || 'Failed to delete Slave Device', 'Delete Failed');
       }
     } catch (e: any) {
       console.error(e);
-      resolveToast(toastId, e.message || 'Network error while deleting Slave Device.', 'error', 'Network Error');
+      toastError(e.message || 'Network error while deleting Slave Device.', 'Network Error');
     } finally {
       setDeletingDeviceId(null);
     }
@@ -1447,7 +1441,7 @@ function EvidenceCardViewer({ title, subtitle, evidence, onPreview }: { title: s
 
 // ── Standalone Form to Edit / Update Existing LC Gate ──
 function UpdateGateForm({ gate, onCancel, onSuccess, zones, divisionsByZone }: any) {
-  const { success: toastSuccess, error: toastError, warning: toastWarning, loading: toastLoading, resolveToast } = useToast();
+  const { success: toastSuccess, error: toastError, warning: toastWarning } = useToast();
   const [name, setName] = useState(gate.name || '');
   const [lcNumber, setLcNumber] = useState(gate.lcNumber || '');
   const [locationName, setLocationName] = useState(gate.locationName || '');
@@ -1501,7 +1495,6 @@ function UpdateGateForm({ gate, onCancel, onSuccess, zones, divisionsByZone }: a
     e.preventDefault();
     if (!canSubmit || submitting) return;
     setSubmitting(true);
-    const toastId = toastLoading('Updating LC Gate...', 'Updating LC Gate');
     try {
       const raw = lcNumber.trim();
       const cleanLc = raw.toUpperCase().startsWith('LC-')
@@ -1530,15 +1523,15 @@ function UpdateGateForm({ gate, onCancel, onSuccess, zones, divisionsByZone }: a
       if (res.ok) {
         const updated = await res.json();
         lcGatesCacheService.markStale(getCacheUserId());
-        resolveToast(toastId, 'LC Gate updated successfully.', 'success', 'LC Gate Updated');
+        toastSuccess('LC Gate updated successfully.', 'LC Gate Updated');
         onSuccess(updated);
       } else {
         const err = await res.json().catch(() => ({}));
-        resolveToast(toastId, err.error || 'Failed to update LC Gate', 'error', 'Update Failed');
+        toastError(err.error || 'Failed to update LC Gate', 'Update Failed');
       }
     } catch (e: any) {
       console.error(e);
-      resolveToast(toastId, e.message || 'Network error occurred while updating LC Gate.', 'error', 'Network Error');
+      toastError(e.message || 'Network error occurred while updating LC Gate.', 'Network Error');
     }
     setSubmitting(false);
   };
@@ -1634,7 +1627,7 @@ function UpdateGateForm({ gate, onCancel, onSuccess, zones, divisionsByZone }: a
 
 // ── Modal to Assign Registered AWS IoT Device to LC Gate ──
 function AssignDeviceModal({ gate, onClose, onSuccess }: any) {
-  const { error: toastError, loading: toastLoading, resolveToast } = useToast();
+  const { success: toastSuccess, error: toastError } = useToast();
   const [unassignedDevices, setUnassignedDevices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
@@ -1663,7 +1656,6 @@ function AssignDeviceModal({ gate, onClose, onSuccess }: any) {
       return;
     }
     setAssigning(true);
-    const toastId = toastLoading('Assigning AWS IoT Thing...', 'Assigning Device');
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/${gate.id}/assign-device`, {
         method: 'POST',
@@ -1674,14 +1666,14 @@ function AssignDeviceModal({ gate, onClose, onSuccess }: any) {
         }),
       });
       if (res.ok) {
-        resolveToast(toastId, 'AWS IoT Thing assigned successfully.', 'success', 'Device Assigned');
+        toastSuccess('AWS IoT Thing assigned successfully.', 'Device Assigned');
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
-        resolveToast(toastId, err.error || 'Failed to assign AWS IoT Thing', 'error', 'Assignment Failed');
+        toastError(err.error || 'Failed to assign AWS IoT Thing', 'Assignment Failed');
       }
     } catch (e: any) {
-      resolveToast(toastId, e.message || 'Error assigning AWS IoT Thing.', 'error', 'Network Error');
+      toastError(e.message || 'Error assigning AWS IoT Thing.', 'Network Error');
     } finally {
       setAssigning(false);
     }
@@ -1754,7 +1746,7 @@ function AssignDeviceModal({ gate, onClose, onSuccess }: any) {
 
 // ── Modal to Edit Existing Master Unit Configuration (Power source & Device link) ──
 function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
-  const { error: toastError, loading: toastLoading, resolveToast } = useToast();
+  const { success: toastSuccess, error: toastError } = useToast();
   const [serialNumber, setSerialNumber] = useState(master.serialNumber || '');
   const [powerSource, setPowerSource] = useState(master.powerSource || 'SOLAR');
   const [deviceList, setDeviceList] = useState<any[]>([]);
@@ -1791,7 +1783,6 @@ function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
     }
 
     setSubmitting(true);
-    const toastId = toastLoading('Updating Master Unit...', 'Updating Master');
     try {
       const devIdNum = selectedDeviceId ? parseInt(selectedDeviceId, 10) : null;
       const unassign = initiallyAssignedDevice && !devIdNum;
@@ -1808,14 +1799,14 @@ function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
       });
 
       if (res.ok) {
-        resolveToast(toastId, 'Master Unit updated successfully.', 'success', 'Master Updated');
+        toastSuccess('Master Unit updated successfully.', 'Master Updated');
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
-        resolveToast(toastId, err.error || 'Failed to update Master Unit', 'error', 'Update Failed');
+        toastError(err.error || 'Failed to update Master Unit', 'Update Failed');
       }
     } catch (e: any) {
-      resolveToast(toastId, e.message || 'Error updating Master Unit.', 'error', 'Network Error');
+      toastError(e.message || 'Error updating Master Unit.', 'Network Error');
     } finally {
       setSubmitting(false);
     }
@@ -1897,7 +1888,7 @@ function EditMasterModal({ gate, master, onClose, onSuccess }: any) {
 }
 
 function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
-  const { loading: toastLoading, resolveToast } = useToast();
+  const { success: toastSuccess, error: toastError, warning: toastWarning } = useToast();
   const [masterSequence, setMasterSequence] = useState('');
   const [powerSource, setPowerSource] = useState('SOLAR');
   const [customSerial, setCustomSerial] = useState<string>('');
@@ -1917,18 +1908,17 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
     const file = e.target.files?.[0];
     if (!file) return;
     setCapturingSimPhoto(true);
-    const capToastId = toastLoading('Capturing Photo...', 'Preparing SIM Photo');
     const reader = new FileReader();
     reader.onloadend = () => {
       const result = reader.result as string;
       setSimPhotoBase64(result);
       setSimPhotoPreview(result);
       setCapturingSimPhoto(false);
-      resolveToast(capToastId, 'Photo captured successfully.', 'success', 'Photo Captured');
+      toastSuccess('Photo captured successfully.', 'Photo Captured');
     };
     reader.onerror = () => {
       setCapturingSimPhoto(false);
-      resolveToast(capToastId, 'Failed to capture photo.', 'error', 'Capture Failed');
+      toastError('Failed to capture photo.', 'Capture Failed');
     };
     reader.readAsDataURL(file);
   };
@@ -1986,7 +1976,6 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
 
     setSubmitting(true);
     setSubmitStage('Creating Master Unit...');
-    const toastId = toastLoading('Creating Master Unit...', 'Creating Master');
     try {
       const res = await fetch(`${API_URL}/api/v1/lcgate/${gate.id}/masters`, {
         method: 'POST',
@@ -2010,7 +1999,6 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
         // If SIM photo was selected, upload evidence immediately
         if (simPhotoBase64 && masterIdToUse) {
           setSubmitStage('Uploading Photo...');
-          resolveToast(toastId, 'Uploading Photo...', 'loading', 'Uploading SIM Photo', 0);
           try {
             let lat = gate.latitude || 0;
             let lng = gate.longitude || 0;
@@ -2048,28 +2036,24 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
 
         lcGatesCacheService.markStale(getCacheUserId());
         if (simUploadFailed) {
-          resolveToast(
-            toastId,
+          toastWarning(
             'Master Unit created successfully, but SIM photo upload failed. Please retry in the Evidence Checklist.',
-            'warning',
             'Master Created (SIM Photo Failed)'
           );
         } else {
-          resolveToast(
-            toastId,
+          toastSuccess(
             simPhotoBase64 ? 'Master Unit created and SIM photo uploaded successfully.' : 'Master Unit created successfully.',
-            'success',
             'Master Unit Created'
           );
         }
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
-        resolveToast(toastId, err.error || 'Failed to add Master Unit', 'error', 'Hardware Error');
+        toastError(err.error || 'Failed to add Master Unit', 'Hardware Error');
       }
     } catch (e: any) {
       console.error(e);
-      resolveToast(toastId, e.message || 'Network error while creating Master Unit.', 'error', 'Network Error');
+      toastError(e.message || 'Network error while creating Master Unit.', 'Network Error');
     }
     setSubmitting(false);
   };
@@ -2167,7 +2151,7 @@ function CreateMasterForm({ gate, onCancel, onSuccess }: any) {
 }
 
 function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
-  const { loading: toastLoading, resolveToast } = useToast();
+  const { success: toastSuccess, error: toastError } = useToast();
   const [type, setType] = useState('LIMIT_SWITCH');
   const [submitting, setSubmitting] = useState(false);
   const [capturingPhoto, setCapturingPhoto] = useState(false);
@@ -2229,17 +2213,16 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       setCapturingPhoto(true);
-      const capToastId = toastLoading('Capturing Photo...', 'Preparing Photo');
       setImageFile(file);
       const reader = new FileReader();
       reader.onload = (ev) => {
         setImagePreview(ev.target?.result as string);
         setCapturingPhoto(false);
-        resolveToast(capToastId, 'Photo captured successfully.', 'success', 'Photo Captured');
+        toastSuccess('Photo captured successfully.', 'Photo Captured');
       };
       reader.onerror = () => {
         setCapturingPhoto(false);
-        resolveToast(capToastId, 'Failed to capture photo.', 'error', 'Capture Failed');
+        toastError('Failed to capture photo.', 'Capture Failed');
       };
       reader.readAsDataURL(file);
     }
@@ -2249,10 +2232,6 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
     e.preventDefault();
     if (submitting || capturingPhoto) return;
     setSubmitting(true);
-    const toastId = toastLoading(
-      imageFile ? 'Uploading Photo & Adding Slave Device...' : 'Adding Slave Device...',
-      'Adding Slave Device'
-    );
     try {
       let imageBase64: string | undefined = undefined;
       if (imageFile) {
@@ -2279,20 +2258,18 @@ function CreateDeviceForm({ master, onCancel, onSuccess }: any) {
       });
       if (res.ok) {
         lcGatesCacheService.markStale(getCacheUserId());
-        resolveToast(
-          toastId,
+        toastSuccess(
           imageBase64 ? 'Slave Device and photo added successfully.' : 'Slave Device added successfully.',
-          'success',
           'Slave Device Added'
         );
         onSuccess();
       } else {
         const err = await res.json().catch(() => ({}));
-        resolveToast(toastId, err.error || 'Failed to add Slave Device', 'error', 'Hardware Error');
+        toastError(err.error || 'Failed to add Slave Device', 'Hardware Error');
       }
     } catch (e: any) {
       console.error(e);
-      resolveToast(toastId, e.message || 'Network error while adding Slave Device.', 'error', 'Network Error');
+      toastError(e.message || 'Network error while adding Slave Device.', 'Network Error');
     }
     setSubmitting(false);
   };
@@ -2493,7 +2470,7 @@ function CentralizedEvidenceUpload({ master, onClose }: any) {
 }
 
 function EvidenceItem({ title, description, evidence, masterId, childDeviceId, category, onUploaded, onDeleted }: any) {
-  const { warning: toastWarning, loading: toastLoading, resolveToast } = useToast();
+  const { success: toastSuccess, error: toastError, warning: toastWarning } = useToast();
   const [actionPhase, setActionPhase] = useState<
     'IDLE' | 'CAPTURING' | 'ACQUIRING_GPS' | 'UPLOADING' | 'REUPLOADING' | 'DELETING'
   >('IDLE');
@@ -2526,33 +2503,23 @@ function EvidenceItem({ title, description, evidence, masterId, childDeviceId, c
 
     const reuploadMode = isReupload;
     setActionPhase('CAPTURING');
-    const toastId = toastLoading('Capturing Photo...', 'Preparing Photo');
 
     const reader = new FileReader();
     reader.onerror = () => {
       setActionPhase('IDLE');
       inputEl.value = '';
-      resolveToast(toastId, 'Failed to read captured photo.', 'error', 'Capture Failed');
+      toastError('Failed to read captured photo.', 'Capture Failed');
     };
     reader.onloadend = () => {
       const base64String = reader.result as string;
-      resolveToast(toastId, 'Photo captured successfully.', 'success', 'Photo Captured', 2000);
-
+      toastSuccess('Photo captured successfully.', 'Photo Captured');
       setActionPhase('ACQUIRING_GPS');
-      const uploadToastId = toastLoading('Acquiring GPS location...', 'GPS Verification');
 
       navigator.geolocation.getCurrentPosition(
         async (pos) => {
           const latitude = pos.coords.latitude;
           const longitude = pos.coords.longitude;
           setActionPhase(reuploadMode ? 'REUPLOADING' : 'UPLOADING');
-          resolveToast(
-            uploadToastId,
-            reuploadMode ? 'Re-uploading Photo...' : 'Uploading Photo...',
-            'loading',
-            reuploadMode ? 'Re-uploading Evidence' : 'Uploading Evidence',
-            0
-          );
 
           try {
             const res = await fetch(`${API_URL}/api/v1/evidence`, {
@@ -2574,27 +2541,21 @@ function EvidenceItem({ title, description, evidence, masterId, childDeviceId, c
             if (res.ok) {
               const saved = await res.json();
               onUploaded(saved);
-              resolveToast(
-                uploadToastId,
+              toastSuccess(
                 reuploadMode ? 'Photo re-uploaded successfully.' : 'Photo uploaded successfully.',
-                'success',
                 reuploadMode ? 'Photo Re-uploaded' : 'Photo Uploaded'
               );
             } else {
               const err = await res.json().catch(() => ({}));
-              resolveToast(
-                uploadToastId,
+              toastError(
                 err.message || err.error || (reuploadMode ? 'Photo re-upload failed.' : 'Photo upload failed.'),
-                'error',
                 reuploadMode ? 'Re-upload Failed' : 'Upload Failed'
               );
             }
           } catch (err: any) {
             console.error(err);
-            resolveToast(
-              uploadToastId,
+            toastError(
               `${reuploadMode ? 'Re-upload' : 'Upload'} failed: ${err.message || 'Network error'}`,
-              'error',
               'Network Error'
             );
           } finally {
@@ -2607,33 +2568,22 @@ function EvidenceItem({ title, description, evidence, masterId, childDeviceId, c
           inputEl.value = '';
 
           if (err.code === 1) {
-            resolveToast(
-              uploadToastId,
+            toastError(
               'GPS location is strictly required to verify installation proof. Please allow location access in your browser settings.',
-              'error',
               'Location Access Denied'
             );
           } else if (err.code === 2) {
-            resolveToast(
-              uploadToastId,
+            toastWarning(
               'Please turn ON your device location / GPS in system settings before uploading evidence.',
-              'warning',
               'Location Turned Off'
             );
           } else if (err.code === 3) {
-            resolveToast(
-              uploadToastId,
+            toastWarning(
               'Could not acquire GPS coordinates in time. Please check your GPS signal and try again.',
-              'warning',
               'GPS Timed Out'
             );
           } else {
-            resolveToast(
-              uploadToastId,
-              `Location Error: ${err.message || 'Unable to get location'}`,
-              'error',
-              'Location Error'
-            );
+            toastError(`Location Error: ${err.message || 'Unable to get location'}`, 'Location Error');
           }
         },
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
@@ -2646,7 +2596,6 @@ function EvidenceItem({ title, description, evidence, masterId, childDeviceId, c
     if (!evidence || isBusy) return;
     if (!window.confirm(`Delete the uploaded photo for "${title}"? This cannot be undone.`)) return;
     setActionPhase('DELETING');
-    const toastId = toastLoading('Deleting Photo...', 'Removing Evidence');
     try {
       const res = await fetch(`${API_URL}/api/v1/evidence/${evidence.id}`, {
         method: 'DELETE',
@@ -2654,13 +2603,13 @@ function EvidenceItem({ title, description, evidence, masterId, childDeviceId, c
       });
       if (res.ok) {
         onDeleted(evidence.id);
-        resolveToast(toastId, 'Photo deleted successfully.', 'success', 'Photo Deleted');
+        toastSuccess('Photo deleted successfully.', 'Photo Deleted');
       } else {
-        resolveToast(toastId, 'Failed to delete photo from server.', 'error', 'Delete Failed');
+        toastError('Failed to delete photo from server.', 'Delete Failed');
       }
     } catch (err) {
       console.error(err);
-      resolveToast(toastId, 'Network error while deleting photo.', 'error', 'Network Error');
+      toastError('Network error while deleting photo.', 'Network Error');
     } finally {
       setActionPhase('IDLE');
     }

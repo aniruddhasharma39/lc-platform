@@ -147,7 +147,6 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
     }
 
     setState(() => _isLoading = true);
-    AppFeedback.showLoading(context, 'Creating LC Gate...');
     try {
       final cleanLc = rawLc.toUpperCase().startsWith('LC-')
           ? rawLc.toUpperCase()

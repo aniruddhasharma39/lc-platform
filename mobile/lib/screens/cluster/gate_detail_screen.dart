@@ -33,7 +33,6 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
   final Set<int> _unassigningMasterIds = {};
   final Set<int> _deletingDeviceIds = {};
   final Set<int> _pingingMasterIds = {};
-  bool _isPingingGate = false;
 
   @override
   void initState() {
@@ -41,23 +40,17 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     gate = widget.gate;
   }
 
-    Future<void> _pingGateDevice({int? masterId, String? thingName, String? unitLabel}) async {
+  Future<void> _pingGateDevice({int? masterId, String? thingName, String? unitLabel}) async {
     final gateId = gate['id'];
     if (gateId == null) return;
     if (masterId != null && _pingingMasterIds.contains(masterId)) return;
-    if (masterId == null && _isPingingGate) return;
 
     final lcNumber = gate['lcNumber'] ?? 'LC Gate';
     final targetDesc = unitLabel != null ? '$lcNumber · $unitLabel' : '$lcNumber hardware';
 
-    setState(() {
-      if (masterId != null) {
-        _pingingMasterIds.add(masterId);
-      } else {
-        _isPingingGate = true;
-      }
-    });
-    AppFeedback.showLoading(context, 'Pinging $targetDesc...');
+    if (masterId != null) {
+      setState(() => _pingingMasterIds.add(masterId));
+    }
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/lcgate/$gateId/health-check'),
@@ -93,14 +86,8 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
         AppFeedback.showError(context, 'Connection error: $e');
       }
     } finally {
-      if (mounted) {
-        setState(() {
-          if (masterId != null) {
-            _pingingMasterIds.remove(masterId);
-          } else {
-            _isPingingGate = false;
-          }
-        });
+      if (mounted && masterId != null) {
+        setState(() => _pingingMasterIds.remove(masterId));
       }
     }
   }
@@ -184,7 +171,6 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         setDialogState(() => isDeleting = true);
                         if (mounted) {
                           setState(() => _deletingEvidenceIds.add(evKey));
-                          AppFeedback.showLoading(this.context, 'Deleting Photo...');
                         }
                         try {
                           http.Response res = await http.delete(
@@ -420,7 +406,6 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                   return;
                 }
                 setModalState(() => isSubmitting = true);
-                AppFeedback.showLoading(this.context, 'Updating LC Gate...');
                 try {
                   final stObj = stations.cast<StationReference?>().firstWhere(
                     (s) => s?.code == selectedStationCode,
@@ -597,7 +582,6 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                 onPressed: (isAssigning || selectedDeviceId == null) ? null : () async {
                   final chosenDev = unassignedDevices.firstWhere((d) => d['id'].toString() == selectedDeviceId);
                   setModalState(() => isAssigning = true);
-                  AppFeedback.showLoading(this.context, 'Assigning AWS IoT Thing...');
                   try {
                     final res = await http.post(
                       Uri.parse('$baseUrl/lcgate/${gate['id']}/assign-device'),
@@ -672,7 +656,6 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         if (mounted && mId != null) {
                           setState(() => _unassigningMasterIds.add(mId));
                         }
-                        AppFeedback.showLoading(context, 'Unassigning AWS IoT Thing...');
                         try {
                           final res = await http.post(
                             Uri.parse('$baseUrl/lcgate/${gate['id']}/unassign-device'),
@@ -766,7 +749,6 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                           return;
                         }
                         setModalState(() => isDeleting = true);
-                        AppFeedback.showLoading(this.context, 'Deleting Master Unit...');
                         try {
                           final res = await http.delete(
                             Uri.parse('$baseUrl/lcgate/masters/${master['id']}'),
@@ -845,7 +827,6 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                         if (mounted && devId != null) {
                           setState(() => _deletingDeviceIds.add(devId));
                         }
-                        AppFeedback.showLoading(this.context, 'Deleting Slave Device...');
                         try {
                           final res = await http.delete(
                             Uri.parse('$baseUrl/lcgate/devices/${device['id']}'),
@@ -1117,14 +1098,11 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                   ? null
                                   : () async {
                                       setDialogState(() => isCapturingPhoto = true);
-                                      AppFeedback.showLoading(this.context, 'Capturing Photo...');
                                       try {
                                         final img = await picker.pickImage(source: ImageSource.camera, imageQuality: 80);
                                         if (img != null) {
                                           if (dialogCtx.mounted) setDialogState(() => slavePhoto = img);
                                           if (mounted) AppFeedback.showSuccess(this.context, 'Photo captured successfully.');
-                                        } else if (mounted) {
-                                          AppFeedback.hide(this.context);
                                         }
                                       } catch (e) {
                                         debugPrint('Camera error: $e');
@@ -1178,7 +1156,6 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                     ? null
                     : () async {
                         setDialogState(() => isAdding = true);
-                        AppFeedback.showLoading(this.context, 'Adding Slave Device...');
                         try {
                           String? base64Img;
                           double? photoLat;
@@ -1713,15 +1690,6 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
             tooltip: 'Edit LC Gate',
             onPressed: _showEditGateDialog,
           ),
-
-          if (masters.isNotEmpty)
-            IconButton(
-              icon: _isPingingGate
-                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.wifi_tethering, color: AppColors.primary),
-              tooltip: 'Check Connection',
-              onPressed: _isPingingGate ? null : _pingGateDevice,
-            ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh Gate Details',
@@ -1841,6 +1809,8 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                       );
 
                                 if (matchingDev != null) {
+                                  final devStatus = (matchingDev['status'] ?? 'ONLINE').toString().toUpperCase();
+                                  final isDevOnline = devStatus == 'ONLINE' || devStatus == 'ACTIVE';
                                   return Container(
                                     margin: const EdgeInsets.only(bottom: 14),
                                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -1849,72 +1819,85 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                       borderRadius: BorderRadius.circular(10),
                                       border: Border.all(color: const Color(0xFFBBF7D0)),
                                     ),
-                                    child: Row(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.stretch,
                                       children: [
-                                        Container(
-                                          padding: const EdgeInsets.all(6),
-                                          decoration: BoxDecoration(
-                                            color: const Color(0xFFDCFCE7),
-                                            borderRadius: BorderRadius.circular(6),
-                                          ),
-                                          child: const Icon(Icons.memory, size: 18, color: Color(0xFF16A34A)),
-                                        ),
-                                        const SizedBox(width: 10),
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Row(
+                                        Row(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Container(
+                                              padding: const EdgeInsets.all(6),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFFDCFCE7),
+                                                borderRadius: BorderRadius.circular(6),
+                                              ),
+                                              child: const Icon(Icons.memory, size: 18, color: Color(0xFF16A34A)),
+                                            ),
+                                            const SizedBox(width: 10),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
                                                 children: [
-                                                  const Text(
-                                                    'ASSIGNED AWS IOT THING',
-                                                    style: TextStyle(
-                                                      fontSize: 10,
-                                                      fontWeight: FontWeight.w800,
-                                                      letterSpacing: 0.5,
-                                                      color: Color(0xFF15803D),
-                                                    ),
+                                                  Wrap(
+                                                    spacing: 6,
+                                                    runSpacing: 4,
+                                                    crossAxisAlignment: WrapCrossAlignment.center,
+                                                    children: [
+                                                      const Text(
+                                                        'ASSIGNED AWS IOT THING',
+                                                        style: TextStyle(
+                                                          fontSize: 10,
+                                                          fontWeight: FontWeight.w800,
+                                                          letterSpacing: 0.5,
+                                                          color: Color(0xFF15803D),
+                                                        ),
+                                                      ),
+                                                      Container(
+                                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                        decoration: BoxDecoration(
+                                                          color: isDevOnline ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
+                                                          borderRadius: BorderRadius.circular(4),
+                                                        ),
+                                                        child: Text(
+                                                          devStatus,
+                                                          style: TextStyle(
+                                                            fontSize: 9,
+                                                            fontWeight: FontWeight.bold,
+                                                            color: isDevOnline ? const Color(0xFF15803D) : const Color(0xFFB91C1C),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ],
                                                   ),
-                                                  const SizedBox(width: 6),
-                                                  Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                                                    decoration: BoxDecoration(
-                                                      color: const Color(0xFFDCFCE7),
-                                                      borderRadius: BorderRadius.circular(4),
-                                                    ),
-                                                    child: Text(
-                                                      (matchingDev['status'] ?? 'ONLINE').toString().toUpperCase(),
-                                                      style: const TextStyle(fontSize: 8.5, fontWeight: FontWeight.bold, color: Color(0xFF15803D)),
+                                                  const SizedBox(height: 3),
+                                                  Text(
+                                                    '${matchingDev['thingName'] ?? 'Unknown'}',
+                                                    style: const TextStyle(
+                                                      fontSize: 14,
+                                                      fontWeight: FontWeight.bold,
+                                                      color: Color(0xFF0F172A),
                                                     ),
                                                   ),
                                                 ],
                                               ),
-                                              const SizedBox(height: 2),
-                                              Text(
-                                                '${matchingDev['thingName'] ?? 'Unknown'}',
-                                                style: const TextStyle(
-                                                  fontSize: 13.5,
-                                                  fontWeight: FontWeight.bold,
-                                                  color: Color(0xFF0F172A),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
+                                            ),
+                                          ],
                                         ),
+                                        const SizedBox(height: 10),
                                         Builder(
                                           builder: (context) {
                                             final mIdInt = master['id'] is int ? master['id'] as int : int.tryParse(master['id']?.toString() ?? '');
                                             final isPinging = mIdInt != null && _pingingMasterIds.contains(mIdInt);
                                             final isUnassigning = mIdInt != null && _unassigningMasterIds.contains(mIdInt);
                                             return Row(
-                                              mainAxisSize: MainAxisSize.min,
+                                              mainAxisAlignment: MainAxisAlignment.end,
                                               children: [
                                                 OutlinedButton.icon(
                                                   style: OutlinedButton.styleFrom(
                                                     foregroundColor: const Color(0xFF0284C7),
                                                     side: const BorderSide(color: Color(0xFFBAE6FD)),
                                                     backgroundColor: Colors.white,
-                                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                                                     minimumSize: Size.zero,
                                                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
@@ -1929,9 +1912,9 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                                   icon: isPinging
                                                       ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
                                                       : const Icon(Icons.wifi_tethering, size: 13),
-                                                  label: Text(isPinging ? 'Pinging...' : 'Ping', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                                                  label: Text(isPinging ? 'Pinging...' : 'Ping', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
                                                 ),
-                                                const SizedBox(width: 6),
+                                                const SizedBox(width: 8),
                                                 OutlinedButton(
                                                   style: OutlinedButton.styleFrom(
                                                     foregroundColor: const Color(0xFFDC2626),
@@ -1947,7 +1930,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                                       : () => _unassignMasterDevice(matchingDev, master),
                                                   child: Text(
                                                     isUnassigning ? 'Unassigning...' : 'Unassign',
-                                                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
                                                   ),
                                                 ),
                                               ],

@@ -40,15 +40,12 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
   Future<void> _pickSimImage(ImageSource source) async {
     if (_isLoading || _isCapturingSimPhoto) return;
     setState(() => _isCapturingSimPhoto = true);
-    AppFeedback.showLoading(context, 'Capturing Photo...');
     try {
       final img = await _picker.pickImage(source: source, imageQuality: 85);
       if (!mounted) return;
       if (img != null) {
         setState(() => _simImage = img);
         AppFeedback.showSuccess(context, 'Photo captured successfully.');
-      } else {
-        AppFeedback.hide(context);
       }
     } catch (e) {
       debugPrint('Error picking SIM image: $e');
@@ -164,7 +161,6 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
       _isLoading = true;
       _submitPhaseLabel = 'Creating Master Unit...';
     });
-    AppFeedback.showLoading(context, 'Creating Master Unit...');
 
     try {
       final seqNum = int.tryParse(_seqCtrl.text);
@@ -196,7 +192,6 @@ class _CreateMasterScreenState extends State<CreateMasterScreen> {
         if (_simImage != null && createdMasterId != null) {
           if (mounted) {
             setState(() => _submitPhaseLabel = 'Uploading Photo...');
-            AppFeedback.showLoading(context, 'Uploading Photo...');
           }
           try {
             final bytes = await _simImage!.readAsBytes();
