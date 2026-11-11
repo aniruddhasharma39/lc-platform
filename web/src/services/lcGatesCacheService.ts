@@ -3,6 +3,8 @@ import { API_URL } from '../config';
 export interface GateStatusItem {
   gateId: number;
   lcNumber: string;
+  isConfigured?: boolean;
+  currentStatus?: 'OPEN' | 'CLOSED' | 'NO_TELEMETRY' | 'UNCONFIGURED';
   isOnline: boolean;
   deviceStatus: 'ONLINE' | 'PARTIAL' | 'OFFLINE' | 'UNCONFIGURED';
   lastSeenAt: string | null;

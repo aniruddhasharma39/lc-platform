@@ -129,10 +129,18 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         if (mounted) {
-          AppFeedback.showSuccess(
-            context,
-            'Ping command dispatched! (Topic: ${data['topic'] ?? 'AWS IoT Core'})',
-          );
+          final isDelivered = data['mqttDelivered'] == true;
+          if (isDelivered) {
+            AppFeedback.showSuccess(
+              context,
+              'Ping command published! (Topic: ${data['topic'] ?? 'AWS IoT Core'})',
+            );
+          } else {
+            AppFeedback.showError(
+              context,
+              data['message']?.toString() ?? 'Could not reach AWS IoT Core broker (${data['mqttError'] ?? 'offline'}).',
+            );
+          }
           _fetchDevices(silent: true);
         }
       } else {
@@ -454,15 +462,17 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
   Widget _buildDeviceCard(dynamic device) {
     final thingName = (device['thingName'] ?? 'Unnamed Thing').toString();
     final serial = (device['serialNumber'] ?? 'N/A').toString();
-    final status = (device['status'] ?? 'ACTIVE').toString().toUpperCase();
+    final connStatus = (device['connectivityStatus'] ?? device['computedStatus'] ?? 'OFFLINE').toString().toUpperCase();
     final deviceType = (device['deviceType'] ?? 'MASTER').toString().toUpperCase();
     final gate = device['gate'] as Map<String, dynamic>?;
     final gateLcNumber = gate?['lcNumber'] ?? 'Unassigned LC';
     final gateLocation = gate?['locationName'] ?? '';
-    final fw = device['firmwareVersion'] ?? 'v1.0.0';
+    final fw = device['firmwareVersion']?.toString().isNotEmpty == true ? device['firmwareVersion'].toString() : '—';
 
-    final isClosed = (device['latestPayload']?['status'] ?? '').toString().toUpperCase() == 'CLOSED';
-    final hasTelemetry = device['latestPayload'] != null;
+    // Single source of truth: DB barrierState ('OPEN' | 'CLOSED' | null) populated strictly by AWS IoT /telemetry
+    final barrierState = device['barrierState']?.toString().toUpperCase();
+    final hasTelemetry = barrierState == 'OPEN' || barrierState == 'CLOSED';
+    final isClosed = barrierState == 'CLOSED';
 
     final simProvider = (device['simProvider'] ?? '').toString().trim();
     final simNumber = (device['simNumber'] ?? '').toString().trim();
@@ -498,11 +508,9 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
     }
 
     Color statusColor;
-    switch (status) {
-      case 'ACTIVE': statusColor = const Color(0xFF16A34A); break;
-      case 'INACTIVE': statusColor = const Color(0xFFDC2626); break;
-      case 'PROVISIONED': statusColor = const Color(0xFF0284C7); break;
-      case 'MAINTENANCE': statusColor = const Color(0xFFEA580C); break;
+    switch (connStatus) {
+      case 'ONLINE': statusColor = const Color(0xFF16A34A); break;
+      case 'OFFLINE': statusColor = const Color(0xFF64748B); break;
       default: statusColor = const Color(0xFF64748B);
     }
 
@@ -576,7 +584,7 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                           ),
                           const SizedBox(width: 5),
                           Text(
-                            status,
+                            connStatus,
                             style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: statusColor),
                           ),
                         ],
@@ -1272,7 +1280,7 @@ class _DeviceInspectSheetState extends State<_DeviceInspectSheet> {
                               border: Border.all(color: const Color(0xFFE2E8F0)),
                             ),
                             child: const Center(
-                              child: Text('No telemetry reports received for this device yet.', style: TextStyle(color: Color(0xFF64748B), fontSize: 13)),
+                              child: Text('No status updates received from this device yet.', style: TextStyle(color: Color(0xFF64748B), fontSize: 13)),
                             ),
                           )
                         else if (_showRawJson)

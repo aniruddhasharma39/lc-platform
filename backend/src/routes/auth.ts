@@ -7,7 +7,7 @@ import { v2 as cloudinary } from 'cloudinary';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { send2FactorSmsOtp } from '../lib/twofactor';
-import { sendEmailOtp } from '../lib/emailService';
+import { dispatchNewRegistrationApproverEmails, sendEmailOtp } from '../lib/emailService';
 import { extractRegistrationUserFields, checkRegistrationUniqueness } from '../lib/userExtract';
 import { validateRegistrationUniqueness } from '../lib/uniqueness';
 import { DEPARTMENTS, DESIGNATIONS, getDesignationConfig, getDesignationsForDepartment } from '../lib/railwayHierarchy';
@@ -477,6 +477,17 @@ router.post('/register', upload.any(), async (req, res, next) => {
         status: 'PENDING'
       }
     });
+
+    const applicantName = (extractedFields.fullName || parsedData.fullName || parsedData.name || 'New Applicant').toString().trim();
+    const requestedRole = (request.designation || parsedData.roleName || parsedData.role || 'Railway Official').toString().trim();
+    dispatchNewRegistrationApproverEmails({
+      request,
+      applicantName,
+      requestedRole,
+      department: request.department,
+      zone: request.zone,
+      division: request.division,
+    }).catch((err) => console.error('⚠️ [REGISTRATION APPROVER EMAIL] Failed:', err?.message || err));
 
     res.status(201).json({ message: 'Registration submitted, pending approval.', requestId: request.id });
   } catch (error) {

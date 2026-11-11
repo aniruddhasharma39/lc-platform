@@ -30,6 +30,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   bool _isLoading = true;
   bool _isRefreshing = false;
   bool _isGateDetailRefreshing = false;
+  final Set<int> _pingingGateIds = {};
   String _token = '';
   String _userId = 'user';
 
@@ -187,6 +188,11 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         if (statusItem != null) {
           _gates[i] = <String, dynamic>{
             ...Map<String, dynamic>.from(g),
+            if (statusItem.isConfigured != null) 'isConfigured': statusItem.isConfigured,
+            if (statusItem.currentStatus != null) ...{
+              'currentStatus': statusItem.currentStatus,
+              'status': statusItem.currentStatus,
+            },
             'isOnline': statusItem.isOnline,
             'deviceStatus': statusItem.deviceStatus,
             'lastSeenAt': statusItem.lastSeenAt,
@@ -453,37 +459,45 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
     return null;
   }
 
-  // Compute operational gate status: 'OPEN' or 'CLOSED'
+  // Read operational gate status strictly from DB authoritative Thing barrierState (no fallbacks to events/device.status/CLOSED)
   String _getGateStatus(Map<String, dynamic> gate) {
+    final bool isConfigured = gate['isConfigured'] == true;
+    final rawStatus = (gate['currentStatus'] ?? gate['status'] ?? '').toString().toUpperCase();
+    if (rawStatus == 'OPEN' || rawStatus == 'CLOSED' || rawStatus == 'NO_TELEMETRY' || rawStatus == 'UNCONFIGURED') {
+      return rawStatus;
+    }
+
     final masters = gate['masters'] as List?;
     final int rawMastersCount = (gate['mastersCount'] as int?) ?? (masters?.length ?? 0);
     final bool hasMaster = (gate['hasMaster'] as bool?) ?? (rawMastersCount > 0);
-    if (!hasMaster || rawMastersCount == 0) {
+    final devs = gate['deviceRegistries'] as List?;
+    final bool hasHardware = (devs != null && devs.any((d) => d is Map && d['masterId'] != null)) ||
+        (masters != null && masters.any((m) => m is Map && ((m['deviceRegistries'] as List?)?.isNotEmpty == true || m['deviceRegistry'] != null)));
+
+    if (!isConfigured && (!hasMaster || !hasHardware)) {
       return 'UNCONFIGURED';
     }
-    final events = gate['events'] as List?;
-    if (events != null && events.isNotEmpty) {
-      final firstEv = events.first;
-      if (firstEv is Map) {
-        final ev = Map<String, dynamic>.from(firstEv);
-        final st = (ev['status'] ?? '').toString().toUpperCase();
-        if (st == 'OPEN' || ev['closedAt'] == null) return 'OPEN';
-        if (st == 'CLOSED' || ev['closedAt'] != null) return 'CLOSED';
-      }
-    }
-    final devs = gate['deviceRegistries'] as List?;
-    if (devs != null && devs.isNotEmpty) {
-      for (final d in devs) {
-        if (d is Map) {
-          final st = (d['status'] ?? '').toString().toUpperCase();
-          if (st == 'OPEN' || st == 'NOT_CLOSED') return 'OPEN';
-          if (st == 'CLOSED') return 'CLOSED';
+
+    // Aggregate strictly from linked DeviceRegistry.barrierState
+    final linked = <Map<String, dynamic>>[];
+    if (masters != null) {
+      for (final m in masters) {
+        if (m is Map) {
+          final drList = m['deviceRegistries'] as List?;
+          final dr = (drList != null && drList.isNotEmpty) ? drList.first : m['deviceRegistry'];
+          if (dr is Map) linked.add(Map<String, dynamic>.from(dr));
         }
       }
     }
-    final rawStatus = (gate['currentStatus'] ?? gate['status'] ?? '').toString().toUpperCase();
-    if (rawStatus == 'OPEN') return 'OPEN';
-    return 'CLOSED';
+    if (linked.isEmpty && devs != null) {
+      for (final d in devs) {
+        if (d is Map && d['masterId'] != null) linked.add(Map<String, dynamic>.from(d));
+      }
+    }
+    if (linked.isEmpty) return 'UNCONFIGURED';
+    if (linked.any((d) => d['barrierState']?.toString().toUpperCase() == 'OPEN')) return 'OPEN';
+    if (linked.any((d) => d['barrierState']?.toString().toUpperCase() == 'CLOSED')) return 'CLOSED';
+    return 'NO_TELEMETRY';
   }
 
   // Jump Breadcrumb
@@ -1142,10 +1156,10 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   // Direct Hardware Connection Check
   Future<void> _pingGateDevice(Map gate) async {
     final gateId = gate['id'] is int ? gate['id'] as int : int.tryParse(gate['id']?.toString() ?? '') ?? 0;
-    if (gateId == 0) return;
+    if (gateId == 0 || _pingingGateIds.contains(gateId)) return;
     final lcNumber = gate['lcNumber'] ?? 'LC Gate';
 
-    AppFeedback.showInfo(context, 'Checking connection for $lcNumber hardware...');
+    setState(() => _pingingGateIds.add(gateId));
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/lcgate/$gateId/health-check'),
@@ -1159,24 +1173,38 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         final data = json.decode(res.body);
         if (mounted) {
           final isDelivered = data['mqttDelivered'] == true;
-          AppFeedback.showSuccess(
-            context,
-            isDelivered
-                ? 'Connection verified: $lcNumber hardware is ONLINE & HEALTHY'
-                : 'Connection check registered for $lcNumber: Status HEALTHY',
-          );
+          if (isDelivered) {
+            AppFeedback.showSuccess(
+              context,
+              'Health check ping sent to $lcNumber via AWS IoT MQTT.',
+            );
+          } else {
+            AppFeedback.showError(
+              context,
+              data['message']?.toString() ?? 'Could not reach AWS IoT Core broker for $lcNumber.',
+            );
+          }
           _fetchGateTelemetry(gateId);
           _refreshSelectedGate(gateId);
         }
       } else {
+        String errMsg = 'Connection check failed (HTTP ${res.statusCode})';
+        try {
+          final parsed = json.decode(res.body);
+          if (parsed is Map && parsed['error'] != null) {
+            errMsg = parsed['error'].toString();
+          }
+        } catch (_) {}
         if (mounted) {
-          AppFeedback.showError(context, 'Connection check failed (HTTP ${res.statusCode})');
+          AppFeedback.showError(context, errMsg);
         }
       }
     } catch (e) {
       if (mounted) {
         AppFeedback.showError(context, 'Connection check error: $e');
       }
+    } finally {
+      if (mounted) setState(() => _pingingGateIds.remove(gateId));
     }
   }
 
@@ -1209,6 +1237,8 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
 
     final gateStatus = _getGateStatus(gate);
     final isGateOpen = gateStatus == 'OPEN';
+    final isGateClosed = gateStatus == 'CLOSED';
+    final isNoTelemetry = gateStatus == 'NO_TELEMETRY';
     final isUnconfigured = !hasMaster || !hasHardware || gateStatus == 'UNCONFIGURED';
 
     return Container(
@@ -1308,7 +1338,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                         const SizedBox(width: 4),
                         Expanded(
                           child: Text(
-                            '${gate['zone'] ?? 'CR'} • ${gate['division'] ?? 'Mumbai'}${stName != null ? " • $stName" : ""}',
+                            '${gate['zone'] ?? '—'} • ${gate['division'] ?? '—'}${stName != null ? " • $stName" : ""}',
                             style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -1319,8 +1349,8 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                 ),
                 const SizedBox(height: 8),
 
-                // PRIMARY GATE STATUS: Strictly UNCONFIGURED, OPENED or CLOSE
-                if (isUnconfigured)
+                // PRIMARY GATE STATUS: Strictly UNCONFIGURED, WAITING FOR STATUS, OPEN, or CLOSED
+                if (isUnconfigured || isNoTelemetry)
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
@@ -1340,9 +1370,9 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                           ),
                         ),
                         const SizedBox(width: 6),
-                        const Text(
-                          'UNCONFIGURED',
-                          style: TextStyle(
+                        Text(
+                          isUnconfigured ? 'UNCONFIGURED' : 'WAITING FOR STATUS',
+                          style: const TextStyle(
                             fontSize: 11.5,
                             fontWeight: FontWeight.w800,
                             color: Color(0xFF475569),
@@ -1373,7 +1403,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                         ),
                         const SizedBox(width: 6),
                         Text(
-                          isGateOpen ? 'OPENED' : 'CLOSE',
+                          isGateOpen ? 'OPENED' : (isGateClosed ? 'CLOSE' : gateStatus),
                           style: TextStyle(
                             fontSize: 11.5,
                             fontWeight: FontWeight.w800,
@@ -1519,25 +1549,41 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                 ),
                 const SizedBox(width: 6),
                 if (masters != null && masters.isNotEmpty) ...[
-                  InkWell(
-                    onTap: () => _pingGateDevice(gate),
-                    borderRadius: BorderRadius.circular(6),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFEFF6FF),
+                  Builder(
+                    builder: (context) {
+                      final gId = gate['id'];
+                      final idNum = gId is int ? gId : int.tryParse(gId?.toString() ?? '') ?? 0;
+                      final isPinging = idNum > 0 && _pingingGateIds.contains(idNum);
+                      return InkWell(
+                        onTap: isPinging ? null : () => _pingGateDevice(gate),
                         borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: const Color(0xFFBFDBFE)),
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.wifi_tethering, size: 12, color: Color(0xFF1D4ED8)),
-                          SizedBox(width: 4),
-                          Text('Check Connection', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
-                        ],
-                      ),
-                    ),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEFF6FF),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: const Color(0xFFBFDBFE)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              isPinging
+                                  ? const SizedBox(
+                                      width: 11,
+                                      height: 11,
+                                      child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xFF1D4ED8)),
+                                    )
+                                  : const Icon(Icons.wifi_tethering, size: 12, color: Color(0xFF1D4ED8)),
+                              const SizedBox(width: 4),
+                              Text(
+                                isPinging ? 'Checking...' : 'Check Connection',
+                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
                   ),
                   const SizedBox(width: 6),
                   Container(
@@ -1616,7 +1662,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
-                          'Zone: ${gate['zone'] ?? 'CR'} • Division: ${gate['division'] ?? 'Mumbai'}${stName != null ? " • Station: $stName" : ""}',
+                          'Zone: ${gate['zone'] ?? '—'} • Division: ${gate['division'] ?? '—'}${stName != null ? " • Station: $stName" : ""}',
                           style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -1810,8 +1856,8 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
           iconColor: const Color(0xFFEF4444),
           children: [
             _buildFieldRow('LC Gate Number', gate['lcNumber'] ?? 'N/A'),
-            _buildFieldRow('Railway Zone', gate['zone'] ?? 'CR'),
-            _buildFieldRow('Railway Division', gate['division'] ?? 'Mumbai'),
+            _buildFieldRow('Railway Zone', gate['zone'] ?? '—'),
+            _buildFieldRow('Railway Division', gate['division'] ?? '—'),
             _buildFieldRow('Location / Station', gate['name'] ?? gate['locationName'] ?? 'N/A'),
             _buildFieldRow(
               'GPS Geotag',
@@ -2393,10 +2439,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
       ))
     );
 
-    final currentStatus = _gateTelemetry?['currentStatus']?.toString().toUpperCase() ?? 'UNKNOWN';
+    final currentStatus = _gateTelemetry?['currentStatus']?.toString().toUpperCase() ?? '';
     final gateOperationalStatus = _getGateStatus(gate);
-    final isUnconfigured = !hasMaster || !hasHardware || currentStatus == 'UNCONFIGURED' || gateOperationalStatus == 'UNCONFIGURED';
-    final isOpen = !isUnconfigured && (gateOperationalStatus == 'OPEN' || currentStatus == 'OPEN');
+    final resolvedTabStatus = (currentStatus == 'OPEN' || currentStatus == 'CLOSED' || currentStatus == 'NO_TELEMETRY' || currentStatus == 'UNCONFIGURED')
+        ? currentStatus
+        : gateOperationalStatus;
+    final isUnconfigured = !hasMaster || !hasHardware || resolvedTabStatus == 'UNCONFIGURED';
+    final isNoTelemetry = !isUnconfigured && resolvedTabStatus == 'NO_TELEMETRY';
+    final isOpen = !isUnconfigured && !isNoTelemetry && resolvedTabStatus == 'OPEN';
 
     final isDeviceOnline = hasHardware && (_gateTelemetry?['isDeviceOnline'] == true ||
         _gateTelemetry?['deviceStatus'] == 'ONLINE' ||
@@ -2443,14 +2493,14 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               // Prominent Gate Status Pill
               Expanded(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 10),
                   decoration: BoxDecoration(
-                    color: isUnconfigured
+                    color: (isUnconfigured || isNoTelemetry)
                         ? const Color(0xFFF1F5F9)
                         : (isOpen ? const Color(0xFFFEE2E2) : const Color(0xFFDCFCE7)),
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                      color: isUnconfigured
+                      color: (isUnconfigured || isNoTelemetry)
                           ? const Color(0xFFCBD5E1)
                           : (isOpen ? const Color(0xFFFCA5A5) : const Color(0xFF86EFAC)),
                     ),
@@ -2459,27 +2509,33 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Container(
-                        width: 9,
-                        height: 9,
+                        width: 8,
+                        height: 8,
                         decoration: BoxDecoration(
-                          color: isUnconfigured
+                          color: (isUnconfigured || isNoTelemetry)
                               ? const Color(0xFF64748B)
                               : (isOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D)),
                           shape: BoxShape.circle,
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      Text(
-                        isUnconfigured
-                            ? 'GATE: UNCONFIGURED'
-                            : (isOpen ? 'GATE: OPEN' : 'GATE: CLOSED'),
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w800,
-                          color: isUnconfigured
-                              ? const Color(0xFF475569)
-                              : (isOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D)),
-                          letterSpacing: 0.5,
+                      const SizedBox(width: 7),
+                      Flexible(
+                        child: Text(
+                          isUnconfigured
+                              ? 'GATE: UNCONFIGURED'
+                              : isNoTelemetry
+                                  ? 'GATE: WAITING FOR STATUS'
+                                  : (isOpen ? 'GATE: OPEN' : 'GATE: CLOSED'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            color: (isUnconfigured || isNoTelemetry)
+                                ? const Color(0xFF475569)
+                                : (isOpen ? const Color(0xFFB91C1C) : const Color(0xFF15803D)),
+                            letterSpacing: 0.4,
+                          ),
                         ),
                       ),
                     ],
@@ -2487,23 +2543,26 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                 ),
               ),
               if (hasHardware) ...[
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 _buildConnectivityBadge(
                   deviceStatus: (_gateTelemetry?['deviceStatus'] ?? gate['deviceStatus'])?.toString(),
                   isOnline: isDeviceOnline,
                   onlineMastersCount: (_gateTelemetry?['onlineMastersCount'] ?? gate['onlineMastersCount']) as int?,
                   hardwareMastersCount: (_gateTelemetry?['hardwareMastersCount'] ?? gate['hardwareMastersCount']) as int?,
-                  horizontalPadding: 12,
-                  verticalPadding: 10,
-                  fontSize: 11.5,
+                  horizontalPadding: 10,
+                  verticalPadding: 9,
+                  fontSize: 11,
                 ),
               ],
-              const SizedBox(width: 8),
+              const SizedBox(width: 4),
 
               // Refresh Button
               IconButton(
                 onPressed: _loadingTelemetry ? null : () => _fetchGateTelemetry(gateId),
                 tooltip: 'Refresh Operations',
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                padding: const EdgeInsets.all(6),
                 icon: _loadingTelemetry
                     ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF0284C7)))
                     : const Icon(Icons.refresh_rounded, size: 20, color: Color(0xFF0284C7)),
@@ -2711,7 +2770,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               if (raw is! Map) return const SizedBox.shrink();
               final cycle = Map<String, dynamic>.from(raw);
 
-              final cycleStatus = (cycle['status']?.toString().toUpperCase()) ?? 'CLOSED';
+              final cycleStatus = (cycle['status']?.toString().toUpperCase()) ?? (cycle['closedAt'] == null ? 'OPEN' : '—');
               final isCycleOpen = cycleStatus == 'OPEN' || cycle['closedAt'] == null;
 
               DateTime? openedAt;

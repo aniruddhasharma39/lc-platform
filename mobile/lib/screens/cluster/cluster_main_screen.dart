@@ -1197,12 +1197,17 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
         final data = json.decode(res.body);
         if (mounted) {
           final isDelivered = data['mqttDelivered'] == true;
-          AppFeedback.showSuccess(
-            context,
-            isDelivered
-                ? 'Connection verified: $lcNumber hardware is ONLINE & HEALTHY'
-                : 'Connection check registered for $lcNumber: Status is HEALTHY',
-          );
+          if (isDelivered) {
+            AppFeedback.showSuccess(
+              context,
+              'Health check ping sent to $lcNumber via AWS IoT MQTT.',
+            );
+          } else {
+            AppFeedback.showError(
+              context,
+              data['message']?.toString() ?? 'Could not reach AWS IoT Core broker for $lcNumber.',
+            );
+          }
           _fetchGates();
         }
       } else {

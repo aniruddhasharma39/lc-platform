@@ -8,6 +8,8 @@ import '../config.dart';
 class GateStatusItem {
   final int gateId;
   final String lcNumber;
+  final bool? isConfigured;
+  final String? currentStatus; // OPEN, CLOSED, NO_TELEMETRY, UNCONFIGURED
   final bool isOnline;
   final String? deviceStatus; // ONLINE, PARTIAL, OFFLINE, or null if unconfigured
   final String? lastSeenAt;
@@ -19,6 +21,8 @@ class GateStatusItem {
   GateStatusItem({
     required this.gateId,
     required this.lcNumber,
+    this.isConfigured,
+    this.currentStatus,
     required this.isOnline,
     this.deviceStatus,
     this.lastSeenAt,
@@ -34,6 +38,8 @@ class GateStatusItem {
           ? json['gateId']
           : int.tryParse(json['gateId']?.toString() ?? '0') ?? 0,
       lcNumber: json['lcNumber']?.toString() ?? '',
+      isConfigured: json['isConfigured'] as bool?,
+      currentStatus: json['currentStatus']?.toString(),
       isOnline: json['isOnline'] == true,
       deviceStatus: json['deviceStatus']?.toString(),
       lastSeenAt: json['lastSeenAt']?.toString(),
@@ -53,6 +59,8 @@ class GateStatusItem {
   Map<String, dynamic> toJson() => {
     'gateId': gateId,
     'lcNumber': lcNumber,
+    'isConfigured': isConfigured,
+    'currentStatus': currentStatus,
     'isOnline': isOnline,
     'deviceStatus': deviceStatus,
     'lastSeenAt': lastSeenAt,

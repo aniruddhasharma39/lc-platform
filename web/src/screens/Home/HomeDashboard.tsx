@@ -20,12 +20,13 @@ interface GateSummaryItem {
   lcNumber: string;
   name: string;
   locationName: string;
-  zone: string;
-  division: string;
+  zone: string | null;
+  division: string | null;
   latitude: number | null;
   longitude: number | null;
   powerSource: 'SOLAR' | 'DIRECT' | 'NOT_CONFIGURED';
-  status: 'OPEN' | 'CLOSED' | 'UNCONFIGURED';
+  status: 'OPEN' | 'CLOSED' | 'NO_TELEMETRY' | 'UNCONFIGURED';
+  isConfigured?: boolean;
   hasMaster?: boolean;
   todayCycles: number;
   totalCycles: number;
@@ -237,7 +238,7 @@ export default function HomeDashboard({
     markersRef.current.clear();
 
     const gatesWithGps = (data?.gates || []).filter(
-      (g) => g.latitude !== null && g.longitude !== null && !isNaN(g.latitude) && !isNaN(g.longitude)
+      (g) => g.isConfigured !== false && g.status !== 'UNCONFIGURED' && g.latitude !== null && g.longitude !== null && !isNaN(g.latitude) && !isNaN(g.longitude)
     );
 
     const bounds: any[] = [];
@@ -247,11 +248,11 @@ export default function HomeDashboard({
       const lng = gate.longitude!;
       bounds.push([lat, lng]);
 
-      const isUnconfigured = gate.status === 'UNCONFIGURED' || !gate.hasMaster;
-      const isOpen = !isUnconfigured && gate.status === 'OPEN';
-      const statusColor = isUnconfigured ? '#d97706' : (isOpen ? '#ef4444' : '#10b981');
-      const statusBg = isUnconfigured ? '#fef3c7' : (isOpen ? '#fef2f2' : '#ecfdf5');
-      const statusLabel = isUnconfigured ? 'UNCONFIGURED' : gate.status;
+      const isOpen = gate.status === 'OPEN';
+      const isNoTele = gate.status === 'NO_TELEMETRY';
+      const statusColor = isNoTele ? '#64748b' : (isOpen ? '#ef4444' : '#10b981');
+      const statusBg = isNoTele ? '#f1f5f9' : (isOpen ? '#fef2f2' : '#ecfdf5');
+      const statusLabel = isNoTele ? 'WAITING FOR STATUS' : gate.status;
       const cleanLcNumber = gate.lcNumber?.replace(/^#+/, '')?.trim();
       const cleanMasterSerial = (gate.masterSerialNumber && gate.masterSerialNumber !== 'Unassigned')
         ? gate.masterSerialNumber.replace(/^#+/, '')?.trim()
@@ -312,7 +313,7 @@ export default function HomeDashboard({
             ">${statusLabel}</span>
           </div>
           <div style="font-size: 12px; color: #475569; margin-bottom: 4px;">
-            📍 <strong>${gate.locationName}</strong> (${gate.zone})
+            📍 <strong>${gate.locationName}</strong>${gate.zone ? ` (${gate.zone})` : ''}
           </div>
           <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;">
             🔄 <strong>${gate.todayCycles}</strong> cycles today • Last: ${gate.lastClosedFormatted}
@@ -547,14 +548,8 @@ export default function HomeDashboard({
               Total LC Gates
             </div>
             <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#0f172a', lineHeight: 1.2 }}>
-              {loading ? '—' : data?.totalAllGates ?? data?.totalDevices ?? (data?.gates?.length ?? 0)}
+              {loading ? '—' : data?.totalConfiguredClusters ?? data?.totalDevices ?? (data?.gates?.filter(g => g.status !== 'UNCONFIGURED').length ?? 0)}
             </div>
-            {Boolean(data?.totalUnconfiguredGates && data.totalUnconfiguredGates > 0) && (
-              <div style={{ fontSize: '0.72rem', color: '#d97706', marginTop: 3, fontWeight: 600 }}>
-                {data?.totalUnconfiguredGates} unconfigured
-              </div>
-            )}
-            
           </div>
         </div>
 
@@ -837,12 +832,12 @@ export default function HomeDashboard({
             <FaSyncAlt className="fa-spin" size={24} style={{ marginBottom: 12 }} />
             <div>Loading gate cycle metrics...</div>
           </div>
-        ) : (data?.gates || []).length === 0 ? (
+        ) : (data?.gates || []).filter((g) => g.isConfigured !== false && g.status !== 'UNCONFIGURED').length === 0 ? (
           <div style={{ padding: 36, textAlign: 'center', color: '#64748b' }}>
             <FaArchway size={36} style={{ color: '#cbd5e1', marginBottom: 10 }} />
-            <div style={{ fontWeight: 600 }}>No LC Gates assigned to your role or scope groups.</div>
+            <div style={{ fontWeight: 600 }}>No configured LC Gates available yet.</div>
             <div style={{ fontSize: '0.8rem', color: '#94a3b8', marginTop: 4 }}>
-              Contact your system administrator to assign Railway Scope Groups to your account.
+              Gates appear in live KPIs once a Master Unit and AWS IoT Thing are assigned.
             </div>
           </div>
         ) : (
@@ -857,14 +852,14 @@ export default function HomeDashboard({
               scrollbarWidth: 'thin',
             }}
           >
-            {data!.gates.map((gate) => {
-              const isUnconfigured = gate.status === 'UNCONFIGURED' || !gate.hasMaster;
-              const isOpen = !isUnconfigured && gate.status === 'OPEN';
+            {data!.gates.filter((g) => g.isConfigured !== false && g.status !== 'UNCONFIGURED').map((gate) => {
+              const isOpen = gate.status === 'OPEN';
+              const isNoTele = gate.status === 'NO_TELEMETRY';
               const isSelected = activeGateId === gate.id;
-              const statusBg = isUnconfigured ? '#fef3c7' : (isOpen ? '#fef2f2' : '#ecfdf5');
-              const statusColor = isUnconfigured ? '#d97706' : (isOpen ? '#ef4444' : '#10b981');
-              const statusBorder = isUnconfigured ? '#fde68a' : (isOpen ? '#fecaca' : '#a7f3d0');
-              const statusLabel = isUnconfigured ? 'UNCONFIGURED' : gate.status;
+              const statusBg = isNoTele ? '#f1f5f9' : (isOpen ? '#fef2f2' : '#ecfdf5');
+              const statusColor = isNoTele ? '#475569' : (isOpen ? '#ef4444' : '#10b981');
+              const statusBorder = isNoTele ? '#cbd5e1' : (isOpen ? '#fecaca' : '#a7f3d0');
+              const statusLabel = isNoTele ? 'WAITING FOR STATUS' : gate.status;
 
               return (
                 <div
@@ -947,7 +942,7 @@ export default function HomeDashboard({
                       {gate.locationName}
                     </div>
                     <div style={{ fontSize: '0.76rem', color: '#64748b', marginBottom: 12 }}>
-                      {gate.zone} • {gate.division} Division
+                      {[gate.zone, gate.division ? `${gate.division} Division` : null].filter(Boolean).join(' • ') || '—'}
                       {gate.scopeGroupName && (
                         <span style={{ marginLeft: 6, color: gate.scopeGroupColor || '#0284c7', fontWeight: 600 }}>
                           [{gate.scopeGroupName}]

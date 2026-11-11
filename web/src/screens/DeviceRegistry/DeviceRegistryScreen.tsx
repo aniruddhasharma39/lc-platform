@@ -198,7 +198,10 @@ interface DeviceItem {
   deviceType: string;
   serialNumber?: string | null;
   status: string;
+  connectivityStatus?: string;
   computedStatus?: string;
+  barrierState?: 'OPEN' | 'CLOSED' | null;
+  lastTelemetryAt?: string | null;
   latestPayloadSent?: string | null;
   latestTopic?: string | null;
   latestPayload?: any;
@@ -360,7 +363,7 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
         return;
       }
 
-      toastSuccess(`Diagnostic ping sent to ${data.topic || 'AWS IoT Core'}. Awaiting hardware packet...`, 'Command Dispatched');
+      toastSuccess(`Connection check sent to ${data.topic || 'AWS IoT Core'}. Waiting for device response...`, 'Command Dispatched');
       setHealthCheckStage('LISTENING');
 
       // Poll every 1.5s for up to 18s (12 attempts) to accommodate cellular 4G latency
@@ -485,7 +488,7 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
       // Defensive client-side check: Only display devices conforming to the LC- naming standard
       if (!dev.thingName?.toUpperCase().startsWith('LC-')) return false;
 
-      const isOnline = dev.computedStatus === 'ONLINE';
+      const isOnline = (dev.connectivityStatus || dev.computedStatus) === 'ONLINE';
       if (statusFilter === 'ONLINE' && !isOnline) return false;
       if (statusFilter === 'OFFLINE' && isOnline) return false;
       if (!search.trim()) return true;
@@ -677,7 +680,7 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
             </thead>
             <tbody>
               {filteredDevices.map((device) => {
-                const isOnline = device.computedStatus === 'ONLINE';
+                const isOnline = (device.connectivityStatus || device.computedStatus) === 'ONLINE';
 
                 return (
                   <tr key={device.id}>
@@ -702,12 +705,28 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                       </span>
                     </td>
 
-                    {/* Status Pill */}
+                    {/* Status Pill + Authoritative DB Barrier State */}
                     <td>
-                      <span className={`status-pill ${isOnline ? 'online' : 'offline'}`}>
-                        <span className="status-dot" />
-                        {isOnline ? 'ONLINE' : 'OFFLINE'}
-                      </span>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+                        <span className={`status-pill ${isOnline ? 'online' : 'offline'}`}>
+                          <span className="status-dot" />
+                          {isOnline ? 'ONLINE' : 'OFFLINE'}
+                        </span>
+                        {device.barrierState && (
+                          <span
+                            style={{
+                              fontSize: '0.68rem',
+                              fontWeight: 800,
+                              padding: '1px 6px',
+                              borderRadius: 4,
+                              background: device.barrierState === 'CLOSED' ? '#dcfce7' : '#fee2e2',
+                              color: device.barrierState === 'CLOSED' ? '#15803d' : '#b91c1c',
+                            }}
+                          >
+                            {device.barrierState}
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* Assigned LC Gate */}
@@ -731,7 +750,7 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                     {/* Firmware */}
                     <td>
                       <code style={{ fontSize: '0.78rem', background: '#f1f5f9', padding: '2px 6px', borderRadius: '4px' }}>
-                        {device.firmwareVersion || '1.0.0'}
+                        {device.firmwareVersion || '—'}
                       </code>
                     </td>
 
@@ -1042,24 +1061,31 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                             lc-gate/{inspectDevice.thingName}/telemetry
                           </code>
                         </div>
-                        {/* Real-time Physical Gate Status Banner */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ fontSize: '0.8rem', color: '#475569', fontWeight: 600 }}>Live Barrier State:</span>
-                          <span
-                            style={{
-                              padding: '4px 14px',
-                              borderRadius: '6px',
-                              fontWeight: 800,
-                              fontSize: '0.9rem',
-                              letterSpacing: '0.4px',
-                              background: (telemetrySummary?.currentStatus || telemetryRecords[0]?.status || 'CLOSED') === 'CLOSED' ? '#dcfce7' : '#fee2e2',
-                              color: (telemetrySummary?.currentStatus || telemetryRecords[0]?.status || 'CLOSED') === 'CLOSED' ? '#15803d' : '#b91c1c',
-                              border: `1px solid ${(telemetrySummary?.currentStatus || telemetryRecords[0]?.status || 'CLOSED') === 'CLOSED' ? '#86efac' : '#fca5a5'}`
-                            }}
-                          >
-                            {telemetrySummary?.currentStatus || telemetryRecords[0]?.status || 'CLOSED'}
-                          </span>
-                        </div>
+                        {/* Real-time Physical Gate Status Banner (DB single source of truth) */}
+                        {(() => {
+                          const bannerState = String(telemetrySummary?.currentStatus || inspectDevice.barrierState || 'NO_TELEMETRY').toUpperCase();
+                          const isClosedState = bannerState === 'CLOSED';
+                          const isOpenState = bannerState === 'OPEN';
+                          return (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ fontSize: '0.8rem', color: '#475569', fontWeight: 600 }}>Live Barrier State:</span>
+                              <span
+                                style={{
+                                  padding: '4px 14px',
+                                  borderRadius: '6px',
+                                  fontWeight: 800,
+                                  fontSize: '0.9rem',
+                                  letterSpacing: '0.4px',
+                                  background: isClosedState ? '#dcfce7' : isOpenState ? '#fee2e2' : '#f1f5f9',
+                                  color: isClosedState ? '#15803d' : isOpenState ? '#b91c1c' : '#475569',
+                                  border: `1px solid ${isClosedState ? '#86efac' : isOpenState ? '#fca5a5' : '#cbd5e1'}`
+                                }}
+                              >
+                                {bannerState === 'NO_TELEMETRY' ? 'WAITING FOR STATUS' : bannerState}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </div>
 
                       {/* Selected Telemetry Payload Presentation */}
@@ -1140,9 +1166,9 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                       ) : (
                         <div className="empty-state py-6" style={{ textAlign: 'center', background: '#f8fafc', borderRadius: '8px', border: '1px dashed #cbd5e1' }}>
                           <FaBroadcastTower size={28} style={{ color: '#94a3b8', margin: '0 auto 8px auto' }} />
-                          <h4 style={{ margin: '0 0 4px 0', color: '#1e293b', fontWeight: 700 }}>No Telemetry Payloads Received Yet</h4>
+                          <h4 style={{ margin: '0 0 4px 0', color: '#1e293b', fontWeight: 700 }}>No Status Updates Received Yet</h4>
                           <p className="text-muted" style={{ fontSize: '0.84rem', margin: 0 }}>
-                            Awaiting real-time telemetry from edge device on MQTT topic <code>lc-gate/{inspectDevice.thingName}/telemetry</code>.
+                            Waiting for live updates from device on <code>lc-gate/{inspectDevice.thingName}/telemetry</code>.
                           </p>
                         </div>
                       )}
@@ -1380,7 +1406,7 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                           <FaSyncAlt className="fa-spin" size={24} color="#0284c7" />
                           <div>
                             <h4 style={{ margin: 0, fontSize: '0.96rem', fontWeight: 700, color: '#0369a1' }}>
-                              Diagnostic Command Dispatched — Awaiting Edge Hardware Packet...
+                              Connection Check Sent — Waiting for Device Response...
                             </h4>
                             <p style={{ margin: '3px 0 0 0', fontSize: '0.82rem', color: '#0284c7' }}>
                               MQTT ping published to <code>lc-gate/{inspectDevice.thingName}/health/request</code>. 
@@ -1432,10 +1458,10 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                               <FaHeartbeat color="#10b981" /> System Verdict
                             </div>
                             <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0f172a', marginTop: 4 }}>
-                              {currentViewingRecord.payload?.healthstatus || currentViewingRecord.payload?.status || 'HEALTHY'}
+                              {currentViewingRecord.payload?.healthstatus || currentViewingRecord.payload?.status || '—'}
                             </div>
                             <div style={{ fontSize: '0.74rem', color: '#059669', fontWeight: 600 }}>
-                              {currentViewingRecord.payload?.FirmwareVersion ? `Firmware v${currentViewingRecord.payload.FirmwareVersion}` : 'Hardware Verified Live'}
+                              {currentViewingRecord.payload?.FirmwareVersion ? `Firmware v${currentViewingRecord.payload.FirmwareVersion}` : 'Firmware: —'}
                             </div>
                           </div>
 
@@ -1448,12 +1474,12 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                                 ? `${currentViewingRecord.payload.BatteryVoltage} V`
                                 : currentViewingRecord.payload?.BatteryPercentage !== null && currentViewingRecord.payload?.BatteryPercentage !== undefined
                                 ? `${currentViewingRecord.payload.BatteryPercentage}%`
-                                : 'Mains / Unmonitored'}
+                                : '—'}
                             </div>
                             <div style={{ fontSize: '0.74rem', color: '#64748b' }}>
                               Solar: {currentViewingRecord.payload?.SolarVoltage !== null && currentViewingRecord.payload?.SolarVoltage !== undefined
                                 ? `${currentViewingRecord.payload.SolarVoltage} V`
-                                : currentViewingRecord.payload?.SolarCharging ? 'Solar Active' : 'Unmonitored'}
+                                : currentViewingRecord.payload?.SolarCharging ? 'Solar Active' : '—'}
                             </div>
                           </div>
 
@@ -1464,10 +1490,10 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                             <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0f172a', marginTop: 4 }}>
                               {currentViewingRecord.payload?.SignalStrength !== undefined && currentViewingRecord.payload?.SignalStrength !== null
                                 ? `${currentViewingRecord.payload.SignalStrength} CSQ`
-                                : currentViewingRecord.payload?.NetworkStrength || 'Connected'}
+                                : currentViewingRecord.payload?.NetworkStrength || '—'}
                             </div>
                             <div style={{ fontSize: '0.74rem', color: '#64748b' }}>
-                              {currentViewingRecord.payload?.NetworkType || '4G LTE'} {currentViewingRecord.payload?.McuTempC !== undefined ? `| ${currentViewingRecord.payload.McuTempC}°C` : ''}
+                              {currentViewingRecord.payload?.NetworkType || '—'} {currentViewingRecord.payload?.McuTempC !== undefined ? `| ${currentViewingRecord.payload.McuTempC}°C` : ''}
                             </div>
                           </div>
 
@@ -1476,10 +1502,11 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                               <FaMicrochip color="#d97706" /> Gate & Sensors
                             </div>
                             <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0f172a', marginTop: 4 }}>
-                              {(currentViewingRecord.payload?.Status === 'NOT_CLOSED' ? 'OPEN' : currentViewingRecord.payload?.Status) || (currentViewingRecord.payload?.LimitSwitchClosed ? 'CLOSED' : 'OPEN')}
+                              {(currentViewingRecord.payload?.Status === 'NOT_CLOSED' ? 'OPEN' : currentViewingRecord.payload?.Status) ||
+                                (currentViewingRecord.payload?.LimitSwitchClosed !== undefined ? (currentViewingRecord.payload.LimitSwitchClosed ? 'CLOSED' : 'OPEN') : '—')}
                             </div>
                             <div style={{ fontSize: '0.74rem', color: '#64748b' }}>
-                              Boom: {currentViewingRecord.payload?.BoomAngle !== undefined ? `${currentViewingRecord.payload.BoomAngle}°` : '0.0°'} | Limit: {currentViewingRecord.payload?.LimitSwitchClosed ? 'Closed' : 'Open'}
+                              Boom: {currentViewingRecord.payload?.BoomAngle !== undefined && currentViewingRecord.payload?.BoomAngle !== null ? `${currentViewingRecord.payload.BoomAngle}°` : '—'} | Limit: {currentViewingRecord.payload?.LimitSwitchClosed !== undefined && currentViewingRecord.payload?.LimitSwitchClosed !== null ? (currentViewingRecord.payload.LimitSwitchClosed ? 'Closed' : 'Open') : '—'}
                             </div>
                           </div>
                         </div>

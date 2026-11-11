@@ -68,12 +68,17 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
         final data = json.decode(res.body);
         if (mounted) {
           final isDelivered = data['mqttDelivered'] == true;
-          AppFeedback.showSuccess(
-            context,
-            isDelivered
-                ? 'Connection verified: $targetDesc is ONLINE & HEALTHY'
-                : 'Connection check registered for $targetDesc: Status is HEALTHY',
-          );
+          if (isDelivered) {
+            AppFeedback.showSuccess(
+              context,
+              'Health check ping sent to $targetDesc via AWS IoT MQTT.',
+            );
+          } else {
+            AppFeedback.showError(
+              context,
+              data['message']?.toString() ?? 'Could not reach AWS IoT Core broker for $targetDesc.',
+            );
+          }
           _refresh();
         }
       } else {
@@ -105,16 +110,24 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
       );
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
-        final gateData = data is Map ? (data['cluster'] ?? data['gate'] ?? data) : null;
-        if (gateData != null && mounted) {
-          setState(() => gate = Map<String, dynamic>.from(gateData));
+        final rawGateData = data is Map ? (data['cluster'] ?? data['gate'] ?? data) : null;
+        if (rawGateData is Map && mounted) {
+          final gateData = Map<String, dynamic>.from(rawGateData);
+          if (data is Map) {
+            for (final k in ['isOnline', 'deviceStatus', 'onlineMastersCount', 'hardwareMastersCount', 'currentStatus', 'status', 'lastSeenAt', 'isConfigured']) {
+              if (data.containsKey(k) && data[k] != null && gateData[k] == null) {
+                gateData[k] = data[k];
+              }
+            }
+          }
+          setState(() => gate = gateData);
           if (isManual) {
             AppFeedback.showSuccess(context, 'Gate and device details refreshed.');
           }
           try {
             final prefs = await SharedPreferences.getInstance();
             final userId = prefs.getString('userId') ?? prefs.getString('employeeId') ?? 'user';
-            LCGatesCacheService.instance.patchGate(userId, Map<String, dynamic>.from(gateData));
+            LCGatesCacheService.instance.patchGate(userId, gateData);
           } catch (_) {}
           return;
         }
@@ -1809,8 +1822,12 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                                       );
 
                                 if (matchingDev != null) {
-                                  final devStatus = (matchingDev['status'] ?? 'ONLINE').toString().toUpperCase();
-                                  final isDevOnline = devStatus == 'ONLINE' || devStatus == 'ACTIVE';
+                                  final rawConn = (matchingDev['connectivityStatus'] ?? matchingDev['computedStatus'] ?? '').toString().toUpperCase();
+                                  final isDevOnline = rawConn.isNotEmpty
+                                      ? rawConn == 'ONLINE'
+                                      : (matchingDev['lastSeenAt'] != null &&
+                                          DateTime.now().difference(DateTime.tryParse(matchingDev['lastSeenAt'].toString()) ?? DateTime(1970)).inMinutes <= 65);
+                                  final devStatus = isDevOnline ? 'ONLINE' : 'OFFLINE';
                                   return Container(
                                     margin: const EdgeInsets.only(bottom: 14),
                                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),

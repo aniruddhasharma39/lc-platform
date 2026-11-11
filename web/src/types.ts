@@ -33,7 +33,9 @@ export type MasterUnitItem = {
 
 export type NotificationItem = {
   id: string;
-  type: 'user_request' | 'cluster_created' | 'device_registered' | 'system';
+  type: 'user_request' | 'cluster_created' | 'device_registered' | 'device_offline' | 'system';
+  priority?: 'P1' | 'P2' | 'P3' | 'P4';
+  priorityLabel?: 'CRITICAL' | 'HIGH' | 'INFO' | 'SETUP';
   title: string;
   message: string;
   createdAt: string;

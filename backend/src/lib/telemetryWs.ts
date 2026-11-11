@@ -2,6 +2,15 @@ import { Server as HttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { prisma } from './prisma';
 import url from 'url';
+import {
+  computeThingConnectivity,
+  hydrateGateMasters,
+  isGenuineTelemetryPacket,
+  isManifestPacket,
+  normalizeBarrierStateColumn,
+  parseBarrierStateFromPayload,
+  resolveGateStateFromThings,
+} from './thingState';
 
 interface ClientSubscription {
   ws: WebSocket;
@@ -28,40 +37,25 @@ export function formatDurationHuman(seconds: number | null | undefined): string 
   return parts.join(' ');
 }
 
-function resolveStateFromPayload(payload: any): 'OPEN' | 'CLOSED' | null {
-  if (!payload || typeof payload !== 'object') return null;
-  if (payload.Status !== undefined) {
-    const s = String(payload.Status).trim().toUpperCase();
-    if (s === 'CLOSED') return 'CLOSED';
-    if (s === 'OPEN' || s === 'NOT_CLOSED') return 'OPEN';
-  }
-  if (payload.LimitSwitchClosed !== undefined) {
-    return payload.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
-  }
-  if (payload.status !== undefined) {
-    const s = String(payload.status).trim().toUpperCase();
-    if (s === 'CLOSED') return 'CLOSED';
-    if (s === 'OPEN' || s === 'NOT_CLOSED') return 'OPEN';
-  }
-  return null;
-}
+const resolveStateFromPayload = parseBarrierStateFromPayload;
 
 /**
  * Builds the comprehensive telemetry payload for a gate (mirrors GET /api/v1/lcgates/:id/telemetry)
  */
 export async function getGateTelemetryPayload(gateId: number) {
-  const gate = await prisma.lCGate.findUnique({
+  const rawGate = await prisma.lCGate.findUnique({
     where: { id: gateId },
     include: {
       masters: {
         orderBy: { masterSequence: 'asc' },
-        include: { childDevices: { orderBy: { deviceSequence: 'asc' } }, deviceRegistries: true }
+        include: { childDevices: { orderBy: { deviceSequence: 'asc' } }, deviceRegistry: true }
       },
       deviceRegistries: true,
     }
   });
 
-  if (!gate) return null;
+  if (!rawGate) return null;
+  const gate = hydrateGateMasters(rawGate as any);
 
   // If gate has no Master Unit attached, it has NO live hardware telemetry and NO operational cycles
   if (!gate.masters || gate.masters.length === 0) {
@@ -111,38 +105,30 @@ export async function getGateTelemetryPayload(gateId: number) {
     };
   }
 
-  // Strictly match each Master Unit to its assigned DeviceRegistry row
+  // Strictly match each Master Unit to its 1-to-1 assigned DeviceRegistry row
   const masterThingBindings = gate.masters.map((m: any) => {
     const linkedReg =
+      m.deviceRegistry ||
       (m.deviceRegistries && m.deviceRegistries[0]) ||
       gate.deviceRegistries.find((d: any) => d.masterId === m.id) ||
       null;
-    const isLegacyNonVirtual = !linkedReg && m.serialNumber && !m.serialNumber.includes('(Virtual Master)');
     return {
       master: m,
       reg: linkedReg,
       thingName: linkedReg?.thingName || null,
       registryId: linkedReg?.id || null,
       hasHardware: Boolean(linkedReg),
-      legacySerial: isLegacyNonVirtual ? m.serialNumber : null,
     };
   });
 
-  // Also include any gate-direct linked registries without masterId (if any legacy row exists)
-  const unmappedGateRegs = gate.deviceRegistries.filter((d: any) => d.masterId === null);
   const perThingQueryKeys = new Map<string, { thingName: string; registryId?: number | null }>();
   for (const b of masterThingBindings) {
     if (b.thingName) {
       perThingQueryKeys.set(b.thingName, { thingName: b.thingName, registryId: b.registryId });
     }
   }
-  for (const d of unmappedGateRegs) {
-    if (d.thingName && !perThingQueryKeys.has(d.thingName)) {
-      perThingQueryKeys.set(d.thingName, { thingName: d.thingName, registryId: d.id });
-    }
-  }
 
-  // Fetch telemetry & health checks PER THING in parallel so one busy Master never starves another
+  // Fetch inbound telemetry & health checks PER THING (excluding synthetic /health/request ping commands)
   const queryTargets = Array.from(perThingQueryKeys.values());
   const [telePerThing, hcPerThing, rawEvents] = await Promise.all([
     Promise.all(
@@ -152,7 +138,9 @@ export async function getGateTelemetryPayload(gateId: number) {
             OR: [
               { thingName: target.thingName },
               ...(target.registryId ? [{ deviceRegistryId: target.registryId }] : [])
-            ]
+            ],
+            NOT: [{ topic: { contains: '/request' } }],
+            status: { not: 'REQUESTED' },
           },
           orderBy: { receivedAt: 'desc' },
           take: 50,
@@ -239,16 +227,7 @@ export async function getGateTelemetryPayload(gateId: number) {
   const lastClosedCycle = operationalCycles.find(c => c.closedAt !== null);
 
   // Categorize payloads matching DeviceRegistry 1:1
-  const isTelemetryPacket = (t: any) =>
-    (t.topic && t.topic.includes('/telemetry')) &&
-    !(t.topic && t.topic.includes('/health')) &&
-    !((t.payload as any)?.action === 'HEALTH_CHECK' || (t.payload as any)?.action === 'HEALTH_CHECK_RESPONSE');
-
-  const isManifestPacket = (t: any) =>
-    (t.topic && t.topic.includes('/manifest')) ||
-    (t.payload && typeof t.payload === 'object' && ((t.payload as any).thing !== undefined || (t.payload as any).Master !== undefined));
-
-  const telemetryRecords = telemetries.filter(isTelemetryPacket);
+  const telemetryRecords = telemetries.filter(isGenuineTelemetryPacket);
   const manifestRecords = telemetries.filter(isManifestPacket);
 
   const healthRecords = healthChecks.length > 0 ? healthChecks.map((h: any) => ({
@@ -256,14 +235,14 @@ export async function getGateTelemetryPayload(gateId: number) {
     thingName: h.thingName,
     topic: `lc-gate/${h.thingName}/health`,
     payload: h.rawPayload,
-    status: h.healthstatus || 'HEALTHY',
+    status: h.healthstatus || null,
     receivedAt: h.createdAt,
     deviceRegistryId: h.deviceRegistryId,
     gateStatus: h.gateStatus,
     isDedicatedHealthCheck: true,
   })) : telemetries.filter(t =>
-    (t.topic && t.topic.includes('/health')) ||
-    (t.payload && typeof t.payload === 'object' && ((t.payload as any).action === 'HEALTH_CHECK' || (t.payload as any).action === 'HEALTH_CHECK_RESPONSE' || (t.payload as any).healthstatus !== undefined))
+    ((t.topic && t.topic.includes('/health') && !t.topic.includes('/request')) ||
+    (t.payload && typeof t.payload === 'object' && ((t.payload as any).action === 'HEALTH_CHECK_RESPONSE' || (t.payload as any).healthstatus !== undefined)))
   );
 
   // Unified deduplicated payloads
@@ -287,9 +266,8 @@ export async function getGateTelemetryPayload(gateId: number) {
   }
   deduplicatedPayloads.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
 
-  // Compute independent per-Master telemetry status, state, and connectivity
-  const ONLINE_CUTOFF_MS = 65 * 60 * 1000;
-  const masterSummaries = masterThingBindings.map(b => {
+  // Compute independent per-Master state & connectivity strictly from DeviceRegistry DB truth
+  const masterSummaries = masterThingBindings.map((b: any) => {
     const m = b.master;
     const reg = b.reg;
     const tName = b.thingName;
@@ -301,28 +279,20 @@ export async function getGateTelemetryPayload(gateId: number) {
     const mMan = b.hasHardware ? manifestRecords.filter(matchRec) : [];
     const mHealth = b.hasHardware ? healthRecords.filter(matchRec) : [];
     const mPayloads = b.hasHardware ? deduplicatedPayloads.filter(matchRec) : [];
-    const mActiveCycle = operationalCycles.find(
-      c => (c.status === 'OPEN' || !c.closedAt) && (c.masterId === m.id || (tName && c.thingName === tName))
-    );
 
+    const conn = reg ? computeThingConnectivity(reg, nowMs) : { isOnline: false, connectivityStatus: 'OFFLINE' as const, lastSeenAt: null };
     const latestPacketTime = mPayloads[0]?.receivedAt ? new Date(mPayloads[0].receivedAt).getTime() : 0;
-    const isMasterOnline = b.hasHardware && latestPacketTime > 0 && (nowMs - latestPacketTime <= ONLINE_CUTOFF_MS);
+    const resolvedSeenMs = Math.max(latestPacketTime, conn.lastSeenAt ? new Date(conn.lastSeenAt).getTime() : 0);
+    const isMasterOnline = b.hasHardware && conn.isOnline;
     const masterDeviceStatus: 'ONLINE' | 'OFFLINE' | 'VIRTUAL' = b.hasHardware
       ? (isMasterOnline ? 'ONLINE' : 'OFFLINE')
       : 'VIRTUAL';
 
-    let mState: 'OPEN' | 'CLOSED' | 'UNCONFIGURED' = b.hasHardware ? 'CLOSED' : 'UNCONFIGURED';
-    if (b.hasHardware) {
-      const parsedFromTele = resolveStateFromPayload(mTele[0]?.payload);
-      if (parsedFromTele) {
-        mState = parsedFromTele;
-      } else if (mActiveCycle) {
-        mState = 'OPEN';
-      } else if (reg?.status) {
-        const s = reg.status.toUpperCase();
-        mState = (s === 'OPEN' || s === 'NOT_CLOSED') ? 'OPEN' : 'CLOSED';
-      }
-    }
+    // Single source of truth: DB barrierState from real AWS IoT /telemetry (NEVER guess CLOSED or read LCGateEvent/reg.status)
+    const dbBarrierState = b.hasHardware && reg ? normalizeBarrierStateColumn(reg.barrierState) : null;
+    const mState: 'OPEN' | 'CLOSED' | 'NO_TELEMETRY' | 'UNCONFIGURED' = !b.hasHardware
+      ? 'UNCONFIGURED'
+      : (dbBarrierState || 'NO_TELEMETRY');
 
     return {
       masterId: m.id,
@@ -334,7 +304,8 @@ export async function getGateTelemetryPayload(gateId: number) {
       deviceRegistryId: b.registryId,
       deviceStatus: masterDeviceStatus,
       isDeviceOnline: isMasterOnline,
-      lastSeenAt: latestPacketTime > 0 ? new Date(latestPacketTime).toISOString() : null,
+      lastSeenAt: resolvedSeenMs > 0 ? new Date(resolvedSeenMs).toISOString() : null,
+      barrierState: dbBarrierState,
       currentStatus: mState,
       latestTelemetry: mTele[0] || null,
       latestManifest: mMan[0] || null,
@@ -342,33 +313,31 @@ export async function getGateTelemetryPayload(gateId: number) {
     };
   });
 
-  const hardwareMasterSummaries = masterSummaries.filter(ms => ms.hasHardware);
-  const hardwareMastersCount = hardwareMasterSummaries.length;
-  const onlineMastersCount = hardwareMasterSummaries.filter(ms => ms.isDeviceOnline).length;
-  const hasHardware = hardwareMastersCount > 0;
-
-  // Fail-Safe Gate Rollup: Gate is OPEN if ANY configured hardware Master Unit is OPEN
-  let resolvedGateState: 'OPEN' | 'CLOSED' | 'UNCONFIGURED' = 'UNCONFIGURED';
-  if (hasHardware) {
-    resolvedGateState = hardwareMasterSummaries.some(ms => ms.currentStatus === 'OPEN') ? 'OPEN' : 'CLOSED';
-  }
+  const resolvedGate = resolveGateStateFromThings(gate, nowMs);
+  const hardwareMasterSummaries = masterSummaries.filter((ms: any) => ms.hasHardware);
+  const hardwareMastersCount = resolvedGate.hardwareMastersCount;
+  const onlineMastersCount = resolvedGate.onlineMastersCount;
+  const hasHardware = resolvedGate.hasHardware;
+  const resolvedGateState = resolvedGate.status;
 
   const isCurrentlyOpen = resolvedGateState === 'OPEN';
   const currentStatus = resolvedGateState;
 
   // Pick representative telemetry for rawReportedStatus (prefer an OPEN master when gate is OPEN)
   const primaryDisplayMaster = isCurrentlyOpen
-    ? (hardwareMasterSummaries.find(ms => ms.currentStatus === 'OPEN') || hardwareMasterSummaries[0])
-    : hardwareMasterSummaries[0];
+    ? (hardwareMasterSummaries.find((ms: any) => ms.currentStatus === 'OPEN') || hardwareMasterSummaries[0])
+    : (hardwareMasterSummaries.find((ms: any) => ms.currentStatus === 'CLOSED') || hardwareMasterSummaries[0]);
   const latestTele = (primaryDisplayMaster?.latestTelemetry?.payload || telemetryRecords[0]?.payload) as any;
 
-  // Calculate duration in current state
+  // Calculate duration in current state (only when barrierState is actually known from AWS IoT)
   let timeInCurrentStateSeconds = 0;
   let currentStateStartedAt: string | null = null;
   if (isCurrentlyOpen) {
-    currentStateStartedAt = activeOpenCycle?.openedAt || (telemetryRecords[0]?.receivedAt ? new Date(telemetryRecords[0].receivedAt).toISOString() : new Date().toISOString());
-    timeInCurrentStateSeconds = Math.max(0, Math.round((nowMs - new Date(currentStateStartedAt).getTime()) / 1000));
-  } else {
+    currentStateStartedAt = activeOpenCycle?.openedAt || (telemetryRecords[0]?.receivedAt ? new Date(telemetryRecords[0].receivedAt).toISOString() : null);
+    if (currentStateStartedAt) {
+      timeInCurrentStateSeconds = Math.max(0, Math.round((nowMs - new Date(currentStateStartedAt).getTime()) / 1000));
+    }
+  } else if (resolvedGateState === 'CLOSED') {
     currentStateStartedAt = lastClosedCycle?.closedAt || (telemetryRecords[0]?.receivedAt ? new Date(telemetryRecords[0].receivedAt).toISOString() : null);
     if (currentStateStartedAt) {
       timeInCurrentStateSeconds = Math.max(0, Math.round((nowMs - new Date(currentStateStartedAt).getTime()) / 1000));
@@ -378,32 +347,30 @@ export async function getGateTelemetryPayload(gateId: number) {
   const currentOperationalState = {
     isCurrentlyOpen,
     currentStatus,
-    rawReportedStatus: (latestTele?.Status === 'NOT_CLOSED' ? 'OPEN' : latestTele?.Status) || currentStatus,
+    rawReportedStatus: resolveStateFromPayload(latestTele) || currentStatus,
     currentStateStartedAt,
     timeInCurrentStateSeconds,
-    timeInCurrentStateFormatted: formatDurationHuman(timeInCurrentStateSeconds),
+    timeInCurrentStateFormatted: currentStateStartedAt ? formatDurationHuman(timeInCurrentStateSeconds) : '—',
     activeCycle: isCurrentlyOpen ? (activeOpenCycle || null) : null,
     lastClosedCycle: lastClosedCycle || null,
     totalCyclesRecorded: operationalCycles.length,
   };
 
-  const primaryThingName = primaryDisplayMaster?.thingName || gate.masters[0]?.serialNumber || 'Unassigned';
+  const primaryThingName = primaryDisplayMaster?.thingName || null;
 
-  // Aggregate connectivity: ONLINE (all hardware online), PARTIAL (some online), OFFLINE (all offline), UNCONFIGURED
+  // Aggregate connectivity strictly from resolvedGate
   const latestPacketTime = deduplicatedPayloads[0]?.receivedAt ? new Date(deduplicatedPayloads[0].receivedAt).getTime() : 0;
-  const isDeviceOnline = hasHardware && onlineMastersCount > 0;
-  const deviceStatus: 'ONLINE' | 'PARTIAL' | 'OFFLINE' | 'UNCONFIGURED' = !hasHardware
-    ? 'UNCONFIGURED'
-    : (onlineMastersCount === 0
-        ? 'OFFLINE'
-        : (onlineMastersCount < hardwareMastersCount ? 'PARTIAL' : 'ONLINE'));
+  const resolvedLastSeen = resolvedGate.lastSeenAt || (latestPacketTime > 0 ? new Date(latestPacketTime).toISOString() : null);
+  const isDeviceOnline = resolvedGate.isOnline;
+  const deviceStatus = resolvedGate.deviceStatus;
 
   return {
     success: true,
     gateId: gate.id,
     lcNumber: gate.lcNumber,
     locationName: gate.locationName,
-    hasMaster: true,
+    hasMaster: resolvedGate.hasMaster,
+    isConfigured: resolvedGate.isConfigured,
     mastersCount: gate.masters.length,
     onlineMastersCount,
     hardwareMastersCount,
@@ -411,10 +378,10 @@ export async function getGateTelemetryPayload(gateId: number) {
     thingName: primaryThingName,
     deviceStatus,
     isDeviceOnline,
-    lastSeenAt: latestPacketTime > 0 ? new Date(latestPacketTime).toISOString() : null,
+    lastSeenAt: resolvedLastSeen,
     currentStatus,
     currentOperationalState,
-    topic: `lc-gate/${primaryThingName}/telemetry`,
+    topic: primaryThingName ? `lc-gate/${primaryThingName}/telemetry` : null,
     counts: {
       all: deduplicatedPayloads.length,
       telemetry: telemetryRecords.length,

@@ -170,7 +170,7 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
 
   Future<void> _pingHealthCheck() async {
     if (_deviceId == null) {
-      AppFeedback.showInfo(context, 'Device "$_thingName" reported healthy via local mesh.');
+      AppFeedback.showError(context, 'No AWS IoT Thing is linked to "$_thingName". Assign hardware first.');
       return;
     }
     setState(() => _isPinging = true);
@@ -184,8 +184,15 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         if (mounted) {
-          final pingStatus = (data['status'] ?? 'ONLINE').toString().toUpperCase();
-          AppFeedback.showSuccess(context, 'Connection verified: $_thingName is $pingStatus');
+          final isDelivered = data['mqttDelivered'] == true;
+          if (isDelivered) {
+            AppFeedback.showSuccess(context, 'Health check ping sent to $_thingName via AWS IoT MQTT.');
+          } else {
+            AppFeedback.showError(
+              context,
+              data['message']?.toString() ?? 'Could not reach AWS IoT Core broker for $_thingName.',
+            );
+          }
           _fetchTelemetry();
         }
       } else {
@@ -385,13 +392,13 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
                               const Icon(Icons.signal_cellular_connected_no_internet_4_bar, size: 40, color: Color(0xFF94A3B8)),
                               const SizedBox(height: 10),
                               Text(
-                                'No Telemetry Reported Yet for $_thingName',
+                                'No Device Updates Yet for $_thingName',
                                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
                                 textAlign: TextAlign.center,
                               ),
                               const SizedBox(height: 4),
                               const Text(
-                                'Hardware parameters will appear dynamically once the device connects to AWS IoT Core and publishes a shadow or manifest topic.',
+                                'Hardware details and status will appear automatically once the device connects and sends an update.',
                                 style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                                 textAlign: TextAlign.center,
                               ),

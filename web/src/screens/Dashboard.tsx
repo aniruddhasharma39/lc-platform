@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { 
   FaBell, FaBars, FaTimes, FaUser, FaUserCircle, 
   FaUserPlus, FaNetworkWired, FaMicrochip, FaCheckCircle, 
-  FaLock, FaSearchPlus,
+  FaExclamationTriangle, FaLock, FaSearchPlus,
   FaHome, FaLayerGroup, FaUsers, FaShieldAlt, FaPaintBrush, 
   FaFileAlt, FaChartBar, FaHistory, FaVideo, FaTrain, FaCog, 
   FaMapMarkerAlt, FaDatabase, FaArchway
@@ -494,81 +494,107 @@ export default function Dashboard({ user, onLogout }: Props) {
                       <div>No notifications right now.</div>
                     </div>
                   ) : (
-                    notifications.map(item => (
-                      <div 
-                        key={item.id}
-                        onClick={() => handleNotificationClick(item)}
-                        style={{
-                          padding: '12px 14px',
-                          borderBottom: '1px solid #f1f5f9',
-                          backgroundColor: item.isRead ? '#ffffff' : '#f0f9ff',
-                          borderLeft: item.isRead ? '4px solid transparent' : '4px solid #0284c7',
-                          display: 'flex',
-                          gap: 12,
-                          alignItems: 'flex-start',
-                          cursor: 'pointer',
-                          transition: 'background 0.15s ease',
-                          position: 'relative'
-                        }}
-                      >
-                        <div style={{ 
-                          width: 32, 
-                          height: 32, 
-                          borderRadius: '50%', 
-                          backgroundColor: item.type === 'user_request' ? '#e0f2fe' : item.type === 'cluster_created' ? '#ecfdf5' : '#fef3c7',
-                          display: 'flex', 
-                          alignItems: 'center', 
-                          justifyContent: 'center',
-                          flexShrink: 0,
-                          marginTop: 2
-                        }}>
-                          {item.type === 'user_request' ? (
-                            <FaUserPlus style={{ color: '#0284c7', fontSize: '0.95rem' }} />
-                          ) : item.type === 'cluster_created' ? (
-                            <FaNetworkWired style={{ color: '#10b981', fontSize: '0.95rem' }} />
-                          ) : (
-                            <FaMicrochip style={{ color: '#d97706', fontSize: '0.95rem' }} />
-                          )}
-                        </div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <strong style={{ fontSize: '0.85rem', color: item.isRead ? '#475569' : '#0f172a', fontWeight: item.isRead ? 600 : 700 }}>
-                                {item.title}
-                              </strong>
-                              {!item.isRead && (
-                                <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#0284c7', display: 'inline-block' }} />
-                              )}
-                            </div>
-                            <small style={{ fontSize: '0.72rem', color: '#94a3b8', whiteSpace: 'nowrap' }}>
-                              {new Date(item.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                            </small>
-                          </div>
-                          <p style={{ margin: '4px 0 0', fontSize: '0.8rem', color: item.isRead ? '#64748b' : '#334155', lineHeight: 1.35 }}>
-                            {item.message}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={(e) => dismissNotification(item.id, e)}
-                          title="Dismiss"
+                    notifications.map((item) => {
+                      const pCode = item.priority || (item.type === 'user_request' ? 'P2' : (item.type === 'cluster_created' || item.type === 'device_registered') ? 'P4' : 'P3');
+                      const pLabel = item.priorityLabel || (pCode === 'P1' ? 'CRITICAL' : pCode === 'P2' ? 'HIGH' : pCode === 'P4' ? 'SETUP' : 'INFO');
+                      const priorityTheme = pCode === 'P1'
+                        ? { badgeBg: '#fee2e2', badgeColor: '#b91c1c', badgeBorder: '#fca5a5', rowBg: '#fff5f5', accent: '#dc2626', iconBg: '#fee2e2', iconColor: '#dc2626' }
+                        : pCode === 'P2'
+                          ? { badgeBg: '#fef3c7', badgeColor: '#b45309', badgeBorder: '#fcd34d', rowBg: '#fffbeb', accent: '#d97706', iconBg: '#fef3c7', iconColor: '#d97706' }
+                          : pCode === 'P4'
+                            ? { badgeBg: '#f1f5f9', badgeColor: '#475569', badgeBorder: '#cbd5e1', rowBg: '#f8fafc', accent: '#64748b', iconBg: '#ecfdf5', iconColor: '#059669' }
+                            : { badgeBg: '#e0f2fe', badgeColor: '#0369a1', badgeBorder: '#7dd3fc', rowBg: '#f0f9ff', accent: '#0284c7', iconBg: '#e0f2fe', iconColor: '#0284c7' };
+
+                      return (
+                        <div 
+                          key={item.id}
+                          onClick={() => handleNotificationClick(item)}
                           style={{
-                            background: 'none',
-                            border: 'none',
-                            color: '#94a3b8',
-                            cursor: 'pointer',
-                            padding: '4px',
+                            padding: '12px 14px',
+                            borderBottom: '1px solid #f1f5f9',
+                            backgroundColor: item.isRead ? '#ffffff' : priorityTheme.rowBg,
+                            borderLeft: item.isRead ? '4px solid transparent' : `4px solid ${priorityTheme.accent}`,
                             display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            borderRadius: '4px',
-                            flexShrink: 0
+                            gap: 12,
+                            alignItems: 'flex-start',
+                            cursor: 'pointer',
+                            transition: 'background 0.15s ease',
+                            position: 'relative'
                           }}
                         >
-                          <FaTimes size={12} />
-                        </button>
-                      </div>
-                    ))
+                          <div style={{ 
+                            width: 32, 
+                            height: 32, 
+                            borderRadius: '50%', 
+                            backgroundColor: priorityTheme.iconBg,
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                            marginTop: 2
+                          }}>
+                            {pCode === 'P1' ? (
+                              <FaExclamationTriangle style={{ color: priorityTheme.iconColor, fontSize: '0.92rem' }} />
+                            ) : item.type === 'user_request' ? (
+                              <FaUserPlus style={{ color: priorityTheme.iconColor, fontSize: '0.95rem' }} />
+                            ) : item.type === 'cluster_created' ? (
+                              <FaNetworkWired style={{ color: priorityTheme.iconColor, fontSize: '0.95rem' }} />
+                            ) : item.type === 'device_registered' ? (
+                              <FaMicrochip style={{ color: priorityTheme.iconColor, fontSize: '0.95rem' }} />
+                            ) : (
+                              <FaCheckCircle style={{ color: priorityTheme.iconColor, fontSize: '0.95rem' }} />
+                            )}
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexWrap: 'wrap' }}>
+                                <span style={{
+                                  fontSize: '0.64rem',
+                                  fontWeight: 800,
+                                  letterSpacing: '0.4px',
+                                  padding: '1px 6px',
+                                  borderRadius: 999,
+                                  backgroundColor: priorityTheme.badgeBg,
+                                  color: priorityTheme.badgeColor,
+                                  border: `1px solid ${priorityTheme.badgeBorder}`,
+                                  whiteSpace: 'nowrap',
+                                }}>
+                                  {pLabel}
+                                </span>
+                                <strong style={{ fontSize: '0.85rem', color: item.isRead ? '#475569' : '#0f172a', fontWeight: item.isRead ? 600 : 700 }}>
+                                  {item.title}
+                                </strong>
+                              </div>
+                              <small style={{ fontSize: '0.72rem', color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                                {new Date(item.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                              </small>
+                            </div>
+                            <p style={{ margin: '4px 0 0', fontSize: '0.8rem', color: item.isRead ? '#64748b' : '#334155', lineHeight: 1.35 }}>
+                              {item.message}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => dismissNotification(item.id, e)}
+                            title="Dismiss"
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: '#94a3b8',
+                              cursor: 'pointer',
+                              padding: '4px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              borderRadius: '4px',
+                              flexShrink: 0
+                            }}
+                          >
+                            <FaTimes size={12} />
+                          </button>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>

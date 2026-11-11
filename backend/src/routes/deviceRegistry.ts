@@ -13,6 +13,14 @@ import { broadcastGateTelemetry } from '../lib/telemetryWs';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
 import { deleteEvidenceFile } from './evidence';
+import {
+  cleanupDetachedThingEventsInTx,
+  computeThingConnectivity,
+  isGenuineTelemetryPacket,
+  isManifestPacket,
+  normalizeBarrierStateColumn,
+  parseBarrierStateFromPayload,
+} from '../lib/thingState';
 // @ts-ignore
 import { Jimp, loadFont } from 'jimp';
 // @ts-ignore
@@ -110,7 +118,7 @@ const registerDeviceSchema = z.object({
   firmwareVersion: z.string().optional().nullable(),
   hardwareVersion: z.string().optional().nullable(),
   dateOfMfg: z.preprocess((val) => (val ? new Date(val as string) : null), z.date().optional().nullable()),
-  manufacturer: z.string().default('Mirtha / LC-Platform'),
+  manufacturer: z.string().optional().nullable(),
   modelNumber: z.string().optional().nullable(),
   batchNumber: z.string().optional().nullable(),
   sensors: z.any().optional().nullable(),
@@ -128,100 +136,6 @@ const registerDeviceSchema = z.object({
 });
 
 const updateDeviceSchema = registerDeviceSchema.partial();
-
-/**
- * Helper to auto-link device to existing Gate, MasterUnit, or ChildDevice by Serial Number
- */
-async function resolveGateAssociations(serialNumber?: string | null, gateId?: number | null, client: any = prisma) {
-  if (!serialNumber && !gateId) return { gateId: null, masterId: null, childDeviceId: null };
-
-  let resolvedGateId = gateId || null;
-  let resolvedMasterId: number | null = null;
-  let resolvedChildDeviceId: number | null = null;
-
-  if (serialNumber) {
-    // 1. Check if serial matches a Master Unit
-    const master = await client.masterUnit.findUnique({
-      where: { serialNumber },
-      select: { id: true, gateId: true },
-    });
-    if (master) {
-      resolvedMasterId = master.id;
-      if (!resolvedGateId) resolvedGateId = master.gateId;
-    }
-
-    // 2. Check if serial matches a Child Device
-    const child = await client.childDevice.findUnique({
-      where: { serialNumber },
-      include: { master: { select: { id: true, gateId: true } } },
-    });
-    if (child) {
-      resolvedChildDeviceId = child.id;
-      if (!resolvedMasterId) resolvedMasterId = child.master.id;
-      if (!resolvedGateId) resolvedGateId = child.master.gateId;
-    }
-
-    // 3. Check if serial or prefix matches an LC Gate number (e.g., LC-0001)
-    if (!resolvedGateId) {
-      const gateMatch = await client.lCGate.findFirst({
-        where: {
-          lcNumber: {
-            equals: serialNumber.split('-').slice(0, 2).join('-'), // "LC-0001"
-          },
-        },
-      });
-      if (gateMatch) resolvedGateId = gateMatch.id;
-    }
-  }
-
-  // 4. If gateId is known (either provided or resolved) but master/child are not yet fully resolved:
-  if (resolvedGateId) {
-    const gateMasters = await client.masterUnit.findMany({
-      where: { gateId: resolvedGateId },
-      orderBy: { masterSequence: 'asc' },
-    });
-
-    if (gateMasters.length > 0) {
-      const primaryMaster = gateMasters[0];
-
-      if (serialNumber) {
-        const isSlave = serialNumber.endsWith('-A') || serialNumber.endsWith('-B') ||
-                        serialNumber.includes('-A') || serialNumber.includes('-B');
-
-        if (isSlave) {
-          resolvedMasterId = primaryMaster.id;
-          let child = await client.childDevice.findUnique({
-            where: { serialNumber },
-          });
-
-          if (!child) {
-            const type = (serialNumber.endsWith('-B') || serialNumber.includes('-B')) ? 'DEVICE_2' : 'DEVICE_1';
-            const count = await client.childDevice.count({ where: { masterId: primaryMaster.id, type } });
-            child = await client.childDevice.create({
-              data: {
-                serialNumber,
-                type,
-                deviceSequence: count + 1,
-                masterId: primaryMaster.id,
-              },
-            });
-          }
-          resolvedChildDeviceId = child.id;
-        } else if (!resolvedMasterId) {
-          resolvedMasterId = primaryMaster.id;
-        }
-      } else if (!resolvedMasterId) {
-        resolvedMasterId = primaryMaster.id;
-      }
-    }
-  }
-
-  return {
-    gateId: resolvedGateId,
-    masterId: resolvedMasterId,
-    childDeviceId: resolvedChildDeviceId,
-  };
-}
 
 /**
  * Scopes device queries to LC Gate Platform devices only (starts with "LC-").
@@ -255,7 +169,7 @@ router.get('/stats/summary', authenticate, async (_req, res, next) => {
       deviceType: { not: 'SLAVE' },
     };
 
-    const [total, active, provisioned, masters] = await Promise.all([
+    const [total, active, provisioned, masters, onlineCount] = await Promise.all([
       prisma.deviceRegistry.count({ where: baseWhere }),
       prisma.deviceRegistry.count({ where: { ...baseWhere, status: 'ACTIVE' } }),
       prisma.deviceRegistry.count({ where: { ...baseWhere, status: 'PROVISIONED' } }),
@@ -265,6 +179,7 @@ router.get('/stats/summary', authenticate, async (_req, res, next) => {
           deviceType: { in: ['MASTER', 'master', 'LC_GATE_MASTER', 'GATE_MASTER', 'LC-GATE-MASTER', 'MASTER_UNIT', 'LC_MASTER'] },
         },
       }),
+      prisma.deviceRegistry.count({ where: { ...baseWhere, connectivityStatus: 'ONLINE' } }),
     ]);
 
     res.json({
@@ -272,6 +187,8 @@ router.get('/stats/summary', authenticate, async (_req, res, next) => {
       active,
       provisioned,
       masters,
+      onlineCount,
+      offlineCount: Math.max(0, total - onlineCount),
       slaves: 0, // Slaves are wired to masters, not individual cloud things
       timestamp: new Date().toISOString(),
     });
@@ -382,32 +299,37 @@ router.get('/', authenticate, async (req, res, next) => {
     ]);
 
     const now = Date.now();
-    // 65-Minute Rule: 1 hour periodic heartbeat (3600s) + 5 min network grace period (300s) = 65 minutes (3,900,000 ms)
-    const ONLINE_TIMEOUT_MS = 65 * 60 * 1000;
 
     const enrichedDevices = await Promise.all(devices.map(async (device) => {
+      // Query strictly genuine inbound /telemetry packets matched only by thingName or deviceRegistryId
       const latestTele = await prisma.deviceTelemetry.findFirst({
         where: {
           OR: [
             { thingName: device.thingName },
             { deviceRegistryId: device.id },
-            ...(device.serialNumber ? [{ thingName: device.serialNumber }] : [])
-          ]
+          ],
+          topic: { contains: '/telemetry' },
+          NOT: [
+            { topic: { contains: '/health' } },
+            { topic: { contains: '/request' } },
+            { topic: { contains: '/manifest' } },
+          ],
+          status: { not: 'REQUESTED' },
         },
-        orderBy: { receivedAt: 'desc' }
+        orderBy: { receivedAt: 'desc' },
       }).catch(() => null);
 
       const latestHealth = await prisma.deviceHealthCheck.findFirst({
         where: {
           OR: [
             { thingName: device.thingName },
-            { deviceRegistryId: device.id }
-          ]
+            { deviceRegistryId: device.id },
+          ],
         },
-        orderBy: { createdAt: 'desc' }
+        orderBy: { createdAt: 'desc' },
       }).catch(() => null);
 
-      // Latest transmission timestamp across telemetry, health check, or device registry lastSeenAt
+      // Compute latest real inbound packet timestamp
       const timestamps = [
         latestTele?.receivedAt ? new Date(latestTele.receivedAt).getTime() : 0,
         latestHealth?.createdAt ? new Date(latestHealth.createdAt).getTime() : 0,
@@ -415,13 +337,11 @@ router.get('/', authenticate, async (req, res, next) => {
       ];
       const maxTimestamp = Math.max(...timestamps);
       const lastTimestamp = maxTimestamp > 0 ? new Date(maxTimestamp) : null;
-
-      const isOnline = Boolean(
-        lastTimestamp &&
-        (now - maxTimestamp <= ONLINE_TIMEOUT_MS) &&
-        device.status !== 'DECOMMISSIONED' &&
-        device.status !== 'INACTIVE'
-      );
+      const conn = computeThingConnectivity({
+        status: device.status,
+        connectivityStatus: (device as any).connectivityStatus,
+        lastSeenAt: lastTimestamp,
+      }, now);
 
       let simPhotoUrl = (device as any).simPhotoUrl;
       if (device.masterId) {
@@ -441,13 +361,18 @@ router.get('/', authenticate, async (req, res, next) => {
         }
       }
 
+      const barrierState = normalizeBarrierStateColumn((device as any).barrierState);
+
       return {
         ...device,
         simPhotoUrl,
-        computedStatus: isOnline ? 'ONLINE' : 'OFFLINE',
-        latestPayloadSent: lastTimestamp ? lastTimestamp.toISOString() : null,
-        latestTopic: latestTele?.topic || `lc-gate/${device.thingName}/telemetry`,
-        latestPayload: latestTele?.payload || (device.metadata as any)?.rawPayload || null,
+        barrierState,
+        connectivityStatus: conn.connectivityStatus,
+        computedStatus: conn.connectivityStatus,
+        isOnline: conn.isOnline,
+        latestPayloadSent: conn.lastSeenAt,
+        latestTopic: latestTele?.topic || null,
+        latestPayload: latestTele?.payload || null,
       };
     }));
 
@@ -504,8 +429,9 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
           OR: [
             { thingName: device.thingName },
             { deviceRegistryId: device.id },
-            ...(device.serialNumber ? [{ thingName: device.serialNumber }] : [])
-          ]
+          ],
+          NOT: [{ topic: { contains: '/request' } }],
+          status: { not: 'REQUESTED' },
         },
         orderBy: { receivedAt: 'desc' },
         take: 100,
@@ -515,66 +441,47 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
           OR: [
             { thingName: device.thingName },
             { deviceRegistryId: device.id },
-            ...(device.serialNumber ? [{ thingName: device.serialNumber }] : [])
-          ]
+          ],
         },
         orderBy: { createdAt: 'desc' },
         take: 50,
       }).catch(() => [])
     ]);
 
-    // Categorize payloads:
-    // 1. Telemetry: strictly gate state telemetry (lc-gate/+/telemetry)
-    // 2. Manifest: firmware hardware profile (lc/devices/+/manifest)
-    // 3. Health Check: hardware diagnostic records
-    const telemetryRecords = telemetries.filter(t =>
-      (t.topic && t.topic.includes('/telemetry')) &&
-      !(t.topic && t.topic.includes('/health')) &&
-      !((t.payload as any)?.action === 'HEALTH_CHECK' || (t.payload as any)?.action === 'HEALTH_CHECK_RESPONSE')
-    );
+    const telemetryRecords = telemetries.filter(isGenuineTelemetryPacket);
+    const manifestRecords = telemetries.filter(isManifestPacket);
 
-    const manifestRecords = telemetries.filter(t =>
-      (t.topic && t.topic.includes('/manifest')) ||
-      (t.payload && typeof t.payload === 'object' && ((t.payload as any).thing !== undefined || (t.payload as any).Master !== undefined))
-    );
-
-    // Map healthChecks from dedicated table or legacy telemetry records
     const healthRecords = healthChecks.length > 0 ? healthChecks.map((h: any) => ({
       id: h.id,
       thingName: h.thingName,
       topic: `lc-gate/${h.thingName}/health`,
       payload: h.rawPayload,
-      status: h.healthstatus || 'HEALTHY',
+      status: h.healthstatus || null,
       receivedAt: h.createdAt,
       deviceRegistryId: h.deviceRegistryId,
       gateStatus: h.gateStatus,
       isDedicatedHealthCheck: true,
     })) : telemetries.filter(t =>
-      (t.topic && t.topic.includes('/health')) ||
-      (t.payload && typeof t.payload === 'object' && ((t.payload as any).action === 'HEALTH_CHECK' || (t.payload as any).action === 'HEALTH_CHECK_RESPONSE' || (t.payload as any).healthstatus !== undefined))
+      ((t.topic && t.topic.includes('/health') && !t.topic.includes('/request')) ||
+      (t.payload && typeof t.payload === 'object' && ((t.payload as any).action === 'HEALTH_CHECK_RESPONSE' || (t.payload as any).healthstatus !== undefined)))
     );
 
     const nowMs = Date.now();
-    const ONLINE_CUTOFF_MS = 65 * 60 * 1000; // 65-Minute Rule
     const latestTimestamp = telemetryRecords[0]?.receivedAt || healthRecords[0]?.receivedAt || device.lastSeenAt || null;
-    const isOnline = Boolean(
-      latestTimestamp &&
-      (nowMs - new Date(latestTimestamp).getTime() <= ONLINE_CUTOFF_MS) &&
-      device.status !== 'DECOMMISSIONED' &&
-      device.status !== 'INACTIVE'
-    );
-    const computedStatus = isOnline ? 'ONLINE' : 'OFFLINE';
+    const conn = computeThingConnectivity({
+      status: device.status,
+      connectivityStatus: (device as any).connectivityStatus,
+      lastSeenAt: latestTimestamp,
+    }, nowMs);
+    const computedStatus = conn.connectivityStatus;
+    const isOnline = conn.isOnline;
 
-    const latestTele = telemetryRecords[0]?.payload as any;
-    // Physical Gate Status is always OPEN / CLOSED / NOT_CLOSED (never "HEALTHY")
-    const rawTeleStatus = latestTele?.Status ? String(latestTele.Status).trim().toUpperCase() : null;
-    const currentStatus = (rawTeleStatus === 'NOT_CLOSED' ? 'OPEN' : rawTeleStatus) || (latestTele?.LimitSwitchClosed !== undefined ? (latestTele.LimitSwitchClosed ? 'CLOSED' : 'OPEN') : (device.status === 'NOT_CLOSED' ? 'OPEN' : (device.status || 'UNKNOWN')));
+    // Single source of truth: DB barrierState populated strictly from genuine /telemetry packets
+    const barrierState = normalizeBarrierStateColumn((device as any).barrierState);
+    const currentStatus = barrierState || 'NO_TELEMETRY';
 
-    // Construct unified payload list without duplicates
     const seenUids = new Set<string>();
     const deduplicatedPayloads: any[] = [];
-    
-    // 1. Add dedicated health records first (if any)
     if (healthChecks.length > 0) {
       for (const h of healthRecords) {
         const uid = `hc-${h.id}`;
@@ -584,8 +491,6 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
         }
       }
     }
-
-    // 2. Add telemetry/manifest records (preventing any duplicate ID collision)
     for (const t of telemetries) {
       const uid = `tel-${t.id}`;
       if (!seenUids.has(uid)) {
@@ -601,10 +506,13 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
       deviceType: device.deviceType,
       firmwareVersion: device.firmwareVersion,
       gate: device.gate,
+      barrierState,
       currentStatus,
+      connectivityStatus: computedStatus,
       computedStatus,
       isOnline,
       lastSeenAt: latestTimestamp,
+      lastTelemetryAt: (device as any).lastTelemetryAt || null,
       counts: {
         all: deduplicatedPayloads.length,
         telemetry: telemetryRecords.length,
@@ -612,7 +520,7 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
         healthCheck: healthRecords.length,
       },
       latestTelemetry: telemetryRecords[0] || null,
-      latestManifest: manifestRecords[0] || (device.metadata ? { topic: `lc/devices/${device.thingName}/manifest`, payload: (device.metadata as any).rawPayload || device.metadata, receivedAt: device.createdAt } : null),
+      latestManifest: manifestRecords[0] || null,
       latestHealthCheck: healthRecords[0] || null,
       healthChecks: healthRecords,
       payloads: deduplicatedPayloads,
@@ -647,7 +555,6 @@ router.get(['/:id/health-checks', '/:thingName/health-checks'], authenticate, as
         OR: [
           { thingName: device.thingName },
           { deviceRegistryId: device.id },
-          ...(device.serialNumber ? [{ thingName: device.serialNumber }] : [])
         ]
       },
       orderBy: { createdAt: 'desc' },
@@ -693,30 +600,45 @@ router.delete(['/:id', '/:thingName'], authenticate, async (req, res, next) => {
 
     const thingName = device.thingName;
 
-    // 1. Delete associated telemetry and health check records
-    await Promise.all([
-      prisma.deviceTelemetry.deleteMany({
-        where: {
-          OR: [
-            { thingName },
-            { deviceRegistryId: device.id },
-          ],
-        },
-      }).catch(console.warn),
-      prisma.deviceHealthCheck.deleteMany({
-        where: {
-          OR: [
-            { thingName },
-            { deviceRegistryId: device.id },
-          ],
-        },
-      }).catch(console.warn),
-    ]);
+    await prisma.$transaction(async (tx) => {
+      if (device.gateId) {
+        await cleanupDetachedThingEventsInTx(tx, {
+          gateId: device.gateId,
+          masterId: device.masterId,
+          thingName,
+        });
+      }
 
-    // 2. Delete from DeviceRegistry
-    await prisma.deviceRegistry.delete({
-      where: { id: device.id },
-    });
+      await tx.deviceTelemetry.deleteMany({
+        where: {
+          OR: [
+            { thingName },
+            { deviceRegistryId: device.id },
+          ],
+        },
+      });
+      await tx.deviceHealthCheck.deleteMany({
+        where: {
+          OR: [
+            { thingName },
+            { deviceRegistryId: device.id },
+          ],
+        },
+      });
+
+      await tx.deviceRegistry.delete({
+        where: { id: device.id },
+      });
+
+      if (device.gateId) {
+        await bumpDirectoryRevision([device.gateId], true, tx);
+      }
+    }, { maxWait: 5000, timeout: 20000 });
+
+    if (device.gateId) {
+      clusterCacheManager.clear();
+      broadcastGateTelemetry(device.gateId).catch(console.warn);
+    }
 
     res.json({
       success: true,
@@ -763,34 +685,17 @@ router.post(['/:id/health-check', '/:thingName/health-check'], authenticate, asy
       timestamp: new Date().toISOString(),
     };
 
-    // Publish to AWS IoT Core MQTT broker
+    // Publish directly to AWS IoT Core MQTT broker without polluting DeviceTelemetry with fake status rows
     const mqttResult = await publishMqttMessage(topic, commandPayload);
-
-    // Record request into common telemetry table so history tracks the health check trigger
-    const record = await prisma.deviceTelemetry.create({
-      data: {
-        thingName: device.thingName,
-        topic,
-        payload: {
-          ...commandPayload,
-          mqttDelivery: mqttResult.success ? 'PUBLISHED_TO_BROKER' : 'QUEUED_LOCAL',
-          mqttError: mqttResult.error || null,
-        },
-        status: 'REQUESTED',
-        deviceRegistryId: device.id,
-        receivedAt: new Date(),
-      }
-    });
 
     res.json({
       message: mqttResult.success
         ? `Health check command published over AWS IoT MQTT to ${topic}`
-        : `Health check request registered for ${device.thingName} (MQTT: ${mqttResult.error || 'broker offline'})`,
+        : `Health check command failed to reach MQTT broker for ${device.thingName} (${mqttResult.error || 'broker offline'})`,
       topic,
       requestId,
       mqttDelivered: mqttResult.success,
       mqttError: mqttResult.error || null,
-      record,
     });
   } catch (err) {
     next(err);
@@ -843,132 +748,112 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
       }
     }
 
-    const statusVal = payload.Status || 'ONLINE';
     const fwVersion = payload.FirmwareVersion || payload.firmwareVersion || undefined;
+    const isPingRequestEcho = String(topic).includes('/health/request') || payload.action === 'HEALTH_CHECK';
+    if (isPingRequestEcho) {
+      return res.status(200).json({ message: 'Health request command ignored by inbound telemetry ingestion' });
+    }
 
-    // Check if this incoming message is a health diagnostic report
     const isHealthTopic = String(topic).includes('/health') || payload.action === 'HEALTH_CHECK_RESPONSE' || payload.healthstatus !== undefined;
-    const isHealthResponse = isHealthTopic && (payload.healthstatus !== undefined || payload.action === 'HEALTH_CHECK_RESPONSE' || payload.BoomAngle !== undefined);
+    const isHealthResponse = isHealthTopic && (payload.healthstatus !== undefined || payload.action === 'HEALTH_CHECK_RESPONSE' || payload.BoomAngle !== undefined || payload.LimitSwitchClosed !== undefined);
+    const isManifest = isManifestPacket({ topic, payload });
+    const isTelemetry = !isHealthResponse && !isManifest && isGenuineTelemetryPacket({ topic, payload });
+    const incomingAt = raw.timestamp ? new Date(raw.timestamp) : new Date();
 
-    // Complete Atomic Telemetry & Heartbeat Persistence:
-    // Wraps DeviceRegistry updates, atomic first-time provisioning, directory revision increments,
-    // and DeviceTelemetry / DeviceHealthCheck writes in a unified atomic transaction.
     const heartbeatResult = await prisma.$transaction(async (tx) => {
-      // 1. Row-level lock on existing device row
-      // Deterministic priority ordering: exact thingName match takes precedence over serialNumber match,
-      // preventing arbitrary device selection under conflicting identity fields.
+      // 1. Row-level lock strictly on exact thingName (zero serialNumber cross-matching fallback)
       const lockedRows: any[] = await tx.$queryRaw`
-        SELECT id, "thingName", "serialNumber", "gateId", "lastSeenAt", "firmwareVersion", "status"
+        SELECT id, "thingName", "serialNumber", "gateId", "masterId", "lastSeenAt", "firmwareVersion", "status", "connectivityStatus", "barrierState"
         FROM "DeviceRegistry"
-        WHERE "thingName" = ${thingName} OR "serialNumber" = ${thingName}
-        ORDER BY CASE WHEN "thingName" = ${thingName} THEN 0 ELSE 1 END, id ASC
+        WHERE "thingName" = ${thingName}
         LIMIT 1
         FOR UPDATE
       `;
       let dev = lockedRows.length > 0 ? lockedRows[0] : null;
+      const previousBarrierState = normalizeBarrierStateColumn(dev?.barrierState);
 
-      // 2. Detect if device was previously OFFLINE (>65m or never seen) before this heartbeat
+      // 2. Parse authoritative barrier state strictly from physical payload fields (OPEN | CLOSED | null)
+      const currentState = (isTelemetry || isHealthResponse)
+        ? parseBarrierStateFromPayload(payload)
+        : null;
+
+      // 3. Detect if device was previously OFFLINE (>65m or never seen) before this packet
       let wasOffline = false;
 
       if (!dev) {
-        // Ingestion Guard: Only auto-provision devices matching the LC Gate platform naming convention ('LC-')
         if (!thingName.toUpperCase().startsWith('LC-')) {
-          return { ignored: true, device: null, wasOffline: false, affectedScopeIds: [], isGlobal: false, telemetry: null, healthCheck: null, isHealthResponse: false, currentState: null, previousState: null };
+          return { ignored: true, device: null, wasOffline: false, telemetry: null, healthCheck: null, isHealthResponse: false, currentState: null, previousState: null };
         }
 
-        // Strict 1-to-1 Isolation: Newly discovered AWS IoT Things start strictly UNASSIGNED.
-        // They must be explicitly assigned to a Master Unit by an authorized user.
+        // Newly discovered AWS IoT Things always start UNASSIGNED and lifecycle ACTIVE (never ONLINE/OPEN guesses)
         const insertedRows: any[] = await tx.$queryRaw`
           INSERT INTO "DeviceRegistry" (
-            "thingName", "serialNumber", "status", "gateId", "masterId", "childDeviceId", "deviceType", "firmwareVersion", "lastSeenAt", "createdAt", "updatedAt"
+            "thingName", "serialNumber", "status", "connectivityStatus", "barrierState", "lastTelemetryAt",
+            "gateId", "masterId", "childDeviceId", "deviceType", "firmwareVersion", "lastSeenAt", "createdAt", "updatedAt"
           )
           VALUES (
-            ${thingName}, ${thingName}, 'ONLINE', NULL, NULL, NULL,
-            ${payload.DeviceType || 'MASTER'}, ${fwVersion || null}, NOW(), NOW(), NOW()
+            ${thingName}, ${thingName}, 'ACTIVE', 'ONLINE', ${currentState}, ${currentState ? incomingAt : null},
+            NULL, NULL, NULL, ${payload.DeviceType || 'MASTER'}, ${fwVersion || null}, ${incomingAt}, NOW(), NOW()
           )
           ON CONFLICT ("thingName") DO UPDATE
-          SET "lastSeenAt" = NOW(),
-              "status" = 'ONLINE',
+          SET "lastSeenAt" = ${incomingAt},
+              "connectivityStatus" = 'ONLINE',
+              "barrierState" = COALESCE(${currentState}, "DeviceRegistry"."barrierState"),
+              "lastTelemetryAt" = CASE WHEN ${currentState !== null} THEN ${incomingAt} ELSE "DeviceRegistry"."lastTelemetryAt" END,
               "firmwareVersion" = COALESCE(${fwVersion || null}, "DeviceRegistry"."firmwareVersion"),
               "updatedAt" = NOW()
-          RETURNING id, "thingName", "serialNumber", "gateId", "masterId", "lastSeenAt", "firmwareVersion", "status", (xmax = 0) AS is_inserted
+          RETURNING id, "thingName", "serialNumber", "gateId", "masterId", "lastSeenAt", "firmwareVersion", "status", "connectivityStatus", "barrierState", (xmax = 0) AS is_inserted
         `;
         dev = insertedRows[0];
-        // Deterministic check: only genuine first-time insertion triggers OFFLINE->ONLINE directory invalidation
         wasOffline = Boolean(dev.is_inserted);
       } else {
-        wasOffline = !dev.lastSeenAt || (Date.now() - new Date(dev.lastSeenAt).getTime() > 65 * 60 * 1000);
-        // Preserve user-configured gate/master linkage; never auto-reassign or guess gate on heartbeat
+        wasOffline =
+          dev.connectivityStatus !== 'ONLINE' ||
+          !dev.lastSeenAt ||
+          (Date.now() - new Date(dev.lastSeenAt).getTime() > 65 * 60 * 1000);
+        // Preserve lifecycle `status`, gate/master linkage, and update connectivityStatus + authoritative barrierState
         dev = await tx.deviceRegistry.update({
           where: { id: dev.id },
           data: {
-            lastSeenAt: new Date(),
-            status: 'ONLINE',
+            lastSeenAt: incomingAt,
+            connectivityStatus: 'ONLINE',
             firmwareVersion: fwVersion || dev.firmwareVersion,
+            ...(currentState ? {
+              barrierState: currentState,
+              lastTelemetryAt: incomingAt,
+            } : {}),
           }
         });
       }
 
-      // 3. If transition from OFFLINE to ONLINE occurred, atomically increment directory revisions within tx
-      let affectedScopeIds: number[] = [];
-      let isGlobal = false;
       if (wasOffline) {
-        if (dev.gateId) {
-          isGlobal = false;
-          await bumpDirectoryRevision([], true, tx);
-        } else {
-          isGlobal = true;
-          await bumpDirectoryRevision([], true, tx);
+        await bumpDirectoryRevision([], true, tx);
+      }
+
+      // 4. Determine genuine previous state strictly from previousBarrierState (or previous /telemetry row if never cached yet)
+      let previousState = previousBarrierState;
+      if (!previousState) {
+        const previousTele = await tx.deviceTelemetry.findFirst({
+          where: {
+            OR: [
+              { thingName: dev.thingName },
+              { deviceRegistryId: dev.id },
+            ],
+            topic: { contains: '/telemetry' },
+            NOT: [
+              { topic: { contains: '/health' } },
+              { topic: { contains: '/request' } },
+            ],
+            status: { not: 'REQUESTED' },
+          },
+          orderBy: { receivedAt: 'desc' },
+        });
+        if (previousTele?.payload) {
+          previousState = parseBarrierStateFromPayload(previousTele.payload);
         }
       }
 
-      // 4. Fetch previous telemetry within transaction to detect genuine gate state transitions (OPEN <-> CLOSED)
-      const previousTele = await tx.deviceTelemetry.findFirst({
-        where: {
-          OR: [
-            { thingName: dev.thingName },
-            { deviceRegistryId: dev.id },
-          ],
-          topic: { contains: '/telemetry' },
-        },
-        orderBy: { receivedAt: 'desc' },
-      });
-
-      // 5. Parse current and previous reported gate status (evaluates Status, LimitSwitch, and general status reliably)
-      let currentState: 'OPEN' | 'CLOSED' | null = null;
-      if (payload.Status !== undefined) {
-        const s = String(payload.Status).trim().toUpperCase();
-        if (s === 'CLOSED') currentState = 'CLOSED';
-        else if (s === 'OPEN' || s === 'NOT_CLOSED') currentState = 'OPEN';
-      }
-      if (!currentState && payload.LimitSwitchClosed !== undefined) {
-        currentState = payload.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
-      }
-      if (!currentState && payload.status !== undefined) {
-        const s = String(payload.status).trim().toUpperCase();
-        if (s === 'CLOSED') currentState = 'CLOSED';
-        else if (s === 'OPEN' || s === 'NOT_CLOSED') currentState = 'OPEN';
-      }
-
-      let previousState: 'OPEN' | 'CLOSED' | null = null;
-      if (previousTele && previousTele.payload && typeof previousTele.payload === 'object') {
-        const prevP = previousTele.payload as any;
-        if (prevP.Status !== undefined) {
-          const s = String(prevP.Status).trim().toUpperCase();
-          if (s === 'CLOSED') previousState = 'CLOSED';
-          else if (s === 'OPEN' || s === 'NOT_CLOSED') previousState = 'OPEN';
-        }
-        if (!previousState && prevP.LimitSwitchClosed !== undefined) {
-          previousState = prevP.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
-        }
-        if (!previousState && prevP.status !== undefined) {
-          const s = String(prevP.status).trim().toUpperCase();
-          if (s === 'CLOSED') previousState = 'CLOSED';
-          else if (s === 'OPEN' || s === 'NOT_CLOSED') previousState = 'OPEN';
-        }
-      }
-
-      // 6. Save telemetry record into DB within the SAME transaction
+      // 5. Save authentic telemetry or health diagnostic report (zero fabricated defaults)
       let createdHealth: any = null;
       let createdTele: any = null;
 
@@ -977,12 +862,12 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
           data: {
             thingName: dev.thingName,
             requestId: payload.requestId || null,
-            healthstatus: payload.healthstatus || 'HEALTHY',
-            gateStatus: (payload.Status === 'NOT_CLOSED' ? 'OPEN' : payload.Status) || (payload.LimitSwitchClosed !== undefined ? (payload.LimitSwitchClosed ? 'CLOSED' : 'OPEN') : null),
+            healthstatus: payload.healthstatus || null,
+            gateStatus: parseBarrierStateFromPayload(payload),
             boomAngle: payload.BoomAngle !== undefined && payload.BoomAngle !== null ? parseFloat(payload.BoomAngle) : null,
             mcuTempC: payload.McuTempC !== undefined && payload.McuTempC !== null ? parseFloat(payload.McuTempC) : null,
             signalStrength: payload.SignalStrength !== undefined && payload.SignalStrength !== null ? parseInt(payload.SignalStrength) : null,
-            networkType: payload.NetworkType || '4G_LTE',
+            networkType: payload.NetworkType || payload.networkType || null,
             limitSwitchClosed: payload.LimitSwitchClosed !== undefined && payload.LimitSwitchClosed !== null ? Boolean(payload.LimitSwitchClosed) : null,
             hallClosed: payload.HallClosed !== undefined && payload.HallClosed !== null ? Boolean(payload.HallClosed) : null,
             batteryVoltage: payload.BatteryVoltage !== undefined && payload.BatteryVoltage !== null ? parseFloat(payload.BatteryVoltage) : null,
@@ -990,10 +875,10 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
             solarVoltage: payload.SolarVoltage !== undefined && payload.SolarVoltage !== null ? parseFloat(payload.SolarVoltage) : null,
             solarCharging: payload.SolarCharging !== undefined && payload.SolarCharging !== null ? Boolean(payload.SolarCharging) : null,
             uptimeSeconds: payload.UptimeSeconds !== undefined && payload.UptimeSeconds !== null ? parseInt(payload.UptimeSeconds) : null,
-            firmwareVersion: payload.FirmwareVersion || fwVersion || '1.0.6',
+            firmwareVersion: payload.FirmwareVersion || fwVersion || null,
             rawPayload: payload,
             deviceRegistryId: dev.id,
-            createdAt: raw.timestamp ? new Date(raw.timestamp) : new Date(),
+            createdAt: incomingAt,
           }
         });
       } else {
@@ -1002,26 +887,30 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
             thingName: dev.thingName,
             topic,
             payload,
-            status: 'ONLINE',
+            status: currentState || (isManifest ? 'MANIFEST' : null),
             deviceRegistryId: dev.id,
-            receivedAt: raw.timestamp ? new Date(raw.timestamp) : new Date(),
+            receivedAt: incomingAt,
           }
         });
+        if (currentState) {
+          dev = await tx.deviceRegistry.update({
+            where: { id: dev.id },
+            data: { lastTelemetryId: createdTele.id },
+          });
+        }
       }
 
       return {
         ignored: false,
         device: dev,
         wasOffline,
-        affectedScopeIds,
-        isGlobal,
         telemetry: createdTele,
         healthCheck: createdHealth,
         isHealthResponse,
         currentState,
         previousState,
       };
-    });
+    }, { maxWait: 5000, timeout: 20000 });
 
     if (heartbeatResult.ignored) {
       return res.status(200).json({
@@ -1032,29 +921,27 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
     const device = heartbeatResult.device!;
     const { telemetry, healthCheck, currentState, previousState } = heartbeatResult;
 
-    // Invalidate local in-memory L1 cache after transaction commits
     if (heartbeatResult.wasOffline) {
-      if (heartbeatResult.isGlobal || heartbeatResult.affectedScopeIds.length === 0) {
-        clusterCacheManager.invalidateAll();
-      } else {
-        clusterCacheManager.invalidateAll();
-      }
+      clusterCacheManager.invalidateAll();
     }
 
     if (heartbeatResult.isHealthResponse) {
+      if (device.gateId) {
+        broadcastGateTelemetry(device.gateId).catch(console.warn);
+      }
       return res.status(201).json({
         message: 'Health diagnostic report recorded in DeviceHealthCheck table',
         healthCheck,
-        device: { id: device.id, thingName: device.thingName, status: 'ACTIVE' }
+        device: { id: device.id, thingName: device.thingName, status: device.status, connectivityStatus: device.connectivityStatus, barrierState: device.barrierState }
       });
     }
 
-    // Trigger operational event recording and state transition alerts
+    // Trigger operational event recording and SMS alert ONLY on real barrier state telemetry
     if (currentState && telemetry) {
       if (!previousState || currentState !== previousState) {
         console.log(`⚡ [STATE DETECTED] Gate "${device.thingName}": ${previousState || 'INITIAL'} ➔ ${currentState}`);
 
-        if (previousState && currentState !== previousState) {
+        if (previousState && currentState === 'OPEN' && currentState !== previousState) {
           checkAndDispatchGateStateAlert({
             deviceId: device.id,
             gateId: device.gateId,
@@ -1063,7 +950,7 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
             serialNumber: device.serialNumber,
             newState: currentState,
             timestamp: telemetry.receivedAt,
-          }).catch(err => console.error('Error dispatching gate state SMS alert:', err));
+          }).catch(err => console.error('Error dispatching gate state alert:', err));
         }
 
         recordGateTelemetryTransition({
@@ -1087,13 +974,15 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
       stateTransition: (currentState && previousState && currentState !== previousState) ? {
         from: previousState,
         to: currentState,
-        alertDispatched: true
+        alertDispatched: currentState === 'OPEN'
       } : null,
       device: {
         id: device.id,
         thingName: device.thingName,
-        status: 'ACTIVE',
-        lastSeenAt: new Date(),
+        status: device.status,
+        connectivityStatus: device.connectivityStatus,
+        barrierState: device.barrierState,
+        lastSeenAt: device.lastSeenAt,
       }
     });
 
@@ -1294,12 +1183,13 @@ router.post('/', authenticate, async (req, res, next) => {
   try {
     const data = registerDeviceSchema.parse(req.body);
 
-    // Auto-resolve relations if not explicitly provided
-    const resolved = await resolveGateAssociations(data.serialNumber || data.thingName, data.gateId);
-
-    const gateId = data.gateId !== undefined ? data.gateId : resolved.gateId;
-    const masterId = data.masterId !== undefined ? data.masterId : resolved.masterId;
-    const childDeviceId = data.childDeviceId !== undefined ? data.childDeviceId : resolved.childDeviceId;
+    // Explicit bindings only; never auto-guess Gate/Master/Slave by serial string prefix
+    const gateId = data.gateId ?? null;
+    const masterId = data.masterId ?? null;
+    const childDeviceId = data.childDeviceId ?? null;
+    if (gateId && !masterId) {
+      return res.status(400).json({ error: 'Explicit masterId is required when assigning a device to a gate.' });
+    }
 
     const device = await prisma.deviceRegistry.upsert({
       where: { thingName: data.thingName },
@@ -1392,10 +1282,8 @@ router.put('/:id', authenticate, async (req, res, next) => {
       if (data.gateId === null) {
         masterId = null;
         childDeviceId = null;
-      } else if (masterId === undefined && childDeviceId === undefined) {
-        const resolved = await resolveGateAssociations(existing.serialNumber || existing.thingName, data.gateId);
-        masterId = resolved.masterId;
-        childDeviceId = resolved.childDeviceId;
+      } else if (masterId === undefined) {
+        return res.status(400).json({ error: 'Explicit masterId is required when assigning a device to a gate.' });
       }
     }
 
@@ -1735,54 +1623,6 @@ router.post('/:id/recharge', authenticate, async (req, res, next) => {
 });
 
 /**
- * DELETE /api/v1/devices/:id
- * Remove or decommission device from registry
- */
-router.delete('/:id', authenticate, async (req, res, next) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: 'Invalid device ID' });
-
-    const device = await prisma.deviceRegistry.findUnique({
-      where: { id },
-      select: { id: true, thingName: true, serialNumber: true, gateId: true }
-    });
-
-    if (!device) {
-      return res.status(404).json({ error: 'Device not found in registry' });
-    }
-
-    // Clean up associated telemetries
-    await prisma.deviceTelemetry.deleteMany({
-      where: {
-        OR: [
-          { deviceRegistryId: id },
-          { thingName: device.thingName },
-          ...(device.serialNumber ? [{ thingName: device.serialNumber }] : [])
-        ]
-      }
-    }).catch(console.warn);
-
-    // Clean up scope group device mappings
-    // Delete device from registry
-    await prisma.deviceRegistry.delete({ where: { id } });
-
-    // Invalidate Cluster cache if deleted device was assigned to a gate
-    if (device.gateId) {
-      await bumpDirectoryRevision([], true);
-    }
-
-    res.status(200).json({
-      success: true,
-      message: `Device "${device.thingName}" successfully deleted from registry.`,
-      deletedThingName: device.thingName
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
  * POST /api/v1/devices/manifest
  * Direct Firmware Manifest Ingestion Endpoint
  */
@@ -1837,9 +1677,9 @@ router.post('/manifest', async (req, res, next) => {
     }
 
     const serialNumber = masterObj['S.No.'] || masterObj['S.No'] || masterObj.serialNumber || raw.serialNumber || raw.serial_number || hw.serialNumber || attrs.serialNumber || thingName;
-    const deviceType = 'MASTER'; // Physical cloud-connected IoT Things are Master units; slaves are wired sub-components!
-    const deviceName = masterObj['Device_Name'] || masterObj.deviceName || raw.deviceName || hw.deviceName || 'LC Gate';
-    const description = masterObj['Desc'] || masterObj.description || raw.description || hw.description || 'Installed on IR Level Crossings';
+    const deviceType = 'MASTER'; // Physical cloud-connected IoT Things are Master units
+    const deviceName = masterObj['Device_Name'] || masterObj.deviceName || raw.deviceName || hw.deviceName || null;
+    const description = masterObj['Desc'] || masterObj.description || raw.description || hw.description || null;
     const firmwareVersion = masterObj.version ? String(masterObj.version) : (fw.version || raw.firmwareVersion || raw.firmware_version || (typeof raw.firmware === 'string' ? raw.firmware : null) || attrs.firmwareVersion || null);
     const hardwareVersion = hw.version || raw.hardwareVersion || raw.hardware_version || (typeof raw.hardware === 'string' ? raw.hardware : null) || attrs.hardwareVersion || null;
     const macAddress = hw.macAddress || raw.macAddress || raw.mac || attrs.macAddress || null;
@@ -1851,7 +1691,7 @@ router.post('/manifest', async (req, res, next) => {
     const rawDate = masterObj['Mfg'] || masterObj.mfg || mfg.dateOfMfg || raw.dateOfMfg || raw.mfgDate || attrs.dateOfMfg;
     const dateOfMfg = parseFlexibleDate(rawDate);
 
-    // Extract wired slaves & their sensors
+    // Extract slaves strictly if actually reported in manifest (zero fabricated Barrier A / B records)
     let parsedSlaves: any[] = [];
     if (Array.isArray(slaveObj)) {
       parsedSlaves = slaveObj;
@@ -1859,102 +1699,43 @@ router.post('/manifest', async (req, res, next) => {
       const sensorsData = slaveObj.Sensors?.SensorName || slaveObj.sensors?.sensorName || slaveObj.Sensors || slaveObj.sensors || [];
       const sensorList = Array.isArray(sensorsData) ? sensorsData : [sensorsData];
       const normalizedSensors = sensorList.map((s: any) => typeof s === 'string' ? { name: s } : s);
-      parsedSlaves = [
-        {
-          slaveId: `${serialNumber}-A`,
-          name: 'Barrier A',
-          type: 'DEVICE_1',
+      if (normalizedSensors.length > 0) {
+        parsedSlaves = [{
+          slaveId: `${serialNumber}-S1`,
+          name: slaveObj.name || 'Slave Sensors',
           connection: 'WIRED',
-          sensors: normalizedSensors.length > 0 ? normalizedSensors : [
-            { name: 'HallEffect Sensor', description: 'Boom barrier position detection' },
-            { name: 'LimitSwitch', description: 'End-stop & locking mechanism' }
-          ]
-        },
-        {
-          slaveId: `${serialNumber}-B`,
-          name: 'Barrier B',
-          type: 'DEVICE_2',
-          connection: 'WIRED',
-          sensors: normalizedSensors.length > 0 ? normalizedSensors : [
-            { name: 'HallEffect Sensor', description: 'Boom barrier position detection' },
-            { name: 'LimitSwitch', description: 'End-stop & locking mechanism' }
-          ]
-        }
-      ];
-    } else {
-      // Default wired slaves A & B for an LC Gate controller
-      parsedSlaves = [
-        {
-          slaveId: `${serialNumber}-A`,
-          name: 'Barrier A',
-          type: 'DEVICE_1',
-          connection: 'WIRED',
-          sensors: [
-            { name: 'HallEffect Sensor', description: 'Boom barrier position detection' },
-            { name: 'LimitSwitch', description: 'End-stop & locking mechanism' }
-          ]
-        },
-        {
-          slaveId: `${serialNumber}-B`,
-          name: 'Barrier B',
-          type: 'DEVICE_2',
-          connection: 'WIRED',
-          sensors: [
-            { name: 'HallEffect Sensor', description: 'Boom barrier position detection' },
-            { name: 'LimitSwitch', description: 'End-stop & locking mechanism' }
-          ]
-        }
-      ];
-    }
-
-    // Dynamic Master sensors: Solar, Battery, Doppler Radar, etc.
-    const sensors = raw.sensors !== undefined ? raw.sensors : (attrs.sensors !== undefined ? attrs.sensors : (raw.telemetry?.sensors || null));
-
-    // Dynamic components: Store wired slaves under components so UI shows them clearly
-    const components = raw.components !== undefined ? raw.components : parsedSlaves;
-
-    // Preserve all custom keys
-    const dynamicAttributes = {
-      ...attrs,
-      ...raw,
-      deviceName,
-      description,
-      slaves: parsedSlaves,
-      hardware: { ...hw, deviceName, description },
-      firmware: { ...fw, version: firmwareVersion },
-    };
-    delete dynamicAttributes.attributes;
-
-    const resolved = await resolveGateAssociations(serialNumber, raw.gateId);
-
-    // If masterId is resolved, automatically synchronize ChildDevice table with wired slaves
-    if (resolved.masterId) {
-      for (const slave of parsedSlaves) {
-        const existingChild = await prisma.childDevice.findUnique({ where: { serialNumber: slave.slaveId } });
-        if (!existingChild) {
-          await prisma.childDevice.create({
-            data: {
-              serialNumber: slave.slaveId,
-              type: slave.type,
-              deviceSequence: slave.type === 'DEVICE_2' ? 2 : 1,
-              masterId: resolved.masterId,
-            }
-          }).catch(console.warn);
-        }
+          sensors: normalizedSensors,
+        }];
       }
     }
 
+    const sensors = raw.sensors !== undefined ? raw.sensors : (attrs.sensors !== undefined ? attrs.sensors : (raw.telemetry?.sensors || null));
+    const components = raw.components !== undefined ? raw.components : (parsedSlaves.length > 0 ? parsedSlaves : null);
+
+    const dynamicAttributes: any = {
+      ...attrs,
+      ...raw,
+      ...(deviceName ? { deviceName } : {}),
+      ...(description ? { description } : {}),
+      ...(parsedSlaves.length > 0 ? { slaves: parsedSlaves } : {}),
+      hardware: { ...hw, ...(deviceName ? { deviceName } : {}), ...(description ? { description } : {}) },
+      firmware: { ...fw, ...(firmwareVersion ? { version: firmwareVersion } : {}) },
+    };
+    delete dynamicAttributes.attributes;
+
+    // Never auto-guess or overwrite gateId / masterId / childDeviceId from manifest ingestion
     const device = await prisma.deviceRegistry.upsert({
       where: { thingName },
       create: {
         thingName,
-        thingArn: raw.thingArn || `arn:aws:iot:ap-south-1:lcgate:thing/${thingName}`,
+        thingArn: raw.thingArn || null,
         thingTypeName: raw.thingTypeName || 'MasterUnit',
         deviceType,
         serialNumber,
         status: raw.status || 'ACTIVE',
-        gateId: resolved.gateId,
-        masterId: resolved.masterId,
+        connectivityStatus: 'ONLINE',
+        gateId: null,
+        masterId: null,
         childDeviceId: null,
         macAddress,
         imei,
@@ -1977,10 +1758,8 @@ router.post('/manifest', async (req, res, next) => {
       update: {
         deviceType,
         serialNumber,
-        status: raw.status || 'ACTIVE',
-        gateId: resolved.gateId,
-        masterId: resolved.masterId,
-        childDeviceId: null,
+        ...(raw.status ? { status: raw.status } : {}),
+        connectivityStatus: 'ONLINE',
         macAddress: macAddress || undefined,
         imei: imei || undefined,
         firmwareVersion: firmwareVersion || undefined,
@@ -2006,13 +1785,13 @@ router.post('/manifest', async (req, res, next) => {
       }
     });
 
-    // Record into common telemetry table for device-wise historic payload inspection
+    // Record into common telemetry table for manifest inspection
     await prisma.deviceTelemetry.create({
       data: {
         thingName,
         topic: raw.topic || `lc-gate/${thingName}/manifest`,
         payload: raw,
-        status: 'ONLINE',
+        status: 'MANIFEST',
         deviceRegistryId: device.id,
         receivedAt: new Date(),
       }
@@ -2047,27 +1826,27 @@ router.post('/simulate-iot-event', authenticate, async (req, res, next) => {
 
     const attrs = payload.attributes || {};
     const serialNumber = attrs.serialNumber || payload.serialNumber || thingName;
-    const resolved = await resolveGateAssociations(serialNumber, null);
 
     const device = await prisma.deviceRegistry.upsert({
       where: { thingName },
       create: {
         thingName,
-        thingArn: payload.thingArn || `arn:aws:iot:ap-south-1:lcgate:thing/${thingName}`,
+        thingArn: payload.thingArn || null,
         thingTypeName: payload.thingTypeName || 'MasterUnit',
         deviceType: attrs.deviceType || payload.deviceType || 'MASTER',
         serialNumber,
         status: 'ACTIVE',
-        gateId: resolved.gateId,
-        masterId: resolved.masterId,
-        childDeviceId: resolved.childDeviceId,
+        connectivityStatus: 'ONLINE',
+        gateId: null,
+        masterId: null,
+        childDeviceId: null,
         manufacturer: attrs.manufacturer || payload.manufacturer || null,
         modelNumber: attrs.modelNumber || payload.modelNumber || null,
         firmwareVersion: attrs.firmwareVersion || payload.firmwareVersion || null,
         hardwareVersion: attrs.hardwareVersion || payload.hardwareVersion || null,
         dateOfMfg: attrs.dateOfMfg ? parseFlexibleDate(attrs.dateOfMfg) : (payload.dateOfMfg ? parseFlexibleDate(payload.dateOfMfg) : null),
-        sensors: payload.sensors || (attrs.sensors ? (typeof attrs.sensors === 'string' ? JSON.parse(attrs.sensors) : attrs.sensors) : []),
-        components: payload.components || (attrs.components ? (typeof attrs.components === 'string' ? JSON.parse(attrs.components) : attrs.components) : []),
+        sensors: payload.sensors || (attrs.sensors ? (typeof attrs.sensors === 'string' ? JSON.parse(attrs.sensors) : attrs.sensors) : null),
+        components: payload.components || (attrs.components ? (typeof attrs.components === 'string' ? JSON.parse(attrs.components) : attrs.components) : null),
         attributes: attrs,
         metadata: {
           simulatedBy: 'LC-Platform API Simulator',
@@ -2078,7 +1857,7 @@ router.post('/simulate-iot-event', authenticate, async (req, res, next) => {
       },
       update: {
         lastSeenAt: new Date(),
-        status: 'ACTIVE',
+        connectivityStatus: 'ONLINE',
         sensors: payload.sensors && payload.sensors.length > 0 ? payload.sensors : undefined,
         components: payload.components && payload.components.length > 0 ? payload.components : undefined,
       },
@@ -2090,7 +1869,7 @@ router.post('/simulate-iot-event', authenticate, async (req, res, next) => {
         thingName,
         topic: payload.topic || `$aws/events/thing/${thingName}/created`,
         payload,
-        status: 'ONLINE',
+        status: 'MANIFEST',
         deviceRegistryId: device.id,
         receivedAt: new Date(),
       }

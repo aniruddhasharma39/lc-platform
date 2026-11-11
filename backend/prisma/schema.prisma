@@ -161,7 +161,7 @@ model MasterUnit {
   gate             LCGate                 @relation(fields: [gateId], references: [id], onDelete: Cascade)
   childDevices     ChildDevice[]
   evidences        InstallationEvidence[]
-  deviceRegistries DeviceRegistry[]
+  deviceRegistry   DeviceRegistry?
   events           LCGateEvent[]
   createdAt        DateTime               @default(now())
   updatedAt        DateTime               @updatedAt
@@ -214,14 +214,18 @@ model DeviceRegistry {
   thingArn        String?
   thingTypeName   String?
   deviceType      String       @default("MASTER") // MASTER, SLAVE, SENSOR_UNIT, GATEWAY, etc.
-  serialNumber    String?      @unique
-  status          String       @default("ACTIVE") // ACTIVE, INACTIVE, PROVISIONED, DECOMMISSIONED, MAINTENANCE
+  serialNumber       String?      @unique
+  status             String       @default("ACTIVE") // Lifecycle only: ACTIVE, INACTIVE, PROVISIONED, DECOMMISSIONED, MAINTENANCE
+  connectivityStatus String       @default("OFFLINE") // Hardware heartbeat: ONLINE, OFFLINE
+  barrierState       String?      // Single source of truth from AWS IoT /telemetry: OPEN, CLOSED, or null (awaiting telemetry)
+  lastTelemetryAt    DateTime?    // Timestamp of latest genuine /telemetry barrier packet
+  lastTelemetryId    Int?         // DeviceTelemetry.id of latest barrier packet
 
   // Optional associations with LC Platform gate & units
-  gateId          Int?
-  gate            LCGate?      @relation(fields: [gateId], references: [id], onDelete: SetNull)
-  masterId        Int?
-  master          MasterUnit?  @relation(fields: [masterId], references: [id], onDelete: SetNull)
+  gateId             Int?
+  gate               LCGate?      @relation(fields: [gateId], references: [id], onDelete: SetNull)
+  masterId           Int?         @unique
+  master             MasterUnit?  @relation(fields: [masterId], references: [id], onDelete: SetNull)
   childDeviceId   Int?
   childDevice     ChildDevice? @relation(fields: [childDeviceId], references: [id], onDelete: SetNull)
 
@@ -261,6 +265,8 @@ model DeviceRegistry {
   @@index([masterId])
   @@index([childDeviceId])
   @@index([status])
+  @@index([connectivityStatus])
+  @@index([barrierState])
 }
 
 model DeviceTelemetry {
@@ -268,7 +274,7 @@ model DeviceTelemetry {
   thingName        String
   topic            String?
   payload          Json
-  status           String?         @default("ONLINE")
+  status           String?
   receivedAt       DateTime        @default(now())
   deviceRegistryId Int?
   deviceRegistry   DeviceRegistry? @relation(fields: [deviceRegistryId], references: [id], onDelete: Cascade)
@@ -281,12 +287,12 @@ model DeviceHealthCheck {
   id                 Int             @id @default(autoincrement())
   thingName          String
   requestId          String?
-  healthstatus       String          @default("HEALTHY") // HEALTHY or DEGRADED
+  healthstatus       String?         // HEALTHY or DEGRADED when reported
   gateStatus         String?         // CLOSED or OPEN
   boomAngle          Float?
   mcuTempC           Float?
   signalStrength     Int?
-  networkType        String?         @default("4G_LTE")
+  networkType        String?
   limitSwitchClosed  Boolean?
   hallClosed         Boolean?
   batteryVoltage     Float?

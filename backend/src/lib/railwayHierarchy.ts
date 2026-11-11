@@ -636,6 +636,151 @@ export interface GateAlertRecipients {
   matchedUsers: any[];
 }
 
+function doesUserMatchGateJurisdiction(
+  u: any,
+  gate: { id: number; stationId?: number | null; division?: string | null; zone?: string | null },
+  assignedGateIds: number[]
+): string | null {
+  if (u.role?.name === 'Developer' || u.role === 'Developer' || u.roleId === 1 || u.id === 1) {
+    return 'Developer / System Governance Override';
+  }
+
+  const cfg = getDesignationConfig(u.designation) || getDesignationConfig(u.role?.name || u.role);
+  const level = cfg?.level;
+  const normGateDivision = normalizeJurisdictionString(gate.division);
+  const normGateZone = normalizeJurisdictionString(gate.zone);
+
+  // Gate-level role (Gateman): STRICTLY assigned gates
+  if (level === 'GATE') {
+    return assignedGateIds.includes(gate.id) ? 'Directly Assigned Gate (Gateman)' : null;
+  }
+
+  // Station-level role (Station Master, Engineering Supervisor)
+  if (level === 'STATION') {
+    if (assignedGateIds.includes(gate.id)) return 'Assigned Gate (Station Level)';
+    if (u.stationId && gate.stationId && u.stationId === gate.stationId) return 'Station Jurisdiction Match';
+    return null;
+  }
+
+  // Divisional-level officers (Senior DOM, DOM, ADOM, Senior DEN, DEN, ADEN)
+  if (level === 'DIVISIONAL') {
+    if (u.division && normGateDivision && normalizeJurisdictionString(u.division) === normGateDivision) {
+      return 'Divisional Jurisdiction Match';
+    }
+    return null;
+  }
+
+  // Fallback for legacy roles without designation config
+  if (assignedGateIds.includes(gate.id)) return 'Explicit Gate Assignment';
+  if (u.stationId && gate.stationId && u.stationId === gate.stationId) return 'Station Fallback Match';
+  if (u.division && normGateDivision && normalizeJurisdictionString(u.division) === normGateDivision) return 'Division Fallback Match';
+  if (u.zone && normGateZone && normalizeJurisdictionString(u.zone) === normGateZone) return 'Zonal Jurisdiction Match';
+  return null;
+}
+
+/**
+ * Resolves all LC Gate IDs visible to a user for In-App operational notifications,
+ * matching the exact Railway Hierarchy jurisdiction used for SMS & Email alerts.
+ */
+export async function resolveUserAlertGateIds(
+  user: any,
+  prisma: PrismaClient,
+  assignedGateIds: number[] = []
+): Promise<number[]> {
+  const isDev = user.role?.name === 'Developer' || user.role === 'Developer' || user.roleId === 1 || user.id === 1;
+  if (isDev) {
+    if (assignedGateIds.length > 0) return assignedGateIds;
+    const anyGates = await prisma.lCGate.findMany({
+      select: { id: true },
+      take: 25,
+      orderBy: { updatedAt: 'desc' },
+    });
+    return anyGates.map((g) => g.id);
+  }
+
+  const allGates = await prisma.lCGate.findMany({
+    select: { id: true, stationId: true, division: true, zone: true },
+  });
+
+  return allGates
+    .filter((g) => doesUserMatchGateJurisdiction(user, g, assignedGateIds) !== null)
+    .map((g) => g.id);
+}
+
+/**
+ * Resolves all APPROVED users authorized to review/approve a specific RegistrationRequest,
+ * matching exact hierarchical rules (`canApproveRequest`) + `manage-users` permission.
+ */
+export async function resolveRegistrationApprovers(
+  request: any,
+  prisma: PrismaClient
+): Promise<Array<{
+  userId: number;
+  fullName: string;
+  email: string;
+  roleName: string;
+  designation: string | null;
+}>> {
+  const candidates = await prisma.user.findMany({
+    where: { status: 'APPROVED' },
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      department: true,
+      designation: true,
+      zone: true,
+      division: true,
+      stationId: true,
+      roleId: true,
+      role: {
+        select: {
+          id: true,
+          name: true,
+          roleModules: {
+            select: {
+              module: { select: { slug: true } },
+            },
+          },
+        },
+      },
+      assignedGates: { select: { gateId: true } },
+    },
+  });
+
+  const emailMap = new Map<string, {
+    userId: number;
+    fullName: string;
+    email: string;
+    roleName: string;
+    designation: string | null;
+  }>();
+
+  for (const u of candidates) {
+    const isDev = u.role?.name === 'Developer' || u.roleId === 1 || u.id === 1;
+    const allowedModules = (u.role?.roleModules || []).map((m) => m.module.slug);
+    const canManageUsers = isDev || allowedModules.includes('manage-users');
+    if (!canManageUsers) continue;
+
+    const uGateIds = (u.assignedGates || []).map((ag) => ag.gateId);
+    const authCheck = canApproveRequest(u, request, uGateIds);
+    if (!isDev && !authCheck.allowed) continue;
+
+    const cleanEmail = (u.email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail) || emailMap.has(cleanEmail)) continue;
+
+    emailMap.set(cleanEmail, {
+      userId: u.id,
+      fullName: u.fullName || 'Railway Official',
+      email: cleanEmail,
+      roleName: u.role?.name || u.designation || 'Officer',
+      designation: u.designation || null,
+    });
+  }
+
+  return Array.from(emailMap.values());
+}
+
 /**
  * Resolves all authorized SMS and Email alert recipients for a specific LC Gate based strictly on
  * Indian Railways role hierarchy and jurisdiction (Gate, Station, Division, Zone, Developer).
@@ -666,67 +811,19 @@ export async function resolveGateAlertRecipients(
       zone: true,
       division: true,
       stationId: true,
+      roleId: true,
       role: { select: { id: true, name: true } },
       assignedGates: { select: { gateId: true } }
     }
   });
 
   const matchedUsers: any[] = [];
-  const normGateDivision = normalizeJurisdictionString(gate.division);
-  const normGateZone = normalizeJurisdictionString(gate.zone);
 
   for (const u of candidateUsers) {
-    // A. Developer / Global Administrator Governance override
-    if (u.role?.name === 'Developer' || u.id === 1) {
-      matchedUsers.push({ user: u, reason: 'Developer / System Governance Override' });
-      continue;
-    }
-
-    const cfg = getDesignationConfig(u.designation) || getDesignationConfig(u.role?.name);
     const assignedGateIds = (u.assignedGates || []).map(ag => ag.gateId);
-    const level = cfg?.level;
-
-    // B. Gate-level role (Gateman): STRICTLY assigned gates
-    if (level === 'GATE') {
-      if (assignedGateIds.includes(gate.id)) {
-        matchedUsers.push({ user: u, reason: 'Directly Assigned Gate (Gateman)' });
-      }
-      continue;
-    }
-
-    // C. Station-level role (Station Master, Engineering Supervisor)
-    if (level === 'STATION') {
-      if (assignedGateIds.includes(gate.id)) {
-        matchedUsers.push({ user: u, reason: 'Assigned Gate (Station Level)' });
-      } else if (u.stationId && gate.stationId && u.stationId === gate.stationId) {
-        matchedUsers.push({ user: u, reason: 'Station Jurisdiction Match' });
-      }
-      continue;
-    }
-
-    // D. Divisional-level officers (Senior DOM, DOM, ADOM, Senior DEN, DEN, ADEN)
-    if (level === 'DIVISIONAL') {
-      if (u.division && normalizeJurisdictionString(u.division) === normGateDivision) {
-        matchedUsers.push({ user: u, reason: 'Divisional Jurisdiction Match' });
-      }
-      continue;
-    }
-
-    // E. Zonal-level officers
-    if (level === 'ZONE') {
-      if (u.zone && normalizeJurisdictionString(u.zone) === normGateZone) {
-        matchedUsers.push({ user: u, reason: 'Zonal Jurisdiction Match' });
-      }
-      continue;
-    }
-
-    // F. Fallback for legacy roles without designation config
-    if (assignedGateIds.includes(gate.id)) {
-      matchedUsers.push({ user: u, reason: 'Explicit Gate Assignment' });
-    } else if (u.stationId && gate.stationId && u.stationId === gate.stationId) {
-      matchedUsers.push({ user: u, reason: 'Station Fallback Match' });
-    } else if (u.division && normalizeJurisdictionString(u.division) === normGateDivision) {
-      matchedUsers.push({ user: u, reason: 'Division Fallback Match' });
+    const reason = doesUserMatchGateJurisdiction(u, gate, assignedGateIds);
+    if (reason) {
+      matchedUsers.push({ user: u, reason });
     }
   }
 

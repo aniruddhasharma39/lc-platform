@@ -444,7 +444,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 ),
                                 const SizedBox(height: 4),
                                 const Text(
-                                  "You're all caught up! New requests, clusters, and devices will appear here.",
+                                  "You're all caught up! New gate alerts, approvals, and updates will appear here.",
                                   textAlign: TextAlign.center,
                                   style: TextStyle(fontSize: 12, color: Colors.grey),
                                 ),
@@ -459,43 +459,84 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             itemBuilder: (context, index) {
                               final item = _notifications[index];
                               final isRead = item['read'] == true || item['isRead'] == true;
-                              final notifType = item['type'] ?? 'info';
+                              final notifType = (item['type'] ?? 'info').toString();
                               final itemId = item['id'].toString();
-
-                              IconData typeIcon = Icons.notifications;
-                              Color iconColor = AppColors.primary;
-                              Color iconBg = AppColors.primary.withValues(alpha: 0.1);
-
+                              final rawPriority = (item['priority'] ?? '').toString().toUpperCase();
                               final titleLower = (item['title'] ?? '').toString().toLowerCase();
 
-                              if (notifType == 'user_request' || notifType == 'request') {
-                                typeIcon = Icons.person_add_alt_1_rounded;
-                                iconColor = Colors.orange.shade700;
-                                iconBg = Colors.orange.shade50;
-                              } else if (notifType == 'cluster_created' || notifType == 'cluster' || notifType == 'gate_created' || notifType == 'gate' || titleLower.contains('gate active')) {
-                                typeIcon = Icons.meeting_room_outlined;
-                                iconColor = const Color(0xFF0284C7);
-                                iconBg = const Color(0xFFF0F9FF);
-                              } else if (notifType == 'device_registered' || notifType == 'device' || titleLower.contains('controller') || titleLower.contains('sensor')) {
-                                typeIcon = Icons.router_rounded;
-                                iconColor = Colors.teal.shade700;
-                                iconBg = Colors.teal.shade50;
-                              } else if (titleLower.contains('gate closed')) {
-                                typeIcon = Icons.door_sliding_outlined;
-                                iconColor = Colors.red.shade700;
-                                iconBg = Colors.red.shade50;
+                              final String priorityCode = rawPriority.isNotEmpty
+                                  ? rawPriority
+                                  : (notifType == 'device_offline' || titleLower.contains('offline') || titleLower.contains('extended') || titleLower.contains('gate open'))
+                                      ? 'P1'
+                                      : (notifType == 'user_request' || notifType == 'request')
+                                          ? 'P2'
+                                          : (notifType == 'cluster_created' || notifType == 'device_registered')
+                                              ? 'P4'
+                                              : 'P3';
+
+                              final String priorityLabel = (item['priorityLabel'] ?? '').toString().isNotEmpty
+                                  ? item['priorityLabel'].toString().toUpperCase()
+                                  : (priorityCode == 'P1'
+                                      ? 'CRITICAL'
+                                      : priorityCode == 'P2'
+                                          ? 'HIGH'
+                                          : priorityCode == 'P4'
+                                              ? 'SETUP'
+                                              : 'INFO');
+
+                              Color badgeBg = const Color(0xFFE0F2FE);
+                              Color badgeFg = const Color(0xFF0369A1);
+                              Color cardBg = const Color(0xFFF0F7FF);
+                              Color cardBorder = const Color(0xFF0284C7).withValues(alpha: 0.45);
+                              if (priorityCode == 'P1') {
+                                badgeBg = const Color(0xFFFEE2E2);
+                                badgeFg = const Color(0xFFB91C1C);
+                                cardBg = const Color(0xFFFFF5F5);
+                                cardBorder = const Color(0xFFFCA5A5);
+                              } else if (priorityCode == 'P2') {
+                                badgeBg = const Color(0xFFFEF3C7);
+                                badgeFg = const Color(0xFFB45309);
+                                cardBg = const Color(0xFFFFFBEB);
+                                cardBorder = const Color(0xFFFCD34D);
+                              } else if (priorityCode == 'P4') {
+                                badgeBg = const Color(0xFFF1F5F9);
+                                badgeFg = const Color(0xFF475569);
+                                cardBg = const Color(0xFFF8FAFC);
+                                cardBorder = const Color(0xFFCBD5E1);
+                              }
+
+                              IconData typeIcon = Icons.notifications;
+                              Color iconColor = badgeFg;
+                              Color iconBg = badgeBg;
+
+                              if (notifType == 'device_offline' || titleLower.contains('offline')) {
+                                typeIcon = Icons.cloud_off_rounded;
+                                iconColor = const Color(0xFFB91C1C);
+                                iconBg = const Color(0xFFFEE2E2);
+                              } else if (titleLower.contains('extended') || titleLower.contains('delay')) {
+                                typeIcon = Icons.warning_amber_rounded;
+                                iconColor = const Color(0xFFB91C1C);
+                                iconBg = const Color(0xFFFEE2E2);
                               } else if (titleLower.contains('gate open')) {
                                 typeIcon = Icons.lock_open_rounded;
-                                iconColor = Colors.green.shade700;
-                                iconBg = Colors.green.shade50;
-                              } else if (titleLower.contains('extended') || titleLower.contains('delay') || titleLower.contains('traffic')) {
-                                typeIcon = Icons.warning_amber_rounded;
-                                iconColor = Colors.amber.shade900;
-                                iconBg = Colors.amber.shade50;
+                                iconColor = const Color(0xFFB91C1C);
+                                iconBg = const Color(0xFFFEE2E2);
+                              } else if (notifType == 'user_request' || notifType == 'request') {
+                                typeIcon = Icons.person_add_alt_1_rounded;
+                                iconColor = const Color(0xFFB45309);
+                                iconBg = const Color(0xFFFEF3C7);
+                              } else if (notifType == 'cluster_created' || notifType == 'cluster' || notifType == 'gate_created' || notifType == 'gate' || titleLower.contains('gate active')) {
+                                typeIcon = Icons.meeting_room_outlined;
+                                iconColor = const Color(0xFF475569);
+                                iconBg = const Color(0xFFF1F5F9);
+                              } else if (notifType == 'device_registered' || notifType == 'device' || titleLower.contains('controller') || titleLower.contains('sensor')) {
+                                typeIcon = Icons.router_rounded;
+                                iconColor = const Color(0xFF0F766E);
+                                iconBg = const Color(0xFFCCFBF1);
                               } else if (titleLower.contains('approved') || titleLower.contains('welcome')) {
                                 typeIcon = Icons.verified_user_rounded;
-                                iconColor = const Color(0xFF003580);
-                                iconBg = const Color(0xFFEFF6FF);
+                                iconColor = const Color(0xFF0369A1);
+                                iconBg = const Color(0xFFE0F2FE);
                               }
 
                               return Dismissible(
@@ -551,10 +592,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   child: Container(
                                     padding: const EdgeInsets.all(12),
                                     decoration: BoxDecoration(
-                                      color: isRead ? Colors.white : const Color(0xFFF0F7FF),
+                                      color: isRead ? Colors.white : cardBg,
                                       borderRadius: BorderRadius.circular(10),
                                       border: Border.all(
-                                        color: isRead ? Colors.grey.shade200 : const Color(0xFF0284C7).withValues(alpha: 0.5),
+                                        color: isRead ? Colors.grey.shade200 : cardBorder,
                                         width: isRead ? 1 : 1.5,
                                       ),
                                       boxShadow: [
@@ -586,17 +627,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                             children: [
                                               Row(
                                                 children: [
-                                                  if (!isRead) ...[
-                                                    Container(
-                                                      width: 7,
-                                                      height: 7,
-                                                      margin: const EdgeInsets.only(right: 6),
-                                                      decoration: const BoxDecoration(
-                                                        color: Color(0xFF0284C7),
-                                                        shape: BoxShape.circle,
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                    margin: const EdgeInsets.only(right: 6),
+                                                    decoration: BoxDecoration(
+                                                      color: badgeBg,
+                                                      borderRadius: BorderRadius.circular(4),
+                                                      border: Border.all(color: badgeFg.withValues(alpha: 0.3)),
+                                                    ),
+                                                    child: Text(
+                                                      priorityLabel,
+                                                      style: TextStyle(
+                                                        fontSize: 9.5,
+                                                        fontWeight: FontWeight.w800,
+                                                        color: badgeFg,
+                                                        letterSpacing: 0.4,
                                                       ),
                                                     ),
-                                                  ],
+                                                  ),
                                                   Expanded(
                                                     child: Text(
                                                       item['title'] ?? 'Notification',
@@ -609,6 +657,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                       overflow: TextOverflow.ellipsis,
                                                     ),
                                                   ),
+                                                  const SizedBox(width: 6),
                                                   Text(
                                                     _formatRelativeTime(item['createdAt']),
                                                     style: TextStyle(
@@ -1395,9 +1444,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildUserDashboard() {
     final summary = _dashboardSummary;
-    final gates = (summary != null && summary['gates'] is List) ? List<dynamic>.from(summary['gates']) : [];
-    final totalLCGates = summary?['totalAllGates'] ?? summary?['totalDevices'] ?? gates.length;
-    final totalUnconfiguredGates = summary?['totalUnconfiguredGates'] ?? gates.where((g) => g['hasMaster'] != true).length;
+    // Configured gates only (exclude unconfigured gates from KPIs & Assigned Gate Cycles)
+    final allSummaryGates = (summary != null && summary['gates'] is List) ? List<dynamic>.from(summary['gates']) : [];
+    final gates = allSummaryGates.where((g) {
+      if (g is! Map) return false;
+      final st = (g['status'] ?? '').toString().toUpperCase();
+      return g['isConfigured'] != false && st != 'UNCONFIGURED';
+    }).toList();
+    final totalLCGates = summary?['totalConfiguredClusters'] ?? summary?['totalDevices'] ?? gates.length;
     final totalCyclesToday = summary?['totalCyclesToday'] ?? 0;
     final totalOpenGates = summary?['totalOpenGates'] ?? 0;
     final totalClosedGates = summary?['totalClosedGates'] ?? 0;
@@ -1491,9 +1545,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: _buildKpiCard(
                     title: 'Total LC Gates',
                     value: _loadingSummary ? '-' : '$totalLCGates',
-                    subtitle: (totalUnconfiguredGates is int && totalUnconfiguredGates > 0)
-                        ? '$totalUnconfiguredGates unconfigured'
-                        : null,
                     icon: Icons.meeting_room_outlined,
                     iconColor: const Color(0xFF0284C7),
                     iconBg: const Color(0xFFE0F2FE),
@@ -1705,8 +1756,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     final location = gate['locationName'] ?? '';
                     final zone = gate['zone'] ?? '';
                     final division = gate['division'] ?? '';
-                    final isUnconfigured = gate['status'] == 'UNCONFIGURED' || gate['hasMaster'] == false;
-                    final isOpen = !isUnconfigured && gate['status'] == 'OPEN';
+                    final gateStatus = (gate['status'] ?? 'NO_TELEMETRY').toString().toUpperCase();
+                    final isOpen = gateStatus == 'OPEN';
+                    final isClosed = gateStatus == 'CLOSED';
+                    final isNoTelemetry = !isOpen && !isClosed;
                     final todayCycles = gate['todayCycles'] ?? 0;
                     final totalCycles = gate['totalCycles'] ?? 0;
                     final gateAvgOpen = gate['avgOpenFormatted']?.toString() ?? '--';
@@ -1792,21 +1845,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                                   decoration: BoxDecoration(
-                                    color: isUnconfigured
-                                        ? const Color(0xFFFEF3C7)
+                                    color: isNoTelemetry
+                                        ? const Color(0xFFF1F5F9)
                                         : (isOpen ? const Color(0xFFFEE2E2) : const Color(0xFFD1FAE5)),
                                     borderRadius: BorderRadius.circular(12),
                                     border: Border.all(
-                                      color: isUnconfigured
-                                          ? const Color(0xFFFDE68A)
+                                      color: isNoTelemetry
+                                          ? const Color(0xFFCBD5E1)
                                           : (isOpen ? const Color(0xFFFECACA) : const Color(0xFFA7F3D0)),
                                     ),
                                   ),
                                   child: Text(
-                                    isUnconfigured ? '● UNCONFIGURED' : (isOpen ? '● OPEN' : '● CLOSED'),
+                                    isNoTelemetry ? '● WAITING FOR STATUS' : (isOpen ? '● OPEN' : '● CLOSED'),
                                     style: TextStyle(
-                                      color: isUnconfigured
-                                          ? const Color(0xFFD97706)
+                                      color: isNoTelemetry
+                                          ? const Color(0xFF475569)
                                           : (isOpen ? const Color(0xFFDC2626) : const Color(0xFF059669)),
                                       fontSize: 10,
                                       fontWeight: FontWeight.bold,
@@ -1831,7 +1884,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                                 Text(
-                                  '$zone • $division Division',
+                                  [
+                                    if (zone.toString().isNotEmpty) zone.toString(),
+                                    if (division.toString().isNotEmpty) '$division Division',
+                                  ].join(' • ').isEmpty
+                                      ? '—'
+                                      : [
+                                          if (zone.toString().isNotEmpty) zone.toString(),
+                                          if (division.toString().isNotEmpty) '$division Division',
+                                        ].join(' • '),
                                   style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,

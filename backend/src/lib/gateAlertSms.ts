@@ -207,6 +207,11 @@ export interface GateStateAlertOptions {
 export async function checkAndDispatchGateStateAlert(options: GateStateAlertOptions) {
   const { deviceId, gateId, masterId, masterSerial, thingName, serialNumber, newState, timestamp = new Date() } = options;
 
+  // Normal CLOSED alerts are disabled (only OPEN & Extended alerts are dispatched)
+  if (newState !== 'OPEN') {
+    return { dispatched: 0, dispatchedEmails: 0, reason: 'CLOSED_NOTIFICATIONS_DISABLED', emailResults: [] };
+  }
+
   console.log(`🔔 [GATE STATE ALERT] Evaluating state change: Device "${thingName}" -> Status: ${newState}`);
 
   // 1. Resolve LC Gate strictly from explicit assignment (no fuzzy fallback guessing)

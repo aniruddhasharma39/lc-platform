@@ -1,6 +1,6 @@
 import nodemailer from 'nodemailer';
 import { prisma } from './prisma';
-import { resolveGateAlertRecipients } from './railwayHierarchy';
+import { resolveGateAlertRecipients, resolveRegistrationApprovers } from './railwayHierarchy';
 
 export interface SendEmailResult {
   success: boolean;
@@ -686,6 +686,10 @@ export interface GateEmailAlertOptions {
 export async function checkAndDispatchGateStateEmailAlert(options: GateEmailAlertOptions) {
   const { deviceId, gateId, masterId, masterSerial, thingName, newState, timestamp = new Date() } = options;
 
+  if (newState !== 'OPEN') {
+    return { dispatched: 0, reason: 'CLOSED_NOTIFICATIONS_DISABLED' };
+  }
+
   console.log(`✉️ [GATE STATE EMAIL ALERT] Evaluating email alert: Device "${thingName}" -> Status: ${newState}`);
 
   // 1. Resolve LC Gate strictly from explicit assignment (no fuzzy fallback guessing)
@@ -801,4 +805,162 @@ export async function checkAndDispatchGateStateEmailAlert(options: GateEmailAler
     timestamp: dateTimeStr,
     results,
   };
+}
+
+/**
+ * P1 (CRITICAL) — Device Offline Email Alert.
+ * Sent STRICTLY to System Admin (Developer role / user id 1) ONLY when hardware goes OFFLINE (> 65m).
+ */
+export async function dispatchDeviceOfflineAdminEmails(devices: Array<{
+  id: number;
+  thingName: string;
+  lastSeenAt?: Date | null;
+  gate?: { lcNumber: string; locationName?: string | null; zone?: string | null; division?: string | null } | null;
+  master?: { serialNumber?: string | null } | null;
+}>) {
+  if (!devices || devices.length === 0) return { dispatched: 0 };
+
+  const adminUsers = await prisma.user.findMany({
+    where: {
+      status: 'APPROVED',
+      OR: [{ roleId: 1 }, { role: { name: 'Developer' } }],
+    },
+    select: { id: true, fullName: true, email: true },
+  });
+
+  const validAdmins = adminUsers.filter((u) => isValidEmail(u.email || ''));
+  if (validAdmins.length === 0) {
+    console.warn('⚠️ [OFFLINE ADMIN ALERT] No approved Developer / System Admin with valid email found.');
+    return { dispatched: 0 };
+  }
+
+  let sentCount = 0;
+  const nowStr = formatIstDateTime(new Date());
+
+  for (const dev of devices) {
+    const unitLabel = dev.master?.serialNumber || dev.thingName;
+    const gateLabel = dev.gate?.lcNumber ? `Gate ${dev.gate.lcNumber}${dev.gate.locationName ? ` (${dev.gate.locationName})` : ''}` : 'Unassigned Gate';
+    const lastSeenStr = dev.lastSeenAt ? formatIstDateTime(new Date(dev.lastSeenAt)) + ' IST' : 'Never reported';
+    const subject = `🔴 [CRITICAL - HARDWARE OFFLINE] ${unitLabel} at ${dev.gate?.lcNumber || 'Inventory'} (> 65m silent)`;
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <body style="margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background-color: #f1f5f9;">
+        <div style="max-width: 580px; margin: 0 auto; background: #ffffff; border: 1px solid #fecaca; border-radius: 12px; overflow: hidden;">
+          <div style="background-color: #991b1b; padding: 20px 24px; color: #ffffff;">
+            <div style="font-size: 11px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; opacity: 0.9;">P1 CRITICAL • SYSTEM ADMIN ONLY</div>
+            <h1 style="margin: 6px 0 0; font-size: 19px; font-weight: 700;">Hardware Offline Alert (&gt; 65 Minutes)</h1>
+          </div>
+          <div style="padding: 24px; color: #1e293b;">
+            <p style="margin: 0 0 16px; font-size: 14px; color: #475569;">
+              Master Controller / AWS IoT Thing <strong>${escapeHtml(unitLabel)}</strong> stopped reporting telemetry for over 65 minutes and is now marked <strong>OFFLINE</strong>.
+            </p>
+            <table style="width: 100%; border-collapse: collapse; font-size: 13px; background: #fef2f2; border-radius: 8px; overflow: hidden;">
+              <tr><td style="padding: 9px 12px; color: #7f1d1d; font-weight: 600; width: 42%;">Hardware Unit:</td><td style="padding: 9px 12px; font-weight: 700; color: #0f172a;">${escapeHtml(unitLabel)} (${escapeHtml(dev.thingName)})</td></tr>
+              <tr><td style="padding: 9px 12px; color: #7f1d1d; font-weight: 600;">LC Gate:</td><td style="padding: 9px 12px; font-weight: 700; color: #0f172a;">${escapeHtml(gateLabel)}</td></tr>
+              <tr><td style="padding: 9px 12px; color: #7f1d1d; font-weight: 600;">Last Packet (IST):</td><td style="padding: 9px 12px; color: #0f172a;">${escapeHtml(lastSeenStr)}</td></tr>
+              <tr><td style="padding: 9px 12px; color: #7f1d1d; font-weight: 600;">Detected At (IST):</td><td style="padding: 9px 12px; color: #0f172a;">${escapeHtml(nowStr)} IST</td></tr>
+            </table>
+          </div>
+          <div style="background: #f8fafc; padding: 14px 24px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 11px; color: #64748b;">
+            Indian Railways Level Crossing Safety Platform — Automated System Admin Alert
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    const textContent = `CRITICAL ALERT (System Admin Only): Hardware ${unitLabel} (${dev.thingName}) at ${gateLabel} went OFFLINE (>65m silent). Last packet: ${lastSeenStr}.`;
+
+    for (const admin of validAdmins) {
+      const res = await sendEmail({
+        toEmail: admin.email,
+        toName: admin.fullName || 'System Admin',
+        subject,
+        textContent,
+        htmlContent,
+      });
+      if (res.success) sentCount++;
+    }
+  }
+
+  return { dispatched: sentCount };
+}
+
+/**
+ * P2 (HIGH) — New User Registration Email Alert to Authorized Approvers.
+ * Dispatched to every approved superior who can approve this request (+ System Admin / Developer).
+ */
+export async function dispatchNewRegistrationApproverEmails(params: {
+  request: any;
+  applicantName: string;
+  requestedRole: string;
+  department?: string | null;
+  zone?: string | null;
+  division?: string | null;
+}) {
+  const { request, applicantName, requestedRole, department, zone, division } = params;
+  const approvers = await resolveRegistrationApprovers(request, prisma);
+  if (approvers.length === 0) {
+    console.warn(`⚠️ [REGISTRATION APPROVER EMAIL] No eligible approver with valid email for request #${request.id}.`);
+    return { dispatched: 0 };
+  }
+
+  const submittedAtStr = formatIstDateTime(request.createdAt ? new Date(request.createdAt) : new Date());
+  const safeApplicant = escapeHtml(applicantName || 'New Applicant');
+  const safeRole = escapeHtml(requestedRole || 'Railway Official');
+  const safeDept = escapeHtml(department || 'Railway Operations');
+  const jurisdiction = [division, zone].filter(Boolean).join(' · ') || 'Platform-wide';
+  const safeJurisdiction = escapeHtml(jurisdiction);
+
+  const subject = `🟠 [APPROVAL REQUIRED] New Registration Request: ${applicantName} (${requestedRole})`;
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <body style="margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background-color: #f1f5f9;">
+      <div style="max-width: 580px; margin: 0 auto; background: #ffffff; border: 1px solid #fde68a; border-radius: 12px; overflow: hidden;">
+        <div style="background-color: #003580; padding: 22px 24px; color: #ffffff;">
+          <div style="font-size: 11px; font-weight: 800; letter-spacing: 1px; color: #fde68a; text-transform: uppercase;">P2 HIGH • APPROVAL REQUIRED</div>
+          <h1 style="margin: 6px 0 0; font-size: 19px; font-weight: 700;">New Employee Registration Request</h1>
+        </div>
+        <div style="padding: 24px; color: #1e293b;">
+          <p style="margin: 0 0 16px; font-size: 14px; color: #475569;">
+            A new railway user has submitted a verified registration request requiring your review and approval in the <strong>LC Platform</strong>:
+          </p>
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px; background: #fffbeb; border-radius: 8px; overflow: hidden;">
+            <tr><td style="padding: 9px 12px; color: #92400e; font-weight: 600; width: 40%;">Applicant Name:</td><td style="padding: 9px 12px; font-weight: 700; color: #0f172a;">${safeApplicant}</td></tr>
+            <tr><td style="padding: 9px 12px; color: #92400e; font-weight: 600;">Requested Role:</td><td style="padding: 9px 12px; font-weight: 700; color: #003580;">${safeRole}</td></tr>
+            <tr><td style="padding: 9px 12px; color: #92400e; font-weight: 600;">Department:</td><td style="padding: 9px 12px; color: #0f172a;">${safeDept}</td></tr>
+            <tr><td style="padding: 9px 12px; color: #92400e; font-weight: 600;">Zone / Division:</td><td style="padding: 9px 12px; color: #0f172a;">${safeJurisdiction}</td></tr>
+            <tr><td style="padding: 9px 12px; color: #92400e; font-weight: 600;">Submitted (IST):</td><td style="padding: 9px 12px; color: #0f172a;">${escapeHtml(submittedAtStr)} IST</td></tr>
+          </table>
+          <p style="margin: 18px 0 0; font-size: 13px; color: #475569;">
+            Please open <strong>User Management</strong> in the LC Platform App or Web Portal to approve or reject this request.
+          </p>
+        </div>
+        <div style="background: #f8fafc; padding: 14px 24px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 11px; color: #64748b;">
+          Ministry of Railways — Level Crossing Safety & Monitoring Platform
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  let sentCount = 0;
+  const textContent = `New Registration Request: ${applicantName} applied for ${requestedRole} (${department || 'Railway Operations'}, ${jurisdiction}) at ${submittedAtStr} IST. Please review in User Management.`;
+
+  for (const approver of approvers) {
+    const res = await sendEmail({
+      toEmail: approver.email,
+      toName: approver.fullName,
+      subject,
+      textContent,
+      htmlContent,
+    });
+    if (res.success) sentCount++;
+  }
+
+  console.log(`✉️ [REGISTRATION APPROVER EMAIL] Notified ${sentCount}/${approvers.length} authorized approver(s) for request #${request.id}.`);
+  return { dispatched: sentCount, totalApprovers: approvers.length };
 }

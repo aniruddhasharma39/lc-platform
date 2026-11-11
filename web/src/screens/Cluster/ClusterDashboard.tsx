@@ -985,9 +985,15 @@ function GateDetailView({ gate, onBack, onEdit, onUpdate, onOpenDeviceInfo }: an
                       <div className="flex items-center gap-2">
                         <strong className="text-sm font-mono text-slate-900">{dev.thingName}</strong>
                         <span className="badge badge-blue text-[10px]">{dev.deviceType}</span>
-                        <span className="badge text-[10px]" style={{ background: dev.status === 'ACTIVE' ? '#dcfce7' : '#f1f5f9', color: dev.status === 'ACTIVE' ? '#15803d' : '#64748b' }}>
-                          {dev.status}
-                        </span>
+                        {(() => {
+                          const connLabel = (dev.connectivityStatus || dev.computedStatus || dev.status || 'OFFLINE').toUpperCase();
+                          const isOnlineOrActive = connLabel === 'ONLINE' || connLabel === 'ACTIVE';
+                          return (
+                            <span className="badge text-[10px]" style={{ background: isOnlineOrActive ? '#dcfce7' : '#f1f5f9', color: isOnlineOrActive ? '#15803d' : '#64748b' }}>
+                              {connLabel}
+                            </span>
+                          );
+                        })()}
                       </div>
                       <div className="text-xs text-muted mt-1">
                         Serial: {dev.serialNumber || 'N/A'} {dev.firmwareVersion ? `| FW: ${dev.firmwareVersion}` : ''}

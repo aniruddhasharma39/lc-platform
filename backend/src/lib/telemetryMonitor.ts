@@ -1,36 +1,20 @@
 import { prisma } from './prisma';
 import { checkAndDispatchGateStateAlert } from './gateAlertSms';
+import { dispatchDeviceOfflineAdminEmails } from './emailService';
 import { broadcastGateTelemetry } from './telemetryWs';
 import { bumpReportRevisionInTx, recordEventChangeInTx } from './reportRevisionManager';
+import {
+  GATE_ONLINE_CUTOFF_MS,
+  isGenuineTelemetryPacket,
+  normalizeBarrierStateColumn,
+  parseBarrierStateFromPayload,
+} from './thingState';
 
 let lastProcessedId = 0;
 const lastKnownState = new Map<string, 'OPEN' | 'CLOSED'>();
 let isPolling = false;
 
-/**
- * Parses state ('OPEN' | 'CLOSED' | null) from a telemetry payload
- */
-export function parseGateStateFromPayload(payload: any): 'OPEN' | 'CLOSED' | null {
-  if (!payload || typeof payload !== 'object') return null;
-
-  if (payload.Status !== undefined) {
-    const s = String(payload.Status).trim().toUpperCase();
-    if (s === 'CLOSED') return 'CLOSED';
-    if (s === 'OPEN' || s === 'NOT_CLOSED') return 'OPEN';
-  }
-
-  if (payload.LimitSwitchClosed !== undefined) {
-    return payload.LimitSwitchClosed ? 'CLOSED' : 'OPEN';
-  }
-
-  if (payload.status !== undefined) {
-    const s = String(payload.status).trim().toUpperCase();
-    if (s === 'CLOSED') return 'CLOSED';
-    if (s === 'OPEN' || s === 'NOT_CLOSED') return 'OPEN';
-  }
-
-  return null;
-}
+export const parseGateStateFromPayload = parseBarrierStateFromPayload;
 
 /**
  * Records an operational gate event in LCGateEvent for the Reports section
@@ -54,13 +38,8 @@ export async function recordGateTelemetryTransition(params: {
     let targetMasterSerial: string | null = params.masterSerial ?? null;
 
     if (!targetGateId || !targetMasterId || !targetMasterSerial) {
-      const foundDev = await prisma.deviceRegistry.findFirst({
-        where: {
-          OR: [
-            { thingName },
-            { serialNumber: thingName }
-          ]
-        },
+      const foundDev = await prisma.deviceRegistry.findUnique({
+        where: { thingName },
         select: {
           id: true,
           gateId: true,
@@ -156,30 +135,9 @@ export async function recordGateTelemetryTransition(params: {
           return updated;
         });
       } else {
-        // If OPEN event was missed (e.g. cold start), record a completed event with standard duration (e.g. 180s)
-        const estimatedOpen = new Date(timestamp.getTime() - 180000);
-        return await prisma.$transaction(async (tx) => {
-          const newEvent = await tx.lCGateEvent.create({
-            data: {
-              gateId: targetGateId!,
-              masterId: targetMasterId,
-              masterSerial: targetMasterSerial,
-              thingName,
-              openedAt: estimatedOpen,
-              closedAt: timestamp,
-              durationSeconds: 180,
-              status: 'CLOSED',
-              openedBy: 'Automated',
-              closedBy: 'Automated',
-              remarks: targetMasterSerial
-                ? `Direct CLOSED state detected (${targetMasterSerial})`
-                : `Direct CLOSED state detected via IoT Telemetry`
-            }
-          });
-          await recordEventChangeInTx(tx, newEvent, 'INSERT');
-          console.log(`📊 [REPORTS] Created completed CLOSED event #${newEvent.id} for Gate #${targetGateId} / Master ${targetMasterSerial || thingName}`);
-          return newEvent;
-        });
+        // First telemetry state seen on boot/cold-start is CLOSED with no prior OPEN cycle:
+        // do NOT fabricate a synthetic 180s cycle; wait for a real OPEN -> CLOSED transition.
+        return null;
       }
     }
   } catch (err: any) {
@@ -232,17 +190,18 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
 
       const masterSerial = dev.master?.serialNumber || null;
 
-      const records = await prisma.deviceTelemetry.findMany({
+      const rawRecords = await prisma.deviceTelemetry.findMany({
         where: {
           OR: [
             { thingName: dev.thingName },
             { deviceRegistryId: dev.id },
-            { topic: { contains: dev.thingName } }
-          ]
+          ],
+          topic: { contains: '/telemetry' },
         },
         orderBy: { receivedAt: 'asc' }
       });
 
+      const records = rawRecords.filter(isGenuineTelemetryPacket);
       if (records.length === 0) continue;
 
       let prevState: 'OPEN' | 'CLOSED' | null = null;
@@ -299,31 +258,8 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
               });
               currentOpenEventId = null;
               openTimestamp = null;
-            } else {
-              // Started in closed state or cold start
-              const estOpen = new Date(timestamp.getTime() - 180000);
-              await prisma.$transaction(async (tx) => {
-                const ev = await tx.lCGateEvent.create({
-                  data: {
-                    gateId: dev.gateId!,
-                    masterId: dev.masterId,
-                    masterSerial,
-                    thingName: dev.thingName,
-                    openedAt: estOpen,
-                    closedAt: timestamp,
-                    durationSeconds: 180,
-                    status: 'CLOSED',
-                    openedBy: 'Automated',
-                    closedBy: 'Automated',
-                    remarks: masterSerial
-                      ? `Direct CLOSED state detected (${masterSerial})`
-                      : `Direct CLOSED state detected via IoT Telemetry`
-                  }
-                });
-                await recordEventChangeInTx(tx, ev, 'INSERT');
-              });
-              totalSynced++;
             }
+            // Do not synthesize fake 180s cycles if history began in CLOSED state
           }
           prevState = state;
         }
@@ -352,26 +288,36 @@ export async function initTelemetryMonitor() {
       lastProcessedId = latestTele.id;
     }
 
-    // Seed latest known states for all registered devices
+    // Seed latest known states strictly from DeviceRegistry.barrierState (populated from genuine /telemetry)
     const devices = await prisma.deviceRegistry.findMany({
-      select: { id: true, thingName: true }
+      select: { id: true, thingName: true, barrierState: true }
     });
 
     for (const d of devices) {
-      const lastTele = await prisma.deviceTelemetry.findFirst({
-        where: {
-          OR: [
-            { deviceRegistryId: d.id },
-            { thingName: d.thingName }
-          ]
-        },
-        orderBy: { receivedAt: 'desc' }
-      });
+      const dbState = normalizeBarrierStateColumn(d.barrierState);
+      if (dbState) {
+        lastKnownState.set(d.thingName, dbState);
+      } else {
+        const lastTele = await prisma.deviceTelemetry.findFirst({
+          where: {
+            OR: [
+              { deviceRegistryId: d.id },
+              { thingName: d.thingName }
+            ],
+            topic: { contains: '/telemetry' },
+            NOT: [
+              { topic: { contains: '/health' } },
+              { topic: { contains: '/request' } }
+            ],
+          },
+          orderBy: { receivedAt: 'desc' }
+        });
 
-      if (lastTele?.payload) {
-        const state = parseGateStateFromPayload(lastTele.payload);
-        if (state) {
-          lastKnownState.set(d.thingName, state);
+        if (lastTele && isGenuineTelemetryPacket(lastTele)) {
+          const state = parseGateStateFromPayload(lastTele.payload);
+          if (state) {
+            lastKnownState.set(d.thingName, state);
+          }
         }
       }
     }
@@ -405,39 +351,51 @@ export async function pollTelemetryTransitions() {
       const thingName = record.thingName;
       if (!thingName) continue;
 
+      if (!isGenuineTelemetryPacket(record)) continue;
+
       const currentState = parseGateStateFromPayload(record.payload);
       if (!currentState) continue;
 
-      const prevState = lastKnownState.get(thingName);
+      // Sync DeviceRegistry authoritative state if packet bypassed POST /telemetry (e.g. Lambda insert)
+      const device = await prisma.deviceRegistry.findUnique({
+        where: { thingName },
+        include: {
+          master: { select: { id: true, serialNumber: true } }
+        }
+      });
+
+      if (device && (device.barrierState !== currentState || !device.lastTelemetryAt || new Date(record.receivedAt) > new Date(device.lastTelemetryAt))) {
+        await prisma.deviceRegistry.update({
+          where: { id: device.id },
+          data: {
+            connectivityStatus: 'ONLINE',
+            lastSeenAt: record.receivedAt || new Date(),
+            barrierState: currentState,
+            lastTelemetryAt: record.receivedAt || new Date(),
+            lastTelemetryId: record.id,
+          },
+        }).catch(() => {});
+      }
+
+      const prevState = lastKnownState.get(thingName) ?? normalizeBarrierStateColumn(device?.barrierState);
 
       // Transition detected! (e.g., OPEN ➔ CLOSED or CLOSED ➔ OPEN)
-      if (prevState && prevState !== currentState) {
-        console.log(`⚡ [TELEMETRY MONITOR] State transition detected for "${thingName}": ${prevState} ➔ ${currentState}`);
+      if (prevState !== currentState) {
+        console.log(`⚡ [TELEMETRY MONITOR] State transition detected for "${thingName}": ${prevState || 'INITIAL'} ➔ ${currentState}`);
 
-        // Find device metadata with linked master
-        const device = await prisma.deviceRegistry.findFirst({
-          where: {
-            OR: [
-              { thingName },
-              { id: record.deviceRegistryId || undefined }
-            ]
-          },
-          include: {
-            master: { select: { id: true, serialNumber: true } }
-          }
-        });
-
-        // Trigger SMS alert asynchronously
-        checkAndDispatchGateStateAlert({
-          deviceId: device?.id,
-          gateId: device?.gateId,
-          masterId: device?.masterId,
-          masterSerial: device?.master?.serialNumber || null,
-          thingName,
-          serialNumber: device?.serialNumber || thingName,
-          newState: currentState,
-          timestamp: record.receivedAt || new Date(),
-        }).catch(err => console.error('Error dispatching SMS from telemetry monitor:', err));
+        if (prevState && currentState === 'OPEN') {
+          // Trigger SMS/Email alert asynchronously only when gate transitions to OPEN (normal CLOSED alerts disabled)
+          checkAndDispatchGateStateAlert({
+            deviceId: device?.id,
+            gateId: device?.gateId,
+            masterId: device?.masterId,
+            masterSerial: device?.master?.serialNumber || null,
+            thingName,
+            serialNumber: device?.serialNumber || thingName,
+            newState: currentState,
+            timestamp: record.receivedAt || new Date(),
+          }).catch(err => console.error('Error dispatching alert from telemetry monitor:', err));
+        }
 
         // Log operational event for the Reports section
         if (device?.gateId) {
@@ -451,6 +409,8 @@ export async function pollTelemetryTransitions() {
           newState: currentState,
           timestamp: record.receivedAt || new Date(),
         }).catch(err => console.error('Error recording telemetry event for reports:', err));
+      } else if (device?.gateId) {
+        broadcastGateTelemetry(device.gateId).catch(console.warn);
       }
 
       // Update in-memory tracker
@@ -468,29 +428,43 @@ export async function pollTelemetryTransitions() {
  * If no message received for > 65 minutes, background worker marks device status = "OFFLINE".
  */
 export async function checkAndMarkOfflineDevices() {
-  const OFFLINE_CUTOFF_MS = 65 * 60 * 1000; // 65 minutes
-  const cutoffDate = new Date(Date.now() - OFFLINE_CUTOFF_MS);
+  const cutoffDate = new Date(Date.now() - GATE_ONLINE_CUTOFF_MS);
 
   try {
-    const result = await prisma.deviceRegistry.updateMany({
+    const candidates = await prisma.deviceRegistry.findMany({
       where: {
-        AND: [
-          { status: { in: ['ONLINE', 'ACTIVE'] } },
-          {
-            OR: [
-              { lastSeenAt: { lt: cutoffDate } },
-              { lastSeenAt: null }
-            ]
-          }
+        connectivityStatus: 'ONLINE',
+        OR: [
+          { lastSeenAt: { lt: cutoffDate } },
+          { lastSeenAt: null }
         ]
       },
+      select: {
+        id: true,
+        thingName: true,
+        lastSeenAt: true,
+        gate: { select: { lcNumber: true, locationName: true, zone: true, division: true } },
+        master: { select: { serialNumber: true } },
+      }
+    });
+
+    if (candidates.length === 0) return;
+
+    const result = await prisma.deviceRegistry.updateMany({
+      where: {
+        id: { in: candidates.map((d) => d.id) },
+        connectivityStatus: 'ONLINE',
+      },
       data: {
-        status: 'OFFLINE'
+        connectivityStatus: 'OFFLINE'
       }
     });
 
     if (result.count > 0) {
-      console.log(`📡 [DEVICE STATUS WORKER] Marked ${result.count} devices as OFFLINE (no packet for > 65 minutes).`);
+      console.log(`📡 [DEVICE STATUS WORKER] Marked ${result.count} devices as connectivityStatus=OFFLINE (no packet for > 65 minutes).`);
+      dispatchDeviceOfflineAdminEmails(candidates).catch((err) =>
+        console.error('Error dispatching offline Admin email alerts:', err)
+      );
     }
   } catch (err: any) {
     console.error('[DEVICE STATUS WORKER ERROR] Failed to sweep offline devices:', err?.message || err);

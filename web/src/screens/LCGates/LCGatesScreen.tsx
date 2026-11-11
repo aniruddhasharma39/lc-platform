@@ -339,6 +339,8 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
             if (statusItem) {
               return {
                 ...g,
+                ...(statusItem.isConfigured !== undefined ? { isConfigured: statusItem.isConfigured } : {}),
+                ...(statusItem.currentStatus ? { currentStatus: statusItem.currentStatus, status: statusItem.currentStatus } : {}),
                 isOnline: statusItem.isOnline,
                 deviceStatus: statusItem.deviceStatus,
                 lastSeenAt: statusItem.lastSeenAt,
@@ -384,6 +386,8 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
             if (statusItem) {
               return {
                 ...g,
+                ...(statusItem.isConfigured !== undefined ? { isConfigured: statusItem.isConfigured } : {}),
+                ...(statusItem.currentStatus ? { currentStatus: statusItem.currentStatus, status: statusItem.currentStatus } : {}),
                 isOnline: statusItem.isOnline,
                 deviceStatus: statusItem.deviceStatus,
                 lastSeenAt: statusItem.lastSeenAt,
@@ -825,7 +829,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
       const targetDesc = data.targetsCount > 1
         ? `${data.targetsCount} Master Units`
         : (data.topic || 'AWS IoT Core');
-      toastSuccess(`Diagnostic ping sent to ${targetDesc}. Awaiting hardware packet...`, 'Command Dispatched');
+      toastSuccess(`Connection check sent to ${targetDesc}. Waiting for device response...`, 'Command Dispatched');
       setHealthCheckStage('LISTENING');
 
       let attempts = 0;
@@ -861,7 +865,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
               setHealthCheckStage('SUCCESS');
               setGateTelemetry(pollData);
               setSelectedPayloadId(matchingCheck.id);
-              toastSuccess(`Live response received from ${selectedGate.lcNumber}! Barrier: ${matchingCheck.gateStatus || matchingCheck.payload?.gateStatus || 'REPORTED'} | Verdict: ${matchingCheck.status || matchingCheck.healthstatus || 'HEALTHY'}`, 'Device Verified');
+              toastSuccess(`Live response received from ${selectedGate.lcNumber}! Barrier: ${matchingCheck.gateStatus || matchingCheck.payload?.gateStatus || 'REPORTED'} | Verdict: ${matchingCheck.status || matchingCheck.healthstatus || 'REPORTED'}`, 'Device Verified');
               return;
             }
 
@@ -879,7 +883,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
               setHealthCheckStage('SUCCESS');
               setGateTelemetry(pollData);
               setSelectedPayloadId(foundInPayloads.id);
-              toastSuccess(`Live response received from ${selectedGate.lcNumber}! Verdict: ${foundInPayloads.payload?.healthstatus || 'HEALTHY'}`, 'Device Verified');
+              toastSuccess(`Live response received from ${selectedGate.lcNumber}! Verdict: ${foundInPayloads.payload?.healthstatus || 'REPORTED'}`, 'Device Verified');
               return;
             }
           }
@@ -961,7 +965,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
     if (selectedMasterIdForInspect !== 'ALL' && activeMasterSummary?.currentStatus) {
       return activeMasterSummary.currentStatus;
     }
-    return currentOperationalState?.currentStatus || gateTelemetry?.currentStatus || 'CLOSED';
+    return currentOperationalState?.currentStatus || gateTelemetry?.currentStatus || 'NO_TELEMETRY';
   }, [selectedMasterIdForInspect, activeMasterSummary, currentOperationalState, gateTelemetry]);
 
   const effectiveLastClosedCycle = useMemo(() => {
@@ -1317,11 +1321,11 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                   </div>
                   <div className="lcg-about-field-row">
                     <span className="lcg-about-field-label">Railway Zone</span>
-                    <span className="lcg-about-field-value">{selectedGate.zone || 'CR'}</span>
+                    <span className="lcg-about-field-value">{selectedGate.zone || '—'}</span>
                   </div>
                   <div className="lcg-about-field-row">
                     <span className="lcg-about-field-label">Railway Division</span>
-                    <span className="lcg-about-field-value">{selectedGate.division || 'Mumbai'}</span>
+                    <span className="lcg-about-field-value">{selectedGate.division || '—'}</span>
                   </div>
                   <div className="lcg-about-field-row">
                     <span className="lcg-about-field-label">Location / Station</span>
@@ -1405,7 +1409,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                         selectedGate.deviceRegistries?.find((d: any) => d.masterId === m.id) ||
                         m.deviceRegistries?.[0] ||
                         null;
-                      const isMasterOnline = matchedDev?.status === 'ONLINE';
+                      const isMasterOnline = (matchedDev?.connectivityStatus || matchedDev?.computedStatus || matchedDev?.status) === 'ONLINE';
                       const isSolarMaster = m.powerSource === 'SOLAR';
                       return (
                         <div
@@ -1441,7 +1445,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                           </div>
                           <div style={{ fontSize: '0.74rem', color: '#64748b', display: 'flex', justifyContent: 'space-between' }}>
                             <span>Sensors: {m.childDevices?.length || 0}</span>
-                            <span>Firmware: v{matchedDev?.firmwareVersion || m.firmwareVersion || '1.0.6'}</span>
+                            <span>Firmware: {(matchedDev?.firmwareVersion || m.firmwareVersion) ? `v${matchedDev?.firmwareVersion || m.firmwareVersion}` : '—'}</span>
                           </div>
                         </div>
                       );
@@ -1489,25 +1493,27 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                     <div>
                       <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Device Name</span>
                       <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#0f172a' }}>
-                        {selectedGate.deviceRegistries?.[0]?.attributes?.deviceName || 'LC Gate'}
+                        {selectedGate.deviceRegistries?.[0]?.attributes?.deviceName || '—'}
                       </div>
                     </div>
                     <div>
                       <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Manufacturing Date</span>
                       <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#0f172a' }}>
-                        {selectedGate.deviceRegistries?.[0]?.dateOfMfg ? new Date(selectedGate.deviceRegistries[0].dateOfMfg).toLocaleDateString() : (selectedGate.createdAt ? new Date(selectedGate.createdAt).toLocaleDateString() : 'N/A')}
+                        {selectedGate.deviceRegistries?.[0]?.dateOfMfg ? new Date(selectedGate.deviceRegistries[0].dateOfMfg).toLocaleDateString() : '—'}
                       </div>
                     </div>
                     <div>
                       <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Firmware Version</span>
                       <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#0f172a' }}>
-                        v{selectedGate.deviceRegistries?.[0]?.firmwareVersion || selectedGate.masters[0]?.firmwareVersion || '1.0.6'}
+                        {(selectedGate.deviceRegistries?.[0]?.firmwareVersion || selectedGate.masters[0]?.firmwareVersion)
+                          ? `v${selectedGate.deviceRegistries?.[0]?.firmwareVersion || selectedGate.masters[0]?.firmwareVersion}`
+                          : '—'}
                       </div>
                     </div>
                     <div style={{ gridColumn: 'span 2' }}>
                       <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Description</span>
                       <div style={{ fontSize: '0.84rem', color: '#334155', marginTop: 2 }}>
-                        {selectedGate.deviceRegistries?.[0]?.attributes?.description || 'Installed on Indian Railways Level Crossings'}
+                        {selectedGate.deviceRegistries?.[0]?.attributes?.description || '—'}
                       </div>
                     </div>
                   </div>
@@ -1832,32 +1838,39 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                       );
                     })()}
 
-                    {/* Gate Barrier Physical Position */}
-                    <span
-                      style={{
-                        padding: '3px 12px',
-                        borderRadius: 6,
-                        fontWeight: 800,
-                        fontSize: '0.8rem',
-                        letterSpacing: '0.3px',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 6,
-                        background: (gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#dcfce7' : '#fee2e2',
-                        color: (gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#15803d' : '#b91c1c',
-                        border: `1px solid ${(gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#86efac' : '#fca5a5'}`
-                      }}
-                    >
-                      <span
-                        className="pulse-dot"
-                        style={{
-                          width: 7,
-                          height: 7,
-                          background: (gateTelemetry?.currentStatus || 'CLOSED').toUpperCase() === 'CLOSED' ? '#15803d' : '#b91c1c'
-                        }}
-                      />
-                      GATE: {(gateTelemetry?.currentStatus || 'CLOSED').toUpperCase()}
-                    </span>
+                    {/* Gate Barrier Physical Position (strictly from DB single source of truth) */}
+                    {(() => {
+                      const bannerSt = (gateTelemetry?.currentStatus || 'NO_TELEMETRY').toUpperCase();
+                      const isClosedSt = bannerSt === 'CLOSED';
+                      const isOpenSt = bannerSt === 'OPEN';
+                      return (
+                        <span
+                          style={{
+                            padding: '3px 12px',
+                            borderRadius: 6,
+                            fontWeight: 800,
+                            fontSize: '0.8rem',
+                            letterSpacing: '0.3px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            background: isClosedSt ? '#dcfce7' : isOpenSt ? '#fee2e2' : '#f1f5f9',
+                            color: isClosedSt ? '#15803d' : isOpenSt ? '#b91c1c' : '#475569',
+                            border: `1px solid ${isClosedSt ? '#86efac' : isOpenSt ? '#fca5a5' : '#cbd5e1'}`
+                          }}
+                        >
+                          <span
+                            className="pulse-dot"
+                            style={{
+                              width: 7,
+                              height: 7,
+                              background: isClosedSt ? '#15803d' : isOpenSt ? '#b91c1c' : '#64748b'
+                            }}
+                          />
+                          GATE: {bannerSt === 'NO_TELEMETRY' ? 'WAITING FOR STATUS' : bannerSt}
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -2013,31 +2026,39 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                     {selectedMasterIdForInspect === 'ALL' ? 'Current Gate Status' : `Master Unit ${activeMasterSummary?.masterSequence || ''} Status`}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <span
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 6,
-                        padding: '4px 12px',
-                        borderRadius: 6,
-                        fontWeight: 800,
-                        fontSize: '0.88rem',
-                        background: String(effectiveCurrentStatus).toUpperCase() === 'CLOSED' ? '#dcfce7' : String(effectiveCurrentStatus).toUpperCase() === 'UNCONFIGURED' ? '#f1f5f9' : '#fee2e2',
-                        color: String(effectiveCurrentStatus).toUpperCase() === 'CLOSED' ? '#15803d' : String(effectiveCurrentStatus).toUpperCase() === 'UNCONFIGURED' ? '#475569' : '#b91c1c',
-                        border: `1px solid ${String(effectiveCurrentStatus).toUpperCase() === 'CLOSED' ? '#86efac' : String(effectiveCurrentStatus).toUpperCase() === 'UNCONFIGURED' ? '#cbd5e1' : '#fca5a5'}`
-                      }}
-                    >
-                      <span
-                        className="pulse-dot"
-                        style={{
-                          width: 7,
-                          height: 7,
-                          borderRadius: '50%',
-                          background: String(effectiveCurrentStatus).toUpperCase() === 'CLOSED' ? '#15803d' : String(effectiveCurrentStatus).toUpperCase() === 'UNCONFIGURED' ? '#64748b' : '#b91c1c'
-                        }}
-                      />
-                      {String(effectiveCurrentStatus).toUpperCase()}
-                    </span>
+                    {(() => {
+                      const effSt = String(effectiveCurrentStatus).toUpperCase();
+                      const isClosedEff = effSt === 'CLOSED';
+                      const isNeutralEff = effSt === 'UNCONFIGURED' || effSt === 'NO_TELEMETRY';
+                      const effLabel = effSt === 'NO_TELEMETRY' ? 'WAITING FOR STATUS' : effSt;
+                      return (
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            padding: '4px 12px',
+                            borderRadius: 6,
+                            fontWeight: 800,
+                            fontSize: '0.88rem',
+                            background: isClosedEff ? '#dcfce7' : isNeutralEff ? '#f1f5f9' : '#fee2e2',
+                            color: isClosedEff ? '#15803d' : isNeutralEff ? '#475569' : '#b91c1c',
+                            border: `1px solid ${isClosedEff ? '#86efac' : isNeutralEff ? '#cbd5e1' : '#fca5a5'}`
+                          }}
+                        >
+                          <span
+                            className="pulse-dot"
+                            style={{
+                              width: 7,
+                              height: 7,
+                              borderRadius: '50%',
+                              background: isClosedEff ? '#15803d' : isNeutralEff ? '#64748b' : '#b91c1c'
+                            }}
+                          />
+                          {effLabel}
+                        </span>
+                      );
+                    })()}
                     <span style={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 600 }}>
                       {selectedMasterIdForInspect === 'ALL' && currentOperationalState?.timeInCurrentStateFormatted
                         ? `for ${currentOperationalState.timeInCurrentStateFormatted}`
@@ -2475,7 +2496,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                         <FaSyncAlt className="fa-spin" size={24} color="#0284c7" />
                         <div>
                           <h4 style={{ margin: 0, fontSize: '0.94rem', fontWeight: 700, color: '#0369a1' }}>
-                            Diagnostic Command Dispatched — Awaiting Edge Hardware Packet...
+                            Connection Check Sent — Waiting for Device Response...
                           </h4>
                           <p style={{ margin: '3px 0 0 0', fontSize: '0.82rem', color: '#0284c7' }}>
                             MQTT ping published to AWS IoT Core. Sampling battery voltage, solar cut-in, cellular signal, and barrier sensors...
@@ -2527,10 +2548,10 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                             <FaHeartbeat color="#10b981" /> System Verdict
                           </div>
                           <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0f172a', marginTop: 4 }}>
-                            {currentViewingRecord.payload?.healthstatus || currentViewingRecord.payload?.status || currentViewingRecord.status || 'HEALTHY'}
+                            {currentViewingRecord.payload?.healthstatus || currentViewingRecord.payload?.status || currentViewingRecord.status || '—'}
                           </div>
                           <div style={{ fontSize: '0.74rem', color: '#059669', fontWeight: 600 }}>
-                            {currentViewingRecord.payload?.FirmwareVersion ? `Firmware v${currentViewingRecord.payload.FirmwareVersion}` : 'Hardware Verified Live'}
+                            {currentViewingRecord.payload?.FirmwareVersion ? `Firmware v${currentViewingRecord.payload.FirmwareVersion}` : 'Firmware: —'}
                           </div>
                         </div>
 
@@ -2543,12 +2564,12 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                               ? `${currentViewingRecord.payload.BatteryVoltage} V`
                               : currentViewingRecord.payload?.BatteryPercentage !== null && currentViewingRecord.payload?.BatteryPercentage !== undefined
                               ? `${currentViewingRecord.payload.BatteryPercentage}%`
-                              : '12.6V (Nominal)'}
+                              : '—'}
                           </div>
                           <div style={{ fontSize: '0.74rem', color: '#64748b' }}>
                             Solar: {currentViewingRecord.payload?.SolarVoltage !== null && currentViewingRecord.payload?.SolarVoltage !== undefined
                               ? `${currentViewingRecord.payload.SolarVoltage} V`
-                              : currentViewingRecord.payload?.SolarCharging ? 'Solar Active' : 'Solar Operational'}
+                              : currentViewingRecord.payload?.SolarCharging ? 'Solar Active' : '—'}
                           </div>
                         </div>
 
@@ -2559,10 +2580,10 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                           <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0f172a', marginTop: 4 }}>
                             {currentViewingRecord.payload?.SignalStrength !== undefined && currentViewingRecord.payload?.SignalStrength !== null
                               ? `${currentViewingRecord.payload.SignalStrength} CSQ`
-                              : currentViewingRecord.payload?.NetworkStrength || 'Connected (4G)'}
+                              : currentViewingRecord.payload?.NetworkStrength || '—'}
                           </div>
                           <div style={{ fontSize: '0.74rem', color: '#64748b' }}>
-                            {currentViewingRecord.payload?.NetworkType || '4G LTE'} {currentViewingRecord.payload?.McuTempC !== undefined ? `| ${currentViewingRecord.payload.McuTempC}°C` : ''}
+                            {currentViewingRecord.payload?.NetworkType || '—'} {currentViewingRecord.payload?.McuTempC !== undefined ? `| ${currentViewingRecord.payload.McuTempC}°C` : ''}
                           </div>
                         </div>
 
@@ -2571,10 +2592,11 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                             <FaMicrochip color="#d97706" /> Gate & Sensors
                           </div>
                           <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0f172a', marginTop: 4 }}>
-                            {currentViewingRecord.payload?.Status || (currentViewingRecord.payload?.LimitSwitchClosed ? 'CLOSED' : 'OPEN')}
+                            {(currentViewingRecord.payload?.Status === 'NOT_CLOSED' ? 'OPEN' : currentViewingRecord.payload?.Status) ||
+                              (currentViewingRecord.payload?.LimitSwitchClosed !== undefined ? (currentViewingRecord.payload.LimitSwitchClosed ? 'CLOSED' : 'OPEN') : '—')}
                           </div>
                           <div style={{ fontSize: '0.74rem', color: '#64748b' }}>
-                            Boom: {currentViewingRecord.payload?.BoomAngle !== undefined ? `${currentViewingRecord.payload.BoomAngle}°` : '0.0°'} | Limit: {currentViewingRecord.payload?.LimitSwitchClosed ? 'Closed' : 'Open'}
+                            Boom: {currentViewingRecord.payload?.BoomAngle !== undefined && currentViewingRecord.payload?.BoomAngle !== null ? `${currentViewingRecord.payload.BoomAngle}°` : '—'} | Limit: {currentViewingRecord.payload?.LimitSwitchClosed !== undefined && currentViewingRecord.payload?.LimitSwitchClosed !== null ? (currentViewingRecord.payload.LimitSwitchClosed ? 'Closed' : 'Open') : '—'}
                           </div>
                         </div>
                       </div>
@@ -2732,9 +2754,9 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                     ) : (
                       <div style={{ textAlign: 'center', padding: '36px 16px', background: '#f8fafc', borderRadius: 8, border: '1px dashed #cbd5e1' }}>
                         <FaBroadcastTower size={28} style={{ color: '#94a3b8', margin: '0 auto 8px auto' }} />
-                        <h4 style={{ margin: '0 0 4px 0', color: '#1e293b', fontWeight: 700 }}>No Telemetry Payloads Received Yet</h4>
+                        <h4 style={{ margin: '0 0 4px 0', color: '#1e293b', fontWeight: 700 }}>No Status Updates Received Yet</h4>
                         <p style={{ margin: 0, fontSize: '0.84rem', color: '#64748b' }}>
-                          Awaiting real-time telemetry from edge device on MQTT topic <code>lc-gate/{selectedGate.lcNumber}/telemetry</code>.
+                          Waiting for live gate updates from device on <code>lc-gate/{selectedGate.lcNumber}/telemetry</code>.
                         </p>
                       </div>
                     )}
@@ -3000,7 +3022,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                               ? `${gate.onlineMastersCount} of ${gate.hardwareMastersCount} hardware masters online`
                               : isOnline
                                 ? 'Edge hardware online & active'
-                                : 'No telemetry for > 65 minutes (Offline)';
+                                : 'No update received for > 65 minutes (Offline)';
                             return (
                               <span
                                 style={{
@@ -3040,7 +3062,7 @@ export default function LCGatesScreen({ user, initialGateId, initialTab }: Props
                       <h4 className="lcg-cluster-name">{gate.name || gate.locationName}</h4>
                       
                       <div className="lcg-cluster-zone-div">
-                        <span><FaTrain size={10} style={{ marginRight: 3 }} /> {gate.zone || 'CR'} / {gate.division || 'Mumbai'}</span>
+                        <span><FaTrain size={10} style={{ marginRight: 3 }} /> {[gate.zone, gate.division].filter(Boolean).join(' / ') || '—'}</span>
                         {(gate.station || gate.stationName) && (
                           <>
                             <span>•</span>

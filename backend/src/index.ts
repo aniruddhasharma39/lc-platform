@@ -25,6 +25,8 @@ dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 5000;
+const isRenderEnvironment =
+  process.env.RENDER === 'true' || Boolean(process.env.RENDER_SERVICE_ID);
 
 // Universal CORS & Chrome Private Network Access header support
 app.use((req, res, next) => {
@@ -44,70 +46,91 @@ app.use(cors({
   exposedHeaders: ['ETag', 'Content-Disposition'],
   allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization', 'If-None-Match', 'If-Match', 'Cache-Control'],
 }));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
-app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
-app.use('/api/v1/uploads', express.static(path.join(process.cwd(), 'uploads')));
+if (isRenderEnvironment) {
+  // Decommissioned stub for legacy Render deployment: keeps Render health check 200 OK
+  // so this deploy replaces older code, while blocking all APIs and running 0 DB/telemetry workers.
+  app.get(['/', '/health', '/healthz'], (_req, res) => {
+    res.status(200).json({
+      status: 'decommissioned',
+      message: 'Backend has been migrated. This Render endpoint is disabled.',
+    });
+  });
 
-// Normalize repeated slashes in request paths (e.g., //api/v1 -> /api/v1)
-app.use((req, res, next) => {
-  if (req.url.includes('//')) {
-    req.url = req.url.replace(/\/+/g, '/');
-  }
-  next();
-});
+  app.use((_req, res) => {
+    res.status(503).json({
+      error: 'Service unavailable on legacy Render host. Please use the updated LC Platform Mobile App.',
+    });
+  });
 
-// Routes
-app.use('/api/v1/auth', authRoutes);
-app.use('/api/v1/users', userRoutes);
-app.use('/api/v1/roles', rolesRoutes);
-app.use('/api/v1/modules', modulesRoutes);
-app.use('/api/v1/registration-forms', registrationFormsRoutes);
-app.use('/api/v1/settings', settingsRoutes);
-app.use('/api/v1/branding', settingsRoutes);
-app.use('/api/v1/lcgate', lcgateRoutes);
-app.use('/api/v1/lcgates', lcgateRoutes);
-app.use('/api/v1/lc-gates', lcgateRoutes);
-app.use('/api/v1/devices', deviceRoutes);
-app.use('/api/v1/evidence', evidenceRoutes);
-app.use('/api/v1/notifications', notificationsRoutes);
+  app.listen(port, () => {
+    console.log(`⛔ [RENDER DECOMMISSIONED STUB] Listening on port ${port} with DB & telemetry workers disabled.`);
+  });
+} else {
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
+  app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+  app.use('/api/v1/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
-app.use('/api/v1/reports', reportsRoutes);
-
-// Error Handling
-app.use(errorHandler);
-
-// Ensure system modules exist
-const ensureSystemModules = async () => {
-  try {
-    const modulesToEnsure = [
-      { name: 'LC Gates', slug: 'lc-gates' },
-      { name: 'Reports', slug: 'reports' },
-      { name: 'Cluster', slug: 'cluster' },
-      { name: 'Device Registry', slug: 'devices' },
-
-      { name: 'Manage Users', slug: 'manage-users' },
-      { name: 'Registration Builder', slug: 'registration' },
-      { name: 'Roles', slug: 'roles' },
-      { name: 'Branding', slug: 'branding' },
-    ];
-    for (const mod of modulesToEnsure) {
-      await prisma.module.upsert({
-        where: { slug: mod.slug },
-        update: {},
-        create: { name: mod.name, slug: mod.slug }
-      });
+  // Normalize repeated slashes in request paths (e.g., //api/v1 -> /api/v1)
+  app.use((req, res, next) => {
+    if (req.url.includes('//')) {
+      req.url = req.url.replace(/\/+/g, '/');
     }
-  } catch (err) {
-    console.error('Failed to ensure system modules:', err);
-  }
-};
+    next();
+  });
 
-const server = http.createServer(app);
-initTelemetryWebSocket(server);
+  // Routes
+  app.use('/api/v1/auth', authRoutes);
+  app.use('/api/v1/users', userRoutes);
+  app.use('/api/v1/roles', rolesRoutes);
+  app.use('/api/v1/modules', modulesRoutes);
+  app.use('/api/v1/registration-forms', registrationFormsRoutes);
+  app.use('/api/v1/settings', settingsRoutes);
+  app.use('/api/v1/branding', settingsRoutes);
+  app.use('/api/v1/lcgate', lcgateRoutes);
+  app.use('/api/v1/lcgates', lcgateRoutes);
+  app.use('/api/v1/lc-gates', lcgateRoutes);
+  app.use('/api/v1/devices', deviceRoutes);
+  app.use('/api/v1/evidence', evidenceRoutes);
+  app.use('/api/v1/notifications', notificationsRoutes);
 
-server.listen(port, () => {
-  ensureSystemModules();
-  startTelemetryMonitor(3000);
-  console.log(`Server is running on port ${port} with WebSocket telemetry stream`);
-});
+  app.use('/api/v1/reports', reportsRoutes);
+
+  // Error Handling
+  app.use(errorHandler);
+
+  // Ensure system modules exist
+  const ensureSystemModules = async () => {
+    try {
+      const modulesToEnsure = [
+        { name: 'LC Gates', slug: 'lc-gates' },
+        { name: 'Reports', slug: 'reports' },
+        { name: 'Cluster', slug: 'cluster' },
+        { name: 'Device Registry', slug: 'devices' },
+
+        { name: 'Manage Users', slug: 'manage-users' },
+        { name: 'Registration Builder', slug: 'registration' },
+        { name: 'Roles', slug: 'roles' },
+        { name: 'Branding', slug: 'branding' },
+      ];
+      for (const mod of modulesToEnsure) {
+        await prisma.module.upsert({
+          where: { slug: mod.slug },
+          update: {},
+          create: { name: mod.name, slug: mod.slug }
+        });
+      }
+    } catch (err) {
+      console.error('Failed to ensure system modules:', err);
+    }
+  };
+
+  const server = http.createServer(app);
+  initTelemetryWebSocket(server);
+
+  server.listen(port, () => {
+    ensureSystemModules();
+    startTelemetryMonitor(3000);
+    console.log(`Server is running on port ${port} with WebSocket telemetry stream`);
+  });
+}
