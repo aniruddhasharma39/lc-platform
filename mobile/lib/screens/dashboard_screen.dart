@@ -1494,38 +1494,44 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Row(
-                        children: [
-                          Text(
-                            'Hello, ${widget.user['fullName'] ?? 'User'}',
+                  SizedBox(
+                    width: double.infinity,
+                    child: Wrap(
+                      alignment: WrapAlignment.spaceBetween,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        Text(
+                          'Hello, ${widget.user['fullName'] ?? 'User'}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF0284C7).withOpacity(0.25),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.4)),
+                          ),
+                          child: Text(
+                            roleName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 18,
+                              color: Color(0xFF38BDF8),
+                              fontSize: 11,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                        ],
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF0284C7).withOpacity(0.25),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.4)),
                         ),
-                        child: Text(
-                          roleName,
-                          style: const TextStyle(
-                            color: Color(0xFF38BDF8),
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 6),
                   Text(
@@ -1633,26 +1639,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    children: [
-                      Icon(
-                        _isSyncing ? Icons.sync_rounded : Icons.check_circle_outline_rounded,
-                        size: 14,
-                        color: _isSyncing ? const Color(0xFF0284C7) : const Color(0xFF059669),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        _isSyncing
-                            ? 'Synchronizing live gate telemetry...'
-                            : 'Verified • Synced ${_formatSyncTime(_lastSyncedAt)}',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w500,
-                          color: Color(0xFF475569),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Icon(
+                          _isSyncing ? Icons.sync_rounded : Icons.check_circle_outline_rounded,
+                          size: 14,
+                          color: _isSyncing ? const Color(0xFF0284C7) : const Color(0xFF059669),
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            _isSyncing
+                                ? 'Synchronizing live gate telemetry...'
+                                : 'Verified • Synced ${_formatSyncTime(_lastSyncedAt)}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w500,
+                              color: Color(0xFF475569),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
+                  const SizedBox(width: 8),
                   InkWell(
                     onTap: _isSyncing ? null : () => _syncDashboardSummary(forceFullReload: true),
                     borderRadius: BorderRadius.circular(4),
@@ -2068,36 +2081,45 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFE0F2FE),
-                              borderRadius: BorderRadius.circular(8),
+                      Expanded(
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFE0F2FE),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Icon(Icons.map_rounded, color: Color(0xFF0284C7), size: 20),
                             ),
-                            child: const Icon(Icons.map_rounded, color: Color(0xFF0284C7), size: 20),
-                          ),
-                          const SizedBox(width: 10),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'India LC Gates Map',
-                                style: TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.bold,
-                                  color: Color(0xFF0F172A),
-                                ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'India LC Gates Map',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF0F172A),
+                                    ),
+                                  ),
+                                  Text(
+                                    '${gates.length} assigned railway gates',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
+                                  ),
+                                ],
                               ),
-                              Text(
-                                '${gates.length} assigned railway gates',
-                                style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
-                              ),
-                            ],
-                          ),
-                        ],
+                            ),
+                          ],
+                        ),
                       ),
+                      const SizedBox(width: 8),
                       Row(
                         children: [
                           Container(
@@ -2191,15 +2213,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                title.toUpperCase(),
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.grey.shade600,
-                  letterSpacing: 0.5,
+              Expanded(
+                child: Text(
+                  title.toUpperCase(),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.grey.shade600,
+                    letterSpacing: 0.5,
+                  ),
                 ),
               ),
+              const SizedBox(width: 6),
               Container(
                 padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
