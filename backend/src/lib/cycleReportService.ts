@@ -1,4 +1,37 @@
 import { prisma } from './prisma';
+import {
+  formatISTDateDisplay,
+  getISTDateString,
+  getISTUtcDateBounds,
+} from './timeUtils';
+
+export { formatISTDateDisplay, getISTDateString, getISTUtcDateBounds };
+
+/**
+ * Resolve a railway jurisdiction label (Station · Division, Division, or Zone)
+ * for reports so gates without legacy ScopeGroup clusters never display "Unassigned".
+ */
+export function resolveGateHierarchyLabel(gate?: {
+  station?: { name?: string | null; code?: string | null } | null;
+  division?: string | null;
+  zone?: string | null;
+  scopeGroups?: Array<{ scopeGroup?: { name?: string | null } | null }> | null;
+} | null): string {
+  if (!gate) return '-';
+  const stationName = gate.station?.name?.trim();
+  const division = gate.division?.trim();
+  const zone = gate.zone?.trim();
+
+  if (stationName && division) {
+    const divLabel = division.toLowerCase().includes('division') ? division : `${division} Division`;
+    return `${stationName} · ${divLabel}`;
+  }
+  if (stationName) return stationName;
+  if (division) return division.toLowerCase().includes('division') ? division : `${division} Division`;
+  if (zone) return zone;
+  const legacyGroup = gate.scopeGroups?.[0]?.scopeGroup?.name?.trim();
+  return legacyGroup || 'Indian Railways';
+}
 
 export interface GateMetadata {
   id: number;
@@ -14,26 +47,42 @@ export interface DailyCycleMetric {
   dateStr: string; // 'YYYY-MM-DD'
   dateFormatted: string; // '01 October 2026'
   completedCycles: number;
-  avgClosingSeconds: number;
-  avgClosingFormatted: string;
-  avgOpeningSeconds: number;
-  avgOpeningFormatted: string;
-  totalClosedSeconds: number;
-  totalClosedFormatted: string;
+  avgOpenSeconds: number;
+  avgOpenFormatted: string;
+  avgClosedSeconds: number;
+  avgClosedFormatted: string;
   totalOpenSeconds: number;
   totalOpenFormatted: string;
+  totalClosedSeconds: number;
+  totalClosedFormatted: string;
+  /** @deprecated Legacy alias of avgOpenSeconds (kept un-inverted for older UI clients) */
+  avgOpeningSeconds: number;
+  /** @deprecated Legacy alias of avgOpenFormatted */
+  avgOpeningFormatted: string;
+  /** @deprecated Legacy alias of avgClosedSeconds */
+  avgClosingSeconds: number;
+  /** @deprecated Legacy alias of avgClosedFormatted */
+  avgClosingFormatted: string;
 }
 
 export interface GateCycleKPIs {
   totalCycles: number;
-  avgClosingSeconds: number;
-  avgClosingFormatted: string;
-  avgOpeningSeconds: number;
-  avgOpeningFormatted: string;
-  totalClosedSeconds: number;
-  totalClosedFormatted: string;
+  avgOpenSeconds: number;
+  avgOpenFormatted: string;
+  avgClosedSeconds: number;
+  avgClosedFormatted: string;
   totalOpenSeconds: number;
   totalOpenFormatted: string;
+  totalClosedSeconds: number;
+  totalClosedFormatted: string;
+  /** @deprecated Legacy alias of avgOpenSeconds */
+  avgOpeningSeconds: number;
+  /** @deprecated Legacy alias of avgOpenFormatted */
+  avgOpeningFormatted: string;
+  /** @deprecated Legacy alias of avgClosedSeconds */
+  avgClosingSeconds: number;
+  /** @deprecated Legacy alias of avgClosedFormatted */
+  avgClosingFormatted: string;
 }
 
 export interface GateCycleReport {
@@ -44,15 +93,23 @@ export interface GateCycleReport {
 
 export interface OverallCycleSummary {
   totalCycles: number;
-  avgClosingSeconds: number;
-  avgClosingFormatted: string;
-  avgOpeningSeconds: number;
-  avgOpeningFormatted: string;
-  totalClosedSeconds: number;
-  totalClosedFormatted: string;
+  avgOpenSeconds: number;
+  avgOpenFormatted: string;
+  avgClosedSeconds: number;
+  avgClosedFormatted: string;
   totalOpenSeconds: number;
   totalOpenFormatted: string;
+  totalClosedSeconds: number;
+  totalClosedFormatted: string;
   reportingGatesCount: number;
+  /** @deprecated Legacy alias of avgOpenSeconds */
+  avgOpeningSeconds: number;
+  /** @deprecated Legacy alias of avgOpenFormatted */
+  avgOpeningFormatted: string;
+  /** @deprecated Legacy alias of avgClosedSeconds */
+  avgClosingSeconds: number;
+  /** @deprecated Legacy alias of avgClosedFormatted */
+  avgClosingFormatted: string;
 }
 
 export interface FullCycleAnalyticsResponse {
@@ -60,31 +117,6 @@ export interface FullCycleAnalyticsResponse {
   endDate: string;
   overall: OverallCycleSummary;
   gateReports: GateCycleReport[];
-}
-
-/**
- * Convert Date to YYYY-MM-DD string in Indian Standard Time (IST)
- */
-export function getISTDateString(date: Date): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(date);
-}
-
-/**
- * Format date nicely in IST: e.g. "01 October 2026"
- */
-export function formatISTDateDisplay(dateStr: string): string {
-  try {
-    const [y, m, d] = dateStr.split('-').map(Number);
-    const dateObj = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
-    return new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Asia/Kolkata',
-      day: '2-digit',
-      month: 'long',
-      year: 'numeric'
-    }).format(dateObj);
-  } catch {
-    return dateStr;
-  }
 }
 
 /**
@@ -123,26 +155,45 @@ export function generateDateRangeList(startDateStr: string, endDateStr: string):
   return dates;
 }
 
-/**
- * Compute UTC date boundaries for an IST date range
- */
-export function getISTUtcDateBounds(startDateStr: string, endDateStr: string): { startUtc: Date; endUtc: Date } {
-  const [sY, sM, sD] = startDateStr.split('-').map(Number);
-  const [eY, eM, eD] = endDateStr.split('-').map(Number);
-
-  // IST is UTC + 5:30.
-  // 00:00:00.000 IST is previous day 18:30:00.000 UTC
-  const startUtc = new Date(Date.UTC(sY, sM - 1, sD, 0, 0, 0, 0) - (5.5 * 3600000));
-  // 23:59:59.999 IST is current day 18:29:59.999 UTC
-  const endUtc = new Date(Date.UTC(eY, eM - 1, eD, 23, 59, 59, 999) - (5.5 * 3600000));
-
-  return { startUtc, endUtc };
+function getEventDurationSeconds(ev: {
+  openedAt: Date;
+  closedAt: Date | null;
+  durationSeconds: number | null;
+}): number {
+  return ev.durationSeconds && ev.durationSeconds > 0
+    ? ev.durationSeconds
+    : Math.max(1, Math.round((new Date(ev.closedAt!).getTime() - new Date(ev.openedAt).getTime()) / 1000));
 }
 
-/**
- * Core cycle analytics calculator for a single gate
- */
-export function calculateGateCycleAnalytics(
+function summarizeCycleOpenAndClosedIntervals(
+  sortedEvents: Array<{
+    openedAt: Date;
+    closedAt: Date | null;
+    durationSeconds: number | null;
+  }>
+): { totalOpenSeconds: number; closedIntervals: number[] } {
+  let totalOpenSeconds = 0;
+  const closedIntervals: number[] = [];
+
+  for (let i = 0; i < sortedEvents.length; i++) {
+    const cur = sortedEvents[i];
+    totalOpenSeconds += getEventDurationSeconds(cur);
+
+    if (i < sortedEvents.length - 1) {
+      const next = sortedEvents[i + 1];
+      const closedInterval = Math.round(
+        (new Date(next.openedAt).getTime() - new Date(cur.closedAt!).getTime()) / 1000
+      );
+      if (closedInterval >= 0) {
+        closedIntervals.push(closedInterval);
+      }
+    }
+  }
+
+  return { totalOpenSeconds, closedIntervals };
+}
+
+function calculateGateCycleAnalyticsInternal(
   gate: GateMetadata,
   rawEvents: Array<{
     id: number;
@@ -154,7 +205,7 @@ export function calculateGateCycleAnalytics(
   }>,
   startDateStr: string,
   endDateStr: string
-): GateCycleReport {
+): { report: GateCycleReport; allClosedIntervals: number[] } {
   // 1. Filter only valid, completed cycles:
   // Must have status !== 'OPEN', closedAt !== null, openedAt !== null, and closedAt > openedAt
   const completedEvents = rawEvents
@@ -177,47 +228,36 @@ export function calculateGateCycleAnalytics(
     deduplicated.push(ev);
   }
 
-  // 3. Compute closing durations & opening intervals
-  let totalClosedSeconds = 0;
-  const openingIntervals: number[] = [];
-
-  for (let i = 0; i < deduplicated.length; i++) {
-    const cur = deduplicated[i];
-    const dur = cur.durationSeconds && cur.durationSeconds > 0
-      ? cur.durationSeconds
-      : Math.max(1, Math.round((new Date(cur.closedAt!).getTime() - new Date(cur.openedAt).getTime()) / 1000));
-    totalClosedSeconds += dur;
-
-    if (i < deduplicated.length - 1) {
-      const next = deduplicated[i + 1];
-      const openInterval = Math.round((new Date(next.openedAt).getTime() - new Date(cur.closedAt!).getTime()) / 1000);
-      if (openInterval >= 0) {
-        openingIntervals.push(openInterval);
-      }
-    }
-  }
+  // 3. Compute open cycle durations (openedAt -> closedAt) & inter-cycle closed intervals (closedAt -> next openedAt)
+  const { totalOpenSeconds, closedIntervals } = summarizeCycleOpenAndClosedIntervals(deduplicated);
 
   const totalCycles = deduplicated.length;
-  const avgClosingSeconds = totalCycles > 0 ? Math.round(totalClosedSeconds / totalCycles) : 0;
-  const avgOpeningSeconds = openingIntervals.length > 0
-    ? Math.round(openingIntervals.reduce((a, b) => a + b, 0) / openingIntervals.length)
+  const avgOpenSeconds = totalCycles > 0 ? Math.round(totalOpenSeconds / totalCycles) : 0;
+  const avgOpenFormatted = totalCycles > 0 ? formatDurationHuman(avgOpenSeconds) : '—';
+  const avgClosedSeconds = closedIntervals.length > 0
+    ? Math.round(closedIntervals.reduce((a, b) => a + b, 0) / closedIntervals.length)
     : 0;
+  const avgClosedFormatted = closedIntervals.length > 0 ? formatDurationHuman(avgClosedSeconds) : '—';
 
   const dateList = generateDateRangeList(startDateStr, endDateStr);
   const totalDays = Math.max(1, dateList.length);
   const totalPeriodSeconds = totalDays * 86400;
-  const totalOpenSeconds = Math.max(0, totalPeriodSeconds - totalClosedSeconds);
+  const totalClosedSeconds = Math.max(0, totalPeriodSeconds - totalOpenSeconds);
 
   const kpis: GateCycleKPIs = {
     totalCycles,
-    avgClosingSeconds,
-    avgClosingFormatted: totalCycles > 0 ? formatDurationHuman(avgClosingSeconds) : '—',
-    avgOpeningSeconds,
-    avgOpeningFormatted: openingIntervals.length > 0 ? formatDurationHuman(avgOpeningSeconds) : '—',
+    avgOpenSeconds,
+    avgOpenFormatted,
+    avgClosedSeconds,
+    avgClosedFormatted,
+    totalOpenSeconds,
+    totalOpenFormatted: formatDurationHuman(totalOpenSeconds),
     totalClosedSeconds,
     totalClosedFormatted: formatDurationHuman(totalClosedSeconds),
-    totalOpenSeconds,
-    totalOpenFormatted: formatDurationHuman(totalOpenSeconds)
+    avgOpeningSeconds: avgOpenSeconds,
+    avgOpeningFormatted: avgOpenFormatted,
+    avgClosingSeconds: avgClosedSeconds,
+    avgClosingFormatted: avgClosedFormatted
   };
 
   // 4. Daily aggregation
@@ -239,52 +279,64 @@ export function calculateGateCycleAnalytics(
     const dayEvents = dailyMap.get(dateStr) || [];
     const count = dayEvents.length;
 
-    let dayClosedSec = 0;
-    const dayOpenIntervals: number[] = [];
+    const { totalOpenSeconds: dayOpenSec, closedIntervals: dayClosedIntervals } =
+      summarizeCycleOpenAndClosedIntervals(dayEvents);
 
-    for (let i = 0; i < dayEvents.length; i++) {
-      const e = dayEvents[i];
-      const dur = e.durationSeconds && e.durationSeconds > 0
-        ? e.durationSeconds
-        : Math.max(1, Math.round((new Date(e.closedAt!).getTime() - new Date(e.openedAt).getTime()) / 1000));
-      dayClosedSec += dur;
-
-      if (i < dayEvents.length - 1) {
-        const nextE = dayEvents[i + 1];
-        const openInt = Math.round((new Date(nextE.openedAt).getTime() - new Date(e.closedAt!).getTime()) / 1000);
-        if (openInt >= 0) {
-          dayOpenIntervals.push(openInt);
-        }
-      }
-    }
-
-    const dayAvgClose = count > 0 ? Math.round(dayClosedSec / count) : 0;
-    const dayAvgOpen = dayOpenIntervals.length > 0
-      ? Math.round(dayOpenIntervals.reduce((a, b) => a + b, 0) / dayOpenIntervals.length)
+    const dayAvgOpen = count > 0 ? Math.round(dayOpenSec / count) : 0;
+    const dayAvgOpenFormatted = count > 0 ? formatDurationHuman(dayAvgOpen) : '—';
+    const dayAvgClosed = dayClosedIntervals.length > 0
+      ? Math.round(dayClosedIntervals.reduce((a, b) => a + b, 0) / dayClosedIntervals.length)
       : 0;
+    const dayAvgClosedFormatted = dayClosedIntervals.length > 0 ? formatDurationHuman(dayAvgClosed) : '—';
 
-    const dayOpenSec = Math.max(0, 86400 - dayClosedSec);
+    const dayClosedSec = Math.max(0, 86400 - dayOpenSec);
 
     dailyBreakdown.push({
       dateStr,
       dateFormatted: formatISTDateDisplay(dateStr),
       completedCycles: count,
-      avgClosingSeconds: dayAvgClose,
-      avgClosingFormatted: count > 0 ? formatDurationHuman(dayAvgClose) : '—',
-      avgOpeningSeconds: dayAvgOpen,
-      avgOpeningFormatted: dayOpenIntervals.length > 0 ? formatDurationHuman(dayAvgOpen) : '—',
-      totalClosedSeconds: dayClosedSec,
-      totalClosedFormatted: count > 0 ? formatDurationHuman(dayClosedSec) : '0s',
+      avgOpenSeconds: dayAvgOpen,
+      avgOpenFormatted: dayAvgOpenFormatted,
+      avgClosedSeconds: dayAvgClosed,
+      avgClosedFormatted: dayAvgClosedFormatted,
       totalOpenSeconds: dayOpenSec,
-      totalOpenFormatted: formatDurationHuman(dayOpenSec)
+      totalOpenFormatted: count > 0 ? formatDurationHuman(dayOpenSec) : '0s',
+      totalClosedSeconds: dayClosedSec,
+      totalClosedFormatted: formatDurationHuman(dayClosedSec),
+      avgOpeningSeconds: dayAvgOpen,
+      avgOpeningFormatted: dayAvgOpenFormatted,
+      avgClosingSeconds: dayAvgClosed,
+      avgClosingFormatted: dayAvgClosedFormatted
     });
   }
 
   return {
-    gate,
-    kpis,
-    dailyBreakdown
+    report: {
+      gate,
+      kpis,
+      dailyBreakdown
+    },
+    allClosedIntervals: closedIntervals
   };
+}
+
+/**
+ * Core cycle analytics calculator for a single gate
+ */
+export function calculateGateCycleAnalytics(
+  gate: GateMetadata,
+  rawEvents: Array<{
+    id: number;
+    gateId: number;
+    openedAt: Date;
+    closedAt: Date | null;
+    durationSeconds: number | null;
+    status: string;
+  }>,
+  startDateStr: string,
+  endDateStr: string
+): GateCycleReport {
+  return calculateGateCycleAnalyticsInternal(gate, rawEvents, startDateStr, endDateStr).report;
 }
 
 /**
@@ -304,15 +356,19 @@ export async function getFullCycleAnalytics(params: {
       endDate: endDateStr,
       overall: {
         totalCycles: 0,
-        avgClosingSeconds: 0,
-        avgClosingFormatted: '—',
-        avgOpeningSeconds: 0,
-        avgOpeningFormatted: '—',
-        totalClosedSeconds: 0,
-        totalClosedFormatted: '0s',
+        avgOpenSeconds: 0,
+        avgOpenFormatted: '—',
+        avgClosedSeconds: 0,
+        avgClosedFormatted: '—',
         totalOpenSeconds: 0,
         totalOpenFormatted: '0s',
-        reportingGatesCount: 0
+        totalClosedSeconds: 0,
+        totalClosedFormatted: '0s',
+        reportingGatesCount: 0,
+        avgOpeningSeconds: 0,
+        avgOpeningFormatted: '—',
+        avgClosingSeconds: 0,
+        avgClosingFormatted: '—'
       },
       gateReports: []
     };
@@ -321,6 +377,7 @@ export async function getFullCycleAnalytics(params: {
   // 1. Fetch gate details
   const gates = await prisma.lCGate.findMany({
     where: { id: { in: targetGateIds } },
+    include: { station: { select: { name: true, code: true } } },
     orderBy: { lcNumber: 'asc' }
   });
 
@@ -360,12 +417,10 @@ export async function getFullCycleAnalytics(params: {
   // 3. Compute per-gate cycle reports
   const gateReports: GateCycleReport[] = [];
   let overallTotalCycles = 0;
-  let overallTotalClosedSeconds = 0;
-  const overallOpeningIntervals: number[] = [];
+  let overallTotalOpenSeconds = 0;
+  const overallClosedIntervals: number[] = [];
 
   for (const g of gates) {
-    const scopeGroup: any = null;
-
     const gateMeta: GateMetadata = {
       id: g.id,
       lcNumber: g.lcNumber,
@@ -373,22 +428,22 @@ export async function getFullCycleAnalytics(params: {
       locationName: g.locationName,
       zone: g.zone,
       division: g.division,
-      scopeGroupName: scopeGroup?.name || 'Unassigned'
+      scopeGroupName: resolveGateHierarchyLabel(g)
     };
 
     const gEvents = eventsByGate.get(g.id) || [];
-    const rep = calculateGateCycleAnalytics(gateMeta, gEvents, startDateStr, endDateStr);
+    const { report: rep, allClosedIntervals } = calculateGateCycleAnalyticsInternal(
+      gateMeta,
+      gEvents,
+      startDateStr,
+      endDateStr
+    );
     gateReports.push(rep);
 
     overallTotalCycles += rep.kpis.totalCycles;
-    overallTotalClosedSeconds += rep.kpis.totalClosedSeconds;
-    if (rep.kpis.avgOpeningSeconds > 0 && rep.dailyBreakdown.length > 0) {
-      // Collect valid intervals from daily breakdown
-      for (const d of rep.dailyBreakdown) {
-        if (d.avgOpeningSeconds > 0) {
-          overallOpeningIntervals.push(d.avgOpeningSeconds);
-        }
-      }
+    overallTotalOpenSeconds += rep.kpis.totalOpenSeconds;
+    if (allClosedIntervals.length > 0) {
+      overallClosedIntervals.push(...allClosedIntervals);
     }
   }
 
@@ -396,27 +451,35 @@ export async function getFullCycleAnalytics(params: {
   const totalDays = Math.max(1, dateList.length);
   const totalGates = gates.length;
   const totalPeriodSeconds = totalDays * 86400 * totalGates;
-  const overallTotalOpenSeconds = Math.max(0, totalPeriodSeconds - overallTotalClosedSeconds);
+  const overallTotalClosedSeconds = Math.max(0, totalPeriodSeconds - overallTotalOpenSeconds);
 
-  const overallAvgClosingSec = overallTotalCycles > 0
-    ? Math.round(overallTotalClosedSeconds / overallTotalCycles)
+  const overallAvgOpenSec = overallTotalCycles > 0
+    ? Math.round(overallTotalOpenSeconds / overallTotalCycles)
     : 0;
+  const overallAvgOpenFormatted = overallTotalCycles > 0 ? formatDurationHuman(overallAvgOpenSec) : '—';
 
-  const overallAvgOpeningSec = overallOpeningIntervals.length > 0
-    ? Math.round(overallOpeningIntervals.reduce((a, b) => a + b, 0) / overallOpeningIntervals.length)
+  const overallAvgClosedSec = overallClosedIntervals.length > 0
+    ? Math.round(overallClosedIntervals.reduce((a, b) => a + b, 0) / overallClosedIntervals.length)
     : 0;
+  const overallAvgClosedFormatted = overallClosedIntervals.length > 0
+    ? formatDurationHuman(overallAvgClosedSec)
+    : '—';
 
   const overall: OverallCycleSummary = {
     totalCycles: overallTotalCycles,
-    avgClosingSeconds: overallAvgClosingSec,
-    avgClosingFormatted: overallTotalCycles > 0 ? formatDurationHuman(overallAvgClosingSec) : '—',
-    avgOpeningSeconds: overallAvgOpeningSec,
-    avgOpeningFormatted: overallOpeningIntervals.length > 0 ? formatDurationHuman(overallAvgOpeningSec) : '—',
-    totalClosedSeconds: overallTotalClosedSeconds,
-    totalClosedFormatted: formatDurationHuman(overallTotalClosedSeconds),
+    avgOpenSeconds: overallAvgOpenSec,
+    avgOpenFormatted: overallAvgOpenFormatted,
+    avgClosedSeconds: overallAvgClosedSec,
+    avgClosedFormatted: overallAvgClosedFormatted,
     totalOpenSeconds: overallTotalOpenSeconds,
     totalOpenFormatted: formatDurationHuman(overallTotalOpenSeconds),
-    reportingGatesCount: totalGates
+    totalClosedSeconds: overallTotalClosedSeconds,
+    totalClosedFormatted: formatDurationHuman(overallTotalClosedSeconds),
+    reportingGatesCount: totalGates,
+    avgOpeningSeconds: overallAvgOpenSec,
+    avgOpeningFormatted: overallAvgOpenFormatted,
+    avgClosingSeconds: overallAvgClosedSec,
+    avgClosingFormatted: overallAvgClosedFormatted
   };
 
   return {
@@ -503,6 +566,24 @@ export interface CountReportResponse {
   zones: ZoneCountItem[];
 }
 
+export function buildStationBucketKey(item: {
+  stationId?: number | null;
+  stationName?: string | null;
+  zone?: string | null;
+  division?: string | null;
+}): string {
+  if (item.stationId) {
+    return `ID_${item.stationId}`;
+  }
+  const zoneKey = (item.zone || 'Indian Railways').trim();
+  const divKey = (item.division || 'Division').trim();
+  const cleanName = (item.stationName || '').trim();
+  if (!cleanName || cleanName === 'Unassigned Station' || cleanName === 'Unassigned') {
+    return `UNASSIGNED_${zoneKey}_${divKey}`;
+  }
+  return `NAME_${zoneKey}_${divKey}_${cleanName}`;
+}
+
 export async function getCountReportAnalytics(options: {
   targetGateIds: number[];
   startDateStr: string;
@@ -550,7 +631,9 @@ export async function getCountReportAnalytics(options: {
     const evs = gateEventsMap.get(g.id) || [];
     const openCount = evs.length;
     const closeCount = evs.filter(e => e.closedAt !== null || e.status === 'CLOSED').length;
-    const totalOps = openCount + closeCount;
+    // Count 1 cycle per LCGateEvent (OPEN -> CLOSED) instead of openCount + closeCount
+    // so Count & Holistic reports match Home todayCycles and Event Log totalOperations 1:1.
+    const totalOps = evs.length;
 
     grandOpenCount += openCount;
     grandCloseCount += closeCount;
@@ -579,7 +662,7 @@ export async function getCountReportAnalytics(options: {
   // Aggregate by Station
   const stationMap = new Map<string, StationCountItem>();
   for (const item of gateItems) {
-    const sKey = item.stationId ? `ID_${item.stationId}` : `NAME_${item.stationName}`;
+    const sKey = buildStationBucketKey(item);
     if (!stationMap.has(sKey)) {
       stationMap.set(sKey, {
         stationId: item.stationId,
@@ -777,9 +860,7 @@ export async function getDurationReportAnalytics(options: {
     let extendedDelays = 0;
 
     for (const ev of completed) {
-      const dur = ev.durationSeconds && ev.durationSeconds > 0
-        ? ev.durationSeconds
-        : Math.max(1, Math.round((new Date(ev.closedAt!).getTime() - new Date(ev.openedAt).getTime()) / 1000));
+      const dur = getEventDurationSeconds(ev);
       gateOpenSec += dur;
       grandOpenDurations.push(dur);
       if (dur > 900) { // Extended delay: > 15 minutes (900 seconds)
@@ -809,27 +890,30 @@ export async function getDurationReportAnalytics(options: {
       const dEvs = dailyMap.get(dStr) || [];
       let dOpenSec = 0;
       for (const e of dEvs) {
-        const dDur = e.durationSeconds && e.durationSeconds > 0
-          ? e.durationSeconds
-          : Math.max(1, Math.round((new Date(e.closedAt!).getTime() - new Date(e.openedAt).getTime()) / 1000));
-        dOpenSec += dDur;
+        dOpenSec += getEventDurationSeconds(e);
       }
       const dClosedSec = Math.max(0, 86400 - dOpenSec);
       const dAvgOpen = dEvs.length > 0 ? Math.round(dOpenSec / dEvs.length) : 0;
       const dAvgClosed = dEvs.length > 0 ? Math.round(dClosedSec / dEvs.length) : 0;
+      const dAvgOpenFmt = formatDurationHuman(dAvgOpen);
+      const dAvgClosedFmt = formatDurationHuman(dAvgClosed);
 
       dailyBreakdown.push({
         dateStr: dStr,
         dateFormatted: formatISTDateDisplay(dStr),
         completedCycles: dEvs.length,
-        avgClosingSeconds: dAvgClosed,
-        avgClosingFormatted: formatDurationHuman(dAvgClosed),
-        avgOpeningSeconds: dAvgOpen,
-        avgOpeningFormatted: formatDurationHuman(dAvgOpen),
+        avgOpenSeconds: dAvgOpen,
+        avgOpenFormatted: dAvgOpenFmt,
+        avgClosedSeconds: dAvgClosed,
+        avgClosedFormatted: dAvgClosedFmt,
+        totalOpenSeconds: dOpenSec,
+        totalOpenFormatted: formatDurationHuman(dOpenSec),
         totalClosedSeconds: dClosedSec,
         totalClosedFormatted: formatDurationHuman(dClosedSec),
-        totalOpenSeconds: dOpenSec,
-        totalOpenFormatted: formatDurationHuman(dOpenSec)
+        avgOpeningSeconds: dAvgOpen,
+        avgOpeningFormatted: dAvgOpenFmt,
+        avgClosingSeconds: dAvgClosed,
+        avgClosingFormatted: dAvgClosedFmt
       });
     }
 
@@ -891,6 +975,7 @@ export interface HolisticLCItem {
   lcNumber: string;
   name: string | null;
   locationName: string;
+  stationId?: number | null;
   stationName: string | null;
   stationCode: string | null;
   division: string | null;
@@ -1011,6 +1096,7 @@ export async function getHolisticReportAnalytics(options: {
       lcNumber: cg.lcNumber,
       name: cg.name,
       locationName: cg.locationName,
+      stationId: cg.stationId,
       stationName: cg.stationName,
       stationCode: cg.stationCode,
       division: cg.division,
@@ -1031,10 +1117,15 @@ export async function getHolisticReportAnalytics(options: {
   // Roll up into Stations
   const stationMap = new Map<string, HolisticStationItem>();
   for (const g of flatGates) {
-    const sKey = g.stationName || 'Unassigned';
+    const sKey = buildStationBucketKey({
+      stationId: g.stationId ?? null,
+      stationName: g.stationName,
+      zone: g.zone || 'Indian Railways',
+      division: g.division || 'Division',
+    });
     if (!stationMap.has(sKey)) {
       stationMap.set(sKey, {
-        stationId: null,
+        stationId: g.stationId ?? null,
         stationName: g.stationName || 'Unassigned Station',
         stationCode: g.stationCode || '—',
         division: g.division || 'Division',

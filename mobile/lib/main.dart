@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'config.dart';
 import 'screens/login_screen.dart';
 import 'screens/dashboard_screen.dart';
+import 'services/home_cache_service.dart';
+import 'services/lc_gates_cache_service.dart';
+import 'services/reports_cache_service.dart';
 import 'utils/app_feedback.dart';
+import 'utils/user_utils.dart';
 
 void main() {
   runApp(const MyApp());
@@ -47,6 +52,29 @@ class MyApp extends StatelessWidget {
           )
         )
       ),
+      // Keep bottom edge above Android 3-button / gesture system navigation bar
+      // on Android 15+ edge-to-edge mode without altering top AppBar insets.
+      builder: (context, child) {
+        return AnnotatedRegion<SystemUiOverlayStyle>(
+          value: const SystemUiOverlayStyle(
+            statusBarColor: Colors.transparent,
+            statusBarIconBrightness: Brightness.dark,
+            systemNavigationBarColor: Colors.white,
+            systemNavigationBarIconBrightness: Brightness.dark,
+            systemNavigationBarContrastEnforced: true,
+          ),
+          child: ColoredBox(
+            color: Colors.white,
+            child: SafeArea(
+              top: false,
+              left: false,
+              right: false,
+              bottom: true,
+              child: child ?? const SizedBox.shrink(),
+            ),
+          ),
+        );
+      },
       home: const AuthWrapper(),
     );
   }
@@ -98,21 +126,20 @@ class _AuthWrapperState extends State<AuthWrapper> {
 
         if (res.statusCode == 200) {
           final serverUser = json.decode(res.body);
+          final resolvedUser = serverUser is Map<String, dynamic>
+              ? serverUser
+              : Map<String, dynamic>.from(json.decode(userStr) as Map);
+          await prefs.setString('user', json.encode(resolvedUser));
+          await persistUserSessionPrefs(prefs, resolvedUser);
           if (mounted) {
             setState(() {
               isAuthenticated = true;
-              user = serverUser is Map<String, dynamic> ? serverUser : json.decode(userStr);
+              user = resolvedUser;
             });
           }
         } else if (res.statusCode == 401) {
-          // Token expired or invalid! Clear storage and show LoginScreen
-          await prefs.remove('token');
-          await prefs.remove('user');
-          for (final k in prefs.getKeys()) {
-            if (k.startsWith('home_dashboard_cache_')) {
-              await prefs.remove(k);
-            }
-          }
+          // Token expired or invalid! Clear storage, identity keys, and all user caches
+          await _clearAuthAndCaches(prefs);
           if (mounted) {
             setState(() {
               isAuthenticated = false;
@@ -122,19 +149,23 @@ class _AuthWrapperState extends State<AuthWrapper> {
           }
         } else {
           // Temporary server error, keep cached session
+          final cachedUser = Map<String, dynamic>.from(json.decode(userStr) as Map);
+          await persistUserSessionPrefs(prefs, cachedUser);
           if (mounted) {
             setState(() {
               isAuthenticated = true;
-              user = json.decode(userStr);
+              user = cachedUser;
             });
           }
         }
       } catch (_) {
         // Network offline or timeout, continue with cached session
+        final cachedUser = Map<String, dynamic>.from(json.decode(userStr) as Map);
+        await persistUserSessionPrefs(prefs, cachedUser);
         if (mounted) {
           setState(() {
             isAuthenticated = true;
-            user = json.decode(userStr);
+            user = cachedUser;
           });
         }
       }
@@ -146,6 +177,20 @@ class _AuthWrapperState extends State<AuthWrapper> {
     }
   }
 
+  Future<void> _clearAuthAndCaches(SharedPreferences prefs) async {
+    await prefs.remove('token');
+    await prefs.remove('user');
+    await clearUserSessionPrefs(prefs);
+    for (final k in prefs.getKeys().toList()) {
+      if (k.startsWith('home_dashboard_cache_')) {
+        await prefs.remove(k);
+      }
+    }
+    await HomeCacheService.instance.clearAllUserCaches();
+    await LCGatesCacheService.instance.clearAllUserCaches();
+    await ReportsCacheService.instance.clearAllUserCaches();
+  }
+
   @override
   Widget build(BuildContext context) {
     if (isLoading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
@@ -153,13 +198,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
     if (isAuthenticated && user != null) {
       return DashboardScreen(user: user!, onLogout: () async {
         final prefs = await SharedPreferences.getInstance();
-        await prefs.remove('token');
-        await prefs.remove('user');
-        for (final k in prefs.getKeys()) {
-          if (k.startsWith('home_dashboard_cache_')) {
-            await prefs.remove(k);
-          }
-        }
+        await _clearAuthAndCaches(prefs);
         if (!mounted) return;
         setState(() {
           isAuthenticated = false;
@@ -175,6 +214,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('token', t);
         await prefs.setString('user', json.encode(u));
+        await persistUserSessionPrefs(prefs, Map<String, dynamic>.from(u));
         if (!mounted) return;
         setState(() {
           isAuthenticated = true;

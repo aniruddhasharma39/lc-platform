@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
-import { authenticate, requireModule } from '../middleware/auth';
+import { authenticate, isDeveloperUser, requireModule } from '../middleware/auth';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
 
@@ -12,10 +12,10 @@ router.use(authenticate);
 // List roles and their module access
 router.get('/', async (req: any, res, next) => {
   try {
-    const isDeveloper = req.user?.role === 'Developer' || req.user?.role?.name === 'Developer' || req.user?.roleId === 1;
+    const isDeveloper = isDeveloperUser(req.user);
 
     const roles = await prisma.role.findMany({
-      where: isDeveloper ? {} : { name: { not: 'Developer' }, id: { not: 1 } },
+      where: isDeveloper ? {} : { name: { not: 'Developer' } },
       include: {
         roleModules: {
           include: { module: true }

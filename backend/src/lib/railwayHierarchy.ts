@@ -17,6 +17,19 @@ export interface DesignationConfig {
 
 export const DEPARTMENTS: DepartmentType[] = ['Operations', 'Engineering'];
 
+/**
+ * Canonical Developer role check across all backend routes and authorization helpers.
+ * Avoids brittle `roleId === 1`, `id === 1`, or `.includes('admin')` bypasses.
+ */
+export function isDeveloperUser(user: any): boolean {
+  if (!user) return false;
+  const roleName =
+    typeof user.role === 'string'
+      ? user.role
+      : user.role?.name || '';
+  return roleName.trim().toLowerCase() === 'developer';
+}
+
 export const DESIGNATIONS: Record<string, DesignationConfig> = {
   // ==========================================
   // OPERATIONS DEPARTMENT
@@ -165,7 +178,7 @@ export function canApproveRequest(approver: any, request: any, approverGateIds: 
   isGovernanceIntervention?: boolean;
 } {
   // System administrators / Developers retain governance-level authority
-  const isDeveloper = approver.role === 'Developer' || approver.role?.name === 'Developer' || approver.roleId === 1;
+  const isDeveloper = isDeveloperUser(approver);
 
   // Extract target fields safely from request or request.data
   let targetDesignation = request.designation;
@@ -280,10 +293,10 @@ export function canAssignRole(
   targetRoleId: number,
   targetRoleName?: string
 ): { allowed: boolean; reason?: string } {
-  const isDeveloper = approver.role === 'Developer' || approver.role?.name === 'Developer' || approver.roleId === 1;
+  const isDeveloper = isDeveloperUser(approver);
 
   const roleName = targetRoleName || '';
-  const isTargetDeveloper = targetRoleId === 1 || roleName.toLowerCase() === 'developer';
+  const isTargetDeveloper = targetRoleName ? roleName.trim().toLowerCase() === 'developer' : targetRoleId === 1;
 
   // Rule 1: Developer role can ONLY be assigned by Developer
   if (isTargetDeveloper) {
@@ -354,7 +367,7 @@ export function canAssignRole(
  * Returns the list of role names that the given approver is hierarchically authorized to assign.
  */
 export function getAllowedRoleNamesForApprover(approver: any): string[] {
-  const isDeveloper = approver.role === 'Developer' || approver.role?.name === 'Developer' || approver.roleId === 1;
+  const isDeveloper = isDeveloperUser(approver);
   if (isDeveloper) {
     return ['Developer', 'Zone Officer', 'Division Officer', ...Object.keys(DESIGNATIONS)];
   }
@@ -380,7 +393,7 @@ export function getAllowedRoleNamesForApprover(approver: any): string[] {
  *    - Gate level staff (Gateman) sees NO users.
  */
 export async function buildUserManagementWhereClause(viewer: any, prisma: PrismaClient): Promise<any> {
-  const isDeveloper = viewer.role === 'Developer' || viewer.role?.name === 'Developer' || viewer.roleId === 1;
+  const isDeveloper = isDeveloperUser(viewer);
   if (isDeveloper) return {};
 
   let effectiveViewer = viewer;
@@ -475,7 +488,7 @@ export async function buildUserManagementWhereClause(viewer: any, prisma: Prisma
  * Verify whether an authenticated viewer has authority to manage (deactivate, reactivate, change role, delete) a target user.
  */
 export async function verifyUserManagementAccess(viewer: any, targetUserId: number, prisma: PrismaClient): Promise<{ allowed: boolean; reason?: string }> {
-  const isDeveloper = viewer.role === 'Developer' || viewer.role?.name === 'Developer' || viewer.roleId === 1;
+  const isDeveloper = isDeveloperUser(viewer);
   if (isDeveloper) return { allowed: true };
 
   if (viewer.id === targetUserId) {
@@ -504,7 +517,7 @@ export async function verifyUserManagementAccess(viewer: any, targetUserId: numb
 }
 
 export async function buildUserGateWhereClause(user: any, prisma: PrismaClient): Promise<any> {
-  const isDeveloper = user.role?.name === 'Developer' || user.role === 'Developer' || user.roleId === 1;
+  const isDeveloper = isDeveloperUser(user);
   if (isDeveloper) return {};
 
   let effectiveUser = user;
@@ -535,7 +548,9 @@ export async function buildUserGateWhereClause(user: any, prisma: PrismaClient):
   // 2. Station-level role (Station Master, Engineering Supervisor):
   if (desig?.level === 'STATION') {
     if (assignedGateIds.length > 0) {
-      return { id: { in: assignedGateIds } };
+      return effectiveUser.stationId
+        ? { OR: [{ id: { in: assignedGateIds } }, { stationId: effectiveUser.stationId }] }
+        : { id: { in: assignedGateIds } };
     }
     if (effectiveUser.stationId) {
       return { stationId: effectiveUser.stationId };
@@ -576,7 +591,8 @@ export async function buildUserGateWhereClause(user: any, prisma: PrismaClient):
  * Throws 403 error or returns boolean.
  */
 export async function verifyGateAccess(user: any, gateId: number, prisma: PrismaClient): Promise<boolean> {
-  const isDeveloper = user.role?.name === 'Developer' || user.roleId === 1;
+  if (!user) return false;
+  const isDeveloper = isDeveloperUser(user);
   if (isDeveloper) return true;
 
   const whereClause = await buildUserGateWhereClause(user, prisma);
@@ -641,7 +657,7 @@ function doesUserMatchGateJurisdiction(
   gate: { id: number; stationId?: number | null; division?: string | null; zone?: string | null },
   assignedGateIds: number[]
 ): string | null {
-  if (u.role?.name === 'Developer' || u.role === 'Developer' || u.roleId === 1 || u.id === 1) {
+  if (isDeveloperUser(u)) {
     return 'Developer / System Governance Override';
   }
 
@@ -687,15 +703,14 @@ export async function resolveUserAlertGateIds(
   prisma: PrismaClient,
   assignedGateIds: number[] = []
 ): Promise<number[]> {
-  const isDev = user.role?.name === 'Developer' || user.role === 'Developer' || user.roleId === 1 || user.id === 1;
+  const isDev = isDeveloperUser(user);
   if (isDev) {
     if (assignedGateIds.length > 0) return assignedGateIds;
-    const anyGates = await prisma.lCGate.findMany({
+    const allGatesForDev = await prisma.lCGate.findMany({
       select: { id: true },
-      take: 25,
       orderBy: { updatedAt: 'desc' },
     });
-    return anyGates.map((g) => g.id);
+    return allGatesForDev.map((g) => g.id);
   }
 
   const allGates = await prisma.lCGate.findMany({
@@ -757,7 +772,7 @@ export async function resolveRegistrationApprovers(
   }>();
 
   for (const u of candidates) {
-    const isDev = u.role?.name === 'Developer' || u.roleId === 1 || u.id === 1;
+    const isDev = isDeveloperUser(u);
     const allowedModules = (u.role?.roleModules || []).map((m) => m.module.slug);
     const canManageUsers = isDev || allowedModules.includes('manage-users');
     if (!canManageUsers) continue;

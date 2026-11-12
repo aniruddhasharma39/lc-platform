@@ -8,6 +8,7 @@ import 'dart:async';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
+import '../../utils/user_utils.dart';
 import '../../services/lc_gates_cache_service.dart';
 
 class LCGatesScreen extends StatefulWidget {
@@ -139,7 +140,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   Future<void> _loadTokenAndFetch() async {
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString('token') ?? '';
-    final userId = (widget.user['id'] ?? prefs.getString('userId') ?? prefs.getString('employeeId') ?? 'user').toString();
+    final userId = resolveCurrentUserId(user: widget.user, prefs: prefs);
     if (!mounted) return;
     setState(() {
       _token = token;
@@ -700,15 +701,26 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
   }
 
   // Telemetry WebSocket Connection
-  void _connectTelemetryWs(int gateId) {
+  Future<void> _connectTelemetryWs(int gateId) async {
     _disconnectTelemetryWs();
     _fetchGateTelemetry(gateId, silent: false);
 
     try {
+      String token = _token;
+      if (token.isEmpty) {
+        final prefs = await SharedPreferences.getInstance();
+        token = prefs.getString('token') ?? '';
+        if (mounted && token.isNotEmpty) {
+          _token = token;
+        }
+      }
+      if (!mounted) return;
+      if (token.isEmpty) return;
+
       final wsUrlStr = baseUrl
           .replaceFirst('http://', 'ws://')
           .replaceFirst('https://', 'wss://')
-          .replaceFirst('/api/v1', '/ws/telemetry?gateId=$gateId');
+          .replaceFirst('/api/v1', '/ws/telemetry?gateId=$gateId&token=${Uri.encodeComponent(token)}');
 
       final uri = Uri.parse(wsUrlStr);
       _telemetryWsChannel = WebSocketChannel.connect(uri);
@@ -840,7 +852,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               color: AppColors.primary,
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 24),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
@@ -1630,98 +1642,155 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
               BoxShadow(color: Color(0x06000000), offset: Offset(0, 1), blurRadius: 2),
             ],
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      gate['lcNumber'] ?? 'LC Gate',
-                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  if (gate['name'] != null && gate['name'] != gate['lcNumber'] && gate['name'] != gate['locationName'])
-                    Text(
-                      gate['name'],
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF64748B)),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 8),
+          child: Builder(
+            builder: (context) {
+              final lcNum = (gate['lcNumber'] ?? 'LC Gate').toString().trim();
+              final locName = (gate['locationName'] ?? gate['name'] ?? '').toString().trim();
+              final stName = gate['station'] != null
+                  ? '${gate['station']['name']} (${gate['station']['code']})'
+                  : (gate['stationName']?.toString().trim() ?? '');
+              final zoneStr = (gate['zone'] ?? '—').toString().trim();
+              final divStr = (gate['division'] ?? '—').toString().trim();
+              final latNum = lat is num ? lat : num.tryParse(lat?.toString() ?? '');
+              final lngNum = lng is num ? lng : num.tryParse(lng?.toString() ?? '');
 
-              Builder(
-                builder: (context) {
-                  final stName = gate['station'] != null
-                      ? '${gate['station']['name']} (${gate['station']['code']})'
-                      : gate['stationName'];
-                  return Row(
-                    children: [
-                      const Icon(Icons.train_outlined, size: 13, color: Color(0xFF64748B)),
-                      const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          'Zone: ${gate['zone'] ?? '—'} • Division: ${gate['division'] ?? '—'}${stName != null ? " • Station: $stName" : ""}',
-                          style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  );
-                },
-              ),
-              if (lat != null && lng != null) ...[
-                const SizedBox(height: 4),
-                InkWell(
-                  onTap: () {
-                    Clipboard.setData(ClipboardData(text: '$lat, $lng'));
-                    AppFeedback.showSuccess(context, 'Coordinates copied: $lat, $lng');
-                  },
+              Widget metaChip(IconData icon, String label, String value) {
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.location_on, size: 13, color: Color(0xFFEF4444)),
-                      const SizedBox(width: 4),
-                      Text(
-                        'GPS: ${(lat as num).toStringAsFixed(5)}, ${(lng as num).toStringAsFixed(5)}',
-                        style: const TextStyle(fontSize: 12, color: Color(0xFF0284C7), fontWeight: FontWeight.w600),
+                      Icon(icon, size: 13, color: const Color(0xFF64748B)),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          '$label: $value',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF334155),
+                          ),
+                        ),
                       ),
-                      const SizedBox(width: 4),
-                      const Icon(Icons.copy, size: 11, color: Color(0xFF0284C7)),
                     ],
                   ),
-                ),
-              ],
+                );
+              }
 
-              // Scope Group badges
-              if (scopeGroups != null && scopeGroups.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: scopeGroups.map((sg) {
-                    final sgName = sg['scopeGroup']?['name'] ?? 'Assigned Scope Group';
-                    return Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFEFF6FF),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: const Color(0xFFBFDBFE)),
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    lcNum,
+                    style: const TextStyle(
+                      fontSize: 19,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF0F172A),
+                    ),
+                  ),
+                  if (locName.isNotEmpty && locName != lcNum) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      locName,
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF475569),
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.layers_outlined, size: 11, color: Color(0xFF1D4ED8)),
-                          const SizedBox(width: 4),
-                          Text(sgName, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
-                        ],
+                    ),
+                  ],
+                  const Divider(height: 18, color: Color(0xFFF1F5F9)),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      metaChip(Icons.public_outlined, 'Zone', zoneStr.isNotEmpty ? zoneStr : '—'),
+                      metaChip(Icons.account_tree_outlined, 'Division', divStr.isNotEmpty ? divStr : '—'),
+                      if (stName.isNotEmpty) metaChip(Icons.train_outlined, 'Station', stName),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  if (latNum != null && lngNum != null)
+                    InkWell(
+                      onTap: () {
+                        Clipboard.setData(ClipboardData(text: '$latNum, $lngNum'));
+                        AppFeedback.showSuccess(context, 'Coordinates copied: $latNum, $lngNum');
+                      },
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF0F9FF),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFBAE6FD)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.location_on, size: 14, color: Color(0xFFEF4444)),
+                            const SizedBox(width: 6),
+                            Text(
+                              'GPS: ${latNum.toStringAsFixed(5)}, ${lngNum.toStringAsFixed(5)}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Color(0xFF0284C7),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            const Icon(Icons.copy, size: 12, color: Color(0xFF0284C7)),
+                          ],
+                        ),
                       ),
-                    );
-                  }).toList(),
-                ),
-              ],
-            ],
+                    )
+                  else
+                    const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.location_off_outlined, size: 13, color: Color(0xFF94A3B8)),
+                        SizedBox(width: 5),
+                        Text(
+                          'GPS: Not Specified',
+                          style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8), fontWeight: FontWeight.w500),
+                        ),
+                      ],
+                    ),
+
+                  // Scope Group badges
+                  if (scopeGroups != null && scopeGroups.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: scopeGroups.map((sg) {
+                        final sgName = sg['scopeGroup']?['name'] ?? 'Assigned Scope Group';
+                        return Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEFF6FF),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: const Color(0xFFBFDBFE)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.layers_outlined, size: 11, color: Color(0xFF1D4ED8)),
+                              const SizedBox(width: 4),
+                              Text(sgName, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
+                            ],
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                ],
+              );
+            },
           ),
         ),
         const SizedBox(height: 14),
@@ -1882,21 +1951,11 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         const SizedBox(height: 18),
 
         // 3. Unified Configured Hardware & Installation Evidence Console
-        Padding(
-          padding: const EdgeInsets.only(left: 2, bottom: 6),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Configured Hardware & Installation Evidence',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                'Hardware units & verified installation evidence photos uploaded during setup.',
-                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-              ),
-            ],
+        const Padding(
+          padding: EdgeInsets.only(left: 2, bottom: 6),
+          child: Text(
+            'Configured Hardware & Installation Evidence',
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
           ),
         ),
         const SizedBox(height: 8),
@@ -2007,7 +2066,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                     ],
                                   ),
                                   Text(
-                                    'Primary Gateway • ${master['powerSource'] == 'SOLAR' ? 'Solar Powered' : 'Direct AC Power'}',
+                                    master['powerSource'] == 'SOLAR' ? 'Solar Powered' : 'Direct AC Power',
                                     style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                                   ),
                                 ],
@@ -2029,10 +2088,10 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            // Component 1: Master Unit (ESP Gateway) & Its Uploaded Evidence Photo
+                            // Component 1: Master Unit & Its Uploaded Evidence Photo
                             _buildDeviceEvidenceCard(
-                              title: 'Master Gateway Unit (ESP)',
-                              subtitle: 'Serial: ${master['serialNumber']} • Primary Gateway Unit',
+                              title: 'Master Unit',
+                              subtitle: 'Serial: ${master['serialNumber']}',
                               icon: Icons.memory,
                               iconColor: const Color(0xFF0284C7),
                               evidence: masterEv,
@@ -2111,44 +2170,36 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                         final isSlaveExpanded = _expandedSlaveId == child['id'];
 
                                         final cType = child['type']?.toString() ?? 'LIMIT_SWITCH';
-                                        final cSeq = child['deviceSequence']?.toString() ?? (cIdx + 1).toString();
                                         final cSerial = child['serialNumber']?.toString() ?? 'Slave Device';
                                         String slaveName;
-                                        String slaveDesc;
                                         String slaveLetter;
                                         switch (cType) {
                                           case 'LIMIT_SWITCH':
                                             slaveName = 'Limit Switch';
-                                            slaveDesc = 'Sensors: End-stop detection & locking mechanism';
                                             slaveLetter = 'A';
                                             break;
                                           case 'HALL_EFFECT':
                                             slaveName = 'Hall Effect Sensor';
-                                            slaveDesc = 'Sensors: Boom barrier magnetic angle positioning';
                                             slaveLetter = 'B';
                                             break;
                                           case 'TILT_SENSOR':
                                             slaveName = 'Tilt Sensor';
-                                            slaveDesc = 'Sensors: Boom inclination & vibration monitoring';
                                             slaveLetter = 'C';
                                             break;
                                           case 'DEVICE_1':
                                             slaveName = 'Limit Switch & Hall Effect';
-                                            slaveDesc = 'Sensors: Dual LimitSwitch & HallEffect Position Detection';
                                             slaveLetter = 'A';
                                             break;
                                           case 'DEVICE_2':
                                             slaveName = 'Tilt Sensor';
-                                            slaveDesc = 'Sensors: High-precision Tilt & Angle Detection';
                                             slaveLetter = 'B';
                                             break;
                                           default:
                                             slaveName = cType.replaceAll('_', ' ');
-                                            slaveDesc = 'Sensors: Wired hardware slave unit';
                                             slaveLetter = 'A';
                                         }
                                         final cleanSlaveSerial = cSerial.replaceAll(RegExp(r'^#+'), '');
-                                        final slaveTitle = 'Sensor Unit $cSeq: $slaveName ($cleanSlaveSerial)';
+                                        final slaveTitle = '$slaveName ($cleanSlaveSerial)';
 
                                         return Container(
                                           decoration: BoxDecoration(
@@ -2179,7 +2230,7 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                                               children: [
                                                                 Expanded(
                                                                   child: Text(
-                                                                    'Sensor Unit $cSeq: $cleanSlaveSerial',
+                                                                    slaveName,
                                                                     style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
                                                                     overflow: TextOverflow.ellipsis,
                                                                   ),
@@ -2200,8 +2251,8 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                                             ),
                                                             const SizedBox(height: 2),
                                                             Text(
-                                                              '$slaveName • Sequence #$cSeq',
-                                                              style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                                                              'Serial: $cleanSlaveSerial',
+                                                              style: const TextStyle(fontSize: 10.5, color: Color(0xFF64748B)),
                                                             ),
                                                           ],
                                                         ),
@@ -2217,28 +2268,18 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
                                                 ),
                                               ),
 
-                                              // Slave Photo & Sensor Details when Expanded
+                                              // Slave Photo Details when Expanded
                                               if (isSlaveExpanded) ...[
                                                 const Divider(height: 1, color: Color(0xFFF1F5F9)),
                                                 Padding(
                                                   padding: const EdgeInsets.all(8),
-                                                  child: Column(
-                                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                                    children: [
-                                                      Text(
-                                                        slaveDesc,
-                                                        style: const TextStyle(fontSize: 10.5, color: Color(0xFF475569), fontWeight: FontWeight.w500),
-                                                      ),
-                                                      const SizedBox(height: 6),
-                                                      _buildPhotoThumbnailRow(
-                                                        evidence: childEv,
-                                                        gate: gate,
-                                                        itemTitle: slaveTitle,
-                                                        masterSeq: master['masterSequence'],
-                                                        deviceSeq: child['deviceSequence'],
-                                                        emptyMessage: 'No installation photo uploaded for $slaveName ($cSerial).',
-                                                      ),
-                                                    ],
+                                                  child: _buildPhotoThumbnailRow(
+                                                    evidence: childEv,
+                                                    gate: gate,
+                                                    itemTitle: slaveTitle,
+                                                    masterSeq: master['masterSequence'],
+                                                    deviceSeq: child['deviceSequence'],
+                                                    emptyMessage: 'No installation photo uploaded for $slaveName ($cSerial).',
                                                   ),
                                                 ),
                                               ],
@@ -2713,20 +2754,10 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Opening & Closing Records',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    'Chronological log of boom barrier opening, closing, and duration',
-                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                  ),
-                ],
+            const Expanded(
+              child: Text(
+                'Opening & Closing Records',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
               ),
             ),
             const SizedBox(width: 8),
@@ -3056,9 +3087,12 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         final gateData = data is Map ? (data['cluster'] ?? data) : null;
-        if (gateData != null && mounted) {
+        if (gateData is Map && mounted) {
           setState(() {
-            _selectedGate = Map<String, dynamic>.from(gateData);
+            _selectedGate = {
+              ...(_selectedGate ?? const <String, dynamic>{}),
+              ...Map<String, dynamic>.from(gateData),
+            };
             _isGateDetailRefreshing = false;
           });
           if (showToast) {

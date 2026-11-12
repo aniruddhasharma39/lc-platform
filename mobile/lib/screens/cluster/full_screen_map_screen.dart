@@ -4,6 +4,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import '../../services/home_cache_service.dart';
 import '../../utils/app_feedback.dart';
+import '../../utils/user_utils.dart';
 
 class FullScreenMapScreen extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -38,7 +39,7 @@ class _FullScreenMapScreenState extends State<FullScreenMapScreen> {
     });
   }
 
-  String get _userId => (widget.user['id'] ?? widget.user['username'] ?? 'user').toString();
+  String get _userId => resolveCurrentUserId(user: widget.user);
 
   Future<void> _refreshMapData() async {
     setState(() => _isRefreshing = true);

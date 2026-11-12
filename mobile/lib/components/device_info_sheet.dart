@@ -30,6 +30,7 @@ class DeviceInfoSheet extends StatefulWidget {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
       backgroundColor: Colors.transparent,
       builder: (_) => DeviceInfoSheet(
         gate: gate,
@@ -43,13 +44,159 @@ class DeviceInfoSheet extends StatefulWidget {
   State<DeviceInfoSheet> createState() => _DeviceInfoSheetState();
 }
 
+class DeviceInfoTarget {
+  final int? deviceId;
+  final String thingName;
+  final String deviceType;
+  final String connectivityStatus;
+  final bool isVirtualUnlinked;
+  final bool canQueryTelemetry;
+
+  const DeviceInfoTarget({
+    this.deviceId,
+    required this.thingName,
+    required this.deviceType,
+    required this.connectivityStatus,
+    required this.isVirtualUnlinked,
+    required this.canQueryTelemetry,
+  });
+}
+
+bool isValidHardwareThingName(String? raw) {
+  if (raw == null) return false;
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty) return false;
+  if (trimmed.toLowerCase().contains('virtual')) return false;
+  return trimmed.toUpperCase().startsWith('LC-');
+}
+
+Map<String, dynamic>? _findHardwareRegistryInList(dynamic list) {
+  if (list is! List) return null;
+  for (final item in list) {
+    if (item is Map) {
+      final map = Map<String, dynamic>.from(item);
+      final tn = map['thingName']?.toString().trim();
+      if (tn != null && tn.isNotEmpty && !tn.toLowerCase().contains('virtual')) {
+        return map;
+      }
+    }
+  }
+  return null;
+}
+
+Map<String, dynamic>? _findHardwareRegistryInMaster(Map<dynamic, dynamic> master) {
+  final fromList = _findHardwareRegistryInList(master['deviceRegistries']);
+  if (fromList != null) return fromList;
+  final singular = master['deviceRegistry'];
+  if (singular is Map) {
+    final map = Map<String, dynamic>.from(singular);
+    final tn = map['thingName']?.toString().trim();
+    if (tn != null && tn.isNotEmpty && !tn.toLowerCase().contains('virtual')) {
+      return map;
+    }
+  }
+  return null;
+}
+
+DeviceInfoTarget resolveDeviceInfoTarget({
+  Map<String, dynamic>? device,
+  Map<String, dynamic>? master,
+  Map<String, dynamic>? gate,
+}) {
+  // 1. Genuine DeviceRegistry record passed explicitly
+  if (device != null) {
+    final tn = device['thingName']?.toString().trim();
+    if (tn != null && tn.isNotEmpty && !tn.toLowerCase().contains('virtual')) {
+      final parsedId = device['id'] is int ? device['id'] as int : int.tryParse('${device['id']}');
+      return DeviceInfoTarget(
+        deviceId: parsedId,
+        thingName: tn,
+        deviceType: (device['deviceType'] ?? 'GATE').toString().toUpperCase(),
+        connectivityStatus: (device['connectivityStatus'] ?? device['computedStatus'] ?? 'OFFLINE').toString().toUpperCase(),
+        isVirtualUnlinked: false,
+        canQueryTelemetry: true,
+      );
+    }
+  }
+
+  // 2. Linked DeviceRegistry under MasterUnit (`deviceRegistries` or singular `deviceRegistry`)
+  Map<String, dynamic>? linkedRegistry;
+  if (master != null) {
+    linkedRegistry = _findHardwareRegistryInMaster(master);
+  } else if (gate != null) {
+    final masters = gate['masters'];
+    if (masters is List) {
+      for (final m in masters) {
+        if (m is Map) {
+          linkedRegistry = _findHardwareRegistryInMaster(m);
+          if (linkedRegistry != null) break;
+        }
+      }
+    }
+    linkedRegistry ??= _findHardwareRegistryInList(gate['deviceRegistries']);
+  }
+
+  if (linkedRegistry != null) {
+    final parsedId = linkedRegistry['id'] is int
+        ? linkedRegistry['id'] as int
+        : int.tryParse('${linkedRegistry['id']}');
+    return DeviceInfoTarget(
+      deviceId: parsedId,
+      thingName: linkedRegistry['thingName'].toString().trim(),
+      deviceType: (linkedRegistry['deviceType'] ?? (master != null ? 'MASTER' : 'GATE')).toString().toUpperCase(),
+      connectivityStatus: (linkedRegistry['connectivityStatus'] ?? linkedRegistry['computedStatus'] ?? 'OFFLINE').toString().toUpperCase(),
+      isVirtualUnlinked: false,
+      canQueryTelemetry: true,
+    );
+  }
+
+  // 3. Unlinked / fallback path: NEVER use MasterUnit.id or LCGate.id as _deviceId!
+  Map<String, dynamic>? fallback = device ?? master;
+  if (fallback == null && gate != null && gate['masters'] is List && (gate['masters'] as List).isNotEmpty) {
+    final firstMaster = (gate['masters'] as List).first;
+    if (firstMaster is Map) {
+      fallback = Map<String, dynamic>.from(firstMaster);
+    }
+  }
+
+  final rawCandidate = fallback != null
+      ? (fallback['awsThingName'] ?? fallback['thingName'] ?? fallback['serialNumber'])?.toString().trim()
+      : null;
+
+  if (isValidHardwareThingName(rawCandidate)) {
+    return DeviceInfoTarget(
+      deviceId: null,
+      thingName: rawCandidate!,
+      deviceType: (fallback?['deviceType'] ?? (master != null || (gate != null && fallback != null) ? 'MASTER' : 'GATE')).toString().toUpperCase(),
+      connectivityStatus: (fallback?['connectivityStatus'] ?? fallback?['computedStatus'] ?? 'OFFLINE').toString().toUpperCase(),
+      isVirtualUnlinked: false,
+      canQueryTelemetry: true,
+    );
+  }
+
+  final displayLabel = (rawCandidate != null && rawCandidate.isNotEmpty)
+      ? rawCandidate
+      : 'Virtual / Unlinked Master';
+
+  return DeviceInfoTarget(
+    deviceId: null,
+    thingName: displayLabel,
+    deviceType: (fallback?['deviceType'] ?? (master != null ? 'MASTER' : 'GATE')).toString().toUpperCase(),
+    connectivityStatus: 'VIRTUAL / UNLINKED',
+    isVirtualUnlinked: true,
+    canQueryTelemetry: false,
+  );
+}
+
 class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
   bool _isLoading = true;
   Map<String, dynamic>? _manifestPayload;
-  String _thingName = 'Unknown Device';
+  String _thingName = 'Virtual / Unlinked Master';
   String _deviceType = 'GATE / CLUSTER';
-  String _status = 'ACTIVE';
+  String _connectivityStatus = 'OFFLINE';
   int? _deviceId;
+  bool _isVirtualUnlinked = false;
+  bool _canQueryTelemetry = false;
   bool _showRawJson = false;
   bool _isPinging = false;
 
@@ -61,48 +208,48 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
   }
 
   void _extractTargetInfo() {
-    // Determine target from device, master, or gate
-    Map<String, dynamic>? target = widget.device;
-    if (target == null && widget.master != null) {
-      final regs = widget.master!['deviceRegistries'];
-      if (regs is List && regs.isNotEmpty) {
-        target = Map<String, dynamic>.from(regs.first as Map);
-      } else {
-        target = widget.master;
-      }
-    }
-    if (target == null && widget.gate != null) {
-      final masters = widget.gate!['masters'];
-      if (masters is List && masters.isNotEmpty) {
-        final firstMaster = masters.first as Map;
-        final regs = firstMaster['deviceRegistries'];
-        if (regs is List && regs.isNotEmpty) {
-          target = Map<String, dynamic>.from(regs.first as Map);
-        } else {
-          target = Map<String, dynamic>.from(firstMaster);
-        }
-      }
-    }
-
-    if (target != null) {
-      _thingName = (target['thingName'] ?? target['serialNumber'] ?? target['lcNumber'] ?? 'Unknown Device').toString();
-      _deviceType = (target['deviceType'] ?? (widget.master != null ? 'MASTER' : 'GATE')).toString().toUpperCase();
-      _status = (target['status'] ?? 'ACTIVE').toString().toUpperCase();
-      if (target['id'] is int) {
-        _deviceId = target['id'] as int;
-      }
-    }
+    final resolved = resolveDeviceInfoTarget(
+      device: widget.device,
+      master: widget.master,
+      gate: widget.gate,
+    );
+    _deviceId = resolved.deviceId;
+    _thingName = resolved.thingName;
+    _deviceType = resolved.deviceType;
+    _connectivityStatus = resolved.connectivityStatus;
+    _isVirtualUnlinked = resolved.isVirtualUnlinked;
+    _canQueryTelemetry = resolved.canQueryTelemetry;
   }
 
   Future<void> _fetchTelemetry() async {
-    if (_thingName.isEmpty || _thingName == 'Unknown Device') { setState(() => _isLoading = false); return; }
+    if (!_canQueryTelemetry) {
+      // Virtual / unlinked masters never hit `/devices/:id/telemetry` (avoids MasterUnit.id collision).
+      Map<String, dynamic>? meta;
+      if (widget.device != null && widget.device!['metadata'] is Map) {
+        meta = Map<String, dynamic>.from(widget.device!['metadata'] as Map);
+      } else if (widget.master != null && widget.master!['metadata'] is Map) {
+        meta = Map<String, dynamic>.from(widget.master!['metadata'] as Map);
+      } else if (widget.gate != null && widget.gate!['metadata'] is Map) {
+        meta = Map<String, dynamic>.from(widget.gate!['metadata'] as Map);
+      }
+      if (mounted) {
+        setState(() {
+          if (meta != null && meta.isNotEmpty) {
+            _manifestPayload = meta;
+          }
+          _isLoading = false;
+        });
+      }
+      return;
+    }
+
     setState(() => _isLoading = true);
     try {
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString('token') ?? '';
 
-      // Try fetching from telemetry API endpoint using ID or ThingName
-      final queryId = _deviceId?.toString() ?? _thingName;
+      // Try fetching from telemetry API endpoint using linked DeviceRegistry ID or valid ThingName
+      final queryId = _deviceId?.toString() ?? Uri.encodeComponent(_thingName);
       final res = await http.get(
         Uri.parse('$baseUrl/devices/$queryId/telemetry'),
         headers: {'Authorization': 'Bearer $token'},
@@ -111,6 +258,10 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         if (data is Map) {
+          final liveConn = (data['connectivityStatus'] ?? data['computedStatus'] ?? '').toString().trim().toUpperCase();
+          if (liveConn.isNotEmpty && mounted) {
+            setState(() => _connectivityStatus = liveConn);
+          }
           if (data['latestManifest']?['payload'] != null) {
             final p = data['latestManifest']['payload'];
             if (p is Map && mounted) {
@@ -169,7 +320,7 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
   }
 
   Future<void> _pingHealthCheck() async {
-    if (_deviceId == null) {
+    if (!_canQueryTelemetry || _isVirtualUnlinked) {
       AppFeedback.showError(context, 'No AWS IoT Thing is linked to "$_thingName". Assign hardware first.');
       return;
     }
@@ -177,8 +328,9 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString('token') ?? '';
+      final pingTarget = _deviceId?.toString() ?? Uri.encodeComponent(_thingName);
       final res = await http.post(
-        Uri.parse('$baseUrl/devices/$_deviceId/health-check'),
+        Uri.parse('$baseUrl/devices/$pingTarget/health-check'),
         headers: {'Authorization': 'Bearer $token'},
       );
       if (res.statusCode == 200) {
@@ -272,15 +424,19 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                             decoration: BoxDecoration(
-                              color: _status == 'ACTIVE' ? const Color(0xFFDCFCE7) : const Color(0xFFF1F5F9),
+                              color: _isVirtualUnlinked
+                                  ? const Color(0xFFFEF3C7)
+                                  : (_connectivityStatus == 'ONLINE' ? const Color(0xFFDCFCE7) : const Color(0xFFF1F5F9)),
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
-                              _status,
+                              _connectivityStatus,
                               style: TextStyle(
                                 fontSize: 9,
                                 fontWeight: FontWeight.bold,
-                                color: _status == 'ACTIVE' ? const Color(0xFF15803D) : const Color(0xFF475569),
+                                color: _isVirtualUnlinked
+                                    ? const Color(0xFFB45309)
+                                    : (_connectivityStatus == 'ONLINE' ? const Color(0xFF15803D) : const Color(0xFF475569)),
                               ),
                             ),
                           ),
@@ -365,14 +521,15 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
                     icon: const Icon(Icons.copy, size: 14),
                     label: const Text('Copy JSON', style: TextStyle(fontSize: 11)),
                   ),
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  icon: _isPinging
-                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.network_ping, size: 18, color: Color(0xFF2563EB)),
-                  tooltip: 'Check Connection',
-                  onPressed: _isPinging ? null : _pingHealthCheck,
-                ),
+                if (_canQueryTelemetry)
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: _isPinging
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.network_ping, size: 18, color: Color(0xFF2563EB)),
+                    tooltip: 'Check Connection',
+                    onPressed: _isPinging ? null : _pingHealthCheck,
+                  ),
               ],
             ),
           ),
@@ -389,25 +546,37 @@ class _DeviceInfoSheetState extends State<DeviceInfoSheet> {
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(Icons.signal_cellular_connected_no_internet_4_bar, size: 40, color: Color(0xFF94A3B8)),
+                              Icon(
+                                _isVirtualUnlinked
+                                    ? Icons.developer_board_off
+                                    : Icons.signal_cellular_connected_no_internet_4_bar,
+                                size: 40,
+                                color: const Color(0xFF94A3B8),
+                              ),
                               const SizedBox(height: 10),
                               Text(
-                                'No Device Updates Yet for $_thingName',
+                                _isVirtualUnlinked
+                                    ? 'Virtual / Unlinked Master'
+                                    : 'No Device Updates Yet for $_thingName',
                                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
                                 textAlign: TextAlign.center,
                               ),
                               const SizedBox(height: 4),
-                              const Text(
-                                'Hardware details and status will appear automatically once the device connects and sends an update.',
-                                style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                              Text(
+                                _isVirtualUnlinked
+                                    ? 'No AWS IoT hardware device is linked to $_thingName. Assign a hardware device from Gate Details to view live telemetry.'
+                                    : 'Hardware details and status will appear automatically once the device connects and sends an update.',
+                                style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                                 textAlign: TextAlign.center,
                               ),
-                              const SizedBox(height: 16),
-                              ElevatedButton.icon(
-                                onPressed: _pingHealthCheck,
-                                icon: const Icon(Icons.refresh, size: 16),
-                                label: const Text('Check Connection Now'),
-                              ),
+                              if (_canQueryTelemetry) ...[
+                                const SizedBox(height: 16),
+                                ElevatedButton.icon(
+                                  onPressed: _pingHealthCheck,
+                                  icon: const Icon(Icons.refresh, size: 16),
+                                  label: const Text('Check Connection Now'),
+                                ),
+                              ],
                             ],
                           ),
                         ),

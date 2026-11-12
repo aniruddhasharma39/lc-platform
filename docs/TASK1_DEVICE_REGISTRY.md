@@ -20,10 +20,7 @@ Located in:
 
 
 
-aws-lambda/device-registration-handler/
-
-
-backend/lambda/device-registration/
+aws-lambda/device-registration-handler/ (single canonical location; legacy duplicate under backend/lambda/device-registration/ consolidated here)
 Key Files Created:
 
 

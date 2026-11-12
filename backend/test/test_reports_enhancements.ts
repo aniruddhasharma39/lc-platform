@@ -82,17 +82,17 @@ async function runTestSuite() {
   ];
   const rep1 = calculateGateCycleAnalytics(gateMeta, test1Events, '2026-10-01', '2026-10-01');
   assert.strictEqual(rep1.kpis.totalCycles, 1, 'Should count exactly 1 cycle');
-  assert.strictEqual(rep1.kpis.avgClosingSeconds, 300, 'Avg closing should be 300s (5m)');
-  assert.strictEqual(rep1.kpis.avgClosingFormatted, '5m', 'Avg closing formatted should be 5m');
-  assert.strictEqual(rep1.kpis.avgOpeningFormatted, '—', 'Avg opening formatted should be dash for single cycle');
+  assert.strictEqual(rep1.kpis.avgOpenSeconds, 300, 'Avg open should be 300s (5m)');
+  assert.strictEqual(rep1.kpis.avgOpenFormatted, '5m', 'Avg open formatted should be 5m');
+  assert.strictEqual(rep1.kpis.avgClosedFormatted, '—', 'Avg closed formatted should be dash for single cycle');
   console.log('✔ TEST 1 PASSED: 1 completed cycle counted accurately.\n');
 
   // ─────────────────────────────────────────────────────────────────
-  // TEST 2: Multiple completed cycles with consecutive opening intervals
+  // TEST 2: Multiple completed cycles with consecutive closed intervals
   // ─────────────────────────────────────────────────────────────────
-  console.log('TEST 2: Multiple completed cycles with average opening intervals');
+  console.log('TEST 2: Multiple completed cycles with average closed intervals');
   const test2Events = [
-    // Cycle 1: 08:10 AM - 08:15 AM (5 min closed)
+    // Cycle 1: 08:10 AM - 08:15 AM (5 min open)
     {
       id: 1,
       gateId: 999,
@@ -101,7 +101,7 @@ async function runTestSuite() {
       durationSeconds: 300,
       status: 'CLOSED'
     },
-    // Cycle 2: 10:25 AM - 10:31 AM (6 min closed). Open interval from 08:15 to 10:25 = 130 min (7800s)
+    // Cycle 2: 10:25 AM - 10:31 AM (6 min open). Closed interval from 08:15 to 10:25 = 130 min (7800s)
     {
       id: 2,
       gateId: 999,
@@ -110,7 +110,7 @@ async function runTestSuite() {
       durationSeconds: 360,
       status: 'CLOSED'
     },
-    // Cycle 3: 12:40 PM - 12:45 PM (5 min closed). Open interval from 10:31 to 12:40 = 129 min (7740s)
+    // Cycle 3: 12:40 PM - 12:45 PM (5 min open). Closed interval from 10:31 to 12:40 = 129 min (7740s)
     {
       id: 3,
       gateId: 999,
@@ -122,12 +122,12 @@ async function runTestSuite() {
   ];
   const rep2 = calculateGateCycleAnalytics(gateMeta, test2Events, '2026-10-01', '2026-10-01');
   assert.strictEqual(rep2.kpis.totalCycles, 3, 'Should count 3 completed cycles');
-  // Avg closing = (300 + 360 + 300) / 3 = 320s = 5m 20s
-  assert.strictEqual(rep2.kpis.avgClosingSeconds, 320, 'Avg closing seconds should be 320');
-  assert.strictEqual(rep2.kpis.avgClosingFormatted, '5m 20s', 'Avg closing formatted matches prompt formula');
-  // Avg opening interval = (7800 + 7740) / 2 = 7770s = 129.5 min (~ 2h 9m 30s)
-  assert.strictEqual(rep2.kpis.avgOpeningSeconds, 7770, 'Avg opening interval seconds matches consecutive pairs');
-  console.log(`✔ TEST 2 PASSED: 3 cycles with Avg Closing ${rep2.kpis.avgClosingFormatted} and Avg Opening ${rep2.kpis.avgOpeningFormatted}.\n`);
+  // Avg open = (300 + 360 + 300) / 3 = 320s = 5m 20s
+  assert.strictEqual(rep2.kpis.avgOpenSeconds, 320, 'Avg open seconds should be 320');
+  assert.strictEqual(rep2.kpis.avgOpenFormatted, '5m 20s', 'Avg open formatted matches unified formula');
+  // Avg closed interval = (7800 + 7740) / 2 = 7770s = 129.5 min (~ 2h 9m 30s)
+  assert.strictEqual(rep2.kpis.avgClosedSeconds, 7770, 'Avg closed interval seconds matches consecutive pairs');
+  console.log(`✔ TEST 2 PASSED: 3 cycles with Avg Open ${rep2.kpis.avgOpenFormatted} and Avg Closed ${rep2.kpis.avgClosedFormatted}.\n`);
 
   // ─────────────────────────────────────────────────────────────────
   // TEST 3: Incomplete, ongoing, and duplicate operations are safely handled
@@ -182,7 +182,7 @@ async function runTestSuite() {
   ];
   const rep4 = calculateGateCycleAnalytics(gateMeta, test4Events, '2026-10-01', '2026-10-02');
   assert.strictEqual(rep4.kpis.totalCycles, 1, 'Should count 1 cycle');
-  assert.strictEqual(rep4.kpis.avgClosingSeconds, 360, 'Full duration across midnight is 360s (6 min)');
+  assert.strictEqual(rep4.kpis.avgOpenSeconds, 360, 'Full open duration across midnight is 360s (6 min)');
   // Attributed to 2026-10-01
   const day1 = rep4.dailyBreakdown.find(d => d.dateStr === '2026-10-01');
   const day2 = rep4.dailyBreakdown.find(d => d.dateStr === '2026-10-02');
@@ -196,14 +196,15 @@ async function runTestSuite() {
   console.log('TEST 5: Zero cycle dates handling');
   const rep5 = calculateGateCycleAnalytics(gateMeta, [], '2026-10-01', '2026-10-03');
   assert.strictEqual(rep5.kpis.totalCycles, 0);
-  assert.strictEqual(rep5.kpis.avgClosingFormatted, '—');
-  assert.strictEqual(rep5.kpis.avgOpeningFormatted, '—');
+  assert.strictEqual(rep5.kpis.avgOpenFormatted, '—');
+  assert.strictEqual(rep5.kpis.avgClosedFormatted, '—');
   assert.strictEqual(rep5.dailyBreakdown.length, 3, 'Must contain all 3 days in range');
   rep5.dailyBreakdown.forEach(day => {
     assert.strictEqual(day.completedCycles, 0);
-    assert.strictEqual(day.avgClosingFormatted, '—');
-    assert.strictEqual(day.avgOpeningFormatted, '—');
-    assert.strictEqual(day.totalOpenFormatted, '24h');
+    assert.strictEqual(day.avgOpenFormatted, '—');
+    assert.strictEqual(day.avgClosedFormatted, '—');
+    assert.strictEqual(day.totalClosedFormatted, '24h');
+    assert.strictEqual(day.totalOpenFormatted, '0s');
   });
   console.log('✔ TEST 5 PASSED: Empty dates render cleanly with zero counts and dashes.\n');
 

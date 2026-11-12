@@ -747,5 +747,40 @@ void main() {
       expect(exportQuery['shift'], 'NIGHT');
       expect(exportQuery['search'], 'LC-99');
     });
+
+    // 29. IST Boundary Integrity (00:00-05:30 IST events not evicted by UTC filter boundaries)
+    test('29. IST boundaries include 00:00-05:30 IST events and parse IST timestamps cleanly', () {
+      final filter = makeFilter(startDate: '2026-11-11', endDate: '2026-11-11');
+      // 2026-11-11 00:15:00 IST == 2026-11-10 18:45:00Z
+      final earlyMorningIst = OperationalRecord.fromJson({
+        'id': 901,
+        'gateId': 101,
+        'lcNumber': 'LC-101',
+        'gateName': 'Gate 101',
+        'locationName': 'North Junction',
+        'openedAt': '2026-11-10T18:45:00.000Z',
+        'closedAt': '2026-11-10T18:50:00.000Z',
+        'durationSeconds': 300,
+        'status': 'CLOSED',
+      });
+      // 2026-11-10 23:50:00 IST == 2026-11-10 18:20:00Z (belongs to Nov 10 IST)
+      final prevDayIst = OperationalRecord.fromJson({
+        'id': 902,
+        'gateId': 101,
+        'lcNumber': 'LC-101',
+        'gateName': 'Gate 101',
+        'locationName': 'North Junction',
+        'openedAt': '2026-11-10T18:20:00.000Z',
+        'closedAt': '2026-11-10T18:25:00.000Z',
+        'durationSeconds': 300,
+        'status': 'CLOSED',
+      });
+
+      expect(earlyMorningIst.openedDateIst, '2026-11-11');
+      expect(earlyMorningIst.openedTimeIst, '00:15:00');
+      expect(earlyMorningIst.closedTimeIst, '00:20:00');
+      expect(cacheService.isRecordMatchingFilters(earlyMorningIst, filter), isTrue);
+      expect(cacheService.isRecordMatchingFilters(prevDayIst, filter), isFalse);
+    });
   });
 }

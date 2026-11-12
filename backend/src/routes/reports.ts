@@ -5,8 +5,15 @@ import PDFDocument from 'pdfkit';
 import path from 'path';
 import fs from 'fs';
 import { prisma } from '../lib/prisma';
-import { authenticate, AuthRequest } from '../middleware/auth';
+import { authenticate, AuthRequest, ensureGateAccess, isDeveloperUser, requireAdmin, requireModule } from '../middleware/auth';
 import { buildUserGateWhereClause } from '../lib/railwayHierarchy';
+import {
+  formatISTTimeString,
+  getISTDateRangeDefaults,
+  getISTDateString,
+  getISTHour,
+  getISTUtcDateBounds,
+} from '../lib/timeUtils';
 import { syncHistoricalTelemetryEvents } from '../lib/telemetryMonitor';
 import { getDirectoryRevisionToken } from '../lib/revisionManager';
 import {
@@ -23,7 +30,8 @@ import {
   getFullCycleAnalytics,
   getCountReportAnalytics,
   getDurationReportAnalytics,
-  getHolisticReportAnalytics
+  getHolisticReportAnalytics,
+  resolveGateHierarchyLabel
 } from '../lib/cycleReportService';
 import {
   exportCompleteLogExcel,
@@ -69,8 +77,7 @@ function formatDurationHuman(seconds: number | null | undefined): string {
  * Helper to resolve user's authorized scope groups and gate IDs
  */
 async function resolveUserAccess(req: AuthRequest) {
-  const roleName = (req.user?.role || '').toLowerCase();
-  const isDeveloper = roleName.includes('developer') || roleName.includes('admin');
+  const isDeveloper = isDeveloperUser(req.user);
 
   // Role-based gate access (no scope groups)
   const whereClause = await buildUserGateWhereClause(req.user, prisma);
@@ -211,6 +218,57 @@ router.get('/gates', async (req: AuthRequest, res, next) => {
   }
 });
 
+function resolveQueryDateRange(query: any): {
+  startDateStr: string;
+  endDateStr: string;
+  startUtc: Date;
+  endUtc: Date;
+} {
+  const { defaultStart, defaultEnd } = getISTDateRangeDefaults(7);
+  const singleDate = typeof query.date === 'string' && query.date ? query.date : undefined;
+  const startDateStr = typeof query.startDate === 'string' && query.startDate
+    ? query.startDate
+    : (singleDate || defaultStart);
+  const endDateStr = typeof query.endDate === 'string' && query.endDate
+    ? query.endDate
+    : (singleDate || defaultEnd);
+  const { startUtc, endUtc } = getISTUtcDateBounds(startDateStr, endDateStr);
+  return { startDateStr, endDateStr, startUtc, endUtc };
+}
+
+function serializeOperationalRecord(ev: any, gateMeta?: any) {
+  const g = gateMeta || ev.gate || null;
+  const openedDateObj = ev.openedAt ? new Date(ev.openedAt) : null;
+  const closedDateObj = ev.closedAt ? new Date(ev.closedAt) : null;
+  return {
+    id: ev.eventId ?? ev.id,
+    gateId: ev.gateId,
+    masterId: ev.masterId || null,
+    masterSerial: ev.masterSerial || null,
+    thingName: ev.thingName || null,
+    lcNumber: g?.lcNumber || null,
+    gateName: g?.name || g?.locationName || null,
+    locationName: g?.locationName || null,
+    zone: g?.zone || null,
+    division: g?.division || null,
+    scopeGroupName: g ? resolveGateHierarchyLabel(g) : null,
+    scopeGroupColor: '#0B3C7A',
+    openedAt: openedDateObj ? openedDateObj.toISOString() : new Date().toISOString(),
+    closedAt: closedDateObj ? closedDateObj.toISOString() : null,
+    openedDateIst: openedDateObj ? getISTDateString(openedDateObj) : null,
+    openedTimeIst: openedDateObj ? formatISTTimeString(openedDateObj) : null,
+    closedDateIst: closedDateObj ? getISTDateString(closedDateObj) : null,
+    closedTimeIst: closedDateObj ? formatISTTimeString(closedDateObj) : null,
+    durationSeconds: ev.durationSeconds,
+    durationFormatted: ev.durationSeconds ? formatDurationHuman(ev.durationSeconds) : 'Ongoing (Open)',
+    status: ev.status,
+    openedBy: ev.openedBy,
+    closedBy: ev.closedBy,
+    trainNumber: ev.trainNumber,
+    remarks: ev.remarks,
+  };
+}
+
 /**
  * Core query helper to fetch operational events with date range, multi-scope, multi-gate, and filters
  */
@@ -248,26 +306,8 @@ async function fetchFilteredOperationalEvents(req: AuthRequest, dbClient: any = 
     gateIdsParam
   );
 
-  // Parse Date Range (Default: Last 7 Days)
-  const today = new Date();
-  const defaultEnd = today.toISOString().split('T')[0];
-  const defaultStartObj = new Date(today);
-  defaultStartObj.setDate(today.getDate() - 7);
-  const defaultStart = defaultStartObj.toISOString().split('T')[0];
-
-  const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate
-    ? req.query.startDate
-    : (typeof req.query.date === 'string' && req.query.date ? req.query.date : defaultStart);
-
-  const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate
-    ? req.query.endDate
-    : (typeof req.query.date === 'string' && req.query.date ? req.query.date : defaultEnd);
-
-  const [sY, sM, sD] = startDateStr.split('-').map(Number);
-  const [eY, eM, eD] = endDateStr.split('-').map(Number);
-
-  const startUtc = new Date(Date.UTC(sY || today.getFullYear(), (sM || 1) - 1, sD || 1, 0, 0, 0, 0));
-  const endUtc = new Date(Date.UTC(eY || today.getFullYear(), (eM || 1) - 1, eD || 1, 23, 59, 59, 999));
+  // Parse Date Range in IST (Default: Last 7 Days)
+  const { startDateStr, endDateStr, startUtc, endUtc } = resolveQueryDateRange(req.query);
 
   // Filters
   const statusFilter = typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL';
@@ -337,6 +377,7 @@ async function fetchFilteredOperationalEvents(req: AuthRequest, dbClient: any = 
           name: true,
           zone: true,
           division: true,
+          station: { select: { name: true, code: true } },
         }
       }
     },
@@ -349,8 +390,7 @@ async function fetchFilteredOperationalEvents(req: AuthRequest, dbClient: any = 
   let filteredEvents = rawEvents.filter(ev => {
     // Shift filter (IST)
     if (shiftFilter !== 'ALL') {
-      const utcTime = new Date(ev.openedAt).getTime();
-      const istHour = new Date(utcTime + (3600000 * 5.5)).getUTCHours();
+      const istHour = getISTHour(new Date(ev.openedAt));
       if (shiftFilter === 'MORNING' && (istHour < 6 || istHour >= 14)) return false;
       if (shiftFilter === 'EVENING' && (istHour < 14 || istHour >= 22)) return false;
       if (shiftFilter === 'NIGHT' && (istHour >= 6 && istHour < 22)) return false;
@@ -463,20 +503,8 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
       gateIdsParam
     );
 
-    // Parse Date Range (Default: Last 7 Days)
-    const today = new Date();
-    const defaultEnd = today.toISOString().split('T')[0];
-    const defaultStartObj = new Date(today);
-    defaultStartObj.setDate(today.getDate() - 7);
-    const defaultStart = defaultStartObj.toISOString().split('T')[0];
-
-    const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate
-      ? req.query.startDate
-      : (typeof req.query.date === 'string' && req.query.date ? req.query.date : defaultStart);
-
-    const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate
-      ? req.query.endDate
-      : (typeof req.query.date === 'string' && req.query.date ? req.query.date : defaultEnd);
+    // Parse Date Range in IST (Default: Last 7 Days)
+    const { startDateStr, endDateStr, startUtc: sUtc, endUtc: eUtc } = resolveQueryDateRange(req.query);
 
     const statusFilter = typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL';
     const shiftFilter = typeof req.query.shift === 'string' ? req.query.shift.toUpperCase() : 'ALL';
@@ -538,11 +566,7 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
       // Fetch point-in-time gate revisions map for serialized change-log sync
       const gateRevisions = await getLatestGateRevisions(data.targetGateIds, tx);
 
-      // Check whether target gates have unclosed events within the requested date window
-      const [sY, sM, sD] = data.startDateStr.split('-').map(Number);
-      const [eY, eM, eD] = data.endDateStr.split('-').map(Number);
-      const sUtc = new Date(Date.UTC(sY, (sM || 1) - 1, sD || 1, 0, 0, 0, 0));
-      const eUtc = new Date(Date.UTC(eY, (eM || 1) - 1, eD || 1, 23, 59, 59, 999));
+      // Check whether target gates have unclosed events within the requested IST date window
       const unclosedCount = await tx.lCGateEvent.count({
         where: {
           gateId: { in: data.targetGateIds },
@@ -583,32 +607,7 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
       },
       cursor,
       metrics: data.metrics,
-      records: data.events.map(ev => {
-        const matchingGroup: any = null;
-        return {
-          id: ev.id,
-          gateId: ev.gateId,
-          masterId: ev.masterId || null,
-          masterSerial: ev.masterSerial || null,
-          thingName: ev.thingName || null,
-          lcNumber: ev.gate.lcNumber,
-          gateName: ev.gate.name || ev.gate.locationName,
-          locationName: ev.gate.locationName,
-          zone: ev.gate.zone,
-          division: ev.gate.division,
-           scopeGroupName: 'Unassigned',
-           scopeGroupColor: '#0B3C7A',
-          openedAt: ev.openedAt.toISOString(),
-          closedAt: ev.closedAt ? ev.closedAt.toISOString() : null,
-          durationSeconds: ev.durationSeconds,
-          durationFormatted: ev.durationSeconds ? formatDurationHuman(ev.durationSeconds) : 'Ongoing (Open)',
-          status: ev.status,
-          openedBy: ev.openedBy,
-          closedBy: ev.closedBy,
-          trainNumber: ev.trainNumber,
-          remarks: ev.remarks
-        };
-      })
+      records: data.events.map(ev => serializeOperationalRecord(ev))
     });
   } catch (error) {
     next(error);
@@ -617,6 +616,17 @@ const handleGetRecords = async (req: AuthRequest, res: Response, next: any) => {
 
 router.get('/records', handleGetRecords);
 router.get('/daily-records', handleGetRecords);
+
+function parseMetricsExtraFilters(query: any): { searchQuery?: string; masterId?: number | null } {
+  const searchQuery = typeof query.search === 'string' && query.search.trim().length > 0
+    ? query.search.trim()
+    : undefined;
+  const rawMaster = typeof query.masterId === 'string' && query.masterId !== 'all'
+    ? parseInt(query.masterId, 10)
+    : null;
+  const masterId = rawMaster !== null && !isNaN(rawMaster) ? rawMaster : null;
+  return { searchQuery, masterId };
+}
 
 /**
  * 2b. GET /api/v1/reports/records/changes
@@ -767,6 +777,7 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
           locationName: true,
           zone: true,
           division: true,
+          station: { select: { name: true, code: true } },
         },
       }) : [];
       const gateMap = new Map(gatesData.map(g => [g.id, g]));
@@ -787,30 +798,7 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
         if (rec.opType === 'DELETE') {
           deletions.push(rec.eventId);
         } else {
-          const g = gateMap.get(rec.gateId);
-          events.push({
-            id: rec.eventId,
-            gateId: rec.gateId,
-            masterId: rec.masterId || null,
-            masterSerial: rec.masterSerial || null,
-            thingName: rec.thingName || null,
-            lcNumber: g?.lcNumber || null,
-            gateName: g?.name || g?.locationName || null,
-            locationName: g?.locationName || null,
-            zone: g?.zone || null,
-            division: g?.division || null,
-            scopeGroupName: null,
-            scopeGroupColor: '#0B3C7A',
-            openedAt: rec.openedAt ? rec.openedAt.toISOString() : new Date().toISOString(),
-            closedAt: rec.closedAt ? rec.closedAt.toISOString() : null,
-            durationSeconds: rec.durationSeconds,
-            durationFormatted: rec.durationSeconds ? formatDurationHuman(rec.durationSeconds) : 'Ongoing (Open)',
-            status: rec.status,
-            openedBy: rec.openedBy,
-            closedBy: rec.closedBy,
-            trainNumber: rec.trainNumber,
-            remarks: rec.remarks,
-          });
+          events.push(serializeOperationalRecord(rec, gateMap.get(rec.gateId)));
         }
       }
 
@@ -819,14 +807,17 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
         req.query.startDate as string,
         req.query.endDate as string,
         typeof req.query.shift === 'string' ? req.query.shift.toUpperCase() : 'ALL',
-        typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL'
+        typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL',
+        parseMetricsExtraFilters(req.query)
       );
 
-      // Check whether target gates still have any unclosed events in the date range
-      const [chSY, chSM, chSD] = ((req.query.startDate as string) || '').split('-').map(Number);
-      const [chEY, chEM, chED] = ((req.query.endDate as string) || '').split('-').map(Number);
-      const chSUtc = chSY ? new Date(Date.UTC(chSY, (chSM || 1) - 1, chSD || 1, 0, 0, 0, 0)) : new Date(0);
-      const chEUtc = chEY ? new Date(Date.UTC(chEY, (chEM || 1) - 1, chED || 1, 23, 59, 59, 999)) : new Date();
+      // Check whether target gates still have any unclosed events in the IST date range
+      const qStartDate = typeof req.query.startDate === 'string' && req.query.startDate ? req.query.startDate : '';
+      const qEndDate = typeof req.query.endDate === 'string' && req.query.endDate ? req.query.endDate : '';
+      const { startUtc: chSUtc, endUtc: chEUtc } =
+        qStartDate && qEndDate
+          ? getISTUtcDateBounds(qStartDate, qEndDate)
+          : { startUtc: new Date(0), endUtc: new Date() };
       const unclosedInWindow = await prisma.lCGateEvent.count({
         where: {
           gateId: { in: targetGateIds },
@@ -913,7 +904,8 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
           req.query.startDate as string,
           req.query.endDate as string,
           typeof req.query.shift === 'string' ? req.query.shift.toUpperCase() : 'ALL',
-          typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL'
+          typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL',
+          parseMetricsExtraFilters(req.query)
         ),
         serverTime: new Date().toISOString(),
       });
@@ -937,6 +929,7 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
             name: true,
             zone: true,
             division: true,
+            station: { select: { name: true, code: true } },
           },
         },
       },
@@ -969,7 +962,7 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
       locationName: ev.gate.locationName,
       zone: ev.gate.zone,
       division: ev.gate.division,
-      scopeGroupName: 'Unassigned',
+      scopeGroupName: resolveGateHierarchyLabel(ev.gate),
       scopeGroupColor: '#0B3C7A',
       openedAt: ev.openedAt.toISOString(),
       closedAt: ev.closedAt ? ev.closedAt.toISOString() : null,
@@ -1005,7 +998,8 @@ router.get('/records/changes', async (req: AuthRequest, res: Response, next: any
       req.query.startDate as string,
       req.query.endDate as string,
       typeof req.query.shift === 'string' ? req.query.shift.toUpperCase() : 'ALL',
-      typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL'
+      typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL',
+      parseMetricsExtraFilters(req.query)
     );
 
     return res.json({
@@ -1037,15 +1031,19 @@ router.get('/cycle-analytics', async (req: AuthRequest, res: Response, next: any
         endDate: '',
         overall: {
           totalCycles: 0,
-          avgClosingSeconds: 0,
-          avgClosingFormatted: '—',
-          avgOpeningSeconds: 0,
-          avgOpeningFormatted: '—',
-          totalClosedSeconds: 0,
-          totalClosedFormatted: '0s',
+          avgOpenSeconds: 0,
+          avgOpenFormatted: '—',
+          avgClosedSeconds: 0,
+          avgClosedFormatted: '—',
           totalOpenSeconds: 0,
           totalOpenFormatted: '0s',
-          reportingGatesCount: 0
+          totalClosedSeconds: 0,
+          totalClosedFormatted: '0s',
+          reportingGatesCount: 0,
+          avgOpeningSeconds: 0,
+          avgOpeningFormatted: '—',
+          avgClosingSeconds: 0,
+          avgClosingFormatted: '—'
         },
         gateReports: []
       });
@@ -1060,19 +1058,7 @@ router.get('/cycle-analytics', async (req: AuthRequest, res: Response, next: any
       gateIdsParam
     );
 
-    const today = new Date();
-    const defaultEnd = today.toISOString().split('T')[0];
-    const defaultStartObj = new Date(today);
-    defaultStartObj.setDate(today.getDate() - 7);
-    const defaultStart = defaultStartObj.toISOString().split('T')[0];
-
-    const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate
-      ? req.query.startDate
-      : (typeof req.query.date === 'string' && req.query.date ? req.query.date : defaultStart);
-
-    const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate
-      ? req.query.endDate
-      : (typeof req.query.date === 'string' && req.query.date ? req.query.date : defaultEnd);
+    const { startDateStr, endDateStr } = resolveQueryDateRange(req.query);
 
     const analytics = await getFullCycleAnalytics({
       targetGateIds,
@@ -1102,14 +1088,7 @@ router.get('/count', async (req: AuthRequest, res: Response, next: any) => {
     const gateIdsParam = (req.query.gateIds || req.query.gateId) as string | undefined;
     const { targetGateIds } = await resolveFilteredGateIds(access, undefined, gateIdsParam);
 
-    const today = new Date();
-    const defaultEnd = today.toISOString().split('T')[0];
-    const defaultStartObj = new Date(today);
-    defaultStartObj.setDate(today.getDate() - 7);
-    const defaultStart = defaultStartObj.toISOString().split('T')[0];
-
-    const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate ? req.query.startDate : defaultStart;
-    const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate ? req.query.endDate : defaultEnd;
+    const { startDateStr, endDateStr } = resolveQueryDateRange(req.query);
 
     const data = await getCountReportAnalytics({
       targetGateIds,
@@ -1133,14 +1112,7 @@ router.get('/duration', async (req: AuthRequest, res: Response, next: any) => {
     const gateIdsParam = (req.query.gateIds || req.query.gateId) as string | undefined;
     const { targetGateIds } = await resolveFilteredGateIds(access, undefined, gateIdsParam);
 
-    const today = new Date();
-    const defaultEnd = today.toISOString().split('T')[0];
-    const defaultStartObj = new Date(today);
-    defaultStartObj.setDate(today.getDate() - 7);
-    const defaultStart = defaultStartObj.toISOString().split('T')[0];
-
-    const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate ? req.query.startDate : defaultStart;
-    const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate ? req.query.endDate : defaultEnd;
+    const { startDateStr, endDateStr } = resolveQueryDateRange(req.query);
 
     const data = await getDurationReportAnalytics({
       targetGateIds,
@@ -1164,14 +1136,7 @@ router.get('/holistic', async (req: AuthRequest, res: Response, next: any) => {
     const gateIdsParam = (req.query.gateIds || req.query.gateId) as string | undefined;
     const { targetGateIds } = await resolveFilteredGateIds(access, undefined, gateIdsParam);
 
-    const today = new Date();
-    const defaultEnd = today.toISOString().split('T')[0];
-    const defaultStartObj = new Date(today);
-    defaultStartObj.setDate(today.getDate() - 7);
-    const defaultStart = defaultStartObj.toISOString().split('T')[0];
-
-    const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate ? req.query.startDate : defaultStart;
-    const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate ? req.query.endDate : defaultEnd;
+    const { startDateStr, endDateStr } = resolveQueryDateRange(req.query);
 
     const data = await getHolisticReportAnalytics({
       targetGateIds,
@@ -1289,12 +1254,6 @@ async function getDeviceMappingReportData(): Promise<DeviceMappingReportData> {
   };
 }
 
-function isDeveloperUser(user: any): boolean {
-  if (!user) return false;
-  const roleName = (typeof user.role === 'string' ? user.role : user.role?.name || '').toLowerCase();
-  return roleName === 'developer' || user.roleId === 1 || user.id === 1;
-}
-
 /**
  * GET /api/v1/reports/device-mapping
  * Developer-only: Compiled LC Gate, Master Unit, AWS IoT Thing & SIM ICCID mapping
@@ -1326,7 +1285,7 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
       }
 
       const mappingData = await getDeviceMappingReportData();
-      const dateStr = new Date().toISOString().split('T')[0];
+      const dateStr = getISTDateString(new Date());
       const filenameBase = `LC_Gate_Device_IoT_Mapping_${dateStr}`;
 
       if (format === 'xlsx' || format === 'excel') {
@@ -1344,14 +1303,7 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
       const gateIdsParam = (req.query.gateIds || req.query.gateId) as string | undefined;
       const { targetGateIds } = await resolveFilteredGateIds(access, undefined, gateIdsParam);
 
-      const today = new Date();
-      const defaultEnd = today.toISOString().split('T')[0];
-      const defaultStartObj = new Date(today);
-      defaultStartObj.setDate(today.getDate() - 7);
-      const defaultStart = defaultStartObj.toISOString().split('T')[0];
-
-      const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate ? req.query.startDate : defaultStart;
-      const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate ? req.query.endDate : defaultEnd;
+      const { startDateStr, endDateStr } = resolveQueryDateRange(req.query);
 
       const countData = await getCountReportAnalytics({ targetGateIds, startDateStr, endDateStr });
       const filenameBase = `LC_Gate_Count_Report_${startDateStr}_to_${endDateStr}`;
@@ -1371,14 +1323,7 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
       const gateIdsParam = (req.query.gateIds || req.query.gateId) as string | undefined;
       const { targetGateIds } = await resolveFilteredGateIds(access, undefined, gateIdsParam);
 
-      const today = new Date();
-      const defaultEnd = today.toISOString().split('T')[0];
-      const defaultStartObj = new Date(today);
-      defaultStartObj.setDate(today.getDate() - 7);
-      const defaultStart = defaultStartObj.toISOString().split('T')[0];
-
-      const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate ? req.query.startDate : defaultStart;
-      const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate ? req.query.endDate : defaultEnd;
+      const { startDateStr, endDateStr } = resolveQueryDateRange(req.query);
 
       const holisticData = await getHolisticReportAnalytics({ targetGateIds, startDateStr, endDateStr });
       const filenameBase = `LC_Gate_Holistic_Management_Report_${startDateStr}_to_${endDateStr}`;
@@ -1404,19 +1349,7 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
         gateIdsParam
       );
 
-      const today = new Date();
-      const defaultEnd = today.toISOString().split('T')[0];
-      const defaultStartObj = new Date(today);
-      defaultStartObj.setDate(today.getDate() - 7);
-      const defaultStart = defaultStartObj.toISOString().split('T')[0];
-
-      const startDateStr = typeof req.query.startDate === 'string' && req.query.startDate
-        ? req.query.startDate
-        : defaultStart;
-
-      const endDateStr = typeof req.query.endDate === 'string' && req.query.endDate
-        ? req.query.endDate
-        : defaultEnd;
+      const { startDateStr, endDateStr } = resolveQueryDateRange(req.query);
 
       const cycleData = await getFullCycleAnalytics({
         targetGateIds,
@@ -1441,7 +1374,7 @@ router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
     const columnsParam = req.query.columns ? (req.query.columns as string).split(',').map(c => c.trim()) : null;
 
     const ALL_COLUMNS = [
-      { key: 'scopeGroup', label: 'Cluster / Scope Group' },
+      { key: 'scopeGroup', label: 'Station / Division' },
       { key: 'lcNumber', label: 'LC Number' },
       { key: 'masterUnit', label: 'Master Unit' },
       { key: 'locationName', label: 'Location Name' },
@@ -1490,12 +1423,13 @@ const recordEventSchema = z.object({
   remarks: z.string().optional()
 });
 
-router.post('/events', async (req: AuthRequest, res, next) => {
+router.post('/events', requireModule('reports'), async (req: AuthRequest, res, next) => {
   try {
     const data = recordEventSchema.parse(req.body);
 
     const gate = await prisma.lCGate.findUnique({ where: { id: data.gateId } });
     if (!gate) return res.status(404).json({ error: 'LC Gate not found' });
+    if (!(await ensureGateAccess(req, res, gate.id))) return;
 
     const openedAt = data.openedAt ? new Date(data.openedAt) : new Date();
     const closedAt = data.closedAt ? new Date(data.closedAt) : (data.status === 'CLOSED' ? new Date() : null);
@@ -1533,13 +1467,14 @@ router.post('/events', async (req: AuthRequest, res, next) => {
  * PUT /api/v1/reports/events/:id
  * Administrative operational event correction
  */
-router.put('/events/:id', async (req: AuthRequest, res, next) => {
+router.put('/events/:id', requireModule('reports'), async (req: AuthRequest, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid event ID' });
 
     const existing = await prisma.lCGateEvent.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ error: 'Event not found' });
+    if (!(await ensureGateAccess(req, res, existing.gateId))) return;
 
     const { status, closedAt, openedAt, remarks, trainNumber } = req.body;
 
@@ -1577,10 +1512,14 @@ router.put('/events/:id', async (req: AuthRequest, res, next) => {
  * DELETE /api/v1/reports/events/:id
  * Single operational event deletion with tombstone logging & revision bump
  */
-router.delete('/events/:id', async (req: AuthRequest, res, next) => {
+router.delete('/events/:id', requireModule('reports'), async (req: AuthRequest, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid event ID' });
+
+    const existing = await prisma.lCGateEvent.findUnique({ where: { id }, select: { id: true, gateId: true } });
+    if (!existing) return res.status(404).json({ error: 'Event not found' });
+    if (!(await ensureGateAccess(req, res, existing.gateId))) return;
 
     await deleteOperationalEvent(id);
     res.status(204).send();
@@ -1593,7 +1532,7 @@ router.delete('/events/:id', async (req: AuthRequest, res, next) => {
  * POST /api/v1/reports/events/batch-delete
  * Bulk operational event deletion with tombstone logging & revision bump
  */
-router.post('/events/batch-delete', async (req: AuthRequest, res, next) => {
+router.post('/events/batch-delete', requireModule('reports'), async (req: AuthRequest, res, next) => {
   try {
     const { eventIds } = req.body;
     if (!Array.isArray(eventIds) || eventIds.length === 0) {
@@ -1601,6 +1540,19 @@ router.post('/events/batch-delete', async (req: AuthRequest, res, next) => {
     }
 
     const ids = eventIds.map((id: any) => parseInt(id, 10)).filter((id: number) => !isNaN(id));
+    if (ids.length === 0) {
+      return res.status(400).json({ error: 'Valid eventIds array required' });
+    }
+
+    const targetEvents = await prisma.lCGateEvent.findMany({
+      where: { id: { in: ids } },
+      select: { gateId: true },
+    });
+    const distinctGateIds = Array.from(new Set(targetEvents.map((e) => e.gateId)));
+    for (const gId of distinctGateIds) {
+      if (!(await ensureGateAccess(req, res, gId))) return;
+    }
+
     const deletedCount = await deleteOperationalEvents(ids);
     res.json({ message: 'Operational events deleted successfully', count: deletedCount });
   } catch (error) {
@@ -1612,7 +1564,7 @@ router.post('/events/batch-delete', async (req: AuthRequest, res, next) => {
  * 5. POST /api/v1/reports/sync-telemetry
  * Explicitly triggers synchronizing historical telemetry transitions into LCGateEvent
  */
-router.post('/sync-telemetry', async (req: AuthRequest, res, next) => {
+router.post('/sync-telemetry', requireModule('reports'), requireAdmin, async (req: AuthRequest, res, next) => {
   try {
     const result = await syncHistoricalTelemetryEvents();
     res.json({ message: 'Telemetry events synced successfully', ...result });

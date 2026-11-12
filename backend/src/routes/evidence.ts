@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
-import { authenticate } from '../middleware/auth';
+import { authenticate, ensureGateAccess, requireModule } from '../middleware/auth';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
 import fs from 'fs';
@@ -92,7 +92,7 @@ const uploadSchema = z.object({
 });
 
 // Upload evidence
-router.post('/', authenticate, async (req: any, res, next) => {
+router.post('/', authenticate, requireModule('cluster'), async (req: any, res, next) => {
   try {
     const data = uploadSchema.parse(req.body);
 
@@ -105,6 +105,11 @@ router.post('/', authenticate, async (req: any, res, next) => {
         error: 'Master Unit Not Found',
         message: `Master unit ID ${data.masterId} does not exist in the system.`,
       });
+    }
+    if (masterExists.gateId) {
+      if (!(await ensureGateAccess(req, res, masterExists.gateId))) return;
+    } else if (req.user?.role !== 'Developer') {
+      return res.status(403).json({ error: 'Forbidden: Only Developer can attach evidence to unlinked Master Units' });
     }
 
     // Ensure uploads directory exists for local fallback
@@ -312,56 +317,74 @@ router.post('/', authenticate, async (req: any, res, next) => {
   }
 });
 
+async function deleteEvidenceRecordWithAccess(req: any, res: any): Promise<boolean> {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: 'Invalid evidence ID' });
+    return false;
+  }
+
+  const evidence = await prisma.installationEvidence.findUnique({
+    where: { id },
+    include: { master: { select: { id: true, gateId: true, serialNumber: true } } },
+  });
+  if (!evidence) {
+    res.status(404).json({ error: 'Evidence not found' });
+    return false;
+  }
+  if (evidence.master?.gateId) {
+    if (!(await ensureGateAccess(req, res, evidence.master.gateId))) return false;
+  } else if (req.user?.role !== 'Developer') {
+    res.status(403).json({ error: 'Forbidden: Only Developer can delete unlinked Master evidence' });
+    return false;
+  }
+
+  await deleteEvidenceFile(evidence.imageUrl);
+  await prisma.installationEvidence.delete({ where: { id } });
+
+  if (evidence.category === 'SIM_CARD' && evidence.masterId) {
+    try {
+      await prisma.deviceRegistry.updateMany({
+        where: {
+          OR: [
+            { masterId: evidence.masterId },
+            ...(evidence.master?.serialNumber
+              ? [
+                  { serialNumber: evidence.master.serialNumber },
+                  { thingName: evidence.master.serialNumber },
+                ]
+              : []),
+          ],
+        },
+        data: { simPhotoUrl: null },
+      });
+    } catch (simErr) {
+      console.warn('Failed to clear SIM photo in DeviceRegistry on delete:', simErr);
+    }
+  }
+
+  if (evidence.master) {
+    try {
+      const now = new Date();
+      await prisma.masterUnit.update({ where: { id: evidence.master.id }, data: { updatedAt: now } }).catch(() => {});
+      if (evidence.master.gateId) {
+        await prisma.lCGate.update({ where: { id: evidence.master.gateId }, data: { updatedAt: now } }).catch(() => {});
+        await bumpDirectoryRevision([evidence.master.gateId], true);
+      }
+      clusterCacheManager.clear();
+    } catch (cacheErr) {
+      console.warn('Failed to bump revision/cache after evidence deletion:', cacheErr);
+    }
+  }
+
+  return true;
+}
+
 // Delete a single evidence record
-router.delete('/:id', authenticate, async (req, res, next) => {
+router.delete('/:id', authenticate, requireModule('cluster'), async (req, res, next) => {
   try {
-    const id = parseInt(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: 'Invalid evidence ID' });
-
-    const evidence = await prisma.installationEvidence.findUnique({
-      where: { id },
-      include: { master: { select: { id: true, gateId: true, serialNumber: true } } },
-    });
-    if (!evidence) return res.status(404).json({ error: 'Evidence not found' });
-
-    await deleteEvidenceFile(evidence.imageUrl);
-    await prisma.installationEvidence.delete({ where: { id } });
-
-    if (evidence.category === 'SIM_CARD' && evidence.masterId) {
-      try {
-        await prisma.deviceRegistry.updateMany({
-          where: {
-            OR: [
-              { masterId: evidence.masterId },
-              ...(evidence.master?.serialNumber
-                ? [
-                    { serialNumber: evidence.master.serialNumber },
-                    { thingName: evidence.master.serialNumber },
-                  ]
-                : []),
-            ],
-          },
-          data: { simPhotoUrl: null },
-        });
-      } catch (simErr) {
-        console.warn('Failed to clear SIM photo in DeviceRegistry on delete:', simErr);
-      }
-    }
-
-    if (evidence.master) {
-      try {
-        const now = new Date();
-        await prisma.masterUnit.update({ where: { id: evidence.master.id }, data: { updatedAt: now } }).catch(() => {});
-        if (evidence.master.gateId) {
-          await prisma.lCGate.update({ where: { id: evidence.master.gateId }, data: { updatedAt: now } }).catch(() => {});
-          await bumpDirectoryRevision([evidence.master.gateId], true);
-        }
-        clusterCacheManager.clear();
-      } catch (cacheErr) {
-        console.warn('Failed to bump revision/cache after evidence deletion:', cacheErr);
-      }
-    }
-
+    const deleted = await deleteEvidenceRecordWithAccess(req, res);
+    if (!deleted) return;
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -369,55 +392,10 @@ router.delete('/:id', authenticate, async (req, res, next) => {
 });
 
 // Alias for clients or firewalls that disallow HTTP DELETE
-router.post('/:id/delete', authenticate, async (req, res, next) => {
+router.post('/:id/delete', authenticate, requireModule('cluster'), async (req, res, next) => {
   try {
-    const id = parseInt(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: 'Invalid evidence ID' });
-
-    const evidence = await prisma.installationEvidence.findUnique({
-      where: { id },
-      include: { master: { select: { id: true, gateId: true, serialNumber: true } } },
-    });
-    if (!evidence) return res.status(404).json({ error: 'Evidence not found' });
-
-    await deleteEvidenceFile(evidence.imageUrl);
-    await prisma.installationEvidence.delete({ where: { id } });
-
-    if (evidence.category === 'SIM_CARD' && evidence.masterId) {
-      try {
-        await prisma.deviceRegistry.updateMany({
-          where: {
-            OR: [
-              { masterId: evidence.masterId },
-              ...(evidence.master?.serialNumber
-                ? [
-                    { serialNumber: evidence.master.serialNumber },
-                    { thingName: evidence.master.serialNumber },
-                  ]
-                : []),
-            ],
-          },
-          data: { simPhotoUrl: null },
-        });
-      } catch (simErr) {
-        console.warn('Failed to clear SIM photo in DeviceRegistry on delete:', simErr);
-      }
-    }
-
-    if (evidence.master) {
-      try {
-        const now = new Date();
-        await prisma.masterUnit.update({ where: { id: evidence.master.id }, data: { updatedAt: now } }).catch(() => {});
-        if (evidence.master.gateId) {
-          await prisma.lCGate.update({ where: { id: evidence.master.gateId }, data: { updatedAt: now } }).catch(() => {});
-          await bumpDirectoryRevision([evidence.master.gateId], true);
-        }
-        clusterCacheManager.clear();
-      } catch (cacheErr) {
-        console.warn('Failed to bump revision/cache after evidence deletion:', cacheErr);
-      }
-    }
-
+    const deleted = await deleteEvidenceRecordWithAccess(req, res);
+    if (!deleted) return;
     res.status(200).json({ success: true });
   } catch (error) {
     next(error);
@@ -429,6 +407,10 @@ router.get('/master/:masterId', authenticate, async (req: any, res, next) => {
   try {
     const masterId = parseInt(req.params.masterId, 10);
     if (isNaN(masterId)) return res.status(400).json({ error: 'Invalid master ID' });
+
+    const master = await prisma.masterUnit.findUnique({ where: { id: masterId }, select: { gateId: true } });
+    if (!master) return res.status(404).json({ error: 'Master Unit not found' });
+    if (master.gateId && !(await ensureGateAccess(req, res, master.gateId))) return;
 
     const evidences = await prisma.installationEvidence.findMany({
       where: { masterId },

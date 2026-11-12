@@ -18,6 +18,7 @@ import { errorHandler } from './middleware/error';
 import { prisma } from './lib/prisma';
 import { startTelemetryMonitor } from './lib/telemetryMonitor';
 import { initTelemetryWebSocket } from './lib/telemetryWs';
+import { getJwtRefreshSecret, getJwtSecret } from './middleware/auth';
 
 import path from 'path';
 
@@ -27,6 +28,12 @@ const app = express();
 const port = process.env.PORT || 5000;
 const isRenderEnvironment =
   process.env.RENDER === 'true' || Boolean(process.env.RENDER_SERVICE_ID);
+
+if (!isRenderEnvironment && process.env.NODE_ENV === 'production') {
+  // Fail fast at startup if production secrets are missing
+  getJwtSecret();
+  getJwtRefreshSecret();
+}
 
 // Universal CORS & Chrome Private Network Access header support
 app.use((req, res, next) => {

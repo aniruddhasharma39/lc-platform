@@ -175,6 +175,19 @@ class HomeCacheService {
     } catch (_) {}
   }
 
+  /// Clear all users' Home dashboard caches on logout / token expiry
+  Future<void> clearAllUserCaches() async {
+    _memoryCache.clear();
+    _inFlightSyncs.clear();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final keys = prefs.getKeys().where((k) => k.startsWith('home_dashboard_cache_')).toList();
+      for (final k in keys) {
+        await prefs.remove(k);
+      }
+    } catch (_) {}
+  }
+
   /// Deduplicated Intelligent Synchronization with Backend
   Future<HomeSyncResult> syncDashboard({
     required String userId,

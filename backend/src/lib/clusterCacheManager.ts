@@ -83,9 +83,10 @@ class ClusterCacheManager {
     directoryRevision: string;
     scopeGroupId?: string | null;
     directOnly?: string | null;
+    configuredOnly?: string | null;
     telemetryBucket?: number | null;
   }): string {
-    const roleKey = params.userRole === 'Developer' ? 'DEV' : 'USER';
+    const roleKey = params.userRole.trim().toLowerCase() === 'developer' ? 'DEV' : 'USER';
 
     // Normalize scope query parameter:
     // - 'all' or empty string
@@ -100,6 +101,7 @@ class ClusterCacheManager {
     }
 
     const normDirect = params.directOnly === 'true' || params.directOnly === '1' ? 'DIR' : 'REC';
+    const normConfiguredOnly = params.configuredOnly === 'true' || params.configuredOnly === '1' ? 'CFG' : 'ALL';
 
     // Transition-aware stable key: if telemetryBucket is omitted, generates a stable key
     // that remains identical until directory revision bumps or transition TTL expires.
@@ -107,7 +109,7 @@ class ClusterCacheManager {
       ? `:tb[${params.telemetryBucket}]`
       : '';
 
-    return `cluster:u${params.userId}:r${roleKey}:s[${normScope}]:d[${normDirect}]${tbPart}:rev[${params.directoryRevision}]`;
+    return `cluster:u${params.userId}:r${roleKey}:s[${normScope}]:d[${normDirect}]:c[${normConfiguredOnly}]${tbPart}:rev[${params.directoryRevision}]`;
   }
 
   /**
@@ -119,6 +121,7 @@ class ClusterCacheManager {
     directoryRevision: string;
     scopeGroupId?: string | null;
     directOnly?: string | null;
+    configuredOnly?: string | null;
     telemetryBucket?: number | null;
   }): string {
     const key = this.generateKey(params);

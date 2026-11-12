@@ -1,6 +1,8 @@
 import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from './prisma';
+import { getISTHour, getISTUtcBoundaryForSingleDate } from './timeUtils';
+import { formatDurationHuman } from './cycleReportService';
 
 /**
  * Report Revision & Tombstone Manager
@@ -13,7 +15,9 @@ import { prisma } from './prisma';
 export interface ReportMetrics {
   totalOperations: number;
   totalDurationSeconds: number;
+  totalDurationFormatted: string;
   avgDurationSeconds: number;
+  avgDurationFormatted: string;
   extendedDelaysCount: number;
   currentlyOpenCount: number;
 }
@@ -342,17 +346,27 @@ export async function calculateAuthoritativeMetrics(
   startDate?: string,
   endDate?: string,
   shiftFilter = 'ALL',
-  statusFilter = 'ALL'
+  statusFilter = 'ALL',
+  extraFilters?: { searchQuery?: string; masterId?: number | null }
 ): Promise<ReportMetrics> {
   if (gateIds.length === 0) {
     return {
       totalOperations: 0,
       totalDurationSeconds: 0,
+      totalDurationFormatted: '0s',
       avgDurationSeconds: 0,
+      avgDurationFormatted: '0s',
       extendedDelaysCount: 0,
       currentlyOpenCount: 0,
     };
   }
+
+  const parsedMasterId =
+    extraFilters?.masterId !== undefined && extraFilters?.masterId !== null && !isNaN(Number(extraFilters.masterId))
+      ? Number(extraFilters.masterId)
+      : null;
+  const searchQuery = (extraFilters?.searchQuery || '').trim().toLowerCase();
+  const hasSearch = searchQuery.length > 0;
 
   // 1. Check revision hash for selected gates
   const sortedGateIds = [...gateIds].sort((a, b) => a - b);
@@ -365,11 +379,12 @@ export async function calculateAuthoritativeMetrics(
   const revString = sortedGateIds.map((id) => `${id}:${settingMap.get(`REPORT_GATE_REV_${id}`) || '0'}`).join(',');
   const currentGateRevHash = crypto.createHash('md5').update(revString).digest('hex').slice(0, 10);
 
-  const cacheKey = `${sortedGateIds.join(',')}|${startDate || ''}|${endDate || ''}|${shiftFilter}|${statusFilter}`;
-  const existingCached = kpiMemoCache.get(cacheKey);
-
-  if (existingCached && existingCached.gateRevHash === currentGateRevHash && Date.now() - existingCached.cachedAt < 60000) {
-    return existingCached.metrics;
+  const cacheKey = `${sortedGateIds.join(',')}|${startDate || ''}|${endDate || ''}|${shiftFilter}|${statusFilter}|m=${parsedMasterId ?? ''}`;
+  if (!hasSearch) {
+    const existingCached = kpiMemoCache.get(cacheKey);
+    if (existingCached && existingCached.gateRevHash === currentGateRevHash && Date.now() - existingCached.cachedAt < 60000) {
+      return existingCached.metrics;
+    }
   }
 
   // 2. Cache Miss: Compute authoritative metrics
@@ -377,14 +392,14 @@ export async function calculateAuthoritativeMetrics(
     gateId: { in: gateIds },
   };
 
+  if (parsedMasterId) {
+    whereClause.masterId = parsedMasterId;
+  }
+
   if (startDate || endDate) {
     whereClause.openedAt = {};
-    if (startDate) whereClause.openedAt.gte = new Date(startDate);
-    if (endDate) {
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      whereClause.openedAt.lte = end;
-    }
+    if (startDate) whereClause.openedAt.gte = getISTUtcBoundaryForSingleDate(startDate, 'start');
+    if (endDate) whereClause.openedAt.lte = getISTUtcBoundaryForSingleDate(endDate, 'end');
   }
 
   if (statusFilter && statusFilter !== 'ALL') {
@@ -398,6 +413,19 @@ export async function calculateAuthoritativeMetrics(
       closedAt: true,
       durationSeconds: true,
       openedAt: true,
+      ...(hasSearch
+        ? {
+            masterSerial: true,
+            thingName: true,
+            gate: {
+              select: {
+                lcNumber: true,
+                locationName: true,
+                name: true,
+              },
+            },
+          }
+        : {}),
     },
   });
 
@@ -406,14 +434,23 @@ export async function calculateAuthoritativeMetrics(
   let extendedDelaysCount = 0;
   let currentlyOpenCount = 0;
 
-  for (const ev of events) {
+  for (const ev of events as any[]) {
     // Shift filter check (IST)
     if (shiftFilter !== 'ALL') {
-      const utcTime = new Date(ev.openedAt).getTime();
-      const istHour = new Date(utcTime + 3600000 * 5.5).getUTCHours();
+      const istHour = getISTHour(new Date(ev.openedAt));
       if (shiftFilter === 'MORNING' && (istHour < 6 || istHour >= 14)) continue;
       if (shiftFilter === 'EVENING' && (istHour < 14 || istHour >= 22)) continue;
       if (shiftFilter === 'NIGHT' && istHour >= 6 && istHour < 22) continue;
+    }
+
+    // Search query check (mirrors fetchFilteredOperationalEvents)
+    if (hasSearch) {
+      const matchLc = (ev.gate?.lcNumber || '').toLowerCase().includes(searchQuery);
+      const matchLoc = (ev.gate?.locationName || '').toLowerCase().includes(searchQuery);
+      const matchName = (ev.gate?.name || '').toLowerCase().includes(searchQuery);
+      const matchMaster = (ev.masterSerial || '').toLowerCase().includes(searchQuery);
+      const matchThing = (ev.thingName || '').toLowerCase().includes(searchQuery);
+      if (!matchLc && !matchLoc && !matchName && !matchMaster && !matchThing) continue;
     }
 
     if (ev.status === 'OPEN' || ev.closedAt == null) {
@@ -434,21 +471,25 @@ export async function calculateAuthoritativeMetrics(
   const result: ReportMetrics = {
     totalOperations,
     totalDurationSeconds,
+    totalDurationFormatted: formatDurationHuman(totalDurationSeconds),
     avgDurationSeconds,
+    avgDurationFormatted: formatDurationHuman(avgDurationSeconds),
     extendedDelaysCount,
     currentlyOpenCount,
   };
 
-  // Cache up to 200 recent query variations
-  if (kpiMemoCache.size > 200) {
-    const oldestKey = kpiMemoCache.keys().next().value;
-    if (oldestKey) kpiMemoCache.delete(oldestKey);
+  // Cache up to 200 recent non-search query variations
+  if (!hasSearch) {
+    if (kpiMemoCache.size > 200) {
+      const oldestKey = kpiMemoCache.keys().next().value;
+      if (oldestKey) kpiMemoCache.delete(oldestKey);
+    }
+    kpiMemoCache.set(cacheKey, {
+      metrics: result,
+      gateRevHash: currentGateRevHash,
+      cachedAt: Date.now(),
+    });
   }
-  kpiMemoCache.set(cacheKey, {
-    metrics: result,
-    gateRevHash: currentGateRevHash,
-    cachedAt: Date.now(),
-  });
 
   return result;
 }

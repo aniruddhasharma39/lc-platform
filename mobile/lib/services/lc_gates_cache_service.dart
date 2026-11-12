@@ -506,54 +506,18 @@ class LCGatesCacheService {
     }
 
     try {
-      // 1. Concurrently fetch scope hierarchy and gates list
-      final scopeFuture = http.get(
-        Uri.parse('$baseUrl/scope-groups/my-scope'),
-        headers: headers,
-      ).timeout(const Duration(seconds: 10)).catchError((_) => http.Response('{}', 500));
-
-      final groupsListFuture = http.get(
-        Uri.parse('$baseUrl/scope-groups'),
-        headers: headers,
-      ).timeout(const Duration(seconds: 10)).catchError((_) => http.Response('[]', 500));
-
-      final gatesFuture = http.get(
+      final gatesRes = await http.get(
         Uri.parse('$baseUrl/lcgate'),
         headers: headers,
       ).timeout(const Duration(seconds: 12));
 
-      final results = await Future.wait([scopeFuture, groupsListFuture, gatesFuture]);
-      final scopeRes = results[0];
-      final groupsListRes = results[1];
-      final gatesRes = results[2];
-
-      // Handle Scope Groups response
-      List<dynamic> resolvedGroups = cached?.scopeGroups ?? [];
+      final List<dynamic> resolvedGroups = cached?.scopeGroups ?? const [];
       final now = DateTime.now();
-      try {
-        List<dynamic> myGroups = [];
-        if (scopeRes.statusCode == 200) {
-          final dynamic sData = json.decode(scopeRes.body);
-          if (sData is Map) {
-            myGroups = List.from(sData['allScopeGroups'] ?? sData['scopeGroups'] ?? []);
-          }
-        }
-        if (groupsListRes.statusCode == 200) {
-          final dynamic gData = json.decode(groupsListRes.body);
-          if (gData is List && gData.isNotEmpty) {
-            resolvedGroups = gData;
-          } else if (myGroups.isNotEmpty) {
-            resolvedGroups = myGroups;
-          }
-        } else if (myGroups.isNotEmpty) {
-          resolvedGroups = myGroups;
-        }
-      } catch (_) {}
 
       // SAFE HTTP 304 HANDLING: Server confirms directory has not changed
       if (gatesRes.statusCode == 304 && cached != null) {
         final updated = cached.copyWith(
-          scopeGroups: resolvedGroups.isNotEmpty ? resolvedGroups : cached.scopeGroups,
+          scopeGroups: resolvedGroups,
           lastSyncedAt: now,
           gatesSyncedAt: now,
           scopeGroupsSyncedAt: now,
@@ -784,24 +748,28 @@ class LCGatesCacheService {
 
   /// Invalidation Mode 2: Mark directory stale (clears ETag and resets sync time to force revalidation)
   Future<void> markStale(String userId) async {
-    final current = _memoryCache[userId];
-    if (current != null) {
-      final stale = current.copyWith(
+    await markAllStale(userId);
+  }
+
+  /// Mark both directory (`lc_gates_dir_v...`) and all cluster keys stale for user
+  Future<void> markAllStale(String userId) async {
+    final trimmedUser = userId.trim();
+
+    // 1. Invalidate directory cache (`lc_gates_dir_v...`) in memory
+    final currentDir = _memoryCache[userId] ?? _memoryCache[trimmedUser];
+    if (currentDir != null) {
+      final staleDir = currentDir.copyWith(
         clearEtag: true,
         gatesSyncedAt: DateTime.fromMillisecondsSinceEpoch(0),
         scopeGroupsSyncedAt: DateTime.fromMillisecondsSinceEpoch(0),
       );
-      _memoryCache[userId] = stale;
-      await _saveToDisk(userId, stale);
+      _memoryCache[userId] = staleDir;
+      _memoryCache[trimmedUser] = staleDir;
     }
 
-    await markAllStale(userId);
-  }
-
-  /// Mark all cluster keys stale for user
-  Future<void> markAllStale(String userId) async {
-    final prefix = 'lc_cluster_v${schemaVersion}_u${userId.trim()}_';
-    final matchingMemKeys = _memoryCache.keys.where((k) => k.startsWith(prefix)).toList();
+    // 2. Invalidate all scoped cluster caches (`lc_cluster_v...`) in memory
+    final clusterPrefix = 'lc_cluster_v${schemaVersion}_u${trimmedUser}_';
+    final matchingMemKeys = _memoryCache.keys.where((k) => k.startsWith(clusterPrefix)).toList();
     for (final k in matchingMemKeys) {
       final item = _memoryCache[k];
       if (item != null) {
@@ -813,16 +781,22 @@ class LCGatesCacheService {
       }
     }
 
+    // 3. Persist invalidation on disk for BOTH directory key and cluster keys
+    // (works even when the user's cache hasn't been hydrated into memory yet)
     try {
       final prefs = await SharedPreferences.getInstance();
-      final diskKeys = prefs.getKeys().where((k) => k.startsWith(prefix)).toList();
+      final dirKey = _cacheKey(trimmedUser);
+      final diskKeys = prefs.getKeys().where((k) => k == dirKey || k.startsWith(clusterPrefix)).toList();
+      final zeroIso = DateTime.fromMillisecondsSinceEpoch(0).toIso8601String();
       for (final dk in diskKeys) {
         final raw = prefs.getString(dk);
         if (raw != null) {
           final map = json.decode(raw);
           if (map is Map<String, dynamic>) {
             map['etag'] = null;
-            map['lastSyncedAt'] = DateTime.fromMillisecondsSinceEpoch(0).toIso8601String();
+            map['lastSyncedAt'] = zeroIso;
+            map['gatesSyncedAt'] = zeroIso;
+            map['scopeGroupsSyncedAt'] = zeroIso;
             await prefs.setString(dk, json.encode(map));
           }
         }

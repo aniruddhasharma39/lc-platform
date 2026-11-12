@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # AWS CLI Setup script to configure the IoT Topic Rules and Lambda permissions
 # Region: ap-south-1
+set -euo pipefail
 
 REGION="ap-south-1"
 FUNCTION_NAME="lc-platform-device-registration"
 RULE_CREATED="lc_platform_thing_created_rule"
+RULE_UPDATED="lc_platform_thing_updated_rule"
 RULE_DELETED="lc_platform_thing_deleted_rule"
 RULE_MANIFEST="lc_platform_device_manifest_rule"
 RULE_TELEMETRY="lc_platform_device_telemetry_rule"
@@ -14,81 +16,108 @@ echo "Configuring AWS IoT Core Rules for LC-Platform Device Registry"
 echo "========================================================"
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+if [[ -z "${ACCOUNT_ID}" ]]; then
+  echo "[ERROR] Failed to detect AWS Account ID. Check AWS CLI credentials." >&2
+  exit 1
+fi
 echo "Detected AWS Account ID: ${ACCOUNT_ID}"
 
-# 1. Grant AWS IoT permission to invoke Lambda for Thing Created rule
-echo "[1/8] Granting IoT invoke permission for Thing Created rule..."
-aws lambda add-permission \
-    --function-name "${FUNCTION_NAME}" \
-    --statement-id "iot-events-permission-$(date +%s)" \
-    --action lambda:InvokeFunction \
-    --principal iot.amazonaws.com \
-    --source-arn "arn:aws:iot:${REGION}:${ACCOUNT_ID}:rule/${RULE_CREATED}" \
-    --region "${REGION}" 2>/dev/null || true
+FUNCTION_ARN="arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:${FUNCTION_NAME}"
 
-# 2. Create or update IoT Topic Rule: Thing Created
-echo "[2/8] Creating Rule: ${RULE_CREATED}..."
-aws iot create-topic-rule \
-    --rule-name "${RULE_CREATED}" \
-    --topic-rule-payload "{\"sql\": \"SELECT * FROM '\$aws/events/thing/+/created'\", \"description\": \"Registers created IoT things into LC-Platform RDS\", \"actions\": [{\"lambda\": {\"functionArn\": \"arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:${FUNCTION_NAME}\"}}], \"ruleDisabled\": false}" \
-    --region "${REGION}"
+upsert_iot_rule() {
+  local step_label="$1"
+  local rule_name="$2"
+  local stmt_id="$3"
+  local sql="$4"
+  local desc="$5"
 
-# 3. Grant AWS IoT permission to invoke Lambda for Thing Deleted rule
-echo "[3/8] Granting IoT invoke permission for Thing Deleted rule..."
-aws lambda add-permission \
-    --function-name "${FUNCTION_NAME}" \
-    --statement-id "iot-deleted-permission-$(date +%s)" \
-    --action lambda:InvokeFunction \
-    --principal iot.amazonaws.com \
-    --source-arn "arn:aws:iot:${REGION}:${ACCOUNT_ID}:rule/${RULE_DELETED}" \
-    --region "${REGION}" 2>/dev/null || true
+  echo "${step_label} Configuring permission & IoT rule: ${rule_name}..."
 
-# 4. Create or update IoT Topic Rule: Thing Deleted
-echo "[4/8] Creating Rule: ${RULE_DELETED}..."
-aws iot create-topic-rule \
-    --rule-name "${RULE_DELETED}" \
-    --topic-rule-payload "{\"sql\": \"SELECT *, topic(4) as thingName FROM '\$aws/events/thing/+/deleted'\", \"description\": \"Removes deleted IoT things from LC-Platform RDS\", \"actions\": [{\"lambda\": {\"functionArn\": \"arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:${FUNCTION_NAME}\"}}], \"ruleDisabled\": false}" \
-    --region "${REGION}"
+  # Fixed statement ID prevents duplicate Lambda resource-policy bloat across re-runs
+  local perm_err
+  if ! perm_err=$(aws lambda add-permission \
+      --function-name "${FUNCTION_NAME}" \
+      --statement-id "${stmt_id}" \
+      --action lambda:InvokeFunction \
+      --principal iot.amazonaws.com \
+      --source-arn "arn:aws:iot:${REGION}:${ACCOUNT_ID}:rule/${rule_name}" \
+      --region "${REGION}" 2>&1 >/dev/null); then
+    if [[ "${perm_err}" == *"ResourceConflictException"* ]]; then
+      echo "      Permission ${stmt_id} already exists (reusing)."
+    else
+      echo "${perm_err}" >&2
+      exit 1
+    fi
+  fi
 
-# 3. Grant AWS IoT permission to invoke Lambda for Device Manifest rule
-echo "[3/6] Granting IoT invoke permission for Device Manifest rule..."
-aws lambda add-permission \
-    --function-name "${FUNCTION_NAME}" \
-    --statement-id "iot-manifest-permission-$(date +%s)" \
-    --action lambda:InvokeFunction \
-    --principal iot.amazonaws.com \
-    --source-arn "arn:aws:iot:${REGION}:${ACCOUNT_ID}:rule/${RULE_MANIFEST}" \
-    --region "${REGION}" 2>/dev/null || true
+  local payload
+  payload=$(printf '{"sql":"%s","description":"%s","actions":[{"lambda":{"functionArn":"%s"}}],"ruleDisabled":false}' \
+    "${sql}" "${desc}" "${FUNCTION_ARN}")
 
-# 4. Create or update IoT Topic Rule: Device Manifest (lc/devices/+/manifest)
-echo "[4/6] Creating Rule: ${RULE_MANIFEST} (topic: lc/devices/+/manifest)..."
-aws iot create-topic-rule \
-    --rule-name "${RULE_MANIFEST}" \
-    --topic-rule-payload "{\"sql\": \"SELECT *, topic(3) as topicThingName FROM 'lc/devices/+/manifest'\", \"description\": \"Ingests firmware hardware profile and sensors manifest into LC-Platform RDS\", \"actions\": [{\"lambda\": {\"functionArn\": \"arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:${FUNCTION_NAME}\"}}], \"ruleDisabled\": false}" \
-    --region "${REGION}"
+  local rule_err
+  if rule_err=$(aws iot create-topic-rule \
+      --rule-name "${rule_name}" \
+      --topic-rule-payload "${payload}" \
+      --region "${REGION}" 2>&1); then
+    echo "      Created rule: ${rule_name}"
+  elif [[ "${rule_err}" == *"ResourceAlreadyExistsException"* ]]; then
+    echo "      Rule exists; replacing rule: ${rule_name}..."
+    aws iot replace-topic-rule \
+      --rule-name "${rule_name}" \
+      --topic-rule-payload "${payload}" \
+      --region "${REGION}"
+    echo "      Updated existing rule: ${rule_name}"
+  else
+    echo "${rule_err}" >&2
+    exit 1
+  fi
+}
 
-# 5. Grant AWS IoT permission to invoke Lambda for Telemetry rule
-echo "[5/6] Granting IoT invoke permission for Telemetry rule..."
-aws lambda add-permission \
-    --function-name "${FUNCTION_NAME}" \
-    --statement-id "iot-telemetry-permission-$(date +%s)" \
-    --action lambda:InvokeFunction \
-    --principal iot.amazonaws.com \
-    --source-arn "arn:aws:iot:${REGION}:${ACCOUNT_ID}:rule/${RULE_TELEMETRY}" \
-    --region "${REGION}" 2>/dev/null || true
+# 1. Thing Created ($aws/events/thing/+/created)
+upsert_iot_rule \
+  "[1/5]" \
+  "${RULE_CREATED}" \
+  "iot-created-perm" \
+  'SELECT *, topic(4) as topicThingName, topic() as topic FROM '\''$aws/events/thing/+/created'\''' \
+  "Registers created IoT things into LC-Platform RDS"
 
-# 6. Create or update IoT Topic Rule: Device Telemetry (lc-gate/+/telemetry & lc-gate/+/health)
-echo "[6/6] Creating Rule: ${RULE_TELEMETRY} (topic: lc-gate/+/#)..."
-aws iot create-topic-rule \
-    --rule-name "${RULE_TELEMETRY}" \
-    --topic-rule-payload "{\"sql\": \"SELECT *, topic(2) as topicThingName, topic() as topic FROM 'lc-gate/+/%23'\", \"description\": \"Streams real-time edge device telemetry and health payloads into LC-Platform RDS DeviceTelemetry\", \"actions\": [{\"lambda\": {\"functionArn\": \"arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:${FUNCTION_NAME}\"}}], \"ruleDisabled\": false}" \
-    --region "${REGION}"
+# 2. Thing Updated ($aws/events/thing/+/updated)
+upsert_iot_rule \
+  "[2/5]" \
+  "${RULE_UPDATED}" \
+  "iot-updated-perm" \
+  'SELECT *, topic(4) as topicThingName, topic() as topic FROM '\''$aws/events/thing/+/updated'\''' \
+  "Synchronizes updated IoT things metadata into LC-Platform RDS"
+
+# 3. Thing Deleted ($aws/events/thing/+/deleted)
+upsert_iot_rule \
+  "[3/5]" \
+  "${RULE_DELETED}" \
+  "iot-deleted-perm" \
+  'SELECT *, topic(4) as thingName, topic() as topic FROM '\''$aws/events/thing/+/deleted'\''' \
+  "Removes deleted IoT things from LC-Platform RDS"
+
+# 4. Device Manifest (lc/devices/+/manifest)
+upsert_iot_rule \
+  "[4/5]" \
+  "${RULE_MANIFEST}" \
+  "iot-manifest-perm" \
+  "SELECT *, topic(3) as topicThingName, topic() as topic FROM 'lc/devices/+/manifest'" \
+  "Ingests firmware hardware profile and sensors manifest into LC-Platform RDS"
+
+# 5. Telemetry & Health (lc-gate/+/telemetry & lc-gate/+/health)
+upsert_iot_rule \
+  "[5/5]" \
+  "${RULE_TELEMETRY}" \
+  "iot-telemetry-perm" \
+  "SELECT *, topic(2) as topicThingName, topic() as topic FROM 'lc-gate/+/#'" \
+  "Streams real-time edge device telemetry and health payloads into LC-Platform RDS DeviceTelemetry"
 
 echo "========================================================"
 echo "Setup Complete!"
-echo "1. Thing Created Rule ($aws/events/thing/+/created) -> ACTIVE"
-echo "2. Thing Deleted Rule ($aws/events/thing/+/deleted) -> ACTIVE"
-echo "3. Device Manifest Rule (lc/devices/+/manifest)     -> ACTIVE"
-echo "4. Telemetry Ingest Rule (lc-gate/+/#)              -> ACTIVE"
+echo "1. Thing Created Rule (\$aws/events/thing/+/created) -> ACTIVE"
+echo "2. Thing Updated Rule (\$aws/events/thing/+/updated) -> ACTIVE"
+echo "3. Thing Deleted Rule (\$aws/events/thing/+/deleted) -> ACTIVE"
+echo "4. Device Manifest Rule (lc/devices/+/manifest)     -> ACTIVE"
+echo "5. Telemetry Ingest Rule (lc-gate/+/#)              -> ACTIVE"
 echo "========================================================"
-

@@ -1,8 +1,10 @@
 import { prisma } from './prisma';
 import { checkAndDispatchGateStateAlert } from './gateAlertSms';
 import { dispatchDeviceOfflineAdminEmails } from './emailService';
-import { broadcastGateTelemetry } from './telemetryWs';
+import { broadcastDeviceTelemetryUpdate, broadcastGateTelemetry } from './telemetryWs';
 import { bumpReportRevisionInTx, recordEventChangeInTx } from './reportRevisionManager';
+import { bumpDirectoryRevision } from './revisionManager';
+import { clusterCacheManager } from './clusterCacheManager';
 import {
   GATE_ONLINE_CUTOFF_MS,
   isGenuineTelemetryPacket,
@@ -10,11 +12,38 @@ import {
   parseBarrierStateFromPayload,
 } from './thingState';
 
+const TELEMETRY_CURSOR_SETTING_KEY = 'TELEMETRY_MONITOR_LAST_ID';
 let lastProcessedId = 0;
 const lastKnownState = new Map<string, 'OPEN' | 'CLOSED'>();
 let isPolling = false;
 
 export const parseGateStateFromPayload = parseBarrierStateFromPayload;
+
+/**
+ * Allows synchronous HTTP ingestion (POST /devices/telemetry) to keep the in-memory
+ * state cache aligned and avoid duplicate alert/transition processing in pollTelemetryTransitions.
+ */
+export function markTelemetryProcessed(
+  thingName: string,
+  state?: 'OPEN' | 'CLOSED' | null,
+  telemetryId?: number | null
+) {
+  if (thingName && state) {
+    lastKnownState.set(thingName, state);
+  }
+  if (telemetryId && telemetryId > lastProcessedId) {
+    lastProcessedId = telemetryId;
+    persistLastProcessedId(telemetryId).catch(() => {});
+  }
+}
+
+async function persistLastProcessedId(id: number): Promise<void> {
+  await prisma.appSetting.upsert({
+    where: { key: TELEMETRY_CURSOR_SETTING_KEY },
+    create: { key: TELEMETRY_CURSOR_SETTING_KEY, value: String(id) },
+    update: { value: String(id) },
+  });
+}
 
 /**
  * Records an operational gate event in LCGateEvent for the Reports section
@@ -275,16 +304,28 @@ export async function syncHistoricalTelemetryEvents(specificGateId?: number) {
 }
 
 /**
- * Initializes the monitor by capturing current state so past history doesn't trigger alerts
+ * Initializes the monitor by restoring persisted watermark or seeding current state
  */
 export async function initTelemetryMonitor() {
   try {
-    const latestTele = await prisma.deviceTelemetry.findFirst({
-      orderBy: { id: 'desc' },
-      select: { id: true }
-    });
+    const [savedCursor, latestTele] = await Promise.all([
+      prisma.appSetting.findUnique({
+        where: { key: TELEMETRY_CURSOR_SETTING_KEY },
+        select: { value: true }
+      }),
+      prisma.deviceTelemetry.findFirst({
+        orderBy: { id: 'desc' },
+        select: { id: true }
+      }),
+    ]);
 
-    if (latestTele) {
+    const parsedSavedId = savedCursor?.value ? parseInt(savedCursor.value, 10) : NaN;
+    const hasSavedCursor = !isNaN(parsedSavedId) && parsedSavedId >= 0;
+
+    if (hasSavedCursor) {
+      // Guard against DB restore/reset where max telemetry ID is lower than saved watermark
+      lastProcessedId = latestTele ? Math.min(parsedSavedId, latestTele.id) : 0;
+    } else if (latestTele) {
       lastProcessedId = latestTele.id;
     }
 
@@ -322,10 +363,13 @@ export async function initTelemetryMonitor() {
       }
     }
 
-    console.log(`📡 [TELEMETRY MONITOR] Initialized at telemetry ID ${lastProcessedId}. Tracking ${lastKnownState.size} device states.`);
+    if (!hasSavedCursor) {
+      // Initial backfill only when bootstrapping without an existing watermark
+      await syncHistoricalTelemetryEvents();
+      await persistLastProcessedId(lastProcessedId).catch(() => {});
+    }
 
-    // Backfill historical telemetry transitions into LCGateEvent if empty
-    await syncHistoricalTelemetryEvents();
+    console.log(`📡 [TELEMETRY MONITOR] Initialized at telemetry ID ${lastProcessedId}. Tracking ${lastKnownState.size} device states.`);
   } catch (err: any) {
     console.error('Failed to initialize telemetry monitor:', err?.message || err);
   }
@@ -338,83 +382,126 @@ export async function pollTelemetryTransitions() {
   if (isPolling) return;
   isPolling = true;
 
+  const BATCH_SIZE = 200;
+  const MAX_BATCHES_PER_TICK = 5;
+
   try {
-    const newRecords = await prisma.deviceTelemetry.findMany({
-      where: { id: { gt: lastProcessedId } },
-      orderBy: { id: 'asc' },
-      take: 50,
-    });
+    const startCursor = lastProcessedId;
 
-    for (const record of newRecords) {
-      lastProcessedId = Math.max(lastProcessedId, record.id);
-
-      const thingName = record.thingName;
-      if (!thingName) continue;
-
-      if (!isGenuineTelemetryPacket(record)) continue;
-
-      const currentState = parseGateStateFromPayload(record.payload);
-      if (!currentState) continue;
-
-      // Sync DeviceRegistry authoritative state if packet bypassed POST /telemetry (e.g. Lambda insert)
-      const device = await prisma.deviceRegistry.findUnique({
-        where: { thingName },
-        include: {
-          master: { select: { id: true, serialNumber: true } }
-        }
+    for (let batch = 0; batch < MAX_BATCHES_PER_TICK; batch++) {
+      const newRecords = await prisma.deviceTelemetry.findMany({
+        where: { id: { gt: lastProcessedId } },
+        orderBy: { id: 'asc' },
+        take: BATCH_SIZE,
       });
 
-      if (device && (device.barrierState !== currentState || !device.lastTelemetryAt || new Date(record.receivedAt) > new Date(device.lastTelemetryAt))) {
-        await prisma.deviceRegistry.update({
-          where: { id: device.id },
-          data: {
-            connectivityStatus: 'ONLINE',
-            lastSeenAt: record.receivedAt || new Date(),
-            barrierState: currentState,
-            lastTelemetryAt: record.receivedAt || new Date(),
-            lastTelemetryId: record.id,
-          },
-        }).catch(() => {});
-      }
+      if (newRecords.length === 0) break;
 
-      const prevState = lastKnownState.get(thingName) ?? normalizeBarrierStateColumn(device?.barrierState);
+      for (const record of newRecords) {
+        lastProcessedId = Math.max(lastProcessedId, record.id);
 
-      // Transition detected! (e.g., OPEN ➔ CLOSED or CLOSED ➔ OPEN)
-      if (prevState !== currentState) {
-        console.log(`⚡ [TELEMETRY MONITOR] State transition detected for "${thingName}": ${prevState || 'INITIAL'} ➔ ${currentState}`);
+        const thingName = record.thingName;
+        if (!thingName) continue;
 
-        if (prevState && currentState === 'OPEN') {
-          // Trigger SMS/Email alert asynchronously only when gate transitions to OPEN (normal CLOSED alerts disabled)
-          checkAndDispatchGateStateAlert({
-            deviceId: device?.id,
+        if (!isGenuineTelemetryPacket(record)) continue;
+
+        const currentState = parseGateStateFromPayload(record.payload);
+        if (!currentState) continue;
+
+        // Read DeviceRegistry BEFORE mutating so persisted barrierState is never clobbered prior to transition check
+        const device = await prisma.deviceRegistry.findUnique({
+          where: { thingName },
+          include: {
+            master: { select: { id: true, serialNumber: true } }
+          }
+        });
+
+        // Skip duplicate work if synchronous POST /devices/telemetry already processed this exact row ID
+        if (device && device.lastTelemetryId && device.lastTelemetryId >= record.id) {
+          lastKnownState.set(thingName, currentState);
+          continue;
+        }
+
+        const packetTime = record.receivedAt ? new Date(record.receivedAt) : new Date();
+        const existingTeleAt = device?.lastTelemetryAt ? new Date(device.lastTelemetryAt) : null;
+
+        // Ignore stale out-of-order packets so historical retries cannot regress live barrierState
+        if (existingTeleAt && packetTime.getTime() < existingTeleAt.getTime()) {
+          continue;
+        }
+
+        const persistedPrevState = normalizeBarrierStateColumn(device?.barrierState);
+        const prevState = lastKnownState.get(thingName) ?? persistedPrevState;
+
+        if (device) {
+          const currentSeenMs = device.lastSeenAt ? new Date(device.lastSeenAt).getTime() : 0;
+          const nextSeenAt = packetTime.getTime() > currentSeenMs ? packetTime : (device.lastSeenAt || packetTime);
+          await prisma.deviceRegistry.update({
+            where: { id: device.id },
+            data: {
+              connectivityStatus: 'ONLINE',
+              lastSeenAt: nextSeenAt,
+              barrierState: currentState,
+              lastTelemetryAt: packetTime,
+              lastTelemetryId: record.id,
+            },
+          }).catch(() => {});
+        }
+
+        // Update in-memory tracker immediately after DB write
+        lastKnownState.set(thingName, currentState);
+
+        // Transition detected! (e.g., OPEN ➔ CLOSED or CLOSED ➔ OPEN)
+        if (prevState !== currentState) {
+          console.log(`⚡ [TELEMETRY MONITOR] State transition detected for "${thingName}": ${prevState || 'INITIAL'} ➔ ${currentState}`);
+
+          if (prevState && currentState === 'OPEN') {
+            // Trigger SMS/Email alert asynchronously only when gate transitions to OPEN (normal CLOSED alerts disabled)
+            checkAndDispatchGateStateAlert({
+              deviceId: device?.id,
+              gateId: device?.gateId,
+              masterId: device?.masterId,
+              masterSerial: device?.master?.serialNumber || null,
+              thingName,
+              serialNumber: device?.serialNumber || thingName,
+              newState: currentState,
+              timestamp: packetTime,
+            }).catch(err => console.error('Error dispatching alert from telemetry monitor:', err));
+          }
+
+          // Commit operational event for Reports BEFORE broadcasting WS telemetry
+          await recordGateTelemetryTransition({
             gateId: device?.gateId,
             masterId: device?.masterId,
             masterSerial: device?.master?.serialNumber || null,
             thingName,
-            serialNumber: device?.serialNumber || thingName,
             newState: currentState,
-            timestamp: record.receivedAt || new Date(),
-          }).catch(err => console.error('Error dispatching alert from telemetry monitor:', err));
-        }
+            timestamp: packetTime,
+          }).catch(err => console.error('Error recording telemetry event for reports:', err));
 
-        // Log operational event for the Reports section
-        if (device?.gateId) {
+          if (device?.gateId) {
+            broadcastGateTelemetry(device.gateId).catch(console.warn);
+          }
+        } else if (device?.gateId) {
           broadcastGateTelemetry(device.gateId).catch(console.warn);
         }
-        recordGateTelemetryTransition({
-          gateId: device?.gateId,
-          masterId: device?.masterId,
-          masterSerial: device?.master?.serialNumber || null,
+
+        // Notify any device-level inspector subscribers (assigned or unassigned) immediately
+        broadcastDeviceTelemetryUpdate({
+          deviceId: device?.id,
           thingName,
-          newState: currentState,
-          timestamp: record.receivedAt || new Date(),
-        }).catch(err => console.error('Error recording telemetry event for reports:', err));
-      } else if (device?.gateId) {
-        broadcastGateTelemetry(device.gateId).catch(console.warn);
+          gateId: device?.gateId,
+          barrierState: currentState,
+          packetType: 'TELEMETRY',
+          telemetryId: record.id,
+        }).catch(console.warn);
       }
 
-      // Update in-memory tracker
-      lastKnownState.set(thingName, currentState);
+      if (newRecords.length < BATCH_SIZE) break;
+    }
+
+    if (lastProcessedId > startCursor) {
+      await persistLastProcessedId(lastProcessedId).catch(() => {});
     }
   } catch (err: any) {
     console.error('Error in pollTelemetryTransitions:', err?.message || err);
@@ -462,6 +549,8 @@ export async function checkAndMarkOfflineDevices() {
 
     if (result.count > 0) {
       console.log(`📡 [DEVICE STATUS WORKER] Marked ${result.count} devices as connectivityStatus=OFFLINE (no packet for > 65 minutes).`);
+      await bumpDirectoryRevision([], true);
+      clusterCacheManager.clear();
       dispatchDeviceOfflineAdminEmails(candidates).catch((err) =>
         console.error('Error dispatching offline Admin email alerts:', err)
       );
@@ -476,6 +565,7 @@ export async function checkAndMarkOfflineDevices() {
  */
 export function startTelemetryMonitor(intervalMs = 3000) {
   initTelemetryMonitor().then(() => {
+    pollTelemetryTransitions();
     setInterval(pollTelemetryTransitions, intervalMs);
     // Immediate sweep upon startup + recurring every 60s
     checkAndMarkOfflineDevices();

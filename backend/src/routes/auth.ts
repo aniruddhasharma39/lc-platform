@@ -5,12 +5,18 @@ import { z } from 'zod';
 import multer from 'multer';
 import { v2 as cloudinary } from 'cloudinary';
 import { prisma } from '../lib/prisma';
-import { authenticate } from '../middleware/auth';
+import { authenticate, getJwtRefreshSecret, getJwtSecret } from '../middleware/auth';
 import { send2FactorSmsOtp } from '../lib/twofactor';
 import { dispatchNewRegistrationApproverEmails, sendEmailOtp } from '../lib/emailService';
 import { extractRegistrationUserFields, checkRegistrationUniqueness } from '../lib/userExtract';
 import { validateRegistrationUniqueness } from '../lib/uniqueness';
-import { DEPARTMENTS, DESIGNATIONS, getDesignationConfig, getDesignationsForDepartment } from '../lib/railwayHierarchy';
+import {
+  DEPARTMENTS,
+  DESIGNATIONS,
+  getDesignationConfig,
+  getDesignationsForDepartment,
+  isDeveloperUser,
+} from '../lib/railwayHierarchy';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -599,8 +605,8 @@ async function findMatchingRegistrationRequest(identifier: string) {
 }
 
 async function createSession(user: any) {
-  const secret = process.env.JWT_SECRET || 'super-secret-jwt-key';
-  const refreshSecret = process.env.JWT_REFRESH_SECRET || 'super-secret-refresh-key';
+  const secret = getJwtSecret();
+  const refreshSecret = getJwtRefreshSecret();
   
   const tokenExpiresIn = (process.env.JWT_EXPIRES_IN || '90d') as any;
   const refreshExpiresIn = (process.env.JWT_REFRESH_EXPIRES_IN || '180d') as any;
@@ -619,8 +625,7 @@ async function createSession(user: any) {
   });
 
   let allowedModules = user.role?.roleModules?.map((rm: any) => rm.module?.slug) || [];
-  const roleName = user.role?.name;
-  if (roleName === 'Developer' || roleName?.toLowerCase() === 'developer') {
+  if (isDeveloperUser(user)) {
     const allModules = await prisma.module.findMany();
     allowedModules = allModules.map((m: any) => m.slug);
   }
@@ -635,7 +640,12 @@ async function createSession(user: any) {
       mobile: user.mobile,
       employeeId: user.employeeId,
       department: user.department,
+      designation: user.designation || user.role?.name || null,
+      roleId: user.roleId ?? null,
       role: user.role?.name,
+      zone: user.zone || null,
+      division: user.division || null,
+      stationId: user.stationId ?? null,
       metadata: user.metadata,
       createdAt: user.createdAt,
       mustChangePassword: user.mustChangePassword,
@@ -968,7 +978,7 @@ router.post('/refresh', async (req, res, next) => {
       return res.status(400).json({ error: 'Refresh token required' });
     }
 
-    const refreshSecret = process.env.JWT_REFRESH_SECRET || 'super-secret-refresh-key';
+    const refreshSecret = getJwtRefreshSecret();
     let decoded: any;
     try {
       decoded = jwt.verify(refreshToken, refreshSecret);
@@ -1049,13 +1059,10 @@ router.get('/me', authenticate, async (req: any, res, next) => {
     }
 
     let allowedModules = user.role?.roleModules?.map((rm: any) => rm.module?.slug) || [];
-    const roleName = user.role?.name;
-    if (roleName === 'Developer' || roleName?.toLowerCase() === 'developer') {
+    if (isDeveloperUser(user)) {
       const allModules = await prisma.module.findMany();
       allowedModules = allModules.map((m: any) => m.slug);
     }
-
-
 
     res.json({
       id: user.id,
@@ -1064,7 +1071,12 @@ router.get('/me', authenticate, async (req: any, res, next) => {
       mobile: user.mobile,
       employeeId: user.employeeId,
       department: user.department,
+      designation: user.designation,
+      roleId: user.roleId,
       role: user.role?.name,
+      zone: user.zone,
+      division: user.division,
+      stationId: user.stationId,
       metadata: user.metadata,
       createdAt: user.createdAt,
       status: user.status,

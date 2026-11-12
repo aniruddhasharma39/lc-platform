@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'create_master_screen.dart';
 import 'package:image_picker/image_picker.dart';
@@ -12,7 +11,9 @@ import 'upload_evidence_screen.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
+import '../../utils/user_utils.dart';
 import '../../components/action_feedback_widgets.dart';
+import '../../services/home_cache_service.dart';
 import '../../services/lc_gates_cache_service.dart';
 
 class GateDetailScreen extends StatefulWidget {
@@ -125,8 +126,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
             AppFeedback.showSuccess(context, 'Gate and device details refreshed.');
           }
           try {
-            final prefs = await SharedPreferences.getInstance();
-            final userId = prefs.getString('userId') ?? prefs.getString('employeeId') ?? 'user';
+            final userId = await loadCurrentUserId();
             LCGatesCacheService.instance.patchGate(userId, gateData);
           } catch (_) {}
           return;
@@ -237,9 +237,9 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
 
   Future<void> _markCacheStale() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final userId = prefs.getString('userId') ?? prefs.getString('employeeId') ?? 'user';
-      LCGatesCacheService.instance.markStale(userId);
+      final userId = await loadCurrentUserId();
+      await LCGatesCacheService.instance.markStale(userId);
+      await HomeCacheService.instance.clearUserCache(userId);
     } catch (_) {}
   }
 
@@ -1346,6 +1346,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setSheetState) {
@@ -1738,7 +1739,7 @@ class _GateDetailScreenState extends State<GateDetailScreen> {
                 )
               : ListView.builder(
                   physics: const AlwaysScrollableScrollPhysics(),
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
                   itemCount: masters.length,
                   itemBuilder: (context, index) {
                     final master = masters[index];

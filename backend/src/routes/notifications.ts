@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { authenticate, AuthRequest } from '../middleware/auth';
-import { canApproveRequest, resolveUserAlertGateIds } from '../lib/railwayHierarchy';
+import { canApproveRequest, isDeveloperUser, resolveUserAlertGateIds } from '../lib/railwayHierarchy';
 
 const router = Router();
 
@@ -102,7 +102,7 @@ async function buildUserNotifications(
   user: any,
   state: { readIds: string[]; dismissedIds: string[] }
 ): Promise<NotificationPayload[]> {
-  const isDev = user.role === 'Developer' || user.roleId === 1 || user.id === 1;
+  const isDev = isDeveloperUser(user);
   const canManageUsers = isDev || user.allowedModules?.includes('manage-users');
 
   const fullUser = await prisma.user.findUnique({
@@ -207,8 +207,8 @@ async function buildUserNotifications(
         }
       }
 
-      // B. Gate Opened Confirmation (Normal Gate Closed omitted per specification)
-      if (ev.status === 'OPEN' || ev.openedAt) {
+      // B. Gate Opened Confirmation (Live OPEN gates only — normal CLOSED cycles omitted per specification)
+      if (ev.status === 'OPEN' && !ev.closedAt) {
         const openId = `op_open_${ev.id}`;
         if (!dismissedSet.has(openId) && !readSet.has(openId)) {
           const timeStr = formatNotificationIstTime(ev.openedAt);

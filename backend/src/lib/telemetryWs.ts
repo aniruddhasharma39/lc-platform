@@ -2,6 +2,8 @@ import { Server as HttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { prisma } from './prisma';
 import url from 'url';
+import { AuthUser, verifyTokenToAuthUser } from '../middleware/auth';
+import { verifyGateAccess } from './railwayHierarchy';
 import {
   computeThingConnectivity,
   hydrateGateMasters,
@@ -14,7 +16,10 @@ import {
 
 interface ClientSubscription {
   ws: WebSocket;
+  user: AuthUser;
   gateId?: number;
+  deviceId?: number;
+  thingName?: string;
   isAlive: boolean;
 }
 
@@ -411,16 +416,90 @@ export function initTelemetryWebSocket(server: HttpServer) {
     const parsedUrl = url.parse(req.url || '', true);
     const gateIdParam = parsedUrl.query.gateId;
     const gateId = gateIdParam ? parseInt(gateIdParam.toString(), 10) : undefined;
+    const deviceIdParam = parsedUrl.query.deviceId;
+    const deviceId = deviceIdParam ? parseInt(deviceIdParam.toString(), 10) : undefined;
+    const thingNameParam = parsedUrl.query.thingName;
+    let thingName = thingNameParam
+      ? (Array.isArray(thingNameParam) ? thingNameParam[0] : thingNameParam.toString()).trim()
+      : undefined;
 
-    const sub: ClientSubscription = { ws, gateId, isAlive: true };
+    const queryToken = parsedUrl.query.token
+      ? (Array.isArray(parsedUrl.query.token) ? parsedUrl.query.token[0] : parsedUrl.query.token.toString())
+      : '';
+    const headerAuth = req.headers.authorization || '';
+    const headerToken = headerAuth.startsWith('Bearer ') ? headerAuth.slice(7).trim() : '';
+    const token = queryToken || headerToken;
+
+    let authUser: AuthUser;
+    try {
+      authUser = await verifyTokenToAuthUser(token);
+      if (gateIdParam !== undefined) {
+        if (gateId === undefined || isNaN(gateId)) {
+          ws.send(JSON.stringify({ type: 'error', error: 'Invalid gateId parameter' }));
+          ws.close(1008, 'Invalid gateId');
+          return;
+        }
+        const authorized = await verifyGateAccess(authUser, gateId, prisma);
+        if (!authorized) {
+          ws.send(JSON.stringify({ type: 'error', error: 'Forbidden: You do not have access to this LC Gate' }));
+          ws.close(1008, 'Forbidden');
+          return;
+        }
+      }
+      if (deviceIdParam !== undefined && (deviceId === undefined || isNaN(deviceId))) {
+        ws.send(JSON.stringify({ type: 'error', error: 'Invalid deviceId parameter' }));
+        ws.close(1008, 'Invalid deviceId');
+        return;
+      }
+      if ((deviceId && !isNaN(deviceId)) || thingName) {
+        const matchedDev = await prisma.deviceRegistry.findFirst({
+          where: deviceId && !isNaN(deviceId) ? { id: deviceId } : { thingName },
+          select: { id: true, thingName: true, gateId: true },
+        }).catch(() => null);
+        if (matchedDev) {
+          if (!thingName) thingName = matchedDev.thingName;
+          if (matchedDev.gateId) {
+            const authorized = await verifyGateAccess(authUser, matchedDev.gateId, prisma);
+            if (!authorized) {
+              ws.send(JSON.stringify({ type: 'error', error: 'Forbidden: You do not have access to this Device' }));
+              ws.close(1008, 'Forbidden');
+              return;
+            }
+          }
+        }
+      }
+    } catch (authErr: any) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'error', error: authErr?.message || 'Unauthorized' }));
+      }
+      ws.close(1008, 'Unauthorized');
+      return;
+    }
+
+    const sub: ClientSubscription = {
+      ws,
+      user: authUser,
+      gateId,
+      deviceId: deviceId && !isNaN(deviceId) ? deviceId : undefined,
+      thingName: thingName || undefined,
+      isAlive: true,
+    };
     clients.add(sub);
-    console.log(`🔌 [WS TELEMETRY] Client connected${gateId ? ` for gate #${gateId}` : ''} (Total: ${clients.size})`);
+    console.log(
+      `🔌 [WS TELEMETRY] Client connected user=${authUser.id}` +
+      `${gateId ? ` gate=#${gateId}` : ''}` +
+      `${sub.deviceId ? ` device=#${sub.deviceId}` : ''}` +
+      `${sub.thingName ? ` thing=${sub.thingName}` : ''}` +
+      ` (Total: ${clients.size})`
+    );
 
     // Send confirmation and initial state immediately
     ws.send(JSON.stringify({
       type: 'connection_established',
       message: 'Connected to LC Platform live telemetry WebSocket stream',
       gateId,
+      deviceId: sub.deviceId,
+      thingName: sub.thingName,
     }));
 
     if (gateId && !isNaN(gateId)) {
@@ -449,6 +528,17 @@ export function initTelemetryWebSocket(server: HttpServer) {
         if (msg.type === 'subscribe') {
           const newGateId = parseInt(msg.gateId, 10);
           if (!isNaN(newGateId)) {
+            const authorized = await verifyGateAccess(sub.user, newGateId, prisma);
+            if (!authorized) {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'error',
+                  error: 'Forbidden: You do not have access to this LC Gate',
+                  gateId: newGateId,
+                }));
+              }
+              return;
+            }
             sub.gateId = newGateId;
             const payload = await getGateTelemetryPayload(newGateId);
             if (payload && ws.readyState === WebSocket.OPEN) {
@@ -496,12 +586,16 @@ export function initTelemetryWebSocket(server: HttpServer) {
   wss.on('close', () => {
     clearInterval(pingInterval);
   });
+  server.once('close', () => {
+    clearInterval(pingInterval);
+    wss?.close();
+  });
 
   console.log(`📡 [WS TELEMETRY] WebSocket server ready on /ws/telemetry`);
 }
 
 /**
- * Broadcasts live telemetry updates to connected clients
+ * Broadcasts live telemetry updates to authorized connected clients
  */
 export async function broadcastGateTelemetry(gateId: number, customData?: any) {
   if (!wss || clients.size === 0) return;
@@ -515,13 +609,62 @@ export async function broadcastGateTelemetry(gateId: number, customData?: any) {
     data: dataToSend
   });
 
-  for (const client of clients) {
-    if (client.ws.readyState === WebSocket.OPEN) {
-      // Send if client is viewing this gate or general listener
-      if (!client.gateId || client.gateId === gateId) {
-        client.ws.send(message);
+  for (const client of Array.from(clients)) {
+    if (client.ws.readyState !== WebSocket.OPEN) continue;
+    if (client.gateId === gateId) {
+      client.ws.send(message);
+    } else if (!client.gateId && !client.deviceId && !client.thingName) {
+      try {
+        const authorized = await verifyGateAccess(client.user, gateId, prisma);
+        if (authorized && client.ws.readyState === WebSocket.OPEN) {
+          client.ws.send(message);
+        }
+      } catch (_) {}
+    }
+  }
+}
+
+/**
+ * Notifies subscribers inspecting a specific Device (DeviceInspectSheet / Registry)
+ * whenever a telemetry or health packet arrives, even when unassigned to a gate.
+ */
+export async function broadcastDeviceTelemetryUpdate(params: {
+  deviceId?: number | null;
+  thingName: string;
+  gateId?: number | null;
+  barrierState?: 'OPEN' | 'CLOSED' | null;
+  packetType?: string;
+  telemetryId?: number | null;
+}) {
+  if (!wss || clients.size === 0) return;
+
+  const message = JSON.stringify({
+    type: 'device_telemetry_update',
+    deviceId: params.deviceId ?? null,
+    thingName: params.thingName,
+    gateId: params.gateId ?? null,
+    barrierState: params.barrierState ?? null,
+    packetType: params.packetType ?? 'TELEMETRY',
+    telemetryId: params.telemetryId ?? null,
+    timestamp: new Date().toISOString(),
+  });
+
+  for (const client of Array.from(clients)) {
+    if (client.ws.readyState !== WebSocket.OPEN) continue;
+    const matchesDevice =
+      (client.deviceId !== undefined && params.deviceId && client.deviceId === params.deviceId) ||
+      (client.thingName !== undefined && client.thingName === params.thingName);
+    if (!matchesDevice) continue;
+
+    if (params.gateId) {
+      try {
+        const authorized = await verifyGateAccess(client.user, params.gateId, prisma);
+        if (!authorized || client.ws.readyState !== WebSocket.OPEN) continue;
+      } catch (_) {
+        continue;
       }
     }
+    client.ws.send(message);
   }
 }
 

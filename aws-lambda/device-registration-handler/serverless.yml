@@ -9,19 +9,43 @@ provider:
   memorySize: 256
   timeout: 15
   environment:
-    DATABASE_URL: ${env:DATABASE_URL, 'postgresql://postgres:<DB_PASSWORD>@<DB_HOST>:5432/lc_platform?schema=public'}
+    DATABASE_URL: ${ssm:/lc-platform/${sls:stage}/DATABASE_URL}
+  vpc:
+    securityGroupIds:
+      - ${ssm:/lc-platform/${sls:stage}/LAMBDA_SG_ID}
+    subnetIds:
+      - ${ssm:/lc-platform/${sls:stage}/LAMBDA_SUBNET_1}
+      - ${ssm:/lc-platform/${sls:stage}/LAMBDA_SUBNET_2}
 
 functions:
   registerDevice:
     handler: index.handler
+    maximumRetryAttempts: 2
+    onError: !GetAtt DeviceRegistrationDlq.Arn
     events:
-      # Triggered automatically on AWS IoT Thing creation
       - iot:
-          sql: "SELECT * FROM '$aws/events/thing/+/created'"
-      # Optional HTTP REST Endpoint
-      - httpApi:
-          path: /devices/register
-          method: post
+          name: lc_platform_thing_created_rule
+          sql: "SELECT *, topic(4) as topicThingName, topic() as topic FROM '$aws/events/thing/+/created'"
+      - iot:
+          name: lc_platform_thing_updated_rule
+          sql: "SELECT *, topic(4) as topicThingName, topic() as topic FROM '$aws/events/thing/+/updated'"
+      - iot:
+          name: lc_platform_thing_deleted_rule
+          sql: "SELECT *, topic(4) as thingName, topic() as topic FROM '$aws/events/thing/+/deleted'"
+      - iot:
+          name: lc_platform_device_manifest_rule
+          sql: "SELECT *, topic(3) as topicThingName, topic() as topic FROM 'lc/devices/+/manifest'"
+      - iot:
+          name: lc_platform_device_telemetry_rule
+          sql: "SELECT *, topic(2) as topicThingName, topic() as topic FROM 'lc-gate/+/#'"
+
+resources:
+  Resources:
+    DeviceRegistrationDlq:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: lc-platform-device-registration-dlq-${sls:stage}
+        MessageRetentionPeriod: 1209600
 
 package:
   patterns:

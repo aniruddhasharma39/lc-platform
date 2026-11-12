@@ -9,6 +9,7 @@ import {
   getISTDateString,
   formatISTDateDisplay,
   formatDurationHuman,
+  resolveGateHierarchyLabel,
   CountReportResponse,
   DurationReportResponse,
   HolisticReportResponse
@@ -50,7 +51,8 @@ export interface CompleteLogReportData {
       name: string | null;
       zone: string | null;
       division: string | null;
-      scopeGroups: Array<{
+      station?: { name?: string | null; code?: string | null } | null;
+      scopeGroups?: Array<{
         scopeGroup: { id: number; name: string; color: string | null };
       }>;
     };
@@ -154,8 +156,6 @@ function organizeCompleteLogData(data: CompleteLogReportData): GateCompleteLogSe
 
   for (const ev of data.events) {
     if (!gateMap.has(ev.gateId)) {
-      const matchingGroup: any = null;
-
       gateMap.set(ev.gateId, {
         gateInfo: {
           id: ev.gate.id,
@@ -164,7 +164,7 @@ function organizeCompleteLogData(data: CompleteLogReportData): GateCompleteLogSe
           name: ev.gate.name,
           zone: ev.gate.zone,
           division: ev.gate.division,
-          scopeGroupName: matchingGroup?.name || 'Unassigned'
+          scopeGroupName: resolveGateHierarchyLabel(ev.gate)
         },
         events: []
       });
@@ -543,7 +543,11 @@ export async function exportCompleteLogPdf(
   doc.text(`Generated At: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`, col2X, mY);
   doc.text(`Shift Filter: ${options.shiftFilter || 'ALL SHIFTS'}`, col3X, mY);
 
-  doc.text(`Scope Groups: ${data.targetScopeGroupIds?.length ? `${data.targetScopeGroupIds.length} Groups` : 'All Assigned'}`, col1X, mY + 15);
+  const uniqueDivisions = Array.from(
+    new Set(data.events.map(e => e.gate?.division?.trim()).filter(Boolean))
+  );
+  const jurisdictionLabel = uniqueDivisions.length > 0 ? uniqueDivisions.join(', ') : 'All Assigned';
+  doc.text(`Jurisdiction: ${jurisdictionLabel}`, col1X, mY + 15);
   doc.text(`Gates Filtered: ${data.metrics.reportingGatesCount} Reporting Gates`, col2X, mY + 15);
   doc.text(`Status Filter: ${options.statusFilter || 'ALL STATUSES'}`, col3X, mY + 15);
 
@@ -574,7 +578,7 @@ export async function exportCompleteLogPdf(
   if (sections.length === 0) {
     doc.rect(36, yPos, doc.page.width - 72, 30).fill('#F8FAFC');
     doc.fillColor('#64748B').fontSize(10).font('Helvetica-Oblique')
-      .text('No operational events recorded for the selected scope groups, gates, and date range.', 36, yPos + 10, {
+      .text('No operational events recorded for the selected gates and date range.', 36, yPos + 10, {
         align: 'center',
         width: doc.page.width - 72
       });
@@ -762,10 +766,10 @@ export async function exportCycleExcel(
   // Overall KPI Summary
   sheet.getCell('A9').value = 'Total Completed Cycles:';
   sheet.getCell('B9').value = cycleData.overall.totalCycles;
-  sheet.getCell('C9').value = 'Avg Closing Time:';
-  sheet.getCell('D9').value = cycleData.overall.avgClosingFormatted;
-  sheet.getCell('E9').value = 'Avg Opening Interval:';
-  sheet.getCell('F9').value = cycleData.overall.avgOpeningFormatted;
+  sheet.getCell('C9').value = 'Avg Open Time:';
+  sheet.getCell('D9').value = cycleData.overall.avgOpenFormatted;
+  sheet.getCell('E9').value = 'Avg Closed Interval:';
+  sheet.getCell('F9').value = cycleData.overall.avgClosedFormatted;
 
   ['A9', 'C9', 'E9'].forEach(cell => {
     sheet.getCell(cell).font = { bold: true, color: { argb: 'FF003580' } };
@@ -804,20 +808,20 @@ export async function exportCycleExcel(
     // Gate KPI Cards Row
     sheet.getCell(`A${curRow}`).value = 'Total Completed Cycles:';
     sheet.getCell(`B${curRow}`).value = gr.kpis.totalCycles;
-    sheet.getCell(`C${curRow}`).value = 'Average Closing Time:';
-    sheet.getCell(`D${curRow}`).value = gr.kpis.avgClosingFormatted;
-    sheet.getCell(`E${curRow}`).value = 'Average Opening Interval:';
-    sheet.getCell(`F${curRow}`).value = gr.kpis.avgOpeningFormatted;
+    sheet.getCell(`C${curRow}`).value = 'Average Open Time:';
+    sheet.getCell(`D${curRow}`).value = gr.kpis.avgOpenFormatted;
+    sheet.getCell(`E${curRow}`).value = 'Average Closed Interval:';
+    sheet.getCell(`F${curRow}`).value = gr.kpis.avgClosedFormatted;
     ['A', 'C', 'E'].forEach(col => {
       sheet.getCell(`${col}${curRow}`).font = { bold: true, size: 9, color: { argb: 'FF003580' } };
     });
     sheet.getRow(curRow).height = 20;
     curRow++;
 
-    sheet.getCell(`A${curRow}`).value = 'Total Closed Duration:';
-    sheet.getCell(`B${curRow}`).value = gr.kpis.totalClosedFormatted;
-    sheet.getCell(`C${curRow}`).value = 'Total Open Duration:';
-    sheet.getCell(`D${curRow}`).value = gr.kpis.totalOpenFormatted;
+    sheet.getCell(`A${curRow}`).value = 'Total Open Duration:';
+    sheet.getCell(`B${curRow}`).value = gr.kpis.totalOpenFormatted;
+    sheet.getCell(`C${curRow}`).value = 'Total Closed Duration:';
+    sheet.getCell(`D${curRow}`).value = gr.kpis.totalClosedFormatted;
     sheet.getCell(`E${curRow}`).value = 'Reporting Window:';
     sheet.getCell(`F${curRow}`).value = `${cycleData.startDate} to ${cycleData.endDate}`;
     ['A', 'C', 'E'].forEach(col => {
@@ -830,10 +834,10 @@ export async function exportCycleExcel(
     const tableHeaders = [
       'Operational Date',
       'Completed Cycles',
-      'Average Closing Time',
-      'Average Opening Time',
-      'Total Closed Duration',
-      'Total Open Duration'
+      'Average Open Time',
+      'Average Closed Interval',
+      'Total Open Duration',
+      'Total Closed Duration'
     ];
     const thRow = sheet.getRow(curRow);
     thRow.values = tableHeaders;
@@ -853,10 +857,10 @@ export async function exportCycleExcel(
       dRow.values = [
         day.dateFormatted,
         day.completedCycles,
-        day.avgClosingFormatted,
-        day.avgOpeningFormatted,
-        day.totalClosedFormatted,
-        day.totalOpenFormatted
+        day.avgOpenFormatted,
+        day.avgClosedFormatted,
+        day.totalOpenFormatted,
+        day.totalClosedFormatted
       ];
       dRow.height = 20;
 
@@ -993,9 +997,9 @@ export async function exportCyclePdf(
   const kpiWidth = (doc.page.width - 72 - 30) / 4;
   const overallKpis = [
     { label: 'TOTAL COMPLETED CYCLES', val: `${cycleData.overall.totalCycles}` },
-    { label: 'AVG CLOSING TIME', val: cycleData.overall.avgClosingFormatted },
-    { label: 'AVG OPENING INTERVAL', val: cycleData.overall.avgOpeningFormatted },
-    { label: 'TOTAL CLOSED DURATION', val: cycleData.overall.totalClosedFormatted },
+    { label: 'AVG OPEN TIME', val: cycleData.overall.avgOpenFormatted },
+    { label: 'AVG CLOSED INTERVAL', val: cycleData.overall.avgClosedFormatted },
+    { label: 'TOTAL OPEN DURATION', val: cycleData.overall.totalOpenFormatted },
   ];
 
   overallKpis.forEach((kpi, i) => {
@@ -1028,9 +1032,9 @@ export async function exportCyclePdf(
     const secKpiWidth = (doc.page.width - 72 - 30) / 4;
     const secKpis = [
       { label: 'COMPLETED CYCLES', val: `${gr.kpis.totalCycles}` },
-      { label: 'AVG CLOSING TIME', val: gr.kpis.avgClosingFormatted || '—' },
-      { label: 'AVG OPENING INTERVAL', val: gr.kpis.avgOpeningFormatted || '—' },
-      { label: 'TOTAL CLOSED DURATION', val: gr.kpis.totalClosedFormatted || '0s' },
+      { label: 'AVG OPEN TIME', val: gr.kpis.avgOpenFormatted || '—' },
+      { label: 'AVG CLOSED INTERVAL', val: gr.kpis.avgClosedFormatted || '—' },
+      { label: 'TOTAL OPEN DURATION', val: gr.kpis.totalOpenFormatted || '0s' },
     ];
     secKpis.forEach((kpi, i) => {
       const xPos = 36 + i * (secKpiWidth + 10);
@@ -1044,10 +1048,10 @@ export async function exportCyclePdf(
     const cols = [
       { label: 'Operational Date', width: (doc.page.width - 72) * 0.22, align: 'left' as const },
       { label: 'Completed Cycles', width: (doc.page.width - 72) * 0.14, align: 'center' as const },
-      { label: 'Avg Closing Time', width: (doc.page.width - 72) * 0.16, align: 'center' as const },
-      { label: 'Avg Opening Time', width: (doc.page.width - 72) * 0.16, align: 'center' as const },
-      { label: 'Total Closed Duration', width: (doc.page.width - 72) * 0.16, align: 'center' as const },
+      { label: 'Avg Open Time', width: (doc.page.width - 72) * 0.16, align: 'center' as const },
+      { label: 'Avg Closed Interval', width: (doc.page.width - 72) * 0.16, align: 'center' as const },
       { label: 'Total Open Duration', width: (doc.page.width - 72) * 0.16, align: 'center' as const },
+      { label: 'Total Closed Duration', width: (doc.page.width - 72) * 0.16, align: 'center' as const },
     ];
 
     doc.rect(36, yPos, doc.page.width - 72, 18).fill(HEADER_BG);
@@ -1083,10 +1087,10 @@ export async function exportCyclePdf(
       const rowValues = [
         day.dateFormatted,
         String(day.completedCycles),
-        day.avgClosingFormatted,
-        day.avgOpeningFormatted,
-        day.totalClosedFormatted,
-        day.totalOpenFormatted
+        day.avgOpenFormatted,
+        day.avgClosedFormatted,
+        day.totalOpenFormatted,
+        day.totalClosedFormatted
       ];
 
       let rX = 36;
@@ -1183,13 +1187,13 @@ export function exportCycleCsv(
     'Location',
     'Zone',
     'Division',
-    'Scope Group',
+    'Station / Division',
     'Operational Date',
     'Completed Cycles',
-    'Average Closing Time',
-    'Average Opening Time',
-    'Total Closed Duration',
-    'Total Open Duration'
+    'Average Open Time',
+    'Average Closed Interval',
+    'Total Open Duration',
+    'Total Closed Duration'
   ];
 
   const rows: string[] = [];
@@ -1203,13 +1207,13 @@ export function exportCycleCsv(
         gr.gate.locationName,
         gr.gate.zone || '-',
         gr.gate.division || '-',
-        gr.gate.scopeGroupName || 'Unassigned',
+        gr.gate.scopeGroupName || resolveGateHierarchyLabel(gr.gate),
         day.dateFormatted,
         day.completedCycles,
-        day.avgClosingFormatted,
-        day.avgOpeningFormatted,
-        day.totalClosedFormatted,
-        day.totalOpenFormatted
+        day.avgOpenFormatted,
+        day.avgClosedFormatted,
+        day.totalOpenFormatted,
+        day.totalClosedFormatted
       ];
       rows.push(row.map(escapeCsv).join(','));
     }

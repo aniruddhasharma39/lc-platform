@@ -5,8 +5,15 @@ import path from 'path';
 import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
-import { buildUserGateWhereClause, verifyGateAccess } from '../lib/railwayHierarchy';
-import { authenticate } from '../middleware/auth';
+import { buildUserGateWhereClause, isDeveloperUser, verifyGateAccess } from '../lib/railwayHierarchy';
+import {
+  authenticate,
+  ensureGateAccess,
+  ensureJurisdictionForAssetCreation,
+  requireAnyModule,
+  requireModule,
+} from '../middleware/auth';
+import { formatLastClosedIST, getISTDateString, getISTUtcDateBounds } from '../lib/timeUtils';
 import { RAILWAY_DATA, RAILWAY_ZONES, RAILWAY_STATIONS, divisionsForZone, stationsForDivision, findZoneForDivision } from '../lib/railwayData';
 
 import { publishMqttMessage } from '../lib/iotClient';
@@ -163,7 +170,7 @@ const createStationSchema = z.object({
 });
 
 // Dynamic/manual Station creation with deduplication
-router.post('/stations', authenticate, async (req, res, next) => {
+router.post('/stations', authenticate, requireModule('cluster'), async (req: any, res, next) => {
   try {
     const data = createStationSchema.parse(req.body);
     const cleanCode = data.code.trim().toUpperCase();
@@ -174,6 +181,7 @@ router.post('/stations', authenticate, async (req, res, next) => {
       return res.status(400).json({ error: 'Railway Zone is required or could not be resolved for this division.' });
     }
     const cleanZone = resolvedZone;
+    if (!(await ensureJurisdictionForAssetCreation(req, res, { zone: cleanZone, division: cleanDiv }))) return;
 
     // Deduplication check: case-insensitive check by code
     let station = await prisma.station.findUnique({
@@ -224,7 +232,7 @@ function formatKpiDuration(seconds: number | null): string {
 // GET /dashboard-summary - Home screen KPIs, gate cycle stats & cluster map coordinates
 router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
   try {
-    const isDeveloper = req.user?.role === 'Developer';
+    const isDeveloper = isDeveloperUser(req.user);
 
     // Role-based access (no scope groups)
     const directorySettings = await prisma.appSetting.findMany({
@@ -253,9 +261,9 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
     }
 
 
-    // Start of today (00:00:00)
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+    // Start of today in IST (00:00:00.000+05:30)
+    const todayIst = getISTDateString(new Date());
+    const { startUtc: startOfTodayIst } = getISTUtcDateBounds(todayIst, todayIst);
 
     const rawGates = await prisma.lCGate.findMany({
       where: whereClause,
@@ -263,10 +271,6 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       include: {
         station: { select: { id: true, code: true, name: true, division: true, zone: true } },
         deviceRegistries: true,
-        events: {
-          orderBy: { openedAt: 'desc' },
-          take: 50,
-        },
         masters: {
           orderBy: { masterSequence: 'asc' },
           include: {
@@ -290,30 +294,97 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
     let totalNoTelemetryGates = 0;
 
     // Exclude ALL unconfigured gates from KPI totals & Assigned Gate Cycles (single source of truth = linked AWS IoT Things)
+    const configuredGateMeta = gates
+      .map((gate) => ({ gate, resolved: resolveGateStateFromThings(gate, nowMs) }))
+      .filter((entry) => entry.resolved.isConfigured);
+
+    const configuredGateIds = configuredGateMeta.map((e) => e.gate.id);
+    const allActiveMasterIds = Array.from(new Set(
+      configuredGateMeta.flatMap((e) => e.gate.masters.map((m: any) => m.id).filter(Boolean))
+    ));
+    const allActiveThingNames = Array.from(new Set(
+      configuredGateMeta.flatMap((e) => e.resolved.linkedThings.map((t: any) => t.thingName).filter(Boolean))
+    ));
+
+    // Fetch 100% of Today's IST events scoped to active hardware Things/Masters (zero take:50 truncation)
+    const todayHwFilters: any[] = [];
+    if (allActiveMasterIds.length > 0) todayHwFilters.push({ masterId: { in: allActiveMasterIds } });
+    if (allActiveThingNames.length > 0) todayHwFilters.push({ thingName: { in: allActiveThingNames } });
+
+    const allTodayRawEvents = (configuredGateIds.length > 0 && todayHwFilters.length > 0)
+      ? await prisma.lCGateEvent.findMany({
+          where: {
+            gateId: { in: configuredGateIds },
+            openedAt: { gte: startOfTodayIst },
+            OR: todayHwFilters,
+          },
+          orderBy: { openedAt: 'desc' },
+        })
+      : [];
+
+    const todayEventsByGate = new Map<number, any[]>();
+    for (const ev of allTodayRawEvents) {
+      if (!todayEventsByGate.has(ev.gateId)) todayEventsByGate.set(ev.gateId, []);
+      todayEventsByGate.get(ev.gateId)!.push(ev);
+    }
+
+    // For gates with <2 closed cycles today (or needing lastClosedEvent / inter-cycle fallback),
+    // fetch up to 50 prior historical events scoped strictly to that gate's active Master/Thing IDs
+    const historicalEventsByGate = new Map<number, any[]>();
+    await Promise.all(
+      configuredGateMeta.map(async ({ gate, resolved }) => {
+        const activeMasterIds = new Set<number>(gate.masters.map((m: any) => m.id));
+        const activeThingNames = new Set<string>(resolved.linkedThings.map((t: any) => t.thingName));
+        const gateTodayScoped = (todayEventsByGate.get(gate.id) || []).filter(
+          (e: any) => (e.masterId && activeMasterIds.has(e.masterId)) || (e.thingName && activeThingNames.has(e.thingName))
+        );
+        const closedTodayCount = gateTodayScoped.filter((e: any) => e.closedAt !== null).length;
+        if (closedTodayCount >= 2) {
+          return;
+        }
+        const gateHwFilters: any[] = [];
+        if (activeMasterIds.size > 0) gateHwFilters.push({ masterId: { in: Array.from(activeMasterIds) } });
+        if (activeThingNames.size > 0) gateHwFilters.push({ thingName: { in: Array.from(activeThingNames) } });
+        if (gateHwFilters.length === 0) return;
+
+        const hist = await prisma.lCGateEvent.findMany({
+          where: {
+            gateId: gate.id,
+            openedAt: { lt: startOfTodayIst },
+            OR: gateHwFilters,
+          },
+          orderBy: { openedAt: 'desc' },
+          take: 50,
+        });
+        historicalEventsByGate.set(gate.id, hist);
+      })
+    );
+
     const configuredGateEntries: any[] = [];
 
-    for (const gate of gates) {
-      const resolved = resolveGateStateFromThings(gate, nowMs);
-      if (!resolved.isConfigured) {
-        continue;
-      }
-
+    for (const { gate, resolved } of configuredGateMeta) {
       const activeMasterIds = new Set<number>(gate.masters.map((m: any) => m.id));
       const activeThingNames = new Set<string>(resolved.linkedThings.map((t: any) => t.thingName));
-      const scopedEvents = gate.events.filter((e: any) => {
-        if (e.masterId && activeMasterIds.has(e.masterId)) return true;
-        if (e.thingName && activeThingNames.has(e.thingName)) return true;
-        return false;
-      });
+      const combinedEvents = [
+        ...(todayEventsByGate.get(gate.id) || []),
+        ...(historicalEventsByGate.get(gate.id) || []),
+      ];
+      const scopedEvents = combinedEvents
+        .filter((e: any) => {
+          if (e.masterId && activeMasterIds.has(e.masterId)) return true;
+          if (e.thingName && activeThingNames.has(e.thingName)) return true;
+          return false;
+        })
+        .sort((a: any, b: any) => new Date(b.openedAt).getTime() - new Date(a.openedAt).getTime());
 
       const isSolar = gate.masters.some((m: any) => m.powerSource === 'SOLAR');
       const primaryMaster = gate.masters[0]?.serialNumber || null;
       const slavesCount = gate.masters.reduce((acc: number, m: any) => acc + (m.childDevices?.length || 0), 0);
 
-      // Compute cycles for today strictly from linked hardware Thing events
+      // Compute cycles for today strictly from linked hardware Thing events in IST
       const todayEvents = scopedEvents.filter((e: any) => {
         const opTime = new Date(e.openedAt).getTime();
-        return opTime >= startOfToday.getTime();
+        return opTime >= startOfTodayIst.getTime();
       });
 
       const todayCyclesCount = todayEvents.length;
@@ -364,14 +435,7 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
 
       if (lastClosedEvent && lastClosedEvent.closedAt) {
         lastClosedAt = lastClosedEvent.closedAt.toISOString();
-        const closedDate = new Date(lastClosedEvent.closedAt);
-        const isToday = closedDate.toDateString() === new Date().toDateString();
-        const timeStr = closedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        if (isToday) {
-          lastClosedFormatted = `Today at ${timeStr}`;
-        } else {
-          lastClosedFormatted = `${closedDate.toLocaleDateString([], { month: 'short', day: 'numeric' })} at ${timeStr}`;
-        }
+        lastClosedFormatted = formatLastClosedIST(new Date(lastClosedEvent.closedAt), new Date());
       }
 
       const status = resolved.status; // 'OPEN' | 'CLOSED' | 'NO_TELEMETRY'
@@ -422,7 +486,9 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       });
     }
 
+    const totalAllGates = gates.length;
     const totalConfiguredClusters = configuredGateEntries.length;
+    const totalUnconfiguredGates = Math.max(0, totalAllGates - totalConfiguredClusters);
 
     const gatesWithAvgOpen = configuredGateEntries.filter(g => g.avgOpenSeconds !== null && g.avgOpenSeconds > 0);
     const globalAvgOpenSec = gatesWithAvgOpen.length > 0
@@ -440,8 +506,9 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       totalDevices: totalConfiguredClusters,
       totalClusters: totalConfiguredClusters,
       totalConfiguredClusters,
-      totalUnconfiguredGates: 0, // Strictly excluded from KPIs per policy
-      totalAllGates: totalConfiguredClusters,
+      totalConfiguredGates: totalConfiguredClusters,
+      totalUnconfiguredGates,
+      totalAllGates,
       totalCyclesToday,
       totalOpenGates,
       totalClosedGates,
@@ -459,6 +526,9 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
       .createHash('md5')
       .update(JSON.stringify({
         totalDevices: responsePayload.totalDevices,
+        totalConfiguredGates: responsePayload.totalConfiguredGates,
+        totalUnconfiguredGates: responsePayload.totalUnconfiguredGates,
+        totalAllGates: responsePayload.totalAllGates,
         totalCyclesToday: responsePayload.totalCyclesToday,
         totalOpenGates: responsePayload.totalOpenGates,
         totalClosedGates: responsePayload.totalClosedGates,
@@ -472,8 +542,10 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
     const etag = `W/"${contentHash}"`;
     res.setHeader('ETag', etag);
 
-    const clientIfNoneMatch = req.headers['if-none-match'];
-    if (clientIfNoneMatch && clientIfNoneMatch === etag) {
+    const clientIfNoneMatch = Array.isArray(req.headers['if-none-match'])
+      ? req.headers['if-none-match'][0]
+      : req.headers['if-none-match'];
+    if (clientIfNoneMatch && matchesETag(clientIfNoneMatch, etag)) {
       return res.status(304).end();
     }
 
@@ -485,9 +557,10 @@ router.get('/dashboard-summary', authenticate, async (req: any, res, next) => {
 
 
 // Create a new LC Gate (Clean railway asset creation decoupled from AWS IoT provisioning)
-router.post('/', authenticate, async (req: any, res, next) => {
+router.post('/', authenticate, requireModule('cluster'), async (req: any, res, next) => {
   try {
     const data = createGateSchema.parse(req.body);
+    if (!(await ensureJurisdictionForAssetCreation(req, res, { zone: data.zone, division: data.division }))) return;
 
     const rawLc = (data.lcNumber || data.lcNumberDigits || '').trim();
     if (!rawLc) {
@@ -565,10 +638,11 @@ router.post('/', authenticate, async (req: any, res, next) => {
 });
 
 // PUT /:id - Edit and update an existing LC Gate
-router.put('/:id', authenticate, async (req: any, res, next) => {
+router.put('/:id', authenticate, requireModule('cluster'), async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid gate ID' });
+    if (!(await ensureGateAccess(req, res, id))) return;
 
     const existing = await prisma.lCGate.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ error: 'LC Gate not found' });
@@ -656,10 +730,11 @@ router.put('/:id', authenticate, async (req: any, res, next) => {
 });
 
 // POST /:id/assign-device - Assign physical AWS IoT device to LC Gate / Master Unit
-router.post('/:id/assign-device', authenticate, async (req: any, res, next) => {
+router.post('/:id/assign-device', authenticate, requireModule('cluster'), async (req: any, res, next) => {
   try {
     const gateId = parseInt(req.params.id, 10);
     if (isNaN(gateId)) return res.status(400).json({ error: 'Invalid gate ID' });
+    if (!(await ensureGateAccess(req, res, gateId))) return;
 
     const { deviceId, masterId, childDeviceId } = req.body;
     if (!deviceId) return res.status(400).json({ error: 'deviceId is required' });
@@ -669,6 +744,7 @@ router.post('/:id/assign-device', authenticate, async (req: any, res, next) => {
 
     const dev = await prisma.deviceRegistry.findUnique({ where: { id: Number(deviceId) } });
     if (!dev) return res.status(404).json({ error: 'Device not found in registry' });
+    if (dev.gateId && dev.gateId !== gateId && !(await ensureGateAccess(req, res, dev.gateId))) return;
 
     const targetMasterId = masterId ? Number(masterId) : null;
     if (!targetMasterId) {
@@ -742,10 +818,11 @@ router.post('/:id/assign-device', authenticate, async (req: any, res, next) => {
 });
 
 // POST /:id/unassign-device - Unassign physical AWS IoT device from LC Gate
-router.post('/:id/unassign-device', authenticate, async (req: any, res, next) => {
+router.post('/:id/unassign-device', authenticate, requireModule('cluster'), async (req: any, res, next) => {
   try {
     const gateId = parseInt(req.params.id, 10);
     if (isNaN(gateId)) return res.status(400).json({ error: 'Invalid gate ID' });
+    if (!(await ensureGateAccess(req, res, gateId))) return;
 
     const { deviceId } = req.body;
     if (!deviceId) return res.status(400).json({ error: 'deviceId is required' });
@@ -819,7 +896,7 @@ function computeGateConnectivity(
 // GET /status-summary - Dedicated, lightweight real-time connectivity & barrier status for accessible gates
 router.get('/status-summary', authenticate, async (req: any, res, next) => {
   try {
-    const isDeveloper = req.user?.role === 'Developer';
+    const isDeveloper = isDeveloperUser(req.user);
 
     let whereClause: any = {};
     if (!isDeveloper) {
@@ -910,7 +987,7 @@ router.get('/', authenticate, async (req: any, res, next) => {
 
         // 2. Authoritative check: Live role & developer privilege (never relies on stale JWT)
         const liveRoleName = currentUser.role?.name || '';
-        const isDeveloper = liveRoleName === 'Developer';
+        const isDeveloper = isDeveloperUser(currentUser);
         const allowedModules = currentUser.role?.roleModules.map((rm: any) => rm.module.slug) || [];
 
         // 3. Permission check: Developer or explicit cluster module permission
@@ -997,6 +1074,7 @@ router.get('/', authenticate, async (req: any, res, next) => {
       directoryRevision: snapshot.revisionToken || '1',
       scopeGroupId: typeof req.query.scopeGroupId === 'string' ? req.query.scopeGroupId : null,
       directOnly: typeof req.query.directOnly === 'string' ? req.query.directOnly : null,
+      configuredOnly: req.query.configuredOnly === 'true' ? 'true' : null,
     };
 
     const cacheKey = clusterCacheManager.generateKey(canonicalParams);
@@ -1062,11 +1140,14 @@ router.get('/', authenticate, async (req: any, res, next) => {
 
     // Ensure gate list is strictly unique by ID
     const uniqueGates = Array.from(new Map(enrichedGates.map(g => [g.id, g])).values());
+    const responseGates = req.query.configuredOnly === 'true'
+      ? uniqueGates.filter((g) => g.isConfigured)
+      : uniqueGates;
 
     // Transition-Aware TTL Calculation:
     // Determine the exact timestamp when the earliest currently-online device crosses 65 minutes
     const onlineExpirations: number[] = [];
-    enrichedGates.forEach(g => {
+    responseGates.forEach(g => {
       if (g.isOnline && g.lastSeenAt) {
         const lastSeenMs = new Date(g.lastSeenAt).getTime();
         onlineExpirations.push(lastSeenMs + ONLINE_CUTOFF_MS);
@@ -1090,7 +1171,7 @@ router.get('/', authenticate, async (req: any, res, next) => {
     res.setHeader('Vary', 'Authorization, If-None-Match');
 
     // Store in L1 In-Memory Cache with Transition-Aware TTL
-    clusterCacheManager.set(cacheKey, uniqueGates, canonicalETag, {
+    clusterCacheManager.set(cacheKey, responseGates, canonicalETag, {
       userId: req.user.id,
       scopeGroupIds: snapshot.relevantScopeGroupIds || snapshot.assignedScopeGroupIds,
       isDeveloper: snapshot.isDeveloper || false,
@@ -1102,7 +1183,7 @@ router.get('/', authenticate, async (req: any, res, next) => {
     }
 
     res.setHeader('X-Cluster-Cache', 'MISS');
-    res.json(uniqueGates);
+    res.json(responseGates);
   } catch (error) {
     next(error);
   }
@@ -1297,10 +1378,11 @@ export async function syncDeviceHistoryToGate(
   }
 }
 
-router.post('/:gateId/masters', authenticate, async (req, res, next) => {
+router.post('/:gateId/masters', authenticate, requireModule('cluster'), async (req: any, res, next) => {
   try {
     const gateId = parseInt(req.params.gateId);
     if (isNaN(gateId)) return res.status(400).json({ error: 'Invalid gate ID' });
+    if (!(await ensureGateAccess(req, res, gateId))) return;
 
     const data = createMasterSchema.parse(req.body);
 
@@ -1315,6 +1397,7 @@ router.post('/:gateId/masters', authenticate, async (req, res, next) => {
       if (!dev) {
         return res.status(400).json({ error: 'Selected device does not exist in AWS IoT registry.' });
       }
+      if (dev.gateId && dev.gateId !== gateId && !(await ensureGateAccess(req, res, dev.gateId))) return;
       if (dev.masterId && dev.masterId !== 0) {
         return res.status(400).json({ error: `Device "${dev.thingName}" is already assigned to another Master Unit.` });
       }
@@ -1387,7 +1470,7 @@ const updateMasterSchema = z.object({
 });
 
 // PUT /masters/:id - Update Master Unit configuration (power source, serial, hardware device mapping)
-router.put('/masters/:id', authenticate, async (req, res, next) => {
+router.put('/masters/:id', authenticate, requireModule('cluster'), async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid master ID' });
@@ -1397,8 +1480,15 @@ router.put('/masters/:id', authenticate, async (req, res, next) => {
       include: { gate: true, deviceRegistry: true }
     });
     if (!existing) return res.status(404).json({ error: 'Master Unit not found' });
+    if (existing.gateId && !(await ensureGateAccess(req, res, existing.gateId))) return;
 
     const data = updateMasterSchema.parse(req.body);
+    if (data.deviceId !== undefined && data.deviceId !== null) {
+      const candidate = await prisma.deviceRegistry.findUnique({ where: { id: data.deviceId }, select: { gateId: true } });
+      if (candidate?.gateId && candidate.gateId !== existing.gateId && !(await ensureGateAccess(req, res, candidate.gateId))) {
+        return;
+      }
+    }
 
     const updated = await prisma.$transaction(async (tx) => {
       let serialNumber = existing.serialNumber;
@@ -1581,7 +1671,7 @@ const createDeviceSchema = z.object({
 });
 
 // Add a Child Device to a Master
-router.post('/masters/:masterId/devices', authenticate, async (req: any, res, next) => {
+router.post('/masters/:masterId/devices', authenticate, requireModule('cluster'), async (req: any, res, next) => {
   try {
     const masterId = parseInt(req.params.masterId);
     if (isNaN(masterId)) return res.status(400).json({ error: 'Invalid master ID' });
@@ -1592,6 +1682,7 @@ router.post('/masters/:masterId/devices', authenticate, async (req: any, res, ne
     if (!master) {
       return res.status(404).json({ error: 'Master Unit not found' });
     }
+    if (master.gateId && !(await ensureGateAccess(req, res, master.gateId))) return;
 
     const letter = getSlaveLetter(data.type);
     const prefix = `${master.serialNumber}-${letter}`;
@@ -1755,10 +1846,17 @@ router.post('/masters/:masterId/devices', authenticate, async (req: any, res, ne
 
 // Delete a Master Unit (cascades to devices and evidences)
 // NOTE: must be declared BEFORE '/:id' so '/masters/:id' is not matched as a gate id.
-router.delete('/masters/:id', authenticate, async (req, res, next) => {
+router.delete('/masters/:id', authenticate, requireModule('cluster'), async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid master ID' });
+
+    const preMaster = await prisma.masterUnit.findUnique({
+      where: { id },
+      select: { gateId: true },
+    });
+    if (!preMaster) return res.status(404).json({ error: 'Master Unit not found' });
+    if (preMaster.gateId && !(await ensureGateAccess(req, res, preMaster.gateId))) return;
     
     let deletedGateId: number | null = null;
     await prisma.$transaction(async (tx) => {
@@ -1835,10 +1933,17 @@ router.delete('/masters/:id', authenticate, async (req, res, next) => {
 });
 
 // Delete a Slave Device
-router.delete('/devices/:id', authenticate, async (req, res, next) => {
+router.delete('/devices/:id', authenticate, requireModule('cluster'), async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid device ID' });
+
+    const preDevice = await prisma.childDevice.findUnique({
+      where: { id },
+      include: { master: { select: { gateId: true } } },
+    });
+    if (!preDevice) return res.status(404).json({ error: 'Slave Device not found' });
+    if (preDevice.master?.gateId && !(await ensureGateAccess(req, res, preDevice.master.gateId))) return;
     
     await prisma.$transaction(async (tx) => {
       const targetDevice = await tx.childDevice.findUnique({
@@ -2009,6 +2114,8 @@ function buildGateTelemetry(gate: any) {
     });
   });
 
+  const resolved = resolveGateStateFromThings(gate, now.getTime());
+
   const gateInfo = {
     id: gate.id,
     lcNumber: gate.lcNumber,
@@ -2020,6 +2127,14 @@ function buildGateTelemetry(gate: any) {
     station: gate.station || null,
     latitude: gate.latitude,
     longitude: gate.longitude,
+    isConfigured: resolved.isConfigured,
+    currentStatus: resolved.status,
+    status: resolved.status,
+    isOnline: resolved.isOnline,
+    deviceStatus: resolved.hasHardware ? resolved.deviceStatus : null,
+    lastSeenAt: resolved.lastSeenAt,
+    onlineMastersCount: resolved.onlineMastersCount,
+    hardwareMastersCount: resolved.hardwareMastersCount,
     powerSource: isSolar ? 'SOLAR' : 'DIRECT',
     mastersCount: masterList.length,
     slavesCount: slavesList.length,
@@ -2090,7 +2205,7 @@ router.get('/:id/telemetry', authenticate, async (req: any, res, next) => {
 });
 
 // Trigger health check command to gate's master hardware over AWS IoT Core MQTT broker
-router.post('/:id/health-check', authenticate, async (req, res, next) => {
+router.post('/:id/health-check', authenticate, requireAnyModule(['lc-gates', 'cluster', 'devices']), async (req: any, res, next) => {
   try {
     const idNum = parseInt(req.params.id);
     const gateWhere = !isNaN(idNum) ? { id: idNum } : { lcNumber: req.params.id };
@@ -2107,6 +2222,7 @@ router.post('/:id/health-check', authenticate, async (req, res, next) => {
     });
 
     if (!rawGate) return res.status(404).json({ error: 'Gate not found' });
+    if (!(await ensureGateAccess(req, res, rawGate.id))) return;
     const gate = hydrateGateMasters(rawGate as any);
 
     const reqMasterId = req.body?.masterId ? Number(req.body.masterId) : null;
@@ -2186,10 +2302,11 @@ router.post('/:id/health-check', authenticate, async (req, res, next) => {
 });
 
 // Delete an LC Gate (cascades) - declared last so it doesn't shadow the paths above.
-router.delete('/:id', authenticate, async (req, res, next) => {
+router.delete('/:id', authenticate, requireModule('cluster'), async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid gate ID' });
+    if (!(await ensureGateAccess(req, res, id))) return;
     
     await prisma.$transaction(async (tx) => {
 

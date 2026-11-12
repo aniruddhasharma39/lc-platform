@@ -3,6 +3,10 @@ import { bumpReportRevisionInTx } from './reportRevisionManager';
 
 export const GATE_ONLINE_CUTOFF_MS = 65 * 60 * 1000; // 65-minute unified heartbeat window
 
+export function getOnlineCutoffDate(nowMs: number = Date.now()): Date {
+  return new Date(nowMs - GATE_ONLINE_CUTOFF_MS);
+}
+
 export type BarrierState = 'OPEN' | 'CLOSED' | null;
 export type GateResolvedStatus = 'OPEN' | 'CLOSED' | 'NO_TELEMETRY' | 'UNCONFIGURED';
 export type GateConnectivityStatus = 'ONLINE' | 'PARTIAL' | 'OFFLINE' | 'UNCONFIGURED';
@@ -34,8 +38,9 @@ export function parseBarrierStateFromPayload(payload: any): BarrierState {
 }
 
 /**
- * Returns true strictly for genuine inbound AWS IoT operational /telemetry packets.
- * Excludes /manifest, /health, /request commands, and locally queued ping artifacts.
+ * Returns true strictly for genuine inbound AWS IoT operational /telemetry packets
+ * that carry real physical barrier state (OPEN / CLOSED / NOT_CLOSED / LimitSwitchClosed).
+ * Excludes /manifest, /health, /request commands, queued ping artifacts, and heartbeat-only payloads.
  */
 export function isGenuineTelemetryPacket(rec: {
   topic?: string | null;
@@ -44,11 +49,38 @@ export function isGenuineTelemetryPacket(rec: {
 }): boolean {
   const topic = String(rec.topic || '').toLowerCase();
   const payload = rec.payload && typeof rec.payload === 'object' ? rec.payload : null;
+  const recStatus = String(rec.status || '').toUpperCase();
   if (!topic.includes('/telemetry')) return false;
   if (topic.includes('/health') || topic.includes('/request') || topic.includes('/manifest')) return false;
-  if (String(rec.status || '').toUpperCase() === 'REQUESTED') return false;
+  if (recStatus === 'REQUESTED' || recStatus === 'MANIFEST' || recStatus === 'ACTIVE' || recStatus === 'HEALTHY' || recStatus === 'HEARTBEAT') {
+    return false;
+  }
   if (payload?.action === 'HEALTH_CHECK' || payload?.action === 'HEALTH_CHECK_RESPONSE') return false;
-  return true;
+  return parseBarrierStateFromPayload(payload) !== null;
+}
+
+/**
+ * Classifies any DeviceTelemetry / DeviceHealthCheck row deterministically for UI tabs and inspectors.
+ */
+export function classifyTelemetryPacketType(rec: {
+  topic?: string | null;
+  status?: string | null;
+  payload?: any;
+  isDedicatedHealthCheck?: boolean;
+}): 'TELEMETRY' | 'MANIFEST' | 'HEALTH' | 'HEARTBEAT' {
+  if (rec.isDedicatedHealthCheck) return 'HEALTH';
+  const topic = String(rec.topic || '').toLowerCase();
+  const payload = rec.payload && typeof rec.payload === 'object' ? rec.payload : null;
+  if (
+    (topic.includes('/health') && !topic.includes('/request')) ||
+    payload?.action === 'HEALTH_CHECK_RESPONSE' ||
+    payload?.healthstatus !== undefined
+  ) {
+    return 'HEALTH';
+  }
+  if (isManifestPacket(rec)) return 'MANIFEST';
+  if (isGenuineTelemetryPacket(rec)) return 'TELEMETRY';
+  return 'HEARTBEAT';
 }
 
 /**
@@ -59,7 +91,16 @@ export function isManifestPacket(rec: { topic?: string | null; payload?: any }):
   const payload = rec.payload && typeof rec.payload === 'object' ? rec.payload : null;
   if (topic.includes('/manifest')) return true;
   if (topic.includes('/request') || topic.includes('/telemetry') || topic.includes('/health')) return false;
-  return Boolean(payload && (payload.thing !== undefined || payload.Master !== undefined));
+  return Boolean(
+    payload &&
+      (payload.thing !== undefined ||
+        payload.Master !== undefined ||
+        payload.master !== undefined ||
+        payload.runtimeConfig !== undefined ||
+        payload.manufacturing !== undefined ||
+        Array.isArray(payload.sensors) ||
+        Array.isArray(payload.components))
+  );
 }
 
 /**
@@ -294,4 +335,88 @@ export async function cleanupDetachedThingEventsInTx(
   });
 
   return eventsToDelete.length;
+}
+
+/**
+ * Normalizes raw status strings (converting firmware "NOT_CLOSED" to "OPEN").
+ */
+export function normalizeRawStatusValue<T>(val: T): T | 'OPEN' {
+  if (typeof val === 'string' && val.trim().toUpperCase() === 'NOT_CLOSED') {
+    return 'OPEN';
+  }
+  return val;
+}
+
+/**
+ * Returns a display-safe clone of a telemetry/health payload with "NOT_CLOSED"
+ * normalized to "OPEN" so Status fields and header BARRIER pills always agree.
+ */
+export function normalizeTelemetryPayloadForDisplay<T>(payload: T): T {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return payload;
+  }
+  const cloned: Record<string, any> = { ...(payload as Record<string, any>) };
+  for (const key of ['Status', 'status', 'gateStatus']) {
+    if (cloned[key] !== undefined && cloned[key] !== null) {
+      cloned[key] = normalizeRawStatusValue(cloned[key]);
+    }
+  }
+  return cloned as T;
+}
+
+/**
+ * Normalizes a telemetry or health record for API responses without mutating DB rows.
+ */
+export function normalizeTelemetryRecordForDisplay<
+  T extends { status?: any; gateStatus?: any; payload?: any }
+>(record: T): T & { resolvedBarrierState: BarrierState } {
+  const normalizedPayload = normalizeTelemetryPayloadForDisplay(record.payload);
+  return {
+    ...record,
+    status: normalizeRawStatusValue(record.status),
+    ...(record.gateStatus !== undefined ? { gateStatus: normalizeRawStatusValue(record.gateStatus) } : {}),
+    payload: normalizedPayload,
+    resolvedBarrierState: parseBarrierStateFromPayload(normalizedPayload),
+  };
+}
+
+/**
+ * Resolves authoritative barrierState ('OPEN' | 'CLOSED' | null) for telemetry APIs
+ * without waiting on the 3-second telemetryMonitor worker when a newer genuine
+ * telemetry packet has already landed in DeviceTelemetry.
+ * Does NOT advance device.lastTelemetryId so pollTelemetryTransitions still detects transitions.
+ */
+export function resolveAuthoritativeBarrierState(
+  device: {
+    barrierState?: string | null;
+    lastTelemetryAt?: Date | string | null;
+    lastTelemetryId?: number | null;
+  },
+  latestGenuineTele?: {
+    id?: number | null;
+    receivedAt?: Date | string | null;
+    payload?: any;
+  } | null
+): BarrierState {
+  const persisted = normalizeBarrierStateColumn(device?.barrierState);
+  if (!latestGenuineTele) return persisted;
+
+  const packetState = parseBarrierStateFromPayload(latestGenuineTele.payload);
+  if (!packetState) return persisted;
+  if (!persisted) return packetState;
+
+  const packetMs = latestGenuineTele.receivedAt ? new Date(latestGenuineTele.receivedAt).getTime() : 0;
+  const persistedMs = device?.lastTelemetryAt ? new Date(device.lastTelemetryAt).getTime() : 0;
+
+  // Prefer packet when newer, or on equal timestamp with a strictly higher row id.
+  if (packetMs > persistedMs) return packetState;
+  if (
+    packetMs === persistedMs &&
+    latestGenuineTele.id &&
+    (!device?.lastTelemetryId || latestGenuineTele.id > device.lastTelemetryId)
+  ) {
+    return packetState;
+  }
+
+  return persisted;
 }

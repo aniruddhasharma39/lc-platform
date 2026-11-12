@@ -6,7 +6,16 @@ import { authenticate, requireModule } from '../middleware/auth';
 import { extractRegistrationUserFields } from '../lib/userExtract';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
-import { canApproveRequest, canAssignRole, getAllowedRoleNamesForApprover, getDesignationConfig, DESIGNATIONS, buildUserManagementWhereClause, verifyUserManagementAccess } from '../lib/railwayHierarchy';
+import {
+  canApproveRequest,
+  canAssignRole,
+  getAllowedRoleNamesForApprover,
+  getDesignationConfig,
+  DESIGNATIONS,
+  buildUserManagementWhereClause,
+  isDeveloperUser,
+  verifyUserManagementAccess,
+} from '../lib/railwayHierarchy';
 import { sendRegistrationApprovalEmail, sendRegistrationRejectionEmail } from '../lib/emailService';
 
 const router = Router();
@@ -15,7 +24,7 @@ router.use(authenticate);
 
 router.get('/', requireModule('manage-users'), async (req: any, res, next) => {
   try {
-    const isDeveloper = req.user?.role === 'Developer' || req.user?.role?.name === 'Developer' || req.user?.roleId === 1;
+    const isDeveloper = isDeveloperUser(req.user);
 
     // Retrieve full viewer record for reliable hierarchy evaluation
     const currentUser = await prisma.user.findUnique({
@@ -293,7 +302,7 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
     // Role assignment authorization:
     // Only Developer / Admin has the right to explicitly select/override a role.
     // Non-developer approvers strictly approve the applicant's requested role.
-    const isApproverDeveloper = req.user?.role === 'Developer' || req.user?.role?.name === 'Developer' || req.user?.roleId === 1;
+    const isApproverDeveloper = isDeveloperUser(req.user);
     const reqDesig = request.designation || formData.designation;
     let finalRoleId: number | null = null;
 
@@ -340,7 +349,7 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
           stationId: request.stationId || data.stationId || null,
           idCardUrl: request.idCardUrl || formData.idCard || formData.idCardUrl || null,
           passwordHash: (formData.password && formData.password.trim().length > 0)
-            ? formData.password
+            ? await bcrypt.hash(formData.password.trim(), 10)
             : await bcrypt.hash('123456', 10),
           status: 'APPROVED',
           metadata: JSON.stringify(mappedMetadata)
@@ -647,6 +656,11 @@ router.put('/:id/railway-mapping', requireModule('manage-users'), async (req: an
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid user ID' });
 
     const data = railwayMappingSchema.parse(req.body);
+    const existing = await prisma.user.findUnique({ where: { id }, select: { id: true } });
+    if (!existing) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
     const updated = await prisma.user.update({
       where: { id },
       data: {
@@ -657,8 +671,11 @@ router.put('/:id/railway-mapping', requireModule('manage-users'), async (req: an
       include: {
         role: true,
         station: true,
-       }
-    }).catch(console.warn);
+      },
+    });
+
+    clusterCacheManager.invalidateUser(id);
+    await bumpDirectoryRevision([], true);
 
     res.json(updated);
   } catch (error) {

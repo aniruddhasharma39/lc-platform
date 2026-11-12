@@ -25,19 +25,36 @@ class AuthoritativeReportMetrics {
     this.reportingGatesCount = 0,
   });
 
+  static String _formatSecondsHuman(int sec) {
+    if (sec <= 0) return '0s';
+    final h = sec ~/ 3600;
+    final m = (sec % 3600) ~/ 60;
+    final s = sec % 60;
+    final parts = <String>[];
+    if (h > 0) parts.add('${h}h');
+    if (m > 0) parts.add('${m}m');
+    if (s > 0 || parts.isEmpty) parts.add('${s}s');
+    return parts.join(' ');
+  }
+
   factory AuthoritativeReportMetrics.fromJson(Map<String, dynamic> json) {
+    final totalSec = json['totalDurationSeconds'] is int
+        ? json['totalDurationSeconds'] as int
+        : int.tryParse(json['totalDurationSeconds']?.toString() ?? '0') ?? 0;
+    final avgSec = json['avgDurationSeconds'] is int
+        ? json['avgDurationSeconds'] as int
+        : int.tryParse(json['avgDurationSeconds']?.toString() ?? '0') ?? 0;
+    final rawTotalFmt = json['totalDurationFormatted']?.toString().trim() ?? '';
+    final rawAvgFmt = json['avgDurationFormatted']?.toString().trim() ?? '';
+
     return AuthoritativeReportMetrics(
       totalOperations: json['totalOperations'] is int
           ? json['totalOperations']
           : int.tryParse(json['totalOperations']?.toString() ?? '0') ?? 0,
-      totalDurationSeconds: json['totalDurationSeconds'] is int
-          ? json['totalDurationSeconds']
-          : int.tryParse(json['totalDurationSeconds']?.toString() ?? '0') ?? 0,
-      totalDurationFormatted: json['totalDurationFormatted']?.toString() ?? '0s',
-      avgDurationSeconds: json['avgDurationSeconds'] is int
-          ? json['avgDurationSeconds']
-          : int.tryParse(json['avgDurationSeconds']?.toString() ?? '0') ?? 0,
-      avgDurationFormatted: json['avgDurationFormatted']?.toString() ?? '0s',
+      totalDurationSeconds: totalSec,
+      totalDurationFormatted: rawTotalFmt.isNotEmpty ? rawTotalFmt : _formatSecondsHuman(totalSec),
+      avgDurationSeconds: avgSec,
+      avgDurationFormatted: rawAvgFmt.isNotEmpty ? rawAvgFmt : _formatSecondsHuman(avgSec),
       extendedDelaysCount: json['extendedDelaysCount'] is int
           ? json['extendedDelaysCount']
           : int.tryParse(json['extendedDelaysCount']?.toString() ?? '0') ?? 0,
@@ -142,6 +159,10 @@ class OperationalRecord {
   final String scopeGroupColor;
   final String openedAt;
   final String? closedAt;
+  final String? openedDateIst;
+  final String? openedTimeIst;
+  final String? closedDateIst;
+  final String? closedTimeIst;
   final int? durationSeconds;
   final String durationFormatted;
   final String status; // OPEN, CLOSED, EXTENDED_DELAY
@@ -162,6 +183,10 @@ class OperationalRecord {
     required this.scopeGroupColor,
     required this.openedAt,
     this.closedAt,
+    this.openedDateIst,
+    this.openedTimeIst,
+    this.closedDateIst,
+    this.closedTimeIst,
     this.durationSeconds,
     required this.durationFormatted,
     required this.status,
@@ -171,7 +196,32 @@ class OperationalRecord {
     this.remarks,
   });
 
+  static DateTime? parseToIst(dynamic rawIso) {
+    if (rawIso == null) return null;
+    final parsed = DateTime.tryParse(rawIso.toString());
+    if (parsed == null) return null;
+    return parsed.toUtc().add(const Duration(hours: 5, minutes: 30));
+  }
+
+  static String formatIstDate(DateTime dtIst) {
+    final y = dtIst.year.toString().padLeft(4, '0');
+    final m = dtIst.month.toString().padLeft(2, '0');
+    final d = dtIst.day.toString().padLeft(2, '0');
+    return '$y-$m-$d';
+  }
+
+  static String formatIstTime(DateTime dtIst) {
+    final hh = dtIst.hour.toString().padLeft(2, '0');
+    final mm = dtIst.minute.toString().padLeft(2, '0');
+    final ss = dtIst.second.toString().padLeft(2, '0');
+    return '$hh:$mm:$ss';
+  }
+
   factory OperationalRecord.fromJson(Map<String, dynamic> json) {
+    final openedAtStr = json['openedAt']?.toString() ?? DateTime.now().toUtc().toIso8601String();
+    final closedAtStr = json['closedAt']?.toString();
+    final openedIst = parseToIst(openedAtStr);
+    final closedIst = parseToIst(closedAtStr);
     return OperationalRecord(
       id: json['id'] is int ? json['id'] : int.tryParse(json['id']?.toString() ?? '0') ?? 0,
       gateId: json['gateId'] is int ? json['gateId'] : int.tryParse(json['gateId']?.toString() ?? '0') ?? 0,
@@ -182,8 +232,12 @@ class OperationalRecord {
       division: json['division']?.toString(),
       scopeGroupName: json['scopeGroupName']?.toString() ?? 'Unassigned',
       scopeGroupColor: json['scopeGroupColor']?.toString() ?? '#0B3C7A',
-      openedAt: json['openedAt']?.toString() ?? DateTime.now().toIso8601String(),
-      closedAt: json['closedAt']?.toString(),
+      openedAt: openedAtStr,
+      closedAt: closedAtStr,
+      openedDateIst: json['openedDateIst']?.toString() ?? (openedIst != null ? formatIstDate(openedIst) : null),
+      openedTimeIst: json['openedTimeIst']?.toString() ?? (openedIst != null ? formatIstTime(openedIst) : null),
+      closedDateIst: json['closedDateIst']?.toString() ?? (closedIst != null ? formatIstDate(closedIst) : null),
+      closedTimeIst: json['closedTimeIst']?.toString() ?? (closedIst != null ? formatIstTime(closedIst) : null),
       durationSeconds: json['durationSeconds'] is int
           ? json['durationSeconds']
           : int.tryParse(json['durationSeconds']?.toString() ?? ''),
@@ -208,6 +262,10 @@ class OperationalRecord {
         'scopeGroupColor': scopeGroupColor,
         'openedAt': openedAt,
         'closedAt': closedAt,
+        'openedDateIst': openedDateIst,
+        'openedTimeIst': openedTimeIst,
+        'closedDateIst': closedDateIst,
+        'closedTimeIst': closedTimeIst,
         'durationSeconds': durationSeconds,
         'durationFormatted': durationFormatted,
         'status': status,
@@ -582,8 +640,11 @@ class ReportsCacheService {
     final key = generateCanonicalKey(userId, params);
     final now = DateTime.now();
 
-    // Determine appropriate TTL
-    final isHistorical = !params.endDate.contains(now.toIso8601String().split('T').first);
+    // Determine appropriate TTL based on today's IST date
+    final todayIst = OperationalRecord.formatIstDate(
+      now.toUtc().add(const Duration(hours: 5, minutes: 30)),
+    );
+    final isHistorical = !params.endDate.contains(todayIst);
     final effectiveTtl = ttl ?? (isHistorical ? historicalReportTtl : freshReportTtl);
 
     final entry = ReportsCacheEntry(
@@ -751,11 +812,11 @@ class ReportsCacheService {
       return false;
     }
 
-    // 3. Date Range Filter (Opened Date must fall within range)
+    // 3. Date Range Filter in IST (00:00:00+05:30 to 23:59:59.999+05:30)
     if (params.startDate.isNotEmpty && params.endDate.isNotEmpty) {
       final opened = DateTime.tryParse(record.openedAt)?.toUtc();
-      final start = DateTime.tryParse('${params.startDate}T00:00:00.000Z')?.toUtc();
-      final end = DateTime.tryParse('${params.endDate}T23:59:59.999Z')?.toUtc();
+      final start = DateTime.tryParse('${params.startDate}T00:00:00+05:30')?.toUtc();
+      final end = DateTime.tryParse('${params.endDate}T23:59:59.999+05:30')?.toUtc();
       if (opened != null && start != null && end != null) {
         if (opened.isBefore(start) || opened.isAfter(end)) {
           return false;

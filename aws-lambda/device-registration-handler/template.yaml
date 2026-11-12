@@ -1,14 +1,14 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: LC-Platform AWS IoT Device Registration Lambda & IoT Rule
+Description: LC-Platform AWS IoT Device Registration Lambda, SQS DLQ & All IoT Core Rules
 
 Parameters:
   DatabaseUrl:
     Type: String
-    Description: PostgreSQL RDS Connection URL for LC-Platform
+    Description: PostgreSQL RDS Connection URL for LC-Platform (inject via CI/CD or SSM Parameter Store)
     NoEcho: true
-    Default: ""
-  
+    MinLength: 1
+
   VpcSubnetIds:
     Type: CommaDelimitedList
     Description: Optional VPC Subnet IDs if RDS is in a private VPC
@@ -23,6 +23,13 @@ Conditions:
   HasVpcConfig: !Not [!Equals [!Join ["", !Ref VpcSubnetIds], ""]]
 
 Resources:
+  # Dead-Letter Queue for failed async IoT Lambda invocations
+  DeviceRegistrationDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: lc-platform-device-registration-dlq
+      MessageRetentionPeriod: 1209600
+
   # Lambda Execution Role
   DeviceRegistrationLambdaRole:
     Type: AWS::IAM::Role
@@ -38,6 +45,14 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: DeviceRegistrationDlqSend
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt DeviceRegistrationDlq.Arn
 
   # Lambda Function
   DeviceRegistrationFunction:
@@ -53,27 +68,31 @@ Resources:
       Environment:
         Variables:
           DATABASE_URL: !Ref DatabaseUrl
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt DeviceRegistrationDlq.Arn
+      EventInvokeConfig:
+        MaximumRetryAttempts: 2
       VpcConfig: !If
         - HasVpcConfig
         - SubnetIds: !Ref VpcSubnetIds
           SecurityGroupIds: !Ref VpcSecurityGroupIds
         - !Ref "AWS::NoValue"
 
-  # AWS IoT Topic Rule: Fires on any Thing created in AWS IoT Core
+  # 1. Thing Created ($aws/events/thing/+/created)
   IotThingCreatedRule:
     Type: AWS::IoT::TopicRule
     Properties:
       RuleName: lc_platform_thing_created_rule
       TopicRulePayload:
         RuleDisabled: false
-        Sql: "SELECT * FROM '$aws/events/thing/+/created'"
-        Description: "Captures AWS IoT Thing creation lifecycle events and persists device metadata into RDS"
+        Sql: "SELECT *, topic(4) as topicThingName, topic() as topic FROM '$aws/events/thing/+/created'"
+        Description: "Registers created IoT things into LC-Platform RDS"
         Actions:
           - Lambda:
               FunctionArn: !GetAtt DeviceRegistrationFunction.Arn
 
-  # Permission allowing AWS IoT to invoke the Lambda function
-  IotInvokeLambdaPermission:
+  IotThingCreatedPermission:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !GetAtt DeviceRegistrationFunction.Arn
@@ -81,10 +100,109 @@ Resources:
       Principal: iot.amazonaws.com
       SourceArn: !GetAtt IotThingCreatedRule.Arn
 
+  # 2. Thing Updated ($aws/events/thing/+/updated)
+  IotThingUpdatedRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: lc_platform_thing_updated_rule
+      TopicRulePayload:
+        RuleDisabled: false
+        Sql: "SELECT *, topic(4) as topicThingName, topic() as topic FROM '$aws/events/thing/+/updated'"
+        Description: "Synchronizes updated IoT things metadata into LC-Platform RDS"
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt DeviceRegistrationFunction.Arn
+
+  IotThingUpdatedPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeviceRegistrationFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !GetAtt IotThingUpdatedRule.Arn
+
+  # 3. Thing Deleted ($aws/events/thing/+/deleted)
+  IotThingDeletedRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: lc_platform_thing_deleted_rule
+      TopicRulePayload:
+        RuleDisabled: false
+        Sql: "SELECT *, topic(4) as thingName, topic() as topic FROM '$aws/events/thing/+/deleted'"
+        Description: "Removes deleted IoT things and cleans up detached LCGateEvents in RDS"
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt DeviceRegistrationFunction.Arn
+
+  IotThingDeletedPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeviceRegistrationFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !GetAtt IotThingDeletedRule.Arn
+
+  # 4. Device Manifest (lc/devices/+/manifest)
+  IotDeviceManifestRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: lc_platform_device_manifest_rule
+      TopicRulePayload:
+        RuleDisabled: false
+        Sql: "SELECT *, topic(3) as topicThingName, topic() as topic FROM 'lc/devices/+/manifest'"
+        Description: "Ingests firmware hardware profile and sensors manifest into LC-Platform RDS"
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt DeviceRegistrationFunction.Arn
+
+  IotDeviceManifestPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeviceRegistrationFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !GetAtt IotDeviceManifestRule.Arn
+
+  # 5. Telemetry & Health (lc-gate/+/#)
+  IotDeviceTelemetryRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: lc_platform_device_telemetry_rule
+      TopicRulePayload:
+        RuleDisabled: false
+        Sql: "SELECT *, topic(2) as topicThingName, topic() as topic FROM 'lc-gate/+/#'"
+        Description: "Streams edge device telemetry and health check payloads into LC-Platform RDS"
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt DeviceRegistrationFunction.Arn
+
+  IotDeviceTelemetryPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeviceRegistrationFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !GetAtt IotDeviceTelemetryRule.Arn
+
 Outputs:
   FunctionArn:
     Description: ARN of the Device Registration Lambda Function
     Value: !GetAtt DeviceRegistrationFunction.Arn
-  TopicRuleArn:
+  DlqArn:
+    Description: ARN of the Lambda Dead-Letter SQS Queue
+    Value: !GetAtt DeviceRegistrationDlq.Arn
+  CreatedTopicRuleArn:
     Description: ARN of the IoT Thing Created Topic Rule
     Value: !GetAtt IotThingCreatedRule.Arn
+  UpdatedTopicRuleArn:
+    Description: ARN of the IoT Thing Updated Topic Rule
+    Value: !GetAtt IotThingUpdatedRule.Arn
+  DeletedTopicRuleArn:
+    Description: ARN of the IoT Thing Deleted Topic Rule
+    Value: !GetAtt IotThingDeletedRule.Arn
+  ManifestTopicRuleArn:
+    Description: ARN of the IoT Device Manifest Topic Rule
+    Value: !GetAtt IotDeviceManifestRule.Arn
+  TelemetryTopicRuleArn:
+    Description: ARN of the IoT Device Telemetry & Health Topic Rule
+    Value: !GetAtt IotDeviceTelemetryRule.Arn

@@ -141,21 +141,32 @@ function renderCleanKeyValueTable(data: any): ReactNode {
                       </span>
                     </div>
                   ) : isStatus ? (
-                    <span
-                      style={{
-                        display: 'inline-block',
-                        padding: '3px 12px',
-                        borderRadius: '6px',
-                        fontWeight: 800,
-                        fontSize: '0.82rem',
-                        letterSpacing: '0.3px',
-                        background: (strVal.toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : strVal).toUpperCase() === 'CLOSED' ? 'rgba(16, 185, 129, 0.14)' : 'rgba(239, 68, 68, 0.14)',
-                        color: (strVal.toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : strVal).toUpperCase() === 'CLOSED' ? '#047857' : '#b91c1c',
-                        border: `1px solid ${(strVal.toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : strVal).toUpperCase() === 'CLOSED' ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.35)'}`,
-                      }}
-                    >
-                      {strVal.toUpperCase() === 'NOT_CLOSED' ? 'OPEN' : strVal}
-                    </span>
+                    (() => {
+                      const upper = strVal.trim().toUpperCase();
+                      const label = upper === 'NOT_CLOSED' ? 'OPEN' : upper;
+                      const isPositive = label === 'CLOSED' || label === 'HEALTHY' || label === 'ONLINE' || label === 'ACTIVE';
+                      const isOpenAlert = label === 'OPEN' || label === 'DEGRADED' || label === 'EXTENDED_DELAY';
+                      const bg = isPositive ? 'rgba(16, 185, 129, 0.14)' : isOpenAlert ? 'rgba(239, 68, 68, 0.14)' : 'rgba(100, 116, 139, 0.14)';
+                      const color = isPositive ? '#047857' : isOpenAlert ? '#b91c1c' : '#475569';
+                      const border = isPositive ? 'rgba(16, 185, 129, 0.35)' : isOpenAlert ? 'rgba(239, 68, 68, 0.35)' : 'rgba(100, 116, 139, 0.35)';
+                      return (
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            padding: '3px 12px',
+                            borderRadius: '6px',
+                            fontWeight: 800,
+                            fontSize: '0.82rem',
+                            letterSpacing: '0.3px',
+                            background: bg,
+                            color,
+                            border: `1px solid ${border}`,
+                          }}
+                        >
+                          {label}
+                        </span>
+                      );
+                    })()
                   ) : isBool ? (
                     <span
                       style={{
@@ -241,6 +252,7 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
   const { success: toastSuccess, error: toastError } = useToast();
 
   const [devices, setDevices] = useState<DeviceItem[]>([]);
+  const [fleetSummary, setFleetSummary] = useState<any | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [search, setSearch] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
@@ -278,6 +290,9 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
         const data = await res.json();
         const validDevices = (data.devices || []).filter((d: any) => d.thingName?.toUpperCase().startsWith('LC-'));
         setDevices(validDevices);
+        if (data.summary && typeof data.summary === 'object') {
+          setFleetSummary(data.summary);
+        }
       } else {
         const err = await res.json();
         if (!silent) toastError(err.error || 'Failed to load device registry', 'Device Registry');
@@ -502,14 +517,26 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
     });
   }, [devices, search, statusFilter]);
 
-  // Categorize payloads cleanly according to the 3 types
+  // Categorize payloads cleanly according to DB Single Source of Truth packet classification
   const telemetryRecords = useMemo(() => {
-    return historicPayloads.filter(t => 
-      ((t.topic && t.topic.includes('/telemetry')) ||
-       (t.payload && typeof t.payload === 'object' && ((t.payload as any).Status !== undefined || (t.payload as any).LimitSwitchClosed !== undefined))) &&
-      !(t.topic && t.topic.includes('/health')) &&
-      !((t.payload as any)?.action === 'HEALTH_CHECK' || (t.payload as any)?.action === 'HEALTH_CHECK_RESPONSE' || (t.payload as any)?.healthstatus !== undefined)
-    );
+    return historicPayloads.filter(t => {
+      if (t.packetType) return t.packetType === 'TELEMETRY';
+      if (t.topic && (t.topic.includes('/health') || t.topic.includes('/manifest') || t.topic.includes('/request'))) {
+        return false;
+      }
+      const p = t.payload && typeof t.payload === 'object' ? (t.payload as any) : null;
+      if (!p || p.action === 'HEALTH_CHECK' || p.action === 'HEALTH_CHECK_RESPONSE' || p.healthstatus !== undefined) {
+        return false;
+      }
+      const rawStatus = String(p.Status ?? p.status ?? p.gateStatus ?? '').trim().toUpperCase();
+      const hasBarrierState =
+        rawStatus === 'OPEN' ||
+        rawStatus === 'CLOSED' ||
+        rawStatus === 'NOT_CLOSED' ||
+        p.LimitSwitchClosed !== undefined ||
+        p.limitSwitchClosed !== undefined;
+      return Boolean(t.topic && t.topic.includes('/telemetry') && hasBarrierState);
+    });
   }, [historicPayloads]);
 
   const manifestRecords = useMemo(() => {
@@ -561,11 +588,11 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
     return null;
   }, [selectedPayloadId, historicPayloads, activeRecordList, inspectTab, telemetrySummary]);
 
-  // Registry summary stats
-  const totalCount = devices.length;
-  const onlineCount = devices.filter(d => d.computedStatus === 'ONLINE').length;
-  const offlineCount = totalCount - onlineCount;
-  const assignedCount = devices.filter(d => Boolean(d.gateId)).length;
+  // Registry summary stats (prefer authoritative DB fleet summary so filters never distort totals)
+  const totalCount = fleetSummary?.total ?? devices.length;
+  const onlineCount = fleetSummary?.online ?? fleetSummary?.onlineCount ?? devices.filter(d => (d.connectivityStatus || d.computedStatus) === 'ONLINE').length;
+  const offlineCount = fleetSummary?.offline ?? fleetSummary?.offlineCount ?? Math.max(0, totalCount - onlineCount);
+  const assignedCount = fleetSummary?.assigned ?? devices.filter(d => Boolean(d.gateId)).length;
 
 
   return (
@@ -878,27 +905,36 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                       {inspectDevice.gate.lcNumber} • {inspectDevice.gate.locationName}
                     </span>
                   )}
-                  <span
-                    style={{
-                      fontSize: '0.75rem',
-                      fontWeight: 700,
-                      padding: '4px 10px',
-                      borderRadius: '6px',
-                      letterSpacing: '0.4px',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      background: inspectDevice.computedStatus === 'ONLINE' ? '#ecfdf5' : '#fef2f2',
-                      color: inspectDevice.computedStatus === 'ONLINE' ? '#047857' : '#b91c1c',
-                      border: `1px solid ${inspectDevice.computedStatus === 'ONLINE' ? '#a7f3d0' : '#fecaca'}`
-                    }}
-                  >
-                    <span
-                      className={inspectDevice.computedStatus === 'ONLINE' ? 'pulse-dot' : 'status-dot'}
-                      style={{ width: 7, height: 7, backgroundColor: inspectDevice.computedStatus === 'ONLINE' ? '#10b981' : '#ef4444' }}
-                    />
-                    {inspectDevice.computedStatus === 'ONLINE' ? 'ONLINE' : 'OFFLINE'}
-                  </span>
+                  {(() => {
+                    const modalIsOnline =
+                      (telemetrySummary?.computedStatus ??
+                        telemetrySummary?.connectivityStatus ??
+                        inspectDevice.computedStatus ??
+                        inspectDevice.connectivityStatus) === 'ONLINE';
+                    return (
+                      <span
+                        style={{
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          padding: '4px 10px',
+                          borderRadius: '6px',
+                          letterSpacing: '0.4px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          background: modalIsOnline ? '#ecfdf5' : '#fef2f2',
+                          color: modalIsOnline ? '#047857' : '#b91c1c',
+                          border: `1px solid ${modalIsOnline ? '#a7f3d0' : '#fecaca'}`
+                        }}
+                      >
+                        <span
+                          className={modalIsOnline ? 'pulse-dot' : 'status-dot'}
+                          style={{ width: 7, height: 7, backgroundColor: modalIsOnline ? '#10b981' : '#ef4444' }}
+                        />
+                        {modalIsOnline ? 'ONLINE' : 'OFFLINE'}
+                      </span>
+                    );
+                  })()}
 
                   {telemetrySummary?.currentStatus && (
                     <span
@@ -1201,7 +1237,14 @@ export default function DeviceRegistryScreen({ user: _user }: Props) {
                                 {telemetryRecords.map((item, idx) => {
                                   const isSelected = currentViewingRecord?.id === item.id;
                                   const p = item.payload || {};
-                                  const status = p.Status || '—';
+                                  const rawRowStatus = String(
+                                    item.resolvedBarrierState || p.Status || p.status || p.gateStatus || ''
+                                  ).trim().toUpperCase();
+                                  const status = rawRowStatus === 'NOT_CLOSED'
+                                    ? 'OPEN'
+                                    : (rawRowStatus || (p.LimitSwitchClosed !== undefined && p.LimitSwitchClosed !== null
+                                        ? (p.LimitSwitchClosed ? 'CLOSED' : 'OPEN')
+                                        : '—'));
 
                                   return (
                                     <tr 

@@ -19,6 +19,7 @@ import '../services/home_cache_service.dart';
 import '../services/lc_gates_cache_service.dart';
 import '../services/reports_cache_service.dart';
 import '../utils/app_feedback.dart';
+import '../utils/user_utils.dart';
 
 class DashboardScreen extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -108,7 +109,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String? _targetGateTab;
   int? _activeGateId;
 
-  String get _userId => (widget.user['id'] ?? widget.user['username'] ?? 'user').toString();
+  String get _userId => resolveCurrentUserId(user: widget.user);
 
   // Manage Users Search & Filter State
   final _userSearchCtrl = TextEditingController();
@@ -123,11 +124,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Timer? _notifsTimer;
 
   bool get _canManageUsers =>
-      widget.user['role'] == 'Developer' ||
+      _isDeveloper ||
       ((widget.user['allowedModules'] as List?)?.contains('manage-users') ?? false);
 
   bool get _isDeveloper =>
-      widget.user['role'] == 'Developer' || widget.user['roleId'] == 1;
+      (widget.user['role'] ?? '').toString().trim().toLowerCase() == 'developer';
 
   @override
   void initState() {
@@ -1256,7 +1257,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       drawer: Drawer(
         child: ListView(
-          padding: EdgeInsets.zero,
+          padding: const EdgeInsets.only(bottom: 16),
           children: [
             DrawerHeader(
               decoration: const BoxDecoration(
@@ -1451,7 +1452,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final st = (g['status'] ?? '').toString().toUpperCase();
       return g['isConfigured'] != false && st != 'UNCONFIGURED';
     }).toList();
-    final totalLCGates = summary?['totalConfiguredClusters'] ?? summary?['totalDevices'] ?? gates.length;
+    final totalConfiguredLCGates = summary?['totalConfiguredGates'] ?? summary?['totalConfiguredClusters'] ?? summary?['totalDevices'];
+    final totalUnconfiguredLCGates = (summary?['totalUnconfiguredGates'] as num?)?.toInt() ?? 0;
+    final totalLCGates = totalConfiguredLCGates ?? gates.length;
     final totalCyclesToday = summary?['totalCyclesToday'] ?? 0;
     final totalOpenGates = summary?['totalOpenGates'] ?? 0;
     final totalClosedGates = summary?['totalClosedGates'] ?? 0;
@@ -1548,6 +1551,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     icon: Icons.meeting_room_outlined,
                     iconColor: const Color(0xFF0284C7),
                     iconBg: const Color(0xFFE0F2FE),
+                    subtitle: _loadingSummary
+                        ? null
+                        : (totalUnconfiguredLCGates > 0
+                            ? '$totalLCGates configured (+$totalUnconfiguredLCGates unconfigured)'
+                            : (summary != null ? 'Configured hardware gates' : null)),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -1593,7 +1601,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: _buildKpiCard(
                     title: 'Avg Open Time',
                     value: _loadingSummary ? '-' : avgOpenFormatted,
-                    subtitle: 'Road clearance avg',
                     icon: Icons.timer_outlined,
                     iconColor: const Color(0xFF0284C7),
                     iconBg: const Color(0xFFE0F2FE),
@@ -1604,7 +1611,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: _buildKpiCard(
                     title: 'Avg Closed Time',
                     value: _loadingSummary ? '-' : avgClosedFormatted,
-                    subtitle: 'Train passage avg',
                     icon: Icons.lock_clock_outlined,
                     iconColor: const Color(0xFFD97706),
                     iconBg: const Color(0xFFFEF3C7),
@@ -1681,23 +1687,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Assigned Gate Cycles',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF0F172A),
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      'Daily operations & closure timestamps',
-                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                    ),
-                  ],
+                const Text(
+                  'Assigned Gate Cycles',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF0F172A),
+                  ),
                 ),
                 if (gates.isNotEmpty)
                   Text(
@@ -1799,49 +1795,57 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                Row(
-                                  children: [
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFF0F172A),
-                                        borderRadius: BorderRadius.circular(6),
-                                      ),
-                                      child: Text(
-                                        lcNumber,
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                    ),
-                                    if (isSolar) ...[
-                                      const SizedBox(width: 6),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                        decoration: BoxDecoration(
-                                          color: Colors.amber.shade50,
-                                          borderRadius: BorderRadius.circular(4),
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            Icon(Icons.wb_sunny_rounded, size: 10, color: Colors.amber.shade800),
-                                            const SizedBox(width: 2),
-                                            Text(
-                                              'Solar',
-                                              style: TextStyle(
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.bold,
-                                                color: Colors.amber.shade800,
-                                              ),
+                                Flexible(
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Flexible(
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFF0F172A),
+                                            borderRadius: BorderRadius.circular(6),
+                                          ),
+                                          child: Text(
+                                            lcNumber,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 12,
                                             ),
-                                          ],
+                                          ),
                                         ),
                                       ),
+                                      if (isSolar) ...[
+                                        const SizedBox(width: 6),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: Colors.amber.shade50,
+                                            borderRadius: BorderRadius.circular(4),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(Icons.wb_sunny_rounded, size: 10, color: Colors.amber.shade800),
+                                              const SizedBox(width: 2),
+                                              Text(
+                                                'Solar',
+                                                style: TextStyle(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.amber.shade800,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
                                     ],
-                                  ],
+                                  ),
                                 ),
+                                const SizedBox(width: 6),
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                                   decoration: BoxDecoration(
@@ -1956,34 +1960,38 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     child: Row(
                                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                       children: [
-                                        Row(
-                                          children: [
-                                            const Icon(Icons.lock_open, size: 11, color: Color(0xFF0284C7)),
-                                            const SizedBox(width: 3),
-                                            Text(
-                                              'Avg Open: ',
-                                              style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
-                                            ),
-                                            Text(
-                                              gateAvgOpen,
-                                              style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                                            ),
-                                          ],
+                                        Flexible(
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(Icons.lock_open, size: 11, color: Color(0xFF0284C7)),
+                                              const SizedBox(width: 3),
+                                              Flexible(
+                                                child: Text(
+                                                  'Avg Open: $gateAvgOpen',
+                                                  overflow: TextOverflow.ellipsis,
+                                                  style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
                                         ),
-                                        Container(width: 1, height: 12, color: Colors.grey.shade300),
-                                        Row(
-                                          children: [
-                                            const Icon(Icons.lock_outline, size: 11, color: Color(0xFFD97706)),
-                                            const SizedBox(width: 3),
-                                            Text(
-                                              'Avg Closed: ',
-                                              style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
-                                            ),
-                                            Text(
-                                              gateAvgClosed,
-                                              style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                                            ),
-                                          ],
+                                        Container(width: 1, height: 12, margin: const EdgeInsets.symmetric(horizontal: 4), color: Colors.grey.shade300),
+                                        Flexible(
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(Icons.lock_outline, size: 11, color: Color(0xFFD97706)),
+                                              const SizedBox(width: 3),
+                                              Flexible(
+                                                child: Text(
+                                                  'Avg Closed: $gateAvgClosed',
+                                                  overflow: TextOverflow.ellipsis,
+                                                  style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
                                         ),
                                       ],
                                     ),
@@ -2116,11 +2124,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ],
                       ),
                     ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'Interactive full-screen geospatial visualization showing real-time operational status, GPS coordinates, and barrier telemetry across India.',
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600, height: 1.4),
                   ),
                   const SizedBox(height: 16),
                   ElevatedButton.icon(

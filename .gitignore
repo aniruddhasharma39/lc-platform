@@ -11,6 +11,9 @@ node_modules/
 !*.env.example
 !*.env.*.example
 
+# Private keys & certificates
+*.pem
+
 # Build outputs & caches
 dist/
 dist-ssr/

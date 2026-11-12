@@ -5,10 +5,28 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
 import '../../utils/file_download_helper.dart';
+import '../../utils/user_utils.dart';
+import '../../services/home_cache_service.dart';
+import '../../services/lc_gates_cache_service.dart';
+
+/// Resolves relative `/uploads/...` or absolute HTTP URLs cleanly and appends
+/// an optional `?v=<version>` cache-buster so updated SIM photos reload immediately.
+String resolveDevicePhotoUrl(String rawUrl, {dynamic version}) {
+  final trimmed = rawUrl.trim();
+  if (trimmed.isEmpty) return '';
+  final base = (trimmed.startsWith('http://') || trimmed.startsWith('https://'))
+      ? trimmed
+      : '$baseUrl${trimmed.startsWith('/') ? trimmed : '/$trimmed'}';
+  final verStr = version?.toString().trim() ?? '';
+  if (verStr.isEmpty || verStr == 'null') return base;
+  final sep = base.contains('?') ? '&' : '?';
+  return '$base${sep}v=${Uri.encodeQueryComponent(verStr)}';
+}
 
 class DeviceRegistryScreen extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -23,6 +41,8 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
   List<dynamic> _devices = [];
   Map<String, dynamic> _stats = {
     'total': 0,
+    'online': 0,
+    'offline': 0,
     'active': 0,
     'inactive': 0,
     'provisioned': 0,
@@ -31,6 +51,10 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
 
   String _searchQuery = '';
   String _selectedStatus = 'ALL';
+  int _currentPage = 1;
+  static const int _pageSize = 50;
+  bool _hasMoreDevices = false;
+  bool _isLoadingMore = false;
   Timer? _pollingTimer;
 
   final TextEditingController _searchCtrl = TextEditingController();
@@ -57,32 +81,87 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
     return prefs.getString('token') ?? '';
   }
 
-  Future<void> _fetchDevices({bool silent = false}) async {
+  Future<void> _fetchDevices({bool silent = false, bool resetPage = false}) async {
+    if (resetPage) _currentPage = 1;
     if (!silent) setState(() => _isLoading = true);
     try {
       final token = await _getToken();
-      final queryParams = <String, String>{};
-      if (_searchQuery.trim().isNotEmpty) queryParams['search'] = _searchQuery.trim();
-      if (_selectedStatus != 'ALL') queryParams['status'] = _selectedStatus;
+      final baseParams = <String, String>{
+        'limit': '$_pageSize',
+      };
+      if (_searchQuery.trim().isNotEmpty) baseParams['search'] = _searchQuery.trim();
+      if (_selectedStatus != 'ALL') baseParams['status'] = _selectedStatus;
 
-      final uri = Uri.parse('$baseUrl/devices').replace(queryParameters: queryParams);
-      final res = await http.get(uri, headers: {
-        'Authorization': 'Bearer $token',
-        'Content-Type': 'application/json',
-      });
+      // Refresh every loaded page 1.._currentPage so items beyond index 50 never disappear on poll
+      final pagesToFetch = _currentPage < 1 ? 1 : _currentPage;
+      final responses = await Future.wait(
+        List.generate(pagesToFetch, (index) {
+          final pageNum = index + 1;
+          final qp = {...baseParams, 'page': '$pageNum'};
+          final uri = Uri.parse('$baseUrl/devices').replace(queryParameters: qp);
+          return http.get(uri, headers: {
+            'Authorization': 'Bearer $token',
+            'Content-Type': 'application/json',
+          });
+        }),
+      );
 
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
+      final firstRes = responses.first;
+      if (firstRes.statusCode == 200) {
+        final mergedById = <dynamic, Map<String, dynamic>>{};
+        final mergedList = <dynamic>[];
+        Map<String, dynamic>? latestSummary;
+        int totalPages = 1;
+
+        for (final res in responses) {
+          if (res.statusCode != 200) continue;
+          final data = json.decode(res.body);
+          if (data is Map) {
+            if (data['summary'] is Map) {
+              latestSummary = Map<String, dynamic>.from(data['summary']);
+            }
+            if (data['pagination'] is Map) {
+              final tp = data['pagination']['totalPages'];
+              if (tp is int) totalPages = tp;
+            }
+            final rawList = (data['devices'] as List?) ?? [];
+            for (final d in rawList) {
+              if (d is Map && (d['thingName'] ?? '').toString().toUpperCase().startsWith('LC-')) {
+                final id = d['id'] ?? d['thingName'];
+                if (!mergedById.containsKey(id)) {
+                  final map = Map<String, dynamic>.from(d);
+                  mergedById[id] = map;
+                  mergedList.add(map);
+                }
+              }
+            }
+          }
+        }
+
         if (mounted) {
           setState(() {
-            final rawList = (data['devices'] as List?) ?? [];
-            _devices = rawList.where((d) => (d['thingName'] ?? '').toString().toUpperCase().startsWith('LC-')).toList();
-            if (data['summary'] != null && data['summary'] is Map) {
-              _stats = Map<String, dynamic>.from(data['summary']);
+            _devices = mergedList;
+            _hasMoreDevices = _currentPage < totalPages;
+            if (latestSummary != null) {
+              final totalVal = latestSummary['total'] ?? _devices.length;
+              final onlineVal = latestSummary['online'] ?? latestSummary['onlineCount'] ?? 0;
+              final offlineVal = latestSummary['offline'] ?? latestSummary['offlineCount'] ?? (totalVal is int && onlineVal is int ? (totalVal - onlineVal).clamp(0, totalVal) : 0);
+              _stats = {
+                ...latestSummary,
+                'total': totalVal,
+                'online': onlineVal,
+                'offline': offlineVal,
+              };
             } else {
-              // Compute from list
-              int active = 0, inactive = 0, prov = 0, maint = 0;
+              // Compute strictly from authoritative DB connectivityStatus (never lifecycle 'ACTIVE')
+              int online = 0, offline = 0, active = 0, inactive = 0, prov = 0, maint = 0;
               for (final d in _devices) {
+                final conn = (d['connectivityStatus'] ?? d['computedStatus'] ?? 'OFFLINE').toString().toUpperCase();
+                if (conn == 'ONLINE') {
+                  online++;
+                } else {
+                  offline++;
+                }
                 final s = (d['status'] ?? '').toString().toUpperCase();
                 if (s == 'ACTIVE') active++;
                 else if (s == 'INACTIVE') inactive++;
@@ -91,6 +170,8 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
               }
               _stats = {
                 'total': _devices.length,
+                'online': online,
+                'offline': offline,
                 'active': active,
                 'inactive': inactive,
                 'provisioned': prov,
@@ -100,7 +181,7 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
           });
         }
       } else if (!silent && mounted) {
-        AppFeedback.showError(context, 'Failed to load device registry (${res.statusCode})');
+        AppFeedback.showError(context, 'Failed to load device registry (${firstRes.statusCode})');
       }
     } catch (e) {
       if (!silent && mounted) {
@@ -108,6 +189,51 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
       }
     } finally {
       if (!silent && mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _loadMoreDevices() async {
+    if (_isLoadingMore || !_hasMoreDevices) return;
+    setState(() => _isLoadingMore = true);
+    final nextPage = _currentPage + 1;
+    try {
+      final token = await _getToken();
+      final queryParams = <String, String>{
+        'page': '$nextPage',
+        'limit': '$_pageSize',
+      };
+      if (_searchQuery.trim().isNotEmpty) queryParams['search'] = _searchQuery.trim();
+      if (_selectedStatus != 'ALL') queryParams['status'] = _selectedStatus;
+
+      final uri = Uri.parse('$baseUrl/devices').replace(queryParameters: queryParams);
+      final res = await http.get(uri, headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      });
+
+      if (res.statusCode == 200 && mounted) {
+        final data = json.decode(res.body);
+        final rawList = (data['devices'] as List?) ?? [];
+        final totalPages = (data['pagination'] is Map && data['pagination']['totalPages'] is int)
+            ? data['pagination']['totalPages'] as int
+            : nextPage;
+        final existingIds = _devices.map((d) => d['id'] ?? d['thingName']).toSet();
+        final newItems = rawList
+            .where((d) =>
+                d is Map &&
+                (d['thingName'] ?? '').toString().toUpperCase().startsWith('LC-') &&
+                !existingIds.contains(d['id'] ?? d['thingName']))
+            .toList();
+        setState(() {
+          _currentPage = nextPage;
+          _devices.addAll(newItems);
+          _hasMoreDevices = _currentPage < totalPages;
+        });
+      }
+    } catch (e) {
+      if (mounted) AppFeedback.showError(context, 'Failed loading more devices: $e');
+    } finally {
+      if (mounted) setState(() => _isLoadingMore = false);
     }
   }
 
@@ -159,10 +285,12 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
       backgroundColor: Colors.transparent,
-      builder: (ctx) => _DeviceInspectSheet(
+      builder: (ctx) => DeviceInspectSheet(
         device: device,
         onHealthCheck: () => _pingHealthCheck(device['id'] as int, device['thingName'] ?? ''),
+        onStateUpdated: () => _fetchDevices(silent: true),
       ),
     );
   }
@@ -172,6 +300,7 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => _DeviceSimManagementSheet(
         device: device,
@@ -182,9 +311,9 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
 
   // Open Quick Recharge Dialog
 
-  // Full-screen image preview
-  void _viewPhoto(BuildContext context, String rawUrl) {
-    final fullUrl = rawUrl.startsWith('http') ? rawUrl : '$baseUrl$rawUrl';
+  // Full-screen image preview with relative path normalization & cache-busting
+  void _viewPhoto(BuildContext context, String rawUrl, {dynamic updatedAt}) {
+    final fullUrl = resolveDevicePhotoUrl(rawUrl, version: updatedAt);
     showDialog(
       context: context,
       builder: (ctx) => Dialog(
@@ -273,14 +402,16 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                     ),
                     const SizedBox(height: 14),
 
-                    // Quick Stat Chips Row
+                    // Quick Stat Chips Row (Authoritative DB connectivity + lifecycle metrics)
                     SingleChildScrollView(
                       scrollDirection: Axis.horizontal,
                       child: Row(
                         children: [
                           _buildStatCard('TOTAL THINGS', '${_stats['total'] ?? 0}', const Color(0xFF0B3C7A), Icons.devices),
                           const SizedBox(width: 8),
-                          _buildStatCard('ONLINE / ACTIVE', '${_stats['active'] ?? 0}', const Color(0xFF16A34A), Icons.check_circle_outline),
+                          _buildStatCard('ONLINE', '${_stats['online'] ?? _stats['onlineCount'] ?? 0}', const Color(0xFF16A34A), Icons.check_circle_outline),
+                          const SizedBox(width: 8),
+                          _buildStatCard('OFFLINE', '${_stats['offline'] ?? _stats['offlineCount'] ?? 0}', const Color(0xFF64748B), Icons.cloud_off_outlined),
                           const SizedBox(width: 8),
                           _buildStatCard('PROVISIONED', '${_stats['provisioned'] ?? 0}', const Color(0xFF0284C7), Icons.hourglass_top),
                           const SizedBox(width: 8),
@@ -303,7 +434,7 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                                 onPressed: () {
                                   _searchCtrl.clear();
                                   setState(() => _searchQuery = '');
-                                  _fetchDevices();
+                                  _fetchDevices(resetPage: true);
                                 },
                               )
                             : null,
@@ -326,21 +457,22 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                       ),
                       onChanged: (val) {
                         setState(() => _searchQuery = val);
-                        _fetchDevices();
+                        _fetchDevices(resetPage: true);
                       },
                     ),
                     const SizedBox(height: 10),
 
-                    // Status Filter Pills
+                    // Status Filter Pills (Live DB connectivity + lifecycle)
                     SingleChildScrollView(
                       scrollDirection: Axis.horizontal,
                       child: Row(
                         children: [
                           _buildFilterChip('ALL', 'All Statuses'),
-                          _buildFilterChip('ACTIVE', 'Active'),
-                          _buildFilterChip('INACTIVE', 'Inactive'),
+                          _buildFilterChip('ONLINE', 'Online'),
+                          _buildFilterChip('OFFLINE', 'Offline'),
                           _buildFilterChip('PROVISIONED', 'Provisioned'),
                           _buildFilterChip('MAINTENANCE', 'Maintenance'),
+                          _buildFilterChip('INACTIVE', 'Inactive'),
                         ],
                       ),
                     ),
@@ -383,8 +515,24 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                 padding: const EdgeInsets.fromLTRB(16, 6, 16, 24),
                 sliver: SliverList(
                   delegate: SliverChildBuilderDelegate(
-                    (ctx, idx) => _buildDeviceCard(_devices[idx]),
-                    childCount: _devices.length,
+                    (ctx, idx) {
+                      if (idx < _devices.length) {
+                        return _buildDeviceCard(_devices[idx]);
+                      }
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: Center(
+                          child: _isLoadingMore
+                              ? const CircularProgressIndicator()
+                              : OutlinedButton.icon(
+                                  onPressed: _loadMoreDevices,
+                                  icon: const Icon(Icons.expand_more),
+                                  label: Text('Load More (${_devices.length} of ${_stats['total'] ?? _devices.length})'),
+                                ),
+                        ),
+                      );
+                    },
+                    childCount: _devices.length + ((_hasMoreDevices || _isLoadingMore) ? 1 : 0),
                   ),
                 ),
               ),
@@ -453,7 +601,7 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
         ),
         onSelected: (selected) {
           setState(() => _selectedStatus = key);
-          _fetchDevices();
+          _fetchDevices(resetPage: true);
         },
       ),
     );
@@ -561,6 +709,11 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                         'Serial: $serial • FW: $fw',
                         style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                       ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Last seen: ${formatDeviceTimestamp(device['lastSeenAt'] ?? device['latestPayloadSent'])}',
+                        style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
+                      ),
                     ],
                   ),
                 ),
@@ -651,11 +804,11 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
                 children: [
                   if (simPhotoUrl.isNotEmpty) ...[
                     GestureDetector(
-                      onTap: () => _viewPhoto(context, simPhotoUrl),
+                      onTap: () => _viewPhoto(context, simPhotoUrl, updatedAt: device['updatedAt']),
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(6),
                         child: Image.network(
-                          simPhotoUrl.startsWith('http') ? simPhotoUrl : '$baseUrl$simPhotoUrl',
+                          resolveDevicePhotoUrl(simPhotoUrl, version: device['updatedAt']),
                           width: 38,
                           height: 38,
                           fit: BoxFit.cover,
@@ -930,242 +1083,483 @@ class _DeviceRegistryScreenState extends State<DeviceRegistryScreen> {
             final matches = confirmController.text.trim() == thingName;
 
             return Dialog(
+              insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               backgroundColor: Colors.white,
               child: Container(
-                constraints: const BoxConstraints(maxWidth: 480),
-                padding: const EdgeInsets.all(22),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Header with red warning badge
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFFEE2E2),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: const Icon(Icons.warning_amber_rounded, color: Color(0xFFDC2626), size: 24),
-                        ),
-                        const SizedBox(width: 12),
-                        const Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Delete AWS IoT Thing',
-                                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                              ),
-                              Text(
-                                'Permanent database & registry cleanup',
-                                style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close, size: 20),
-                          onPressed: isDeleting ? null : () => Navigator.pop(dCtx),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-
-                    // GitHub Warning Callout
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFF1F2),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFFFECDD3)),
-                      ),
-                      child: Column(
+                constraints: const BoxConstraints(maxWidth: 460),
+                padding: const EdgeInsets.all(20),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Header with red warning badge
+                      Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Row(
-                            children: [
-                              Icon(Icons.shield_outlined, size: 16, color: Color(0xFFBE123C)),
-                              SizedBox(width: 6),
-                              Text(
-                                'Unexpected bad things will happen if you don’t read this!',
-                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11.5, color: Color(0xFFBE123C)),
-                              ),
-                            ],
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFEE2E2),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(Icons.warning_amber_rounded, color: Color(0xFFDC2626), size: 22),
                           ),
-                          const SizedBox(height: 8),
-                          RichText(
-                            text: TextSpan(
-                              style: const TextStyle(fontSize: 12, color: Color(0xFF4C0519), height: 1.4),
+                          const SizedBox(width: 12),
+                          const Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const TextSpan(text: 'This action '),
-                                const TextSpan(text: 'cannot be undone. ', style: TextStyle(fontWeight: FontWeight.bold)),
-                                const TextSpan(text: 'This will permanently delete the '),
-                                TextSpan(text: thingName, style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace')),
-                                const TextSpan(text: ' AWS IoT Thing record from the database, purge all associated telemetries, and disconnect it from any assigned LC Gate.'),
+                                Text(
+                                  'Delete AWS IoT Thing',
+                                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                ),
+                                SizedBox(height: 2),
+                                Text(
+                                  'Permanent database & registry cleanup',
+                                  style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                                ),
                               ],
                             ),
                           ),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                            icon: const Icon(Icons.close, size: 20, color: Color(0xFF475569)),
+                            onPressed: isDeleting ? null : () => Navigator.pop(dCtx),
+                          ),
                         ],
                       ),
-                    ),
-                    const SizedBox(height: 18),
+                      const SizedBox(height: 14),
 
-                    // Confirmation Prompt
-                    RichText(
-                      text: TextSpan(
-                        style: const TextStyle(fontSize: 13, color: Color(0xFF334155)),
-                        children: [
-                          const TextSpan(text: 'Please type '),
-                          TextSpan(
-                            text: thingName,
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace', color: Color(0xFF0F172A)),
-                          ),
-                          const TextSpan(text: ' to confirm:'),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-
-                    // Monospace text field
-                    TextField(
-                      controller: confirmController,
-                      enabled: !isDeleting,
-                      autofocus: true,
-                      style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 14),
-                      decoration: InputDecoration(
-                        hintText: thingName,
-                        hintStyle: TextStyle(color: Colors.grey.shade400, fontFamily: 'monospace'),
-                        filled: true,
-                        fillColor: const Color(0xFFF8FAFC),
-                        isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                        border: OutlineInputBorder(
+                      // GitHub Warning Callout
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFF1F2),
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+                          border: Border.all(color: const Color(0xFFFECDD3)),
                         ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(
-                            color: matches ? const Color(0xFFDC2626) : const Color(0xFFCBD5E1),
-                            width: matches ? 1.5 : 1.0,
-                          ),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: const BorderSide(color: Color(0xFFDC2626), width: 2),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Padding(
+                                  padding: EdgeInsets.only(top: 1),
+                                  child: Icon(Icons.shield_outlined, size: 15, color: Color(0xFFBE123C)),
+                                ),
+                                SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    'Unexpected bad things will happen if you don’t read this!',
+                                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11.5, color: Color(0xFFBE123C), height: 1.3),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            RichText(
+                              text: TextSpan(
+                                style: const TextStyle(fontSize: 12, color: Color(0xFF4C0519), height: 1.45),
+                                children: [
+                                  const TextSpan(text: 'This action '),
+                                  const TextSpan(text: 'cannot be undone. ', style: TextStyle(fontWeight: FontWeight.bold)),
+                                  const TextSpan(text: 'This will permanently delete the '),
+                                  TextSpan(text: thingName, style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace')),
+                                  const TextSpan(text: ' AWS IoT Thing record from the database, purge all associated telemetries, and disconnect it from any assigned LC Gate.'),
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      onChanged: (_) => setDlgState(() {}),
-                    ),
-                    const SizedBox(height: 20),
+                      const SizedBox(height: 16),
 
-                    // Action Button (GitHub Red or Disabled Grey)
-                    SizedBox(
-                      width: double.infinity,
-                      height: 44,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: matches ? const Color(0xFFDC2626) : const Color(0xFFF1F5F9),
-                          disabledBackgroundColor: const Color(0xFFF1F5F9),
-                          foregroundColor: matches ? Colors.white : const Color(0xFF94A3B8),
-                          disabledForegroundColor: const Color(0xFF94A3B8),
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(
+                      // Confirmation Prompt
+                      RichText(
+                        text: TextSpan(
+                          style: const TextStyle(fontSize: 13, color: Color(0xFF334155)),
+                          children: [
+                            const TextSpan(text: 'Please type '),
+                            TextSpan(
+                              text: thingName,
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace', color: Color(0xFF0F172A)),
+                            ),
+                            const TextSpan(text: ' to confirm:'),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+
+                      // Monospace text field
+                      TextField(
+                        controller: confirmController,
+                        enabled: !isDeleting,
+                        autofocus: true,
+                        style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 14),
+                        decoration: InputDecoration(
+                          hintText: thingName,
+                          hintStyle: TextStyle(color: Colors.grey.shade400, fontFamily: 'monospace'),
+                          filled: true,
+                          fillColor: const Color(0xFFF8FAFC),
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                          border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(8),
-                            side: BorderSide(
-                              color: matches ? const Color(0xFFB91C1C) : const Color(0xFFE2E8F0),
+                            borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(
+                              color: matches ? const Color(0xFFDC2626) : const Color(0xFFCBD5E1),
+                              width: matches ? 1.5 : 1.0,
                             ),
                           ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: const BorderSide(color: Color(0xFFDC2626), width: 2),
+                          ),
                         ),
-                        onPressed: (!matches || isDeleting)
-                            ? null
-                            : () async {
-                                setDlgState(() => isDeleting = true);
-                                try {
-                                  final token = await _getToken();
-                                  final uri = Uri.parse('$baseUrl/devices/$deviceId');
-                                  final res = await http.delete(uri, headers: {
-                                    'Authorization': 'Bearer $token',
-                                    'Content-Type': 'application/json',
-                                  }).timeout(const Duration(seconds: 15));
-
-                                  if (res.statusCode == 200) {
-                                    Navigator.pop(dCtx);
-                                    if (mounted) {
-                                      AppFeedback.showSuccess(context, 'Device $thingName deleted from database');
-                                      _fetchDevices(silent: false);
-                                    }
-                                  } else {
-                                    final err = json.decode(res.body);
-                                    if (mounted) {
-                                      AppFeedback.showError(context, err['error'] ?? 'Failed to delete device');
-                                    }
-                                    setDlgState(() => isDeleting = false);
-                                  }
-                                } catch (e) {
-                                  if (mounted) AppFeedback.showError(context, 'Delete error: $e');
-                                  setDlgState(() => isDeleting = false);
-                                }
-                              },
-                        child: isDeleting
-                            ? const Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                  ),
-                                  SizedBox(width: 10),
-                                  Text('Deleting Thing...', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
-                                ],
-                              )
-                            : const Text(
-                                'I understand the consequences, delete this thing',
-                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5),
-                              ),
+                        onChanged: (_) => setDlgState(() {}),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 16),
+
+                      // Action Button (GitHub Red or Disabled Grey)
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: matches ? const Color(0xFFDC2626) : const Color(0xFFF1F5F9),
+                            disabledBackgroundColor: const Color(0xFFF1F5F9),
+                            foregroundColor: matches ? Colors.white : const Color(0xFF94A3B8),
+                            disabledForegroundColor: const Color(0xFF94A3B8),
+                            elevation: 0,
+                            minimumSize: const Size(double.infinity, 46),
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              side: BorderSide(
+                                color: matches ? const Color(0xFFB91C1C) : const Color(0xFFE2E8F0),
+                              ),
+                            ),
+                          ),
+                          onPressed: (!matches || isDeleting)
+                              ? null
+                              : () async {
+                                  setDlgState(() => isDeleting = true);
+                                  try {
+                                    final token = await _getToken();
+                                    final uri = Uri.parse('$baseUrl/devices/$deviceId');
+                                    final res = await http.delete(uri, headers: {
+                                      'Authorization': 'Bearer $token',
+                                      'Content-Type': 'application/json',
+                                    }).timeout(const Duration(seconds: 15));
+
+                                    if (res.statusCode == 200) {
+                                      final uid = await loadCurrentUserId(widget.user);
+                                      await LCGatesCacheService.instance.markStale(uid);
+                                      await HomeCacheService.instance.clearUserCache(uid);
+                                      if (dCtx.mounted) Navigator.pop(dCtx);
+                                      if (mounted) {
+                                        AppFeedback.showSuccess(context, 'Device $thingName deleted from database');
+                                        _fetchDevices(silent: false);
+                                      }
+                                    } else {
+                                      final err = json.decode(res.body);
+                                      if (mounted) {
+                                        AppFeedback.showError(context, err['error'] ?? 'Failed to delete device');
+                                      }
+                                      if (dCtx.mounted) setDlgState(() => isDeleting = false);
+                                    }
+                                  } catch (e) {
+                                    if (mounted) AppFeedback.showError(context, 'Delete error: $e');
+                                    if (dCtx.mounted) setDlgState(() => isDeleting = false);
+                                  }
+                                },
+                          child: isDeleting
+                              ? const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                    ),
+                                    SizedBox(width: 10),
+                                    Text('Deleting Thing...', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
+                                  ],
+                                )
+                              : const Text(
+                                  'I understand the consequences, delete this thing',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5, height: 1.3),
+                                ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             );
           },
         );
       },
-    );
+    ).then((_) => confirmController.dispose());
   }
+}
+
+const _monthsShort = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/// Formats an ISO timestamp into a clean local date-time string + short relative age.
+String formatDeviceTimestamp(dynamic raw) {
+  if (raw == null) return 'Never connected';
+  final str = raw.toString().trim();
+  if (str.isEmpty) return 'Never connected';
+  DateTime? dt;
+  try {
+    dt = DateTime.parse(str).toLocal();
+  } catch (_) {
+    return str;
+  }
+  final month = _monthsShort[dt.month - 1];
+  final hour12 = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+  final minute = dt.minute.toString().padLeft(2, '0');
+  final amPm = dt.hour >= 12 ? 'PM' : 'AM';
+  final formatted = '${dt.day} $month ${dt.year}, $hour12:$minute $amPm';
+
+  final diff = DateTime.now().difference(dt);
+  if (diff.inSeconds < 60) return '$formatted (just now)';
+  if (diff.inMinutes < 60) return '$formatted (${diff.inMinutes}m ago)';
+  if (diff.inHours < 24) return '$formatted (${diff.inHours}h ago)';
+  return '$formatted (${diff.inDays}d ago)';
+}
+
+/// Maps status string values inside JSON payloads cleanly without coloring ONLINE heartbeats red.
+({Color bg, Color fg, String label}) statusValueBadgeColors(String rawVal) {
+  final upper = rawVal.trim().toUpperCase();
+  final normalized = upper == 'NOT_CLOSED' ? 'OPEN' : upper;
+  if (normalized == 'CLOSED' || normalized == 'HEALTHY') {
+    return (bg: const Color(0xFFDCFCE7), fg: const Color(0xFF15803D), label: normalized);
+  }
+  if (normalized == 'OPEN' || normalized == 'DEGRADED' || normalized == 'EXTENDED_DELAY') {
+    return (bg: const Color(0xFFFEE2E2), fg: const Color(0xFFB91C1C), label: normalized);
+  }
+  if (normalized == 'ONLINE' || normalized == 'ACTIVE') {
+    return (bg: const Color(0xFFD1FAE5), fg: const Color(0xFF047857), label: normalized);
+  }
+  return (bg: const Color(0xFFF1F5F9), fg: const Color(0xFF475569), label: rawVal);
+}
+
+String classifyMobilePacketType(Map<String, dynamic> rec) {
+  final backendType = rec['packetType']?.toString().toUpperCase();
+  if (backendType == 'TELEMETRY' || backendType == 'MANIFEST' || backendType == 'HEALTH' || backendType == 'HEARTBEAT') {
+    return backendType!;
+  }
+  if (rec['isDedicatedHealthCheck'] == true) return 'HEALTH';
+  final topic = (rec['topic'] ?? '').toString().toLowerCase();
+  final payload = rec['payload'] is Map ? Map<String, dynamic>.from(rec['payload'] as Map) : <String, dynamic>{};
+  if ((topic.contains('/health') && !topic.contains('/request')) ||
+      payload['action'] == 'HEALTH_CHECK_RESPONSE' ||
+      payload.containsKey('healthstatus')) {
+    return 'HEALTH';
+  }
+  if (topic.contains('/manifest') || payload.containsKey('thing') || payload.containsKey('Master')) {
+    return 'MANIFEST';
+  }
+  final recStatus = (rec['status'] ?? '').toString().toUpperCase();
+  final rawStatus = (payload['Status'] ?? payload['status'] ?? payload['gateStatus'] ?? '').toString().trim().toUpperCase();
+  final hasBarrier = rawStatus == 'OPEN' ||
+      rawStatus == 'CLOSED' ||
+      rawStatus == 'NOT_CLOSED' ||
+      payload['LimitSwitchClosed'] != null ||
+      payload['limitSwitchClosed'] != null;
+  if (topic.contains('/telemetry') &&
+      !topic.contains('/request') &&
+      recStatus != 'REQUESTED' &&
+      recStatus != 'MANIFEST' &&
+      recStatus != 'ACTIVE' &&
+      recStatus != 'HEALTHY' &&
+      recStatus != 'HEARTBEAT' &&
+      hasBarrier) {
+    return 'TELEMETRY';
+  }
+  return 'HEARTBEAT';
+}
+
+/// Resolves normalized physical gate state ('OPEN' | 'CLOSED' | null) from a telemetry/health record.
+String? resolveMobileRecordBarrierState(Map<String, dynamic> rec) {
+  final preResolved = rec['resolvedBarrierState']?.toString().trim().toUpperCase();
+  if (preResolved == 'OPEN' || preResolved == 'CLOSED') return preResolved;
+  if (preResolved == 'NOT_CLOSED') return 'OPEN';
+
+  final payload = rec['payload'] is Map ? Map<String, dynamic>.from(rec['payload'] as Map) : <String, dynamic>{};
+  final rawStatus = (payload['Status'] ??
+          payload['status'] ??
+          payload['gateStatus'] ??
+          rec['gateStatus'] ??
+          rec['status'] ??
+          '')
+      .toString()
+      .trim()
+      .toUpperCase();
+  if (rawStatus == 'CLOSED') return 'CLOSED';
+  if (rawStatus == 'OPEN' || rawStatus == 'NOT_CLOSED') return 'OPEN';
+
+  final limitClosed = payload['LimitSwitchClosed'] ?? payload['limitSwitchClosed'];
+  if (limitClosed is bool) return limitClosed ? 'CLOSED' : 'OPEN';
+  return null;
+}
+
+/// Normalizes firmware 'NOT_CLOSED' status values to 'OPEN' so Raw JSON, Table View, and BARRIER pills match.
+dynamic normalizeMobilePayloadForDisplay(dynamic payload) {
+  if (payload is! Map) return payload;
+  final copy = Map<String, dynamic>.from(payload);
+  for (final key in ['Status', 'status', 'gateStatus']) {
+    final val = copy[key];
+    if (val is String && val.trim().toUpperCase() == 'NOT_CLOSED') {
+      copy[key] = 'OPEN';
+    }
+  }
+  return copy;
+}
+
+String mobileRecordUid(Map<String, dynamic> rec) {
+  final prefix = rec['isDedicatedHealthCheck'] == true ? 'hc' : 'tel';
+  return '$prefix-${rec['id'] ?? rec['receivedAt'] ?? ''}';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INSPECT TELEMETRY BOTTOM SHEET
 // ─────────────────────────────────────────────────────────────────────────────
-class _DeviceInspectSheet extends StatefulWidget {
+class DeviceInspectSheet extends StatefulWidget {
   final Map<String, dynamic> device;
   final VoidCallback onHealthCheck;
+  final VoidCallback? onStateUpdated;
 
-  const _DeviceInspectSheet({required this.device, required this.onHealthCheck});
+  const DeviceInspectSheet({
+    super.key,
+    required this.device,
+    required this.onHealthCheck,
+    this.onStateUpdated,
+  });
 
   @override
-  State<_DeviceInspectSheet> createState() => _DeviceInspectSheetState();
+  State<DeviceInspectSheet> createState() => _DeviceInspectSheetState();
 }
 
-class _DeviceInspectSheetState extends State<_DeviceInspectSheet> {
+class _DeviceInspectSheetState extends State<DeviceInspectSheet> {
   bool _isLoading = true;
+  bool _isFetching = false;
+  Map<String, dynamic>? _telemetrySummary;
   List<dynamic> _historicPayloads = [];
+  String _activeTab = 'telemetry';
+  int _selectedIdx = 0;
+  String? _selectedRecordUid;
   bool _showRawJson = false;
+  Timer? _autoRefreshTimer;
+  WebSocketChannel? _wsChannel;
+  StreamSubscription? _wsSub;
+  Timer? _wsReconnectTimer;
+  bool _wsConnected = false;
 
   @override
   void initState() {
     super.initState();
-    _loadTelemetry();
+    _loadTelemetry(silent: false);
+    // Fallback silent poll every 3s guarantees live updates even if cellular drops WebSocket frames
+    _autoRefreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      _loadTelemetry(silent: true);
+    });
+    _connectDeviceWs();
   }
 
-  Future<void> _loadTelemetry() async {
-    setState(() => _isLoading = true);
+  @override
+  void dispose() {
+    _autoRefreshTimer?.cancel();
+    _disconnectDeviceWs();
+    super.dispose();
+  }
+
+  Future<void> _connectDeviceWs() async {
+    _disconnectDeviceWs();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('token') ?? '';
+      if (!mounted || token.isEmpty) return;
+
+      final deviceId = widget.device['id'];
+      final thingName = (widget.device['thingName'] ?? '').toString().trim();
+      final queryParams = <String, String>{'token': token};
+      if (deviceId != null) queryParams['deviceId'] = deviceId.toString();
+      if (thingName.isNotEmpty) queryParams['thingName'] = thingName;
+
+      final wsBase = baseUrl
+          .replaceFirst('http://', 'ws://')
+          .replaceFirst('https://', 'wss://')
+          .replaceFirst('/api/v1', '/ws/telemetry');
+      final uri = Uri.parse(wsBase).replace(queryParameters: queryParams);
+
+      _wsChannel = WebSocketChannel.connect(uri);
+      _wsChannel?.ready.catchError((_) {});
+
+      _wsSub = _wsChannel!.stream.listen(
+        (message) {
+          if (!mounted) return;
+          try {
+            final msg = json.decode(message.toString());
+            if (msg is Map<String, dynamic>) {
+              final type = msg['type']?.toString() ?? '';
+              if (type == 'connection_established' || type == 'pong') {
+                if (!_wsConnected) setState(() => _wsConnected = true);
+                return;
+              }
+              if (type == 'device_telemetry_update' || type == 'telemetry_update') {
+                if (!_wsConnected) setState(() => _wsConnected = true);
+                _loadTelemetry(silent: true);
+              }
+            }
+          } catch (_) {}
+        },
+        onDone: _scheduleDeviceWsReconnect,
+        onError: (_) => _scheduleDeviceWsReconnect(),
+      );
+    } catch (_) {
+      _scheduleDeviceWsReconnect();
+    }
+  }
+
+  void _disconnectDeviceWs() {
+    _wsReconnectTimer?.cancel();
+    _wsReconnectTimer = null;
+    _wsSub?.cancel();
+    _wsSub = null;
+    try {
+      _wsChannel?.sink.close();
+    } catch (_) {}
+    _wsChannel = null;
+  }
+
+  void _scheduleDeviceWsReconnect() {
+    if (!mounted) return;
+    if (_wsConnected) setState(() => _wsConnected = false);
+    _wsReconnectTimer?.cancel();
+    _wsReconnectTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted) _connectDeviceWs();
+    });
+  }
+
+  Future<void> _loadTelemetry({bool silent = false}) async {
+    if (_isFetching) return;
+    _isFetching = true;
+    if (!silent && mounted) {
+      setState(() => _isLoading = true);
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString('token') ?? '';
@@ -1178,131 +1572,525 @@ class _DeviceInspectSheetState extends State<_DeviceInspectSheet> {
 
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
-        if (mounted) {
+        if (mounted && data is Map) {
+          final prevBarrier = (_telemetrySummary?['currentStatus'] ?? widget.device['barrierState'])?.toString().toUpperCase();
+          final prevConn = (_telemetrySummary?['connectivityStatus'] ?? widget.device['connectivityStatus'])?.toString().toUpperCase();
+          final nextSummary = Map<String, dynamic>.from(data);
+          final nextPayloads = (data['payloads'] as List?) ?? [];
+
           setState(() {
-            _historicPayloads = (data['payloads'] as List?) ?? [];
+            _telemetrySummary = nextSummary;
+            _historicPayloads = nextPayloads;
+            if (_selectedRecordUid == null) {
+              _selectedIdx = 0;
+            }
           });
+
+          final nextBarrier = (nextSummary['currentStatus'] ?? nextSummary['barrierState'])?.toString().toUpperCase();
+          final nextConn = (nextSummary['connectivityStatus'] ?? nextSummary['computedStatus'])?.toString().toUpperCase();
+          if (prevBarrier != nextBarrier || prevConn != nextConn) {
+            widget.onStateUpdated?.call();
+          }
         }
       }
     } catch (_) {
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      _isFetching = false;
+      if (mounted && _isLoading) {
+        setState(() => _isLoading = false);
+      }
     }
+  }
+
+  List<Map<String, dynamic>> _recordsForTab(String tab) {
+    final all = _historicPayloads
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+    if (tab == 'all') return all;
+    final wanted = tab == 'telemetry'
+        ? 'TELEMETRY'
+        : tab == 'health'
+            ? 'HEALTH'
+            : 'MANIFEST';
+    final filtered = all.where((r) => classifyMobilePacketType(r) == wanted).toList();
+    if (filtered.isEmpty && tab == 'telemetry' && _telemetrySummary?['latestTelemetry'] is Map) {
+      return [Map<String, dynamic>.from(_telemetrySummary!['latestTelemetry'] as Map)];
+    }
+    if (filtered.isEmpty && tab == 'manifest' && _telemetrySummary?['latestManifest'] is Map) {
+      return [Map<String, dynamic>.from(_telemetrySummary!['latestManifest'] as Map)];
+    }
+    return filtered;
+  }
+
+  Widget _buildSheetTab(String tabKey, String label, int count) {
+    final active = _activeTab == tabKey;
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: () => setState(() {
+          _activeTab = tabKey;
+          _selectedIdx = 0;
+          _selectedRecordUid = null;
+        }),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+          decoration: BoxDecoration(
+            color: active ? AppColors.primary : const Color(0xFFF1F5F9),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Text(
+            '$label ($count)',
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.bold,
+              color: active ? Colors.white : const Color(0xFF475569),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final thingName = widget.device['thingName'] ?? 'Device';
-    final serial = widget.device['serialNumber'] ?? 'N/A';
-    final latestPayload = widget.device['latestPayload'] ?? (_historicPayloads.isNotEmpty ? _historicPayloads[0]['payload'] : null);
+    final thingName = (_telemetrySummary?['thingName'] ?? widget.device['thingName'] ?? 'Device').toString();
+    final serial = (_telemetrySummary?['serialNumber'] ?? widget.device['serialNumber'] ?? 'N/A').toString();
+    final connStatus = (_telemetrySummary?['connectivityStatus'] ??
+            _telemetrySummary?['computedStatus'] ??
+            widget.device['connectivityStatus'] ??
+            widget.device['computedStatus'] ??
+            'OFFLINE')
+        .toString()
+        .toUpperCase();
+    final isOnline = connStatus == 'ONLINE';
+    final teleList = _recordsForTab('telemetry');
+    final healthList = _recordsForTab('health');
+    final manifestList = _recordsForTab('manifest');
+    final allList = _recordsForTab('all');
 
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.85,
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      child: Column(
-        children: [
-          // Drag handle
-          Container(
-            width: 40,
-            height: 4,
-            margin: const EdgeInsets.symmetric(vertical: 10),
-            decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
-          ),
+    // Align top BARRIER pill with the latest genuine telemetry packet when present
+    final latestTeleBarrier = teleList.isNotEmpty ? resolveMobileRecordBarrierState(teleList.first) : null;
+    final apiBarrierState = (_telemetrySummary?['currentStatus'] ??
+            _telemetrySummary?['barrierState'] ??
+            widget.device['barrierState'] ??
+            'NO_TELEMETRY')
+        .toString()
+        .toUpperCase();
+    final barrierState = (latestTeleBarrier ?? (apiBarrierState == 'NOT_CLOSED' ? 'OPEN' : apiBarrierState));
+    final lastSeenRaw = _telemetrySummary?['lastSeenAt'] ?? widget.device['lastSeenAt'] ?? widget.device['latestPayloadSent'];
 
-          // Header
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+    final activeList = _activeTab == 'telemetry'
+        ? teleList
+        : _activeTab == 'health'
+            ? healthList
+            : _activeTab == 'manifest'
+                ? manifestList
+                : allList;
+
+    int resolvedIdx = _selectedIdx;
+    if (_selectedRecordUid != null && activeList.isNotEmpty) {
+      final matchedIdx = activeList.indexWhere((r) => mobileRecordUid(r) == _selectedRecordUid);
+      if (matchedIdx >= 0) resolvedIdx = matchedIdx;
+    }
+    final safeIdx = activeList.isEmpty ? 0 : resolvedIdx.clamp(0, activeList.length - 1);
+    final selectedRecord = activeList.isNotEmpty ? activeList[safeIdx] : null;
+    final shownPayload = selectedRecord != null ? normalizeMobilePayloadForDisplay(selectedRecord['payload']) : null;
+    final shownType = selectedRecord != null ? classifyMobilePacketType(selectedRecord) : null;
+    final selectedPacketBarrier = selectedRecord != null ? resolveMobileRecordBarrierState(selectedRecord) : null;
+    final isViewingLatest = _selectedRecordUid == null || safeIdx == 0;
+
+    return SafeArea(
+      top: false,
+      child: Container(
+        height: MediaQuery.of(context).size.height * 0.85,
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          children: [
+            // Drag handle
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.symmetric(vertical: 10),
+              decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
+            ),
+
+            // Header with DB-truth connectivity + barrier state + last seen
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
                     children: [
-                      Text(
-                        thingName,
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              thingName,
+                              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                            ),
+                            Text('Serial: $serial • DB Single Source of Truth', style: const TextStyle(fontSize: 11.5, color: Color(0xFF64748B))),
+                          ],
+                        ),
                       ),
-                      Text('Serial: $serial • AWS IoT Shadow', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                      IconButton(
+                        icon: const Icon(Icons.refresh, color: AppColors.primary),
+                        tooltip: 'Refresh Telemetry',
+                        onPressed: () => _loadTelemetry(silent: false),
+                      ),
+                      IconButton(
+                        icon: Icon(_showRawJson ? Icons.table_chart : Icons.code, color: AppColors.primary),
+                        tooltip: _showRawJson ? 'View Table' : 'View Raw JSON',
+                        onPressed: () => setState(() => _showRawJson = !_showRawJson),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: () => Navigator.pop(context),
+                      ),
                     ],
                   ),
-                ),
-                IconButton(
-                  icon: Icon(_showRawJson ? Icons.table_chart : Icons.code, color: AppColors.primary),
-                  tooltip: _showRawJson ? 'View Table' : 'View Raw JSON',
-                  onPressed: () => setState(() => _showRawJson = !_showRawJson),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.pop(context),
-                ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-
-          // Body
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : SingleChildScrollView(
-                    padding: const EdgeInsets.all(18),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Quick Ping Button
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.primary,
-                            minimumSize: const Size.fromHeight(42),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                          onPressed: () {
-                            widget.onHealthCheck();
-                            Navigator.pop(context);
-                          },
-                          icon: const Icon(Icons.network_ping, size: 18, color: Colors.white),
-                          label: const Text('Trigger Health Check Ping', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: isOnline ? const Color(0xFFDCFCE7) : const Color(0xFFF1F5F9),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: isOnline ? const Color(0xFF86EFAC) : const Color(0xFFCBD5E1)),
                         ),
-                        const SizedBox(height: 16),
-
-                        const Text('LATEST TELEMETRY PAYLOAD', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B))),
-                        const SizedBox(height: 8),
-
-                        if (latestPayload == null || (latestPayload is Map && latestPayload.isEmpty))
-                          Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFF8FAFC),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: const Color(0xFFE2E8F0)),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: BoxDecoration(
+                                color: isOnline ? const Color(0xFF16A34A) : const Color(0xFF64748B),
+                                shape: BoxShape.circle,
+                              ),
                             ),
-                            child: const Center(
-                              child: Text('No status updates received from this device yet.', style: TextStyle(color: Color(0xFF64748B), fontSize: 13)),
+                            const SizedBox(width: 5),
+                            Text(
+                              connStatus,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: isOnline ? const Color(0xFF15803D) : const Color(0xFF475569),
+                              ),
                             ),
-                          )
-                        else if (_showRawJson)
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF0F172A),
-                              borderRadius: BorderRadius.circular(8),
+                          ],
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: barrierState == 'CLOSED'
+                              ? const Color(0xFFDCFCE7)
+                              : barrierState == 'OPEN'
+                                  ? const Color(0xFFFEE2E2)
+                                  : const Color(0xFFF1F5F9),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          barrierState == 'NO_TELEMETRY' ? 'BARRIER: NO TELEMETRY' : 'BARRIER: $barrierState',
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.bold,
+                            color: barrierState == 'CLOSED'
+                                ? const Color(0xFF15803D)
+                                : barrierState == 'OPEN'
+                                    ? const Color(0xFFB91C1C)
+                                    : const Color(0xFF475569),
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE0F2FE),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: const Color(0xFFBAE6FD)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: BoxDecoration(
+                                color: _wsConnected ? const Color(0xFF0284C7) : const Color(0xFF10B981),
+                                shape: BoxShape.circle,
+                              ),
                             ),
-                            child: SelectableText(
-                              const JsonEncoder.withIndent('  ').convert(latestPayload),
-                              style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Color(0xFF38BDF8)),
+                            const SizedBox(width: 4),
+                            Text(
+                              _wsConnected ? 'LIVE WS • 3s' : 'AUTO 3s',
+                              style: const TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF0369A1),
+                              ),
                             ),
-                          )
-                        else
-                          _buildTelemetryTable(latestPayload),
-                      ],
-                    ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
-          ),
-        ],
+                  const SizedBox(height: 5),
+                  Text(
+                    'Last MQTT packet seen: ${formatDeviceTimestamp(lastSeenRaw)}',
+                    style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+
+            // Body
+            Expanded(
+              child: _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(18, 14, 18, 28),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Quick Ping Button
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.primary,
+                              minimumSize: const Size.fromHeight(42),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            onPressed: () {
+                              widget.onHealthCheck();
+                              Navigator.pop(context);
+                            },
+                            icon: const Icon(Icons.network_ping, size: 18, color: Colors.white),
+                            label: const Text('Trigger Health Check Ping', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                          ),
+                          const SizedBox(height: 14),
+
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(
+                              children: [
+                                _buildSheetTab('telemetry', 'Telemetry', teleList.length),
+                                _buildSheetTab('health', 'Health', healthList.length),
+                                _buildSheetTab('manifest', 'Manifest', manifestList.length),
+                                _buildSheetTab('all', 'All Records', allList.length),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+
+                          if (selectedRecord != null) ...[
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF8FAFC),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: const Color(0xFFE2E8F0)),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFE0E7FF),
+                                          borderRadius: BorderRadius.circular(4),
+                                        ),
+                                        child: Text(
+                                          shownType ?? 'RECORD',
+                                          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF3730A3)),
+                                        ),
+                                      ),
+                                      if (selectedPacketBarrier != null) ...[
+                                        const SizedBox(width: 6),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: selectedPacketBarrier == 'CLOSED'
+                                                ? const Color(0xFFDCFCE7)
+                                                : const Color(0xFFFEE2E2),
+                                            borderRadius: BorderRadius.circular(4),
+                                          ),
+                                          child: Text(
+                                            selectedPacketBarrier,
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                              color: selectedPacketBarrier == 'CLOSED'
+                                                  ? const Color(0xFF15803D)
+                                                  : const Color(0xFFB91C1C),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          'Received: ${formatDeviceTimestamp(selectedRecord['receivedAt'])}',
+                                          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF334155)),
+                                        ),
+                                      ),
+                                      if (!isViewingLatest)
+                                        InkWell(
+                                          onTap: () => setState(() {
+                                            _selectedRecordUid = null;
+                                            _selectedIdx = 0;
+                                          }),
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFFE0F2FE),
+                                              borderRadius: BorderRadius.circular(4),
+                                              border: Border.all(color: const Color(0xFF7DD3FC)),
+                                            ),
+                                            child: const Text(
+                                              'Live Latest',
+                                              style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF0369A1)),
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  if ((selectedRecord['topic'] ?? '').toString().isNotEmpty) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Topic: ${selectedRecord['topic']}',
+                                      style: const TextStyle(fontSize: 11, fontFamily: 'monospace', color: Color(0xFF0369A1)),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                          ],
+
+                          if (shownPayload == null || (shownPayload is Map && shownPayload.isEmpty))
+                            Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF8FAFC),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: const Color(0xFFE2E8F0)),
+                              ),
+                              child: Center(
+                                child: Text(
+                                  _activeTab == 'telemetry'
+                                      ? 'No physical barrier telemetry packets recorded yet.'
+                                      : 'No records found in this category yet.',
+                                  style: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ),
+                            )
+                          else if (_showRawJson)
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF0F172A),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: SelectableText(
+                                const JsonEncoder.withIndent('  ').convert(shownPayload),
+                                style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Color(0xFF38BDF8)),
+                              ),
+                            )
+                          else
+                            _buildTelemetryTable(shownPayload),
+
+                          if (activeList.length > 1) ...[
+                            const SizedBox(height: 16),
+                            Text(
+                              'HISTORY (${activeList.length} RECORDS)',
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+                            ),
+                            const SizedBox(height: 8),
+                            ...List.generate(activeList.length > 12 ? 12 : activeList.length, (i) {
+                              final item = activeList[i];
+                              final selected = i == safeIdx;
+                              final pktType = classifyMobilePacketType(item);
+                              final rowBarrier = resolveMobileRecordBarrierState(item);
+                              return InkWell(
+                                onTap: () => setState(() {
+                                  _selectedIdx = i;
+                                  _selectedRecordUid = i == 0 ? null : mobileRecordUid(item);
+                                }),
+                                child: Container(
+                                  margin: const EdgeInsets.only(bottom: 6),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: selected ? const Color(0xFFEFF6FF) : Colors.white,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: selected ? AppColors.primary : const Color(0xFFE2E8F0)),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Text(
+                                        pktType,
+                                        style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF475569)),
+                                      ),
+                                      if (rowBarrier != null) ...[
+                                        const SizedBox(width: 6),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                          decoration: BoxDecoration(
+                                            color: rowBarrier == 'CLOSED'
+                                                ? const Color(0xFFDCFCE7)
+                                                : const Color(0xFFFEE2E2),
+                                            borderRadius: BorderRadius.circular(4),
+                                          ),
+                                          child: Text(
+                                            rowBarrier,
+                                            style: TextStyle(
+                                              fontSize: 9.5,
+                                              fontWeight: FontWeight.bold,
+                                              color: rowBarrier == 'CLOSED'
+                                                  ? const Color(0xFF15803D)
+                                                  : const Color(0xFFB91C1C),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          formatDeviceTimestamp(item['receivedAt']),
+                                          style: const TextStyle(fontSize: 11.5, color: Color(0xFF0F172A)),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      if (selected)
+                                        const Icon(Icons.visibility, size: 15, color: AppColors.primary),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }),
+                          ],
+                        ],
+                      ),
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1326,7 +2114,9 @@ class _DeviceInspectSheetState extends State<_DeviceInspectSheet> {
           final k = entries[idx].key.toString();
           final v = entries[idx].value;
           final strVal = v.toString();
-          final isStatus = k.toLowerCase() == 'status';
+          final keyLower = k.toLowerCase();
+          final isStatus = keyLower == 'status' || keyLower == 'gatestatus' || keyLower == 'healthstatus' || keyLower == 'devicestatus';
+          final badge = statusValueBadgeColors(strVal);
 
           return Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -1347,15 +2137,15 @@ class _DeviceInspectSheetState extends State<_DeviceInspectSheet> {
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                             decoration: BoxDecoration(
-                              color: (strVal.toUpperCase() == 'NOT_CLOSED' ? 'OPEN' : strVal).toUpperCase() == 'CLOSED' ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
+                              color: badge.bg,
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
-                              strVal.toUpperCase() == 'NOT_CLOSED' ? 'OPEN' : strVal,
+                              badge.label,
                               style: TextStyle(
                                 fontSize: 11,
                                 fontWeight: FontWeight.bold,
-                                color: (strVal.toUpperCase() == 'NOT_CLOSED' ? 'OPEN' : strVal).toUpperCase() == 'CLOSED' ? const Color(0xFF15803D) : const Color(0xFFB91C1C),
+                                color: badge.fg,
                               ),
                             ),
                           ),
@@ -1558,6 +2348,9 @@ class _DeviceSimManagementSheetState extends State<_DeviceSimManagementSheet> {
       );
 
       if (res.statusCode == 200) {
+        final uid = await loadCurrentUserId();
+        await LCGatesCacheService.instance.markStale(uid);
+        await HomeCacheService.instance.clearUserCache(uid);
         if (mounted) {
           AppFeedback.showSuccess(context, 'SIM details and connectivity record updated!');
           widget.onSaved();

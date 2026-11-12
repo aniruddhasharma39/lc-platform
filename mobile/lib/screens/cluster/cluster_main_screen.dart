@@ -7,8 +7,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
+import '../../utils/user_utils.dart';
 import '../../components/action_feedback_widgets.dart';
 import 'railway_data.dart';
+import '../../services/home_cache_service.dart';
 import '../../services/lc_gates_cache_service.dart';
 
 class ClusterMainScreen extends StatefulWidget {
@@ -70,7 +72,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
   Future<void> _init() async {
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString('token') ?? '';
-    final userId = (widget.user?['id'] ?? prefs.getString('userId') ?? prefs.getString('employeeId') ?? 'user').toString();
+    final userId = resolveCurrentUserId(user: widget.user, prefs: prefs);
     if (!mounted) return;
     setState(() {
       _token = token;
@@ -609,6 +611,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                           );
                           if (res.statusCode == 204 || res.statusCode == 200) {
                             await LCGatesCacheService.instance.removeGateAcrossAllScopes(_userId, gateId);
+                            await HomeCacheService.instance.clearUserCache(_userId);
                             if (mounted) {
                               setState(() {
                                 _gates.removeWhere((g) => g['id'] == gateId);
@@ -724,6 +727,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
           if (!mounted) return;
           if (result == true) {
             await LCGatesCacheService.instance.markAllStale(_userId);
+            await HomeCacheService.instance.clearUserCache(_userId);
             await _fetchGates();
           }
         },
@@ -856,7 +860,7 @@ class _ClusterMainScreenState extends State<ClusterMainScreen> {
                                 onRefresh: () => _fetchGates(isManualRefresh: true),
                                 child: ListView.builder(
                                   physics: const AlwaysScrollableScrollPhysics(),
-                                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 80),
+                                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 96),
                                   itemCount: filtered.length + (_errorMessage != null ? 1 : 0),
                                   itemBuilder: (context, index) {
                                     // If there's an error banner while displaying cached data

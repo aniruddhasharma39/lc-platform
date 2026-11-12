@@ -5,21 +5,34 @@ import path from 'path';
 import crypto from 'crypto';
 import { v2 as cloudinary } from 'cloudinary';
 import { prisma } from '../lib/prisma';
-import { authenticate } from '../middleware/auth';
+import {
+  authenticate,
+  ensureGateAccess,
+  requireAdmin,
+  requireAnyModule,
+  requireDeviceIngestSecret,
+  requireModule,
+} from '../middleware/auth';
+import { verifyGateAccess } from '../lib/railwayHierarchy';
 import { publishMqttMessage } from '../lib/iotClient';
 import { checkAndDispatchGateStateAlert, checkAndDispatchGateStateEmailAlert } from '../lib/gateAlertSms';
-import { recordGateTelemetryTransition } from '../lib/telemetryMonitor';
-import { broadcastGateTelemetry } from '../lib/telemetryWs';
+import { markTelemetryProcessed, recordGateTelemetryTransition } from '../lib/telemetryMonitor';
+import { broadcastDeviceTelemetryUpdate, broadcastGateTelemetry } from '../lib/telemetryWs';
 import { bumpDirectoryRevision } from '../lib/revisionManager';
 import { clusterCacheManager } from '../lib/clusterCacheManager';
 import { deleteEvidenceFile } from './evidence';
 import {
+  classifyTelemetryPacketType,
   cleanupDetachedThingEventsInTx,
   computeThingConnectivity,
+  getOnlineCutoffDate,
   isGenuineTelemetryPacket,
   isManifestPacket,
   normalizeBarrierStateColumn,
+  normalizeTelemetryPayloadForDisplay,
+  normalizeTelemetryRecordForDisplay,
   parseBarrierStateFromPayload,
+  resolveAuthoritativeBarrierState,
 } from '../lib/thingState';
 // @ts-ignore
 import { Jimp, loadFont } from 'jimp';
@@ -158,40 +171,117 @@ function buildLcDeviceWhere(param: string) {
   };
 }
 
+const MASTER_DEVICE_TYPES = new Set([
+  'MASTER',
+  'LC_GATE_MASTER',
+  'GATE_MASTER',
+  'LC-GATE-MASTER',
+  'MASTER_UNIT',
+  'LC_MASTER',
+]);
+
+/**
+ * Authoritative PostgreSQL Single Source of Truth fleet summary for all LC- Things (non-SLAVE).
+ * Live connectivity (online/offline) strictly uses computeThingConnectivity (65-minute cutoff),
+ * never lifecycle status ('ACTIVE').
+ */
+async function computeLcDeviceFleetSummary(nowMs: number = Date.now()) {
+  const allLcThings = await prisma.deviceRegistry.findMany({
+    where: {
+      thingName: { startsWith: 'LC-', mode: 'insensitive' },
+      deviceType: { not: 'SLAVE' },
+    },
+    select: {
+      id: true,
+      status: true,
+      connectivityStatus: true,
+      lastSeenAt: true,
+      gateId: true,
+      deviceType: true,
+    },
+  });
+
+  let online = 0;
+  let active = 0;
+  let inactive = 0;
+  let provisioned = 0;
+  let maintenance = 0;
+  let decommissioned = 0;
+  let assigned = 0;
+  let masters = 0;
+
+  for (const dev of allLcThings) {
+    if (computeThingConnectivity(dev, nowMs).isOnline) online++;
+    const lifecycle = String(dev.status || 'ACTIVE').toUpperCase();
+    if (lifecycle === 'ACTIVE') active++;
+    else if (lifecycle === 'INACTIVE') inactive++;
+    else if (lifecycle === 'PROVISIONED') provisioned++;
+    else if (lifecycle === 'MAINTENANCE') maintenance++;
+    else if (lifecycle === 'DECOMMISSIONED') decommissioned++;
+
+    if (dev.gateId !== null && dev.gateId !== undefined) assigned++;
+    if (MASTER_DEVICE_TYPES.has(String(dev.deviceType || '').toUpperCase())) masters++;
+  }
+
+  const total = allLcThings.length;
+  const offline = Math.max(0, total - online);
+
+  return {
+    total,
+    online,
+    offline,
+    onlineCount: online,
+    offlineCount: offline,
+    active,
+    inactive,
+    provisioned,
+    maintenance,
+    decommissioned,
+    assigned,
+    masters,
+    slaves: 0, // Slaves are wired to masters, not individual cloud things
+    timestamp: new Date(nowMs).toISOString(),
+  };
+}
+
+/**
+ * Shared authoritative connectivity resolver used across GET /devices,
+ * GET /devices/:id, and GET /devices/:id/telemetry so list, detail, and
+ * telemetry inspection views always agree on isOnline / connectivityStatus.
+ */
+export function resolveAuthoritativeDeviceConnectivity(
+  device: {
+    status?: string | null;
+    connectivityStatus?: string | null;
+    lastSeenAt?: Date | string | null;
+  },
+  nowMs: number = Date.now(),
+  extraTimestamps: Array<Date | string | null | undefined> = []
+) {
+  const candidateMs = [
+    device.lastSeenAt ? new Date(device.lastSeenAt).getTime() : 0,
+    ...extraTimestamps.map((ts) => (ts ? new Date(ts).getTime() : 0)),
+  ];
+  const maxMs = Math.max(0, ...candidateMs);
+  const effectiveLastSeen = maxMs > 0 ? new Date(maxMs) : null;
+  return computeThingConnectivity(
+    {
+      status: device.status,
+      connectivityStatus: device.connectivityStatus,
+      lastSeenAt: effectiveLastSeen,
+    },
+    nowMs
+  );
+}
+
 /**
  * GET /api/v1/devices/stats/summary
  * Device registry metrics and totals
  */
 router.get('/stats/summary', authenticate, async (_req, res, next) => {
   try {
-    const baseWhere: any = {
-      thingName: { startsWith: 'LC-', mode: 'insensitive' },
-      deviceType: { not: 'SLAVE' },
-    };
-
-    const [total, active, provisioned, masters, onlineCount] = await Promise.all([
-      prisma.deviceRegistry.count({ where: baseWhere }),
-      prisma.deviceRegistry.count({ where: { ...baseWhere, status: 'ACTIVE' } }),
-      prisma.deviceRegistry.count({ where: { ...baseWhere, status: 'PROVISIONED' } }),
-      prisma.deviceRegistry.count({
-        where: {
-          thingName: { startsWith: 'LC-', mode: 'insensitive' },
-          deviceType: { in: ['MASTER', 'master', 'LC_GATE_MASTER', 'GATE_MASTER', 'LC-GATE-MASTER', 'MASTER_UNIT', 'LC_MASTER'] },
-        },
-      }),
-      prisma.deviceRegistry.count({ where: { ...baseWhere, connectivityStatus: 'ONLINE' } }),
-    ]);
-
-    res.json({
-      total,
-      active,
-      provisioned,
-      masters,
-      onlineCount,
-      offlineCount: Math.max(0, total - onlineCount),
-      slaves: 0, // Slaves are wired to masters, not individual cloud things
-      timestamp: new Date().toISOString(),
-    });
+    const summary = await computeLcDeviceFleetSummary();
+    res.json(summary);
   } catch (error) {
     next(error);
   }
@@ -208,59 +298,75 @@ router.get('/', authenticate, async (req, res, next) => {
     const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
     const take = Math.min(100, Math.max(1, parseInt(limit as string, 10) || 50));
     const skip = (pageNum - 1) * take;
+    const now = Date.now();
+    const cutoffDate = getOnlineCutoffDate(now);
 
-    // Strict LC Gate Platform isolation: only query devices starting with 'LC-'
-    const where: any = {
-      thingName: { startsWith: 'LC-', mode: 'insensitive' },
-    };
+    // Strict LC Gate Platform isolation: always keep startsWith('LC-') inside top-level AND
+    const andFilters: any[] = [
+      { thingName: { startsWith: 'LC-', mode: 'insensitive' } },
+    ];
 
     if (deviceType && typeof deviceType === 'string' && deviceType !== 'ALL') {
       if (deviceType.toUpperCase() === 'MASTER') {
-        where.deviceType = {
-          in: ['MASTER', 'master', 'LC_GATE_MASTER', 'GATE_MASTER', 'LC-GATE-MASTER', 'MASTER_UNIT', 'LC_MASTER']
-        };
+        andFilters.push({
+          deviceType: {
+            in: ['MASTER', 'master', 'LC_GATE_MASTER', 'GATE_MASTER', 'LC-GATE-MASTER', 'MASTER_UNIT', 'LC_MASTER']
+          },
+        });
       } else {
-        where.deviceType = deviceType;
+        andFilters.push({ deviceType });
       }
     } else if (!deviceType || deviceType !== 'ALL') {
       // By default, show Master IoT devices (slaves are wired to masters)
-      where.deviceType = { not: 'SLAVE' };
+      andFilters.push({ deviceType: { not: 'SLAVE' } });
     }
 
-    if (status && typeof status === 'string' && status !== 'ALL') {
-      if (status !== 'ONLINE' && status !== 'OFFLINE') {
-        where.status = status;
+    const normalizedStatus = typeof status === 'string' ? status.trim().toUpperCase() : '';
+    if (normalizedStatus && normalizedStatus !== 'ALL') {
+      if (normalizedStatus === 'ONLINE') {
+        andFilters.push({
+          status: { notIn: ['INACTIVE', 'DECOMMISSIONED'] },
+          lastSeenAt: { gte: cutoffDate },
+        });
+      } else if (normalizedStatus === 'OFFLINE') {
+        andFilters.push({
+          OR: [
+            { status: { in: ['INACTIVE', 'DECOMMISSIONED'] } },
+            { lastSeenAt: null },
+            { lastSeenAt: { lt: cutoffDate } },
+          ],
+        });
+      } else {
+        andFilters.push({ status: normalizedStatus });
       }
     }
 
-
     if (unassigned === 'true') {
-      where.masterId = null;
+      andFilters.push({ masterId: null });
     }
 
     if (gateId && typeof gateId === 'string') {
       const gid = parseInt(gateId, 10);
-      if (!isNaN(gid)) where.gateId = gid;
+      if (!isNaN(gid)) andFilters.push({ gateId: gid });
     }
 
     if (search && typeof search === 'string' && search.trim() !== '') {
       const s = search.trim();
-      where.AND = [
-        { thingName: { startsWith: 'LC-', mode: 'insensitive' } },
-        {
-          OR: [
-            { thingName: { contains: s, mode: 'insensitive' } },
-            { serialNumber: { contains: s, mode: 'insensitive' } },
-            { modelNumber: { contains: s, mode: 'insensitive' } },
-            { manufacturer: { contains: s, mode: 'insensitive' } },
-            { imei: { contains: s, mode: 'insensitive' } },
-          ],
-        },
-      ];
-      delete where.thingName;
+      andFilters.push({
+        OR: [
+          { thingName: { contains: s, mode: 'insensitive' } },
+          { serialNumber: { contains: s, mode: 'insensitive' } },
+          { modelNumber: { contains: s, mode: 'insensitive' } },
+          { manufacturer: { contains: s, mode: 'insensitive' } },
+          { imei: { contains: s, mode: 'insensitive' } },
+          { gate: { lcNumber: { contains: s, mode: 'insensitive' } } },
+        ],
+      });
     }
 
-    const [devices, totalCount] = await Promise.all([
+    const where: any = { AND: andFilters };
+
+    const [devices, totalCount, summary] = await Promise.all([
       prisma.deviceRegistry.findMany({
         where,
         skip,
@@ -296,72 +402,93 @@ router.get('/', authenticate, async (req, res, next) => {
         },
       }),
       prisma.deviceRegistry.count({ where }),
+      computeLcDeviceFleetSummary(now),
     ]);
 
-    const now = Date.now();
+    const masterIds = Array.from(
+      new Set(devices.map((d) => d.masterId).filter((id): id is number => id !== null && id !== undefined))
+    );
+    const simEvidences = masterIds.length > 0
+      ? await prisma.installationEvidence.findMany({
+          where: { masterId: { in: masterIds }, category: 'SIM_CARD' },
+          orderBy: { updatedAt: 'desc' },
+          select: { masterId: true, imageUrl: true },
+        }).catch(() => [])
+      : [];
+    const simPhotoByMasterId = new Map<number, string>();
+    for (const ev of simEvidences) {
+      if (ev.masterId && ev.imageUrl && !simPhotoByMasterId.has(ev.masterId)) {
+        simPhotoByMasterId.set(ev.masterId, ev.imageUrl);
+      }
+    }
 
     const enrichedDevices = await Promise.all(devices.map(async (device) => {
-      // Query strictly genuine inbound /telemetry packets matched only by thingName or deviceRegistryId
-      const latestTele = await prisma.deviceTelemetry.findFirst({
-        where: {
-          OR: [
-            { thingName: device.thingName },
-            { deviceRegistryId: device.id },
-          ],
-          topic: { contains: '/telemetry' },
-          NOT: [
-            { topic: { contains: '/health' } },
-            { topic: { contains: '/request' } },
-            { topic: { contains: '/manifest' } },
-          ],
-          status: { not: 'REQUESTED' },
-        },
-        orderBy: { receivedAt: 'desc' },
-      }).catch(() => null);
+      // Resolve strictly genuine physical barrier /telemetry packets plus any inbound telemetry/health timestamps
+      const [indexedTele, recentTeleCandidates, latestAnyTele, latestHealth] = await Promise.all([
+        (device as any).lastTelemetryId
+          ? prisma.deviceTelemetry.findUnique({ where: { id: (device as any).lastTelemetryId } }).catch(() => null)
+          : Promise.resolve(null),
+        prisma.deviceTelemetry.findMany({
+          where: {
+            OR: [
+              { thingName: device.thingName },
+              { deviceRegistryId: device.id },
+            ],
+            topic: { contains: '/telemetry' },
+            NOT: [
+              { topic: { contains: '/health' } },
+              { topic: { contains: '/request' } },
+              { topic: { contains: '/manifest' } },
+            ],
+            status: { notIn: ['REQUESTED', 'MANIFEST', 'ACTIVE', 'HEALTHY', 'HEARTBEAT'] },
+          },
+          orderBy: [{ receivedAt: 'desc' }, { id: 'desc' }],
+          take: 25,
+        }).catch(() => []),
+        prisma.deviceTelemetry.findFirst({
+          where: {
+            OR: [
+              { thingName: device.thingName },
+              { deviceRegistryId: device.id },
+            ],
+            NOT: [{ topic: { contains: '/request' } }],
+            status: { not: 'REQUESTED' },
+          },
+          orderBy: { receivedAt: 'desc' },
+          select: { receivedAt: true },
+        }).catch(() => null),
+        prisma.deviceHealthCheck.findFirst({
+          where: {
+            OR: [
+              { thingName: device.thingName },
+              { deviceRegistryId: device.id },
+            ],
+          },
+          orderBy: { createdAt: 'desc' },
+          select: { createdAt: true },
+        }).catch(() => null),
+      ]);
 
-      const latestHealth = await prisma.deviceHealthCheck.findFirst({
-        where: {
-          OR: [
-            { thingName: device.thingName },
-            { deviceRegistryId: device.id },
-          ],
-        },
-        orderBy: { createdAt: 'desc' },
-      }).catch(() => null);
+      const latestTele =
+        recentTeleCandidates.find(isGenuineTelemetryPacket) ||
+        (indexedTele && isGenuineTelemetryPacket(indexedTele) ? indexedTele : null);
 
-      // Compute latest real inbound packet timestamp
-      const timestamps = [
-        latestTele?.receivedAt ? new Date(latestTele.receivedAt).getTime() : 0,
-        latestHealth?.createdAt ? new Date(latestHealth.createdAt).getTime() : 0,
-        device.lastSeenAt ? new Date(device.lastSeenAt).getTime() : 0,
-      ];
-      const maxTimestamp = Math.max(...timestamps);
-      const lastTimestamp = maxTimestamp > 0 ? new Date(maxTimestamp) : null;
-      const conn = computeThingConnectivity({
-        status: device.status,
-        connectivityStatus: (device as any).connectivityStatus,
-        lastSeenAt: lastTimestamp,
-      }, now);
+      // Authoritative live connectivity aligned with GET /devices/:id and GET /devices/:id/telemetry
+      const conn = resolveAuthoritativeDeviceConnectivity(device, now, [
+        latestTele?.receivedAt,
+        latestAnyTele?.receivedAt,
+        latestHealth?.createdAt,
+      ]);
 
-      let simPhotoUrl = (device as any).simPhotoUrl;
-      if (device.masterId) {
-        const simEvidence = await prisma.installationEvidence.findFirst({
-          where: { masterId: device.masterId, category: 'SIM_CARD' },
-          orderBy: { updatedAt: 'desc' },
-          select: { imageUrl: true },
-        }).catch(() => null);
-        if (simEvidence?.imageUrl) {
-          simPhotoUrl = simEvidence.imageUrl;
-          if ((device as any).simPhotoUrl !== simEvidence.imageUrl) {
-            prisma.deviceRegistry.update({
-              where: { id: device.id },
-              data: { simPhotoUrl: simEvidence.imageUrl },
-            }).catch(() => {});
-          }
-        }
-      }
+      const simPhotoUrl =
+        (device.masterId ? simPhotoByMasterId.get(device.masterId) : null) ??
+        (device as any).simPhotoUrl ??
+        null;
 
-      const barrierState = normalizeBarrierStateColumn((device as any).barrierState);
+      const barrierState = resolveAuthoritativeBarrierState(device, latestTele);
+      const latestTelemetryAt = latestTele?.receivedAt
+        ? new Date(latestTele.receivedAt).toISOString()
+        : ((device as any).lastTelemetryAt ? new Date((device as any).lastTelemetryAt).toISOString() : null);
 
       return {
         ...device,
@@ -370,21 +497,17 @@ router.get('/', authenticate, async (req, res, next) => {
         connectivityStatus: conn.connectivityStatus,
         computedStatus: conn.connectivityStatus,
         isOnline: conn.isOnline,
+        lastSeenAt: conn.lastSeenAt,
         latestPayloadSent: conn.lastSeenAt,
+        latestTelemetryAt,
         latestTopic: latestTele?.topic || null,
-        latestPayload: latestTele?.payload || null,
+        latestPayload: normalizeTelemetryPayloadForDisplay(latestTele?.payload || null),
       };
     }));
 
-    let finalDevices = enrichedDevices;
-    if (status === 'ONLINE') {
-      finalDevices = enrichedDevices.filter(d => d.computedStatus === 'ONLINE');
-    } else if (status === 'OFFLINE') {
-      finalDevices = enrichedDevices.filter(d => d.computedStatus === 'OFFLINE');
-    }
-
     res.json({
-      devices: finalDevices,
+      devices: enrichedDevices,
+      summary,
       pagination: {
         page: pageNum,
         limit: take,
@@ -433,7 +556,7 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
           NOT: [{ topic: { contains: '/request' } }],
           status: { not: 'REQUESTED' },
         },
-        orderBy: { receivedAt: 'desc' },
+        orderBy: [{ receivedAt: 'desc' }, { id: 'desc' }],
         take: 100,
       }).catch(() => []),
       prisma.deviceHealthCheck.findMany({
@@ -449,6 +572,14 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
     ]);
 
     const telemetryRecords = telemetries.filter(isGenuineTelemetryPacket);
+    if (telemetryRecords.length === 0 && (device as any).lastTelemetryId) {
+      const indexedTele = await prisma.deviceTelemetry.findUnique({
+        where: { id: (device as any).lastTelemetryId },
+      }).catch(() => null);
+      if (indexedTele && isGenuineTelemetryPacket(indexedTele)) {
+        telemetryRecords.push(indexedTele);
+      }
+    }
     const manifestRecords = telemetries.filter(isManifestPacket);
 
     const healthRecords = healthChecks.length > 0 ? healthChecks.map((h: any) => ({
@@ -461,23 +592,23 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
       deviceRegistryId: h.deviceRegistryId,
       gateStatus: h.gateStatus,
       isDedicatedHealthCheck: true,
+      packetType: 'HEALTH' as const,
     })) : telemetries.filter(t =>
       ((t.topic && t.topic.includes('/health') && !t.topic.includes('/request')) ||
       (t.payload && typeof t.payload === 'object' && ((t.payload as any).action === 'HEALTH_CHECK_RESPONSE' || (t.payload as any).healthstatus !== undefined)))
-    );
+    ).map((t: any) => ({ ...t, packetType: 'HEALTH' as const }));
 
     const nowMs = Date.now();
-    const latestTimestamp = telemetryRecords[0]?.receivedAt || healthRecords[0]?.receivedAt || device.lastSeenAt || null;
-    const conn = computeThingConnectivity({
-      status: device.status,
-      connectivityStatus: (device as any).connectivityStatus,
-      lastSeenAt: latestTimestamp,
-    }, nowMs);
+    const conn = resolveAuthoritativeDeviceConnectivity(device, nowMs, [
+      telemetryRecords[0]?.receivedAt,
+      healthRecords[0]?.receivedAt,
+      telemetries[0]?.receivedAt,
+    ]);
     const computedStatus = conn.connectivityStatus;
     const isOnline = conn.isOnline;
 
-    // Single source of truth: DB barrierState populated strictly from genuine /telemetry packets
-    const barrierState = normalizeBarrierStateColumn((device as any).barrierState);
+    // Single source of truth: align barrierState immediately with latest genuine /telemetry packet
+    const barrierState = resolveAuthoritativeBarrierState(device, telemetryRecords[0] || null);
     const currentStatus = barrierState || 'NO_TELEMETRY';
 
     const seenUids = new Set<string>();
@@ -487,7 +618,7 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
         const uid = `hc-${h.id}`;
         if (!seenUids.has(uid)) {
           seenUids.add(uid);
-          deduplicatedPayloads.push(h);
+          deduplicatedPayloads.push(normalizeTelemetryRecordForDisplay(h));
         }
       }
     }
@@ -495,34 +626,53 @@ router.get('/:id/telemetry', authenticate, async (req, res, next) => {
       const uid = `tel-${t.id}`;
       if (!seenUids.has(uid)) {
         seenUids.add(uid);
-        deduplicatedPayloads.push(t);
+        deduplicatedPayloads.push(normalizeTelemetryRecordForDisplay({
+          ...t,
+          packetType: classifyTelemetryPacketType(t),
+        }));
       }
     }
-    deduplicatedPayloads.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
+    deduplicatedPayloads.sort((a, b) => {
+      const timeDiff = new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime();
+      if (timeDiff !== 0) return timeDiff;
+      return (Number(b.id) || 0) - (Number(a.id) || 0);
+    });
+
+    const taggedLatestTele = telemetryRecords[0]
+      ? normalizeTelemetryRecordForDisplay({ ...telemetryRecords[0], packetType: 'TELEMETRY' as const })
+      : null;
+
+    const latestManifest = manifestRecords[0]
+      ? normalizeTelemetryRecordForDisplay({ ...manifestRecords[0], packetType: 'MANIFEST' as const })
+      : null;
+    const normalizedHealthRecords = healthRecords.map(normalizeTelemetryRecordForDisplay);
 
     res.json({
       thingName: device.thingName,
       serialNumber: device.serialNumber,
       deviceType: device.deviceType,
       firmwareVersion: device.firmwareVersion,
+      status: device.status,
       gate: device.gate,
       barrierState,
       currentStatus,
       connectivityStatus: computedStatus,
       computedStatus,
       isOnline,
-      lastSeenAt: latestTimestamp,
-      lastTelemetryAt: (device as any).lastTelemetryAt || null,
+      lastSeenAt: conn.lastSeenAt,
+      lastTelemetryAt: telemetryRecords[0]?.receivedAt
+        ? new Date(telemetryRecords[0].receivedAt).toISOString()
+        : ((device as any).lastTelemetryAt ? new Date((device as any).lastTelemetryAt).toISOString() : null),
       counts: {
         all: deduplicatedPayloads.length,
         telemetry: telemetryRecords.length,
         manifest: manifestRecords.length,
-        healthCheck: healthRecords.length,
+        healthCheck: normalizedHealthRecords.length,
       },
-      latestTelemetry: telemetryRecords[0] || null,
-      latestManifest: manifestRecords[0] || null,
-      latestHealthCheck: healthRecords[0] || null,
-      healthChecks: healthRecords,
+      latestTelemetry: taggedLatestTele,
+      latestManifest,
+      latestHealthCheck: normalizedHealthRecords[0] || null,
+      healthChecks: normalizedHealthRecords,
       payloads: deduplicatedPayloads,
     });
   } catch (error) {
@@ -577,7 +727,7 @@ router.get(['/:id/health-checks', '/:thingName/health-checks'], authenticate, as
  * DELETE /api/v1/devices/:thingName
  * Deletes a device from the DeviceRegistry and cleans up telemetry/scope mappings.
  */
-router.delete(['/:id', '/:thingName'], authenticate, async (req, res, next) => {
+router.delete(['/:id', '/:thingName'], authenticate, requireModule('devices'), async (req: any, res, next) => {
   try {
     const param = req.params.id || req.params.thingName;
     const where = buildLcDeviceWhere(param);
@@ -597,6 +747,7 @@ router.delete(['/:id', '/:thingName'], authenticate, async (req, res, next) => {
     if (!device) {
       return res.status(404).json({ error: 'Device not found in registry' });
     }
+    if (device.gateId && !(await ensureGateAccess(req, res, device.gateId))) return;
 
     const thingName = device.thingName;
 
@@ -660,7 +811,7 @@ router.delete(['/:id', '/:thingName'], authenticate, async (req, res, next) => {
  * POST /api/v1/devices/:thingName/health-check
  * Triggers a health check command to the physical device over AWS IoT Core MQTT broker
  */
-router.post(['/:id/health-check', '/:thingName/health-check'], authenticate, async (req, res, next) => {
+router.post(['/:id/health-check', '/:thingName/health-check'], authenticate, requireAnyModule(['devices', 'cluster', 'lc-gates']), async (req: any, res, next) => {
   try {
     const param = req.params.id || req.params.thingName;
     const where = buildLcDeviceWhere(param);
@@ -675,6 +826,7 @@ router.post(['/:id/health-check', '/:thingName/health-check'], authenticate, asy
     if (!device) {
       return res.status(404).json({ error: 'Device not found in registry' });
     }
+    if (device.gateId && !(await ensureGateAccess(req, res, device.gateId))) return;
 
     const topic = `lc-gate/${device.thingName}/health/request`;
     const requestId = `hc_${Date.now()}`;
@@ -708,7 +860,7 @@ router.post(['/:id/health-check', '/:thingName/health-check'], authenticate, asy
  * Public webhook/endpoint for AWS IoT Core Rule HTTP Action, Lambda, edge devices, or simulator
  * to record real-world device payloads into the common telemetry table.
  */
-router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
+router.post(['/telemetry', '/:thingName/telemetry'], requireDeviceIngestSecret, async (req, res, next) => {
   try {
     const raw = req.body || {};
     const paramThing = req.params.thingName;
@@ -730,7 +882,17 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
     if (!topic) {
       if (raw.action === 'HEALTH_CHECK' || raw.action === 'HEALTH_CHECK_RESPONSE' || raw.healthstatus !== undefined || raw.BatteryPercentage !== undefined || raw.NetworkStrength !== undefined) {
         topic = `lc-gate/${thingName}/health`;
-      } else if (raw.thing?.Master || raw.Master) {
+      } else if (
+        raw.thing?.Master ||
+        raw.thing?.master ||
+        raw.Thing?.Master ||
+        raw.Master ||
+        raw.master ||
+        raw.runtimeConfig ||
+        raw.manufacturing ||
+        Array.isArray(raw.sensors) ||
+        Array.isArray(raw.components)
+      ) {
         topic = `lc/devices/${thingName}/manifest`;
       } else {
         topic = `lc-gate/${thingName}/telemetry`;
@@ -758,12 +920,23 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
     const isHealthResponse = isHealthTopic && (payload.healthstatus !== undefined || payload.action === 'HEALTH_CHECK_RESPONSE' || payload.BoomAngle !== undefined || payload.LimitSwitchClosed !== undefined);
     const isManifest = isManifestPacket({ topic, payload });
     const isTelemetry = !isHealthResponse && !isManifest && isGenuineTelemetryPacket({ topic, payload });
-    const incomingAt = raw.timestamp ? new Date(raw.timestamp) : new Date();
+    const rawTs = raw.timestamp ?? payload.timestamp ?? null;
+    let incomingAt = new Date();
+    if (rawTs !== null && rawTs !== undefined && rawTs !== '') {
+      const numTs = typeof rawTs === 'number' ? rawTs : (/^\d+(\.\d+)?$/.test(String(rawTs).trim()) ? Number(rawTs) : NaN);
+      const ms = Number.isFinite(numTs)
+        ? (numTs >= 1e9 && numTs < 1e11 ? numTs * 1000 : numTs)
+        : Date.parse(String(rawTs));
+      const minEpochMs = Date.UTC(2020, 0, 1);
+      if (Number.isFinite(ms) && ms >= minEpochMs && ms <= Date.now() + 24 * 60 * 60 * 1000) {
+        incomingAt = new Date(ms);
+      }
+    }
 
     const heartbeatResult = await prisma.$transaction(async (tx) => {
       // 1. Row-level lock strictly on exact thingName (zero serialNumber cross-matching fallback)
       const lockedRows: any[] = await tx.$queryRaw`
-        SELECT id, "thingName", "serialNumber", "gateId", "masterId", "lastSeenAt", "firmwareVersion", "status", "connectivityStatus", "barrierState"
+        SELECT id, "thingName", "serialNumber", "gateId", "masterId", "lastSeenAt", "lastTelemetryAt", "firmwareVersion", "status", "connectivityStatus", "barrierState"
         FROM "DeviceRegistry"
         WHERE "thingName" = ${thingName}
         LIMIT 1
@@ -776,30 +949,40 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
       const currentState = (isTelemetry || isHealthResponse)
         ? parseBarrierStateFromPayload(payload)
         : null;
+      const isGenuineBarrierTelemetry = isTelemetry && currentState !== null;
 
       // 3. Detect if device was previously OFFLINE (>65m or never seen) before this packet
       let wasOffline = false;
+      let isMonotonicTele = true;
 
       if (!dev) {
         if (!thingName.toUpperCase().startsWith('LC-')) {
-          return { ignored: true, device: null, wasOffline: false, telemetry: null, healthCheck: null, isHealthResponse: false, currentState: null, previousState: null };
+          return { ignored: true, device: null, wasOffline: false, isMonotonicTele: true, telemetry: null, healthCheck: null, isHealthResponse: false, currentState: null, previousState: null };
         }
 
         // Newly discovered AWS IoT Things always start UNASSIGNED and lifecycle ACTIVE (never ONLINE/OPEN guesses)
+        const teleBarrierState = isGenuineBarrierTelemetry ? currentState : null;
         const insertedRows: any[] = await tx.$queryRaw`
           INSERT INTO "DeviceRegistry" (
             "thingName", "serialNumber", "status", "connectivityStatus", "barrierState", "lastTelemetryAt",
             "gateId", "masterId", "childDeviceId", "deviceType", "firmwareVersion", "lastSeenAt", "createdAt", "updatedAt"
           )
           VALUES (
-            ${thingName}, ${thingName}, 'ACTIVE', 'ONLINE', ${currentState}, ${currentState ? incomingAt : null},
+            ${thingName}, ${thingName}, 'ACTIVE', 'ONLINE', ${teleBarrierState}, ${teleBarrierState ? incomingAt : null},
             NULL, NULL, NULL, ${payload.DeviceType || 'MASTER'}, ${fwVersion || null}, ${incomingAt}, NOW(), NOW()
           )
           ON CONFLICT ("thingName") DO UPDATE
-          SET "lastSeenAt" = ${incomingAt},
+          SET "lastSeenAt" = GREATEST(COALESCE("DeviceRegistry"."lastSeenAt", ${incomingAt}), ${incomingAt}),
               "connectivityStatus" = 'ONLINE',
-              "barrierState" = COALESCE(${currentState}, "DeviceRegistry"."barrierState"),
-              "lastTelemetryAt" = CASE WHEN ${currentState !== null} THEN ${incomingAt} ELSE "DeviceRegistry"."lastTelemetryAt" END,
+              "barrierState" = CASE
+                WHEN ${teleBarrierState !== null} AND ("DeviceRegistry"."lastTelemetryAt" IS NULL OR ${incomingAt} >= "DeviceRegistry"."lastTelemetryAt")
+                THEN ${teleBarrierState}
+                ELSE "DeviceRegistry"."barrierState"
+              END,
+              "lastTelemetryAt" = CASE
+                WHEN ${teleBarrierState !== null} THEN GREATEST(COALESCE("DeviceRegistry"."lastTelemetryAt", ${incomingAt}), ${incomingAt})
+                ELSE "DeviceRegistry"."lastTelemetryAt"
+              END,
               "firmwareVersion" = COALESCE(${fwVersion || null}, "DeviceRegistry"."firmwareVersion"),
               "updatedAt" = NOW()
           RETURNING id, "thingName", "serialNumber", "gateId", "masterId", "lastSeenAt", "firmwareVersion", "status", "connectivityStatus", "barrierState", (xmax = 0) AS is_inserted
@@ -810,15 +993,19 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
         wasOffline =
           dev.connectivityStatus !== 'ONLINE' ||
           !dev.lastSeenAt ||
-          (Date.now() - new Date(dev.lastSeenAt).getTime() > 65 * 60 * 1000);
-        // Preserve lifecycle `status`, gate/master linkage, and update connectivityStatus + authoritative barrierState
+          (incomingAt.getTime() - new Date(dev.lastSeenAt).getTime() > 65 * 60 * 1000);
+        const existingSeenMs = dev.lastSeenAt ? new Date(dev.lastSeenAt).getTime() : 0;
+        const nextSeenAt = incomingAt.getTime() > existingSeenMs ? incomingAt : (dev.lastSeenAt || incomingAt);
+        isMonotonicTele = !dev.lastTelemetryAt || incomingAt.getTime() >= new Date(dev.lastTelemetryAt).getTime();
+
+        // Preserve lifecycle `status`, gate/master linkage, and update connectivityStatus + monotonic barrierState
         dev = await tx.deviceRegistry.update({
           where: { id: dev.id },
           data: {
-            lastSeenAt: incomingAt,
+            lastSeenAt: nextSeenAt,
             connectivityStatus: 'ONLINE',
             firmwareVersion: fwVersion || dev.firmwareVersion,
-            ...(currentState ? {
+            ...(isGenuineBarrierTelemetry && isMonotonicTele ? {
               barrierState: currentState,
               lastTelemetryAt: incomingAt,
             } : {}),
@@ -887,12 +1074,12 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
             thingName: dev.thingName,
             topic,
             payload,
-            status: currentState || (isManifest ? 'MANIFEST' : null),
+            status: currentState || (isManifest ? 'MANIFEST' : 'HEARTBEAT'),
             deviceRegistryId: dev.id,
             receivedAt: incomingAt,
           }
         });
-        if (currentState) {
+        if (isGenuineBarrierTelemetry && isMonotonicTele) {
           dev = await tx.deviceRegistry.update({
             where: { id: dev.id },
             data: { lastTelemetryId: createdTele.id },
@@ -904,10 +1091,11 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
         ignored: false,
         device: dev,
         wasOffline,
+        isMonotonicTele,
         telemetry: createdTele,
         healthCheck: createdHealth,
         isHealthResponse,
-        currentState,
+        currentState: isGenuineBarrierTelemetry ? currentState : null,
         previousState,
       };
     }, { maxWait: 5000, timeout: 20000 });
@@ -919,7 +1107,7 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
     }
 
     const device = heartbeatResult.device!;
-    const { telemetry, healthCheck, currentState, previousState } = heartbeatResult;
+    const { telemetry, healthCheck, currentState, previousState, isMonotonicTele } = heartbeatResult;
 
     if (heartbeatResult.wasOffline) {
       clusterCacheManager.invalidateAll();
@@ -929,6 +1117,14 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
       if (device.gateId) {
         broadcastGateTelemetry(device.gateId).catch(console.warn);
       }
+      broadcastDeviceTelemetryUpdate({
+        deviceId: device.id,
+        thingName: device.thingName,
+        gateId: device.gateId,
+        barrierState: (device as any).barrierState ?? null,
+        packetType: 'HEALTH',
+        telemetryId: healthCheck?.id ?? null,
+      }).catch(console.warn);
       return res.status(201).json({
         message: 'Health diagnostic report recorded in DeviceHealthCheck table',
         healthCheck,
@@ -936,8 +1132,8 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
       });
     }
 
-    // Trigger operational event recording and SMS alert ONLY on real barrier state telemetry
-    if (currentState && telemetry) {
+    // Trigger operational event recording and SMS alert ONLY on real monotonic barrier state telemetry
+    if (currentState && telemetry && isMonotonicTele) {
       if (!previousState || currentState !== previousState) {
         console.log(`⚡ [STATE DETECTED] Gate "${device.thingName}": ${previousState || 'INITIAL'} ➔ ${currentState}`);
 
@@ -953,7 +1149,7 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
           }).catch(err => console.error('Error dispatching gate state alert:', err));
         }
 
-        recordGateTelemetryTransition({
+        await recordGateTelemetryTransition({
           gateId: device.gateId,
           masterId: device.masterId,
           thingName: device.thingName,
@@ -961,12 +1157,22 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
           timestamp: telemetry.receivedAt,
         }).catch(err => console.error('Error recording telemetry event for reports:', err));
       }
+
+      markTelemetryProcessed(device.thingName, currentState, telemetry.id);
     }
 
-    // Broadcast live telemetry update over WebSocket to any connected clients
+    // Broadcast live telemetry update over WebSocket after transition commit
     if (device.gateId) {
       broadcastGateTelemetry(device.gateId).catch(console.warn);
     }
+    broadcastDeviceTelemetryUpdate({
+      deviceId: device.id,
+      thingName: device.thingName,
+      gateId: device.gateId,
+      barrierState: currentState || (device as any).barrierState || null,
+      packetType: isManifest ? 'MANIFEST' : (currentState ? 'TELEMETRY' : 'HEARTBEAT'),
+      telemetryId: telemetry?.id ?? null,
+    }).catch(console.warn);
 
     res.status(201).json({
       message: 'Payload ingested and recorded successfully',
@@ -992,28 +1198,36 @@ router.post(['/telemetry', '/:thingName/telemetry'], async (req, res, next) => {
   }
 });
 
+async function loadAuthorizedAlertDevice(req: any, res: any) {
+  const where = buildLcDeviceWhere(req.params.id);
+  if (!where) {
+    res.status(404).json({ error: 'Device not found' });
+    return null;
+  }
+  const device = await prisma.deviceRegistry.findFirst({
+    where,
+    include: { gate: true },
+  });
+  if (!device) {
+    res.status(404).json({ error: 'Device not found' });
+    return null;
+  }
+  if (device.gateId && !(await ensureGateAccess(req, res, device.gateId))) {
+    return null;
+  }
+  return device;
+}
+
 /**
  * POST /api/v1/devices/:id/test-sms-alert
  * Test endpoint to simulate a gate state change (OPEN or CLOSED) and test DLT SMS dispatch
  */
-router.post('/:id/test-sms-alert', authenticate, async (req, res, next) => {
+router.post('/:id/test-sms-alert', authenticate, requireAnyModule(['devices', 'cluster']), async (req: any, res, next) => {
   try {
-    const param = req.params.id;
-    const where = buildLcDeviceWhere(param);
-    if (!where) {
-      return res.status(404).json({ error: 'Device not found' });
-    }
+    const device = await loadAuthorizedAlertDevice(req, res);
+    if (!device) return;
     const { state = 'OPEN' } = req.body;
     const targetState: 'OPEN' | 'CLOSED' = String(state).toUpperCase() === 'CLOSED' ? 'CLOSED' : 'OPEN';
-
-    const device = await prisma.deviceRegistry.findFirst({
-      where,
-      include: { gate: true }
-    });
-
-    if (!device) {
-      return res.status(404).json({ error: 'Device not found' });
-    }
 
     const alertResult = await checkAndDispatchGateStateAlert({
       deviceId: device.id,
@@ -1038,24 +1252,12 @@ router.post('/:id/test-sms-alert', authenticate, async (req, res, next) => {
  * POST /api/v1/devices/:id/test-email-alert
  * Test endpoint to simulate a gate state change (OPEN or CLOSED) and test Brevo email alert dispatch
  */
-router.post('/:id/test-email-alert', authenticate, async (req, res, next) => {
+router.post('/:id/test-email-alert', authenticate, requireAnyModule(['devices', 'cluster']), async (req: any, res, next) => {
   try {
-    const param = req.params.id;
-    const where = buildLcDeviceWhere(param);
-    if (!where) {
-      return res.status(404).json({ error: 'Device not found' });
-    }
+    const device = await loadAuthorizedAlertDevice(req, res);
+    if (!device) return;
     const { state = 'OPEN' } = req.body;
     const targetState: 'OPEN' | 'CLOSED' = String(state).toUpperCase() === 'CLOSED' ? 'CLOSED' : 'OPEN';
-
-    const device = await prisma.deviceRegistry.findFirst({
-      where,
-      include: { gate: true }
-    });
-
-    if (!device) {
-      return res.status(404).json({ error: 'Device not found' });
-    }
 
     const emailAlertResult = await checkAndDispatchGateStateEmailAlert({
       deviceId: device.id,
@@ -1080,24 +1282,12 @@ router.post('/:id/test-email-alert', authenticate, async (req, res, next) => {
  * POST /api/v1/devices/:id/test-alert
  * Test endpoint to simulate a gate state change and test BOTH DLT SMS and Brevo Email dispatch
  */
-router.post('/:id/test-alert', authenticate, async (req, res, next) => {
+router.post('/:id/test-alert', authenticate, requireAnyModule(['devices', 'cluster']), async (req: any, res, next) => {
   try {
-    const param = req.params.id;
-    const where = buildLcDeviceWhere(param);
-    if (!where) {
-      return res.status(404).json({ error: 'Device not found' });
-    }
+    const device = await loadAuthorizedAlertDevice(req, res);
+    if (!device) return;
     const { state = 'OPEN' } = req.body;
     const targetState: 'OPEN' | 'CLOSED' = String(state).toUpperCase() === 'CLOSED' ? 'CLOSED' : 'OPEN';
-
-    const device = await prisma.deviceRegistry.findFirst({
-      where,
-      include: { gate: true }
-    });
-
-    if (!device) {
-      return res.status(404).json({ error: 'Device not found' });
-    }
 
     const alertResult = await checkAndDispatchGateStateAlert({
       deviceId: device.id,
@@ -1147,26 +1337,50 @@ router.get('/:id', authenticate, async (req, res, next) => {
       return res.status(404).json({ error: 'Device not found in registry' });
     }
 
-    let simPhotoUrl = (device as any).simPhotoUrl;
-    if (device.masterId) {
-      const simEvidence = await prisma.installationEvidence.findFirst({
-        where: { masterId: device.masterId, category: 'SIM_CARD' },
-        orderBy: { updatedAt: 'desc' },
-        select: { imageUrl: true },
-      }).catch(() => null);
-      if (simEvidence?.imageUrl) {
-        simPhotoUrl = simEvidence.imageUrl;
-        if ((device as any).simPhotoUrl !== simEvidence.imageUrl) {
-          prisma.deviceRegistry.update({
-            where: { id: device.id },
-            data: { simPhotoUrl: simEvidence.imageUrl },
-          }).catch(() => {});
-        }
-      }
-    }
+    const [simEvidence, latestAnyTele, latestHealth] = await Promise.all([
+      device.masterId
+        ? prisma.installationEvidence.findFirst({
+            where: { masterId: device.masterId, category: 'SIM_CARD' },
+            orderBy: { updatedAt: 'desc' },
+            select: { imageUrl: true },
+          }).catch(() => null)
+        : Promise.resolve(null),
+      prisma.deviceTelemetry.findFirst({
+        where: {
+          OR: [
+            { thingName: device.thingName },
+            { deviceRegistryId: device.id },
+          ],
+          NOT: [{ topic: { contains: '/request' } }],
+          status: { not: 'REQUESTED' },
+        },
+        orderBy: { receivedAt: 'desc' },
+        select: { receivedAt: true },
+      }).catch(() => null),
+      prisma.deviceHealthCheck.findFirst({
+        where: {
+          OR: [
+            { thingName: device.thingName },
+            { deviceRegistryId: device.id },
+          ],
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true },
+      }).catch(() => null),
+    ]);
+
+    const simPhotoUrl = simEvidence?.imageUrl || (device as any).simPhotoUrl || null;
+    const conn = resolveAuthoritativeDeviceConnectivity(device, Date.now(), [
+      latestAnyTele?.receivedAt,
+      latestHealth?.createdAt,
+    ]);
 
     res.json({
       ...device,
+      connectivityStatus: conn.connectivityStatus,
+      computedStatus: conn.connectivityStatus,
+      isOnline: conn.isOnline,
+      lastSeenAt: conn.lastSeenAt,
       simPhotoUrl,
     });
   } catch (error) {
@@ -1179,7 +1393,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
  * Register or Upsert a device in the RDS Device Registry
  * Can be invoked directly by admin, backend, or webhook from AWS IoT
  */
-router.post('/', authenticate, async (req, res, next) => {
+router.post('/', authenticate, requireModule('devices'), async (req: any, res, next) => {
   try {
     const data = registerDeviceSchema.parse(req.body);
 
@@ -1190,6 +1404,7 @@ router.post('/', authenticate, async (req, res, next) => {
     if (gateId && !masterId) {
       return res.status(400).json({ error: 'Explicit masterId is required when assigning a device to a gate.' });
     }
+    if (gateId && !(await ensureGateAccess(req, res, gateId))) return;
 
     const device = await prisma.deviceRegistry.upsert({
       where: { thingName: data.thingName },
@@ -1200,6 +1415,7 @@ router.post('/', authenticate, async (req, res, next) => {
         deviceType: data.deviceType,
         serialNumber: data.serialNumber || data.thingName,
         status: data.status,
+        connectivityStatus: 'OFFLINE',
         gateId,
         masterId,
         childDeviceId,
@@ -1215,7 +1431,7 @@ router.post('/', authenticate, async (req, res, next) => {
         components: data.components ? (typeof data.components === 'string' ? JSON.parse(data.components) : data.components) : null,
         attributes: data.attributes ? (typeof data.attributes === 'string' ? JSON.parse(data.attributes) : data.attributes) : null,
         metadata: data.metadata ? (typeof data.metadata === 'string' ? JSON.parse(data.metadata) : data.metadata) : null,
-        lastSeenAt: new Date(),
+        lastSeenAt: null,
       },
       update: {
         thingArn: data.thingArn !== undefined ? data.thingArn : undefined,
@@ -1238,7 +1454,6 @@ router.post('/', authenticate, async (req, res, next) => {
         components: data.components ? (typeof data.components === 'string' ? JSON.parse(data.components) : data.components) : undefined,
         attributes: data.attributes ? (typeof data.attributes === 'string' ? JSON.parse(data.attributes) : data.attributes) : undefined,
         metadata: data.metadata ? (typeof data.metadata === 'string' ? JSON.parse(data.metadata) : data.metadata) : undefined,
-        lastSeenAt: new Date(),
       },
       include: {
         gate: true,
@@ -1260,7 +1475,7 @@ router.post('/', authenticate, async (req, res, next) => {
  * PUT /api/v1/devices/:id
  * Update metadata, sensors, components, or status of a registered device
  */
-router.put('/:id', authenticate, async (req, res, next) => {
+router.put('/:id', authenticate, requireModule('devices'), async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid device ID' });
@@ -1274,6 +1489,8 @@ router.put('/:id', authenticate, async (req, res, next) => {
       },
     });
     if (!existing) return res.status(404).json({ error: 'Device not found' });
+    if (existing.gateId && !(await ensureGateAccess(req, res, existing.gateId))) return;
+    if (data.gateId && data.gateId !== existing.gateId && !(await ensureGateAccess(req, res, data.gateId))) return;
 
     let masterId = data.masterId;
     let childDeviceId = data.childDeviceId;
@@ -1381,7 +1598,7 @@ const simUpdateSchema = z.object({
  * Dedicated endpoint for SIM & Connectivity details.
  * SIM Card photograph is strictly mandatory.
  */
-router.put('/:id/sim', authenticate, async (req: any, res, next) => {
+router.put('/:id/sim', authenticate, requireAnyModule(['devices', 'cluster']), async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid device ID' });
@@ -1391,6 +1608,7 @@ router.put('/:id/sim', authenticate, async (req: any, res, next) => {
       include: { master: true },
     });
     if (!existing) return res.status(404).json({ error: 'Device not found' });
+    if (existing.gateId && !(await ensureGateAccess(req, res, existing.gateId))) return;
 
     const data = simUpdateSchema.parse(req.body);
 
@@ -1442,45 +1660,8 @@ router.put('/:id/sim', authenticate, async (req: any, res, next) => {
       },
     });
 
-    // Resolve linked master ID (from existing.masterId, serialNumber, thingName, or gate's primary master)
-    let linkedMasterId = existing.masterId;
-    if (!linkedMasterId && existing.serialNumber) {
-      const masterBySerial = await prisma.masterUnit.findUnique({
-        where: { serialNumber: existing.serialNumber },
-      });
-      if (masterBySerial) {
-        linkedMasterId = masterBySerial.id;
-        await prisma.deviceRegistry.update({
-          where: { id },
-          data: { masterId: linkedMasterId, gateId: masterBySerial.gateId },
-        }).catch(() => {});
-      }
-    }
-    if (!linkedMasterId && existing.thingName) {
-      const masterByThing = await prisma.masterUnit.findUnique({
-        where: { serialNumber: existing.thingName },
-      });
-      if (masterByThing) {
-        linkedMasterId = masterByThing.id;
-        await prisma.deviceRegistry.update({
-          where: { id },
-          data: { masterId: linkedMasterId, gateId: masterByThing.gateId },
-        }).catch(() => {});
-      }
-    }
-    if (!linkedMasterId && existing.gateId) {
-      const gateMaster = await prisma.masterUnit.findFirst({
-        where: { gateId: existing.gateId },
-        orderBy: { masterSequence: 'asc' },
-      });
-      if (gateMaster) {
-        linkedMasterId = gateMaster.id;
-        await prisma.deviceRegistry.update({
-          where: { id },
-          data: { masterId: linkedMasterId },
-        }).catch(() => {});
-      }
-    }
+    // Use explicit masterId binding only (do not silently auto-link unmapped masters by serial or sequence)
+    const linkedMasterId = existing.masterId;
 
     // Also sync to InstallationEvidence (single source of truth, removing duplicates)
     if (linkedMasterId && finalPhotoUrl) {
@@ -1574,13 +1755,14 @@ const rechargeSchema = z.object({
  * POST /api/v1/devices/:id/recharge
  * Quick action to record a SIM plan recharge and extend validity.
  */
-router.post('/:id/recharge', authenticate, async (req, res, next) => {
+router.post('/:id/recharge', authenticate, requireAnyModule(['devices', 'cluster']), async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid device ID' });
 
     const existing = await prisma.deviceRegistry.findUnique({ where: { id } });
     if (!existing) return res.status(404).json({ error: 'Device not found' });
+    if (existing.gateId && !(await ensureGateAccess(req, res, existing.gateId))) return;
 
     const data = rechargeSchema.parse(req.body);
 
@@ -1647,7 +1829,7 @@ function parseFlexibleDate(rawDate?: any): Date | null {
  * Called by edge firmware (via HTTPS from LTE modem), AWS IoT Rules (from topic lc/devices/+/manifest),
  * or provisioning tools to register/update exact hardware and sensor configurations.
  */
-router.post('/manifest', async (req, res, next) => {
+router.post('/manifest', requireDeviceIngestSecret, async (req, res, next) => {
   try {
     const raw = req.body;
 
@@ -1811,7 +1993,7 @@ router.post('/manifest', async (req, res, next) => {
  * Simulates the AWS IoT Lifecycle Rule payload as if received from AWS IoT Core:
  * topic: $aws/events/thing/<thingName>/created
  */
-router.post('/simulate-iot-event', authenticate, async (req, res, next) => {
+router.post('/simulate-iot-event', authenticate, requireModule('devices'), requireAdmin, async (req, res, next) => {
   try {
     const payload = req.body;
     const thingName = payload.thingName || payload.thing_name;

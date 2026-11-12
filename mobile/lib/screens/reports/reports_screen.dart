@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../config.dart';
 import '../../main.dart';
 import '../../utils/app_feedback.dart';
+import '../../utils/user_utils.dart';
 import '../../services/reports_cache_service.dart';
 import '../../utils/file_download_helper.dart';
 
@@ -30,7 +31,7 @@ class ReportsScreen extends StatefulWidget {
 class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserver {
   String _token = '';
   bool _isDeveloper = false;
-  String get _userId => widget.user['id']?.toString() ?? '0';
+  String get _userId => resolveCurrentUserId(user: widget.user);
 
   // 1. Report Type Switcher: count | duration | holistic | complete_log
   String _reportType = 'count';
@@ -116,10 +117,11 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     if (!_isDeveloper && _reportType == 'device_mapping') {
       _reportType = 'count';
     }
-    final now = DateTime.now();
+    final nowIst = DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30));
+    final todayIstCalendar = DateTime(nowIst.year, nowIst.month, nowIst.day);
     _dateRange = DateTimeRange(
-      start: now.subtract(const Duration(days: 7)),
-      end: now,
+      start: todayIstCalendar.subtract(const Duration(days: 7)),
+      end: todayIstCalendar,
     );
     _loadTokenAndFetch();
     _startPollingTimer();
@@ -195,6 +197,22 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     return '$y-$m-$day';
   }
 
+  void _invalidateCachedTabSnapshots() {
+    _countAnalytics = null;
+    _cycleAnalytics = null;
+    _holisticAnalytics = null;
+    _records = [];
+    _cursor = null;
+    _metrics = {
+      'totalOperations': 0,
+      'totalDurationFormatted': '0s',
+      'avgDurationFormatted': '0s',
+      'extendedDelaysCount': 0,
+      'currentlyOpenCount': 0,
+      'reportingGatesCount': 0,
+    };
+  }
+
   void _applyDatePreset(String preset) {
     setState(() {
       _activePreset = preset;
@@ -211,6 +229,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       } else if (preset == 'month') {
         _dateRange = DateTimeRange(start: DateTime(now.year, now.month, 1), end: now);
       }
+      _invalidateCachedTabSnapshots();
     });
     _triggerReportFetch();
   }
@@ -454,6 +473,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                 _selectedGateIds.addAll(allGateIds);
               }
             }
+            _invalidateCachedTabSnapshots();
           });
           _triggerReportFetch(forceReload: true);
         }
@@ -863,7 +883,9 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                             ),
                             onPressed: () {
                               Navigator.pop(ctx);
-                              setState(() {});
+                              setState(() {
+                                _invalidateCachedTabSnapshots();
+                              });
                               _triggerReportFetch();
                             },
                             child: Text('Apply Selection (${_selectedGateIds.length} Gates)', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
@@ -1009,11 +1031,12 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       if (_selectedClusterIds.isNotEmpty) queryParams['scopeGroupIds'] = _selectedClusterIds.join(',');
       if (_selectedGateIds.isNotEmpty) {
         queryParams['gateIds'] = _selectedGateIds.join(',');
-      } else {
+      } else if (_isDeveloper) {
         queryParams['gateIds'] = 'all';
       }
       if (_filterStatus != 'ALL') queryParams['status'] = _filterStatus;
       if (_filterShift != 'ALL') queryParams['shift'] = _filterShift;
+      if (_searchQuery.trim().isNotEmpty) queryParams['search'] = _searchQuery.trim();
 
       final uri = Uri.parse('$baseUrl/reports/export').replace(queryParameters: queryParams);
       final res = await http.get(uri, headers: _headers);
@@ -1488,7 +1511,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
           : RefreshIndicator(
               onRefresh: () => _triggerReportFetch(forceReload: true),
               child: ListView(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
                 children: [
                   // 1. Report Type Selector
                   _buildReportTypeSelector(),
@@ -1555,6 +1578,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                     setState(() {
                                       _dateRange = picked;
                                       _activePreset = 'custom';
+                                      _invalidateCachedTabSnapshots();
                                     });
                                     _triggerReportFetch();
                                   }
@@ -1860,9 +1884,12 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   List<Widget> _buildDatePartitionedLogCards() {
     final Map<String, List<dynamic>> grouped = {};
     for (final rec in _records) {
-      String dateKey = (rec['openedDate'] ?? '').toString();
+      String dateKey = (rec['openedDateIst'] ?? rec['openedDate'] ?? '').toString().trim();
       if (dateKey.isEmpty && rec['openedAt'] != null) {
-        dateKey = rec['openedAt'].toString().split('T').first;
+        final istDt = OperationalRecord.parseToIst(rec['openedAt']);
+        if (istDt != null) {
+          dateKey = OperationalRecord.formatIstDate(istDt);
+        }
       }
       if (dateKey.isEmpty) dateKey = 'Other / Incomplete';
       grouped.putIfAbsent(dateKey, () => []).add(rec);
@@ -1942,8 +1969,10 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     final gateReports = (_cycleAnalytics!['gateReports'] as List?) ?? [];
 
     final totalCycles = overall['totalCycles'] ?? 0;
-    final avgClosingFormatted = overall['avgClosingFormatted'] ?? '—';
-    final avgOpeningFormatted = overall['avgOpeningFormatted'] ?? '—';
+    final avgOpenFormatted =
+        overall['avgOpenFormatted'] ?? overall['avgOpeningFormatted'] ?? '—';
+    final avgClosedFormatted =
+        overall['avgClosedFormatted'] ?? overall['avgClosingFormatted'] ?? '—';
     final reportingGatesCount = overall['reportingGatesCount'] ?? gateReports.length;
 
     final displayedReports = _selectedCycleGateId == null
@@ -1967,11 +1996,11 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
             const SizedBox(width: 8),
             Expanded(
               child: _buildCycleKpiCard(
-                'Avg Closing Time',
-                '$avgClosingFormatted',
+                'Avg Open Time',
+                '$avgOpenFormatted',
                 Icons.hourglass_bottom_rounded,
                 const Color(0xFF2563EB),
-                'Mean closure duration',
+                'Mean open cycle duration',
               ),
             ),
           ],
@@ -1981,11 +2010,11 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
           children: [
             Expanded(
               child: _buildCycleKpiCard(
-                'Avg Opening Time',
-                '$avgOpeningFormatted',
+                'Avg Closed Time',
+                '$avgClosedFormatted',
                 Icons.schedule_rounded,
                 const Color(0xFF059669),
-                'Road clearance interval',
+                'Mean closed interval',
               ),
             ),
             const SizedBox(width: 8),
@@ -2181,7 +2210,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                             Text(d['dateFormatted'] ?? d['dateStr'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12), overflow: TextOverflow.ellipsis),
                             const SizedBox(height: 2),
                             Text(
-                              'Closed: ${d['totalClosedFormatted'] ?? '0s'} • Open: ${d['totalOpenFormatted'] ?? '0s'}',
+                              'Open: ${d['totalOpenFormatted'] ?? '0s'} • Closed: ${d['totalClosedFormatted'] ?? '0s'}',
                               style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600),
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -2204,7 +2233,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            'Avg close: ${d['avgClosingFormatted'] ?? '—'}',
+                            'Avg open: ${d['avgOpenFormatted'] ?? d['avgOpeningFormatted'] ?? '—'}',
                             style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
                           ),
                         ],
@@ -2247,8 +2276,22 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       statusBg = const Color(0xFFFEE2E2);
     }
 
-    final openedAtStr = rec['openedAt'] != null ? rec['openedAt'].toString().split('T').last.split('.').first : '-';
-    final closedAtStr = rec['closedAt'] != null ? rec['closedAt'].toString().split('T').last.split('.').first : 'OPEN';
+    String openedAtStr = (rec['openedTimeIst'] ?? '').toString().trim();
+    if (openedAtStr.isEmpty && rec['openedAt'] != null) {
+      final istOpened = OperationalRecord.parseToIst(rec['openedAt']);
+      openedAtStr = istOpened != null ? OperationalRecord.formatIstTime(istOpened) : '-';
+    }
+    if (openedAtStr.isEmpty) openedAtStr = '-';
+
+    String closedAtStr = (rec['closedTimeIst'] ?? '').toString().trim();
+    if (closedAtStr.isEmpty) {
+      if (rec['closedAt'] != null) {
+        final istClosed = OperationalRecord.parseToIst(rec['closedAt']);
+        closedAtStr = istClosed != null ? OperationalRecord.formatIstTime(istClosed) : 'OPEN';
+      } else {
+        closedAtStr = 'OPEN';
+      }
+    }
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -2449,7 +2492,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         // Summary KPI row
         Row(
           children: [
-            Expanded(child: _buildCycleKpiCard('Total Ops', '$totalOps', Icons.alt_route_rounded, const Color(0xFF2563EB), 'Combined events')),
+            Expanded(child: _buildCycleKpiCard('Total Ops', '$totalOps', Icons.alt_route_rounded, const Color(0xFF2563EB), 'Logged gate cycles')),
             const SizedBox(width: 8),
             Expanded(child: _buildCycleKpiCard('Openings', '$totalOpen', Icons.lock_open_rounded, const Color(0xFF10B981), 'Barrier opens')),
           ],
