@@ -13,6 +13,7 @@ import 'profile_screen.dart';
 import 'duty_roster_screen.dart';
 import 'attendance/face_enrollment_screen.dart';
 import 'attendance/shift_attendance_screen.dart';
+import 'attendance/supervisor_attendance_screen.dart';
 
 import 'device_registry/device_registry_screen.dart';
 import 'lc_gates/lc_gates_screen.dart';
@@ -1827,6 +1828,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 },
               ),
             ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              child: ListTile(
+                dense: true,
+                tileColor: Colors.transparent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                title: const Text(
+                  'Gate Staffing Monitor',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w500,
+                    color: Color(0xFF1E293B),
+                    fontSize: 13.5,
+                  ),
+                ),
+                leading: const Icon(
+                  Icons.grid_view_rounded,
+                  color: Color(0xFF64748B),
+                ),
+                onTap: () async {
+                  final nav = Navigator.of(context);
+                  nav.pop();
+                  final token = await _getToken();
+                  if (!mounted) return;
+                  await nav.push(
+                    MaterialPageRoute(
+                      builder: (ctx) => SupervisorAttendanceScreen(
+                        user: widget.user,
+                        token: token,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
             ..._systemModules.where((m) {
               final slug = (m['slug'] ?? '').toString().toLowerCase();
               final name = (m['name'] ?? '').toString().toLowerCase();
@@ -2190,6 +2225,61 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
             ),
+            if (roleName.toLowerCase().contains('restkeeper') || roleName.toLowerCase().contains('pwi') || roleName.toLowerCase().contains('cpwi') || roleName.toLowerCase().contains('den') || roleName.toLowerCase().contains('admin')) ...[
+              const SizedBox(height: 10),
+              InkWell(
+                onTap: () async {
+                  final nav = Navigator.of(context);
+                  final token = await _getToken();
+                  if (!mounted) return;
+                  await nav.push(
+                    MaterialPageRoute(builder: (_) => SupervisorAttendanceScreen(user: widget.user, token: token)),
+                  );
+                },
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFCBD5E1)),
+                    boxShadow: [
+                      BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 6, offset: const Offset(0, 2)),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEFF6FF),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.grid_view_rounded, color: Color(0xFF2563EB), size: 22),
+                      ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Station Gate Staffing Monitor',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Color(0xFF0F172A)),
+                            ),
+                            SizedBox(height: 2),
+                            Text(
+                              'Live gate attendance matrix & 1-tap manual approvals',
+                              style: TextStyle(fontSize: 11.5, color: Color(0xFF64748B)),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: AppColors.primary),
+                    ],
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
 
             // Top KPI Metric Cards Grid (6 Metric Tiles)
