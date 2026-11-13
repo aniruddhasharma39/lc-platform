@@ -47,6 +47,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
   int? _selectedStationId;
   final Set<int> _selectedGateIds = {};
 
+  // Railway Safety & Medical Qualifications (PME & RC)
+  DateTime? _pmeDate;
+  DateTime? _pmeExpiryDate;
+  final _pmeCertCtrl = TextEditingController();
+
+  DateTime? _rcDate;
+  DateTime? _rcExpiryDate;
+  final _rcInstituteCtrl = TextEditingController();
+
   // Official ID Card Document
   XFile? _idCardFile;
   final ImagePicker _picker = ImagePicker();
@@ -89,6 +98,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _empIdCtrl.dispose();
     _passwordCtrl.dispose();
     _confirmPasswordCtrl.dispose();
+    _pmeCertCtrl.dispose();
+    _rcInstituteCtrl.dispose();
     super.dispose();
   }
 
@@ -194,6 +205,116 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   bool get _isGateman {
     return _currentDesigObj?['name'] == 'Gateman';
+  }
+
+  bool get _isRestkeeper {
+    final name = _currentDesigObj?['name']?.toString().toLowerCase() ?? '';
+    return name.contains('restkeeper') || name.contains('rest keeper');
+  }
+
+  bool get _needsRailwayMedicalAndCourse {
+    return _isGateman || _isRestkeeper;
+  }
+
+  String _formatDate(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$y-$m-$day';
+  }
+
+  Future<void> _pickPmeDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _pmeDate ?? DateTime.now(),
+      firstDate: DateTime(2010),
+      lastDate: DateTime.now(),
+      helpText: 'SELECT PME MEDICAL EXAM DATE',
+    );
+    if (picked != null && mounted) {
+      setState(() {
+        _pmeDate = picked;
+        // PME mandatory every 4 years
+        _pmeExpiryDate = DateTime(picked.year + 4, picked.month, picked.day);
+      });
+    }
+  }
+
+  Future<void> _pickRcDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _rcDate ?? DateTime.now(),
+      firstDate: DateTime(2010),
+      lastDate: DateTime.now(),
+      helpText: 'SELECT REFRESHER COURSE (RC) DATE',
+    );
+    if (picked != null && mounted) {
+      setState(() {
+        _rcDate = picked;
+        // RC mandatory every 2 years
+        _rcExpiryDate = DateTime(picked.year + 2, picked.month, picked.day);
+      });
+    }
+  }
+
+  Widget _buildValidityBadge(DateTime? expiry) {
+    if (expiry == null) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF1F5F9),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: const Color(0xFFCBD5E1)),
+        ),
+        child: const Text('NOT SET', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF64748B))),
+      );
+    }
+    final now = DateTime.now();
+    final isExpired = expiry.isBefore(now);
+    final daysRemaining = expiry.difference(now).inDays;
+    final isDueSoon = !isExpired && daysRemaining <= 30;
+
+    final Color badgeColor;
+    final String label;
+    final IconData icon;
+
+    if (isExpired) {
+      badgeColor = const Color(0xFFDC2626);
+      label = 'EXPIRED';
+      icon = Icons.cancel;
+    } else if (isDueSoon) {
+      badgeColor = const Color(0xFFD97706);
+      label = 'DUE SOON (${daysRemaining}d)';
+      icon = Icons.warning_amber_rounded;
+    } else {
+      badgeColor = const Color(0xFF059669);
+      label = 'VALID';
+      icon = Icons.check_circle;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: badgeColor.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: badgeColor.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: badgeColor),
+          const SizedBox(width: 3),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.bold,
+              color: badgeColor,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _pickIdCard(ImageSource source) async {
@@ -411,6 +532,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
         'stationId': _selectedStationId,
         'gateIds': _selectedGateIds.toList(),
         'declarationConfirmed': true,
+        if (_pmeDate != null) 'pmeDate': _formatDate(_pmeDate!),
+        if (_pmeExpiryDate != null) 'pmeExpiryDate': _formatDate(_pmeExpiryDate!),
+        if (_pmeCertCtrl.text.trim().isNotEmpty) 'pmeCertificateNo': _pmeCertCtrl.text.trim(),
+        if (_rcDate != null) 'rcDate': _formatDate(_rcDate!),
+        if (_rcExpiryDate != null) 'rcExpiryDate': _formatDate(_rcExpiryDate!),
+        if (_rcInstituteCtrl.text.trim().isNotEmpty) 'rcInstitute': _rcInstituteCtrl.text.trim(),
       };
 
       request.fields['data'] = json.encode(registrationData);
@@ -421,6 +548,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
       if (_selectedStationId != null) request.fields['stationId'] = _selectedStationId.toString();
       request.fields['declarationConfirmed'] = 'true';
       request.fields['formId'] = '1';
+
+      if (_pmeDate != null) {
+        request.fields['pmeDate'] = _formatDate(_pmeDate!);
+        request.fields['pmeExpiryDate'] = _formatDate(_pmeExpiryDate!);
+      }
+      if (_pmeCertCtrl.text.trim().isNotEmpty) {
+        request.fields['pmeCertificateNo'] = _pmeCertCtrl.text.trim();
+      }
+      if (_rcDate != null) {
+        request.fields['rcDate'] = _formatDate(_rcDate!);
+        request.fields['rcExpiryDate'] = _formatDate(_rcExpiryDate!);
+      }
+      if (_rcInstituteCtrl.text.trim().isNotEmpty) {
+        request.fields['rcInstitute'] = _rcInstituteCtrl.text.trim();
+      }
 
       for (final gid in _selectedGateIds) {
         request.fields['gateIds'] = gid.toString();
@@ -1028,11 +1170,44 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
                                 // Gates List
                                 if (_selectedStationId != null) ...[
-                                  Text(
-                                    _isGateman
-                                        ? 'Select Exactly ONE Assigned LC Gate *'
-                                        : 'Select Assigned LC Gate(s) *',
-                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF334155)),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        _isGateman
+                                            ? 'Select Exactly ONE Assigned LC Gate *'
+                                            : (_isRestkeeper
+                                                ? 'Station Gates for Rounds & Roster *'
+                                                : 'Select Assigned LC Gate(s) *'),
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF334155)),
+                                      ),
+                                      if (!_isGateman && _availableGates.isNotEmpty)
+                                        TextButton.icon(
+                                          style: TextButton.styleFrom(visualDensity: VisualDensity.compact, padding: EdgeInsets.zero),
+                                          icon: Icon(
+                                            _selectedGateIds.length == _availableGates.length ? Icons.deselect : Icons.select_all,
+                                            size: 15,
+                                          ),
+                                          label: Text(
+                                            _selectedGateIds.length == _availableGates.length
+                                                ? 'Deselect All'
+                                                : 'Select All (${_availableGates.length})',
+                                            style: const TextStyle(fontSize: 11),
+                                          ),
+                                          onPressed: () {
+                                            setState(() {
+                                              if (_selectedGateIds.length == _availableGates.length) {
+                                                _selectedGateIds.clear();
+                                              } else {
+                                                _selectedGateIds.clear();
+                                                for (final g in _availableGates) {
+                                                  if (g['id'] is int) _selectedGateIds.add(g['id'] as int);
+                                                }
+                                              }
+                                            });
+                                          },
+                                        ),
+                                    ],
                                   ),
                                   const SizedBox(height: 6),
                                   if (_availableGates.isEmpty)
@@ -1080,7 +1255,204 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         const SizedBox(height: 16),
                       ],
 
-                      // 5. Verification Notice & Declaration (Section 6)
+                      // 5. Railway Safety & Medical Qualifications (PME & RC)
+                      if (_needsRailwayMedicalAndCourse) ...[
+                        Card(
+                          elevation: 1,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Row(
+                                  children: [
+                                    Icon(Icons.medical_services_outlined, color: AppColors.primary, size: 18),
+                                    SizedBox(width: 8),
+                                    Text(
+                                      '5. Railway Safety & Medical Records',
+                                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Container(
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFF8FAFC),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                                  ),
+                                  child: const Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Icon(Icons.info_outline, size: 15, color: Color(0xFF0284C7)),
+                                      SizedBox(width: 6),
+                                      Expanded(
+                                        child: Text(
+                                          'Indian Railways Safety Rule: Periodical Medical Examination (PME) is mandatory every 4 years. Refresher Course (RC) is mandatory every 2 years.',
+                                          style: TextStyle(fontSize: 11, color: Color(0xFF334155), height: 1.3),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(height: 14),
+
+                                // PME Section
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: const Color(0xFFCBD5E1)),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text(
+                                            'PME (Periodical Medical Exam)',
+                                            style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                          ),
+                                          _buildValidityBadge(_pmeExpiryDate),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 8),
+                                      InkWell(
+                                        onTap: _pickPmeDate,
+                                        borderRadius: BorderRadius.circular(6),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFF1F5F9),
+                                            borderRadius: BorderRadius.circular(6),
+                                            border: Border.all(color: const Color(0xFFCBD5E1)),
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              const Icon(Icons.calendar_month_outlined, size: 16, color: AppColors.primary),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  _pmeDate != null
+                                                      ? 'Exam Date: ${_formatDate(_pmeDate!)}'
+                                                      : 'Tap to select PME Exam Date',
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    color: _pmeDate != null ? const Color(0xFF0F172A) : const Color(0xFF64748B),
+                                                    fontWeight: _pmeDate != null ? FontWeight.w600 : FontWeight.normal,
+                                                  ),
+                                                ),
+                                              ),
+                                              if (_pmeExpiryDate != null)
+                                                Text(
+                                                  'Expires: ${_formatDate(_pmeExpiryDate!)} (+4y)',
+                                                  style: const TextStyle(fontSize: 11, color: Color(0xFF0369A1), fontWeight: FontWeight.bold),
+                                                ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      TextField(
+                                        controller: _pmeCertCtrl,
+                                        decoration: const InputDecoration(
+                                          labelText: 'PME Certificate / Fit Memo No. (Optional)',
+                                          hintText: 'e.g. PME/2024/0491',
+                                          isDense: true,
+                                          border: OutlineInputBorder(),
+                                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                        ),
+                                        style: const TextStyle(fontSize: 12),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+
+                                // RC Section
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: const Color(0xFFCBD5E1)),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text(
+                                            'RC (Refresher Course)',
+                                            style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                          ),
+                                          _buildValidityBadge(_rcExpiryDate),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 8),
+                                      InkWell(
+                                        onTap: _pickRcDate,
+                                        borderRadius: BorderRadius.circular(6),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFF1F5F9),
+                                            borderRadius: BorderRadius.circular(6),
+                                            border: Border.all(color: const Color(0xFFCBD5E1)),
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              const Icon(Icons.school_outlined, size: 16, color: AppColors.primary),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  _rcDate != null
+                                                      ? 'Course Date: ${_formatDate(_rcDate!)}'
+                                                      : 'Tap to select Refresher Course Date',
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    color: _rcDate != null ? const Color(0xFF0F172A) : const Color(0xFF64748B),
+                                                    fontWeight: _rcDate != null ? FontWeight.w600 : FontWeight.normal,
+                                                  ),
+                                                ),
+                                              ),
+                                              if (_rcExpiryDate != null)
+                                                Text(
+                                                  'Expires: ${_formatDate(_rcExpiryDate!)} (+2y)',
+                                                  style: const TextStyle(fontSize: 11, color: Color(0xFF0369A1), fontWeight: FontWeight.bold),
+                                                ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      TextField(
+                                        controller: _rcInstituteCtrl,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Training Center / Institute (Optional)',
+                                          hintText: 'e.g. ZRTI Bhusawal / STC Kota',
+                                          isDense: true,
+                                          border: OutlineInputBorder(),
+                                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                        ),
+                                        style: const TextStyle(fontSize: 12),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+
+                      // 6. Verification Notice & Declaration (Section 6)
                       Container(
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
