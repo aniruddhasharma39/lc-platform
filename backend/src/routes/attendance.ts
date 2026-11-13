@@ -494,7 +494,7 @@ router.post('/mark', authenticate, upload.single('image'), async (req: AuthReque
         return res.status(401).json({
           success: false,
           code: 'PROXY_FACE_DETECTED',
-          error: `Biometric verification failed: The face in front of the camera belongs to another registered employee (${searchRes.externalImageId}). Proxy attendance is strictly prohibited under Indian Railways safety rules.`,
+          error: 'Biometric verification failed: Face does not match the registered profile for this account. Proxy attendance is strictly prohibited under Indian Railways safety rules.',
         });
       }
     }
@@ -519,7 +519,7 @@ router.post('/mark', authenticate, upload.single('image'), async (req: AuthReque
         code: 'FACE_NOT_MATCHED',
         similarityScore: Math.round(similarityScore),
         threshold: DEFAULT_SIMILARITY_THRESHOLD,
-        error: `Facial verification failed: Your face does not match the registered profile for ${user.fullName} (${user.employeeId}). Please ensure good lighting and face the camera directly.`,
+        error: 'Facial verification failed: Face does not match the registered profile. Please ensure proper lighting and face the camera directly.',
       });
     }
 
