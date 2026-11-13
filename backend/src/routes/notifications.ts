@@ -320,6 +320,96 @@ async function buildUserNotifications(
     }
   }
 
+  // P2 — HIGH: Duty Roster Shift Assignments (for assigned Gateman)
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  const upcomingDuties = await prisma.gateDutyRoster.findMany({
+    where: {
+      gatemanUserId: user.id,
+      date: { gte: todayStr }
+    },
+    include: {
+      gate: { select: { lcNumber: true, locationName: true } }
+    },
+    orderBy: [{ date: 'asc' }, { startTime: 'asc' }],
+    take: 5
+  });
+
+  for (const duty of upcomingDuties) {
+    const notifId = `roster_duty_${duty.id}_${duty.date}`;
+    if (!dismissedSet.has(notifId) && !readSet.has(notifId)) {
+      notifications.push({
+        id: notifId,
+        type: 'system',
+        priority: 'P2',
+        priorityLabel: 'HIGH',
+        priorityRank: 2,
+        title: 'Gate Duty Roster Assigned',
+        message: `You are scheduled at Gate ${duty.gate.lcNumber} for ${duty.shiftName} (${duty.startTime} - ${duty.endTime}) on ${duty.date}.`,
+        createdAt: duty.createdAt.toISOString(),
+        isRead: false,
+        read: false,
+        targetModule: 'lc-gates',
+      });
+    }
+  }
+
+  // P1/P2 — PME & RC Medical and Course Expiry Alerts
+  if (fullUser) {
+    const now = new Date();
+    // PME alert for user
+    if (fullUser.pmeExpiryDate) {
+      const pmeDiffDays = Math.ceil((new Date(fullUser.pmeExpiryDate).getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      if (pmeDiffDays <= 30) {
+        const pmeNotifId = `pme_alert_${fullUser.id}_${fullUser.pmeExpiryDate.toISOString().split('T')[0]}`;
+        if (!dismissedSet.has(pmeNotifId) && !readSet.has(pmeNotifId)) {
+          const isExpired = pmeDiffDays < 0;
+          notifications.push({
+            id: pmeNotifId,
+            type: 'system',
+            priority: isExpired ? 'P1' : 'P2',
+            priorityLabel: isExpired ? 'CRITICAL' : 'HIGH',
+            priorityRank: isExpired ? 1 : 2,
+            title: isExpired ? 'PME Medical Exam EXPIRED' : 'PME Medical Exam Due Soon',
+            message: isExpired
+              ? `Your Periodical Medical Examination expired ${Math.abs(pmeDiffDays)} days ago. Immediate re-examination required.`
+              : `Your Periodical Medical Examination is due for renewal in ${pmeDiffDays} days.`,
+            createdAt: now.toISOString(),
+            isRead: false,
+            read: false,
+            targetModule: 'profile',
+          });
+        }
+      }
+    }
+
+    // RC alert for user
+    if (fullUser.rcExpiryDate) {
+      const rcDiffDays = Math.ceil((new Date(fullUser.rcExpiryDate).getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      if (rcDiffDays <= 30) {
+        const rcNotifId = `rc_alert_${fullUser.id}_${fullUser.rcExpiryDate.toISOString().split('T')[0]}`;
+        if (!dismissedSet.has(rcNotifId) && !readSet.has(rcNotifId)) {
+          const isExpired = rcDiffDays < 0;
+          notifications.push({
+            id: rcNotifId,
+            type: 'system',
+            priority: isExpired ? 'P1' : 'P2',
+            priorityLabel: isExpired ? 'CRITICAL' : 'HIGH',
+            priorityRank: isExpired ? 1 : 2,
+            title: isExpired ? 'Refresher Course EXPIRED' : 'Refresher Course Due Soon',
+            message: isExpired
+              ? `Your Refresher Course expired ${Math.abs(rcDiffDays)} days ago. Re-certification required.`
+              : `Your Refresher Course is due for renewal in ${rcDiffDays} days.`,
+            createdAt: now.toISOString(),
+            isRead: false,
+            read: false,
+            targetModule: 'profile',
+          });
+        }
+      }
+    }
+  }
+
   // P4 — SETUP (Developer / System Admin ONLY): Gate Creation & Hardware Linkages
   if (isDev) {
     const [gates, masters, childDevices] = await Promise.all([

@@ -964,3 +964,108 @@ export async function dispatchNewRegistrationApproverEmails(params: {
   console.log(`✉️ [REGISTRATION APPROVER EMAIL] Notified ${sentCount}/${approvers.length} authorized approver(s) for request #${request.id}.`);
   return { dispatched: sentCount, totalApprovers: approvers.length };
 }
+
+
+export interface DutyRosterEmailParams {
+  toEmail: string;
+  recipientName: string;
+  gateNumber: string;
+  stationName: string;
+  shiftName: string;
+  startTime: string;
+  endTime: string;
+  date: string;
+  restkeeperName?: string;
+  pmeStatusText?: string;
+  rcStatusText?: string;
+}
+
+export async function sendDutyRosterEmail(params: DutyRosterEmailParams): Promise<SendEmailResult> {
+  const subject = `[DUTY ROSTER] Assigned to ${params.gateNumber} (${params.shiftName}) on ${params.date}`;
+  const textContent = `Dear ${params.recipientName}, you are assigned for duty at ${params.gateNumber} (${params.stationName}) for ${params.shiftName} (${params.startTime} - ${params.endTime}) on ${params.date}. Please report on time.`;
+  const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: 'Segoe UI', Arial, sans-serif; background-color: #f8fafc; color: #1e293b; margin: 0; padding: 20px; }
+    .card { background-color: #ffffff; max-width: 600px; margin: 0 auto; border-radius: 12px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+    .header { background: linear-gradient(135deg, #0b3c7a 0%, #0e9aa7 100%); color: #ffffff; padding: 24px; text-align: center; }
+    .header h1 { margin: 0; font-size: 20px; letter-spacing: 0.5px; }
+    .header p { margin: 6px 0 0; font-size: 13px; opacity: 0.9; }
+    .content { padding: 24px; }
+    .greeting { font-size: 15px; font-weight: 600; margin-bottom: 16px; color: #0f172a; }
+    .details-box { background-color: #f1f5f9; border-radius: 8px; padding: 16px; margin: 16px 0; border-left: 4px solid #0b3c7a; }
+    .detail-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #e2e8f0; font-size: 13.5px; }
+    .detail-row:last-child { border-bottom: none; }
+    .detail-label { color: #64748b; font-weight: 600; }
+    .detail-value { color: #0f172a; font-weight: bold; }
+    .shift-highlight { background-color: #eff6ff; border: 1px solid #bfdbfe; color: #1d4ed8; padding: 12px; border-radius: 8px; text-align: center; font-size: 15px; font-weight: bold; margin: 16px 0; }
+    .footer { background-color: #f8fafc; padding: 16px 24px; font-size: 11.5px; color: #94a3b8; text-align: center; border-top: 1px solid #e2e8f0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <h1>INDIAN RAILWAYS LC MONITORING</h1>
+      <p>Official Gate Duty Roster Notification</p>
+    </div>
+    <div class="content">
+      <div class="greeting">Dear ${params.recipientName},</div>
+      <p style="font-size: 13.5px; line-height: 1.5; color: #334155;">
+        You have been allocated for duty by the Restkeeper for the following Level Crossing shift. Please review your duty details below and ensure timely reporting.
+      </p>
+      
+      <div class="shift-highlight">
+        🚦 ${params.gateNumber} &bull; ${params.shiftName} (${params.startTime} - ${params.endTime})
+      </div>
+
+      <div class="details-box">
+        <div class="detail-row">
+          <span class="detail-label">Duty Date:</span>
+          <span class="detail-value">${params.date}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Level Crossing:</span>
+          <span class="detail-value">${params.gateNumber}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Station Jurisdiction:</span>
+          <span class="detail-value">${params.stationName}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Shift Name:</span>
+          <span class="detail-value">${params.shiftName}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Shift Hours:</span>
+          <span class="detail-value">${params.startTime} to ${params.endTime}</span>
+        </div>
+        ${params.restkeeperName ? `
+        <div class="detail-row">
+          <span class="detail-label">Rostered By:</span>
+          <span class="detail-value">${params.restkeeperName} (Restkeeper)</span>
+        </div>` : ''}
+      </div>
+
+      <p style="font-size: 12.5px; color: #64748b; margin-top: 16px; line-height: 1.4;">
+        ⚠️ <strong>Safety Notice:</strong> Ensure full exchange of Private Numbers (PN) with the Station Master. Verify boom clearance, warning bell audio, and road signals at shift commencement.
+      </p>
+    </div>
+    <div class="footer">
+      Automated dispatch from Indian Railways LC Platform &bull; Do not reply to this email.
+    </div>
+  </div>
+</body>
+</html>
+  `;
+
+  return sendEmail({
+    toEmail: params.toEmail,
+    toName: params.recipientName,
+    subject,
+    textContent,
+    htmlContent,
+  });
+}

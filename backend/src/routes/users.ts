@@ -17,6 +17,7 @@ import {
   verifyUserManagementAccess,
 } from '../lib/railwayHierarchy';
 import { sendRegistrationApprovalEmail, sendRegistrationRejectionEmail } from '../lib/emailService';
+import { getExamCompliance } from './roster';
 
 const router = Router();
 
@@ -156,10 +157,18 @@ router.get('/', requireModule('manage-users'), async (req: any, res, next) => {
         hasConflict: conflictReasons.length > 0,
         conflictReasons,
         allowedRoleNames: getAllowedRoleNamesForApprover(viewer),
+        pmeStatus: getExamCompliance(r.pmeExpiryDate),
+        rcStatus: getExamCompliance(r.rcExpiryDate),
       });
     }
     
-    res.json({ users, pendingRequests: visiblePendingRequests });
+    const enrichedUsers = users.map(u => ({
+      ...u,
+      pmeStatus: getExamCompliance(u.pmeExpiryDate),
+      rcStatus: getExamCompliance(u.rcExpiryDate),
+    }));
+
+    res.json({ users: enrichedUsers, pendingRequests: visiblePendingRequests });
   } catch (error) {
     next(error);
   }
@@ -353,6 +362,12 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
             ? await bcrypt.hash(formData.password.trim(), 10)
             : await bcrypt.hash('123456', 10),
           status: 'APPROVED',
+          pmeDate: request.pmeDate || (formData.pmeDate ? new Date(formData.pmeDate) : null),
+          pmeExpiryDate: request.pmeExpiryDate || (formData.pmeExpiryDate ? new Date(formData.pmeExpiryDate) : null),
+          pmeCertificateNo: request.pmeCertificateNo || formData.pmeCertificateNo || null,
+          rcDate: request.rcDate || (formData.rcDate ? new Date(formData.rcDate) : null),
+          rcExpiryDate: request.rcExpiryDate || (formData.rcExpiryDate ? new Date(formData.rcExpiryDate) : null),
+          rcInstitute: request.rcInstitute || formData.rcInstitute || null,
           metadata: JSON.stringify(mappedMetadata)
         },
         include: {

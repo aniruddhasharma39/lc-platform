@@ -566,6 +566,44 @@ router.post('/register', upload.any(), async (req, res, next) => {
       dataToStore.password = await bcrypt.hash(dataToStore.password, 10);
     }
 
+    // Parse PME & RC medical and training qualifications
+    let pmeDate: Date | null = null;
+    let pmeExpiryDate: Date | null = null;
+    let pmeCertificateNo: string | null = null;
+    let rcDate: Date | null = null;
+    let rcExpiryDate: Date | null = null;
+    let rcInstitute: string | null = null;
+
+    const rawPmeDate = parsedData.pmeDate || req.body.pmeDate;
+    if (rawPmeDate) {
+      const parsed = new Date(rawPmeDate);
+      if (!isNaN(parsed.getTime())) {
+        pmeDate = parsed;
+        const exp = new Date(parsed);
+        exp.setFullYear(exp.getFullYear() + 4); // Railway PME valid for 4 years
+        pmeExpiryDate = exp;
+      }
+    }
+    const rawPmeCert = parsedData.pmeCertificateNo || req.body.pmeCertificateNo;
+    if (rawPmeCert) {
+      pmeCertificateNo = String(rawPmeCert).trim();
+    }
+
+    const rawRcDate = parsedData.rcDate || req.body.rcDate;
+    if (rawRcDate) {
+      const parsed = new Date(rawRcDate);
+      if (!isNaN(parsed.getTime())) {
+        rcDate = parsed;
+        const exp = new Date(parsed);
+        exp.setFullYear(exp.getFullYear() + 2); // Railway Refresher Course valid for 2 years
+        rcExpiryDate = exp;
+      }
+    }
+    const rawRcInst = parsedData.rcInstitute || req.body.rcInstitute;
+    if (rawRcInst) {
+      rcInstitute = String(rawRcInst).trim();
+    }
+
     const request = await prisma.registrationRequest.create({
       data: {
         formId,
@@ -579,6 +617,12 @@ router.post('/register', upload.any(), async (req, res, next) => {
         gateIds: gateIds,
         idCardUrl: idCardUploadedUrl || null,
         declarationConfirmed: declarationConfirmed,
+        pmeDate,
+        pmeExpiryDate,
+        pmeCertificateNo,
+        rcDate,
+        rcExpiryDate,
+        rcInstitute,
         status: 'PENDING'
       }
     });

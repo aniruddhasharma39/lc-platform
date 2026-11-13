@@ -12,6 +12,8 @@ import lcgateRoutes from './routes/lcgate';
 import deviceRoutes from './routes/deviceRegistry';
 import evidenceRoutes from './routes/evidence';
 import notificationsRoutes from './routes/notifications';
+import shiftsRoutes from './routes/shifts';
+import rosterRoutes from './routes/roster';
 
 import reportsRoutes from './routes/reports';
 import { errorHandler } from './middleware/error';
@@ -100,6 +102,8 @@ if (isRenderEnvironment) {
   app.use('/api/v1/devices', deviceRoutes);
   app.use('/api/v1/evidence', evidenceRoutes);
   app.use('/api/v1/notifications', notificationsRoutes);
+  app.use('/api/v1/shifts', shiftsRoutes);
+  app.use('/api/v1/roster', rosterRoutes);
 
   app.use('/api/v1/reports', reportsRoutes);
 
