@@ -376,6 +376,36 @@ router.post('/mark', authenticate, upload.single('image'), async (req: AuthReque
 
     const today = getTodayDateString();
 
+    // =========================================================================
+    // STRICT SHIFT SEQUENCE & STATE MACHINE LOCK
+    // =========================================================================
+    // Find the most recent attendance record for this user
+    const lastAttendance = await prisma.shiftAttendance.findFirst({
+      where: { userId: user.id },
+      orderBy: { id: 'desc' },
+      include: { gate: true },
+    });
+
+    if (type === 'CHECK_IN') {
+      // 1. Prevent Check-In if user has an active, unclosed shift
+      if (lastAttendance && lastAttendance.type === 'CHECK_IN') {
+        return res.status(400).json({
+          success: false,
+          code: 'ACTIVE_DUTY_UNCLOSED',
+          error: `Unclosed shift detected: You are already checked in for ${lastAttendance.shiftName} (${lastAttendance.date}). You must complete Check-Out before checking in for a new shift.`,
+        });
+      }
+    } else if (type === 'CHECK_OUT') {
+      // 2. Prevent Check-Out if there is no active Check-In to close
+      if (!lastAttendance || lastAttendance.type !== 'CHECK_IN') {
+        return res.status(400).json({
+          success: false,
+          code: 'NO_ACTIVE_CHECKIN',
+          error: 'No active Check-In found. You must mark Check-In before marking Check-Out.',
+        });
+      }
+    }
+
     // 1. Resolve Target Gate / Station coordinates for geofence validation
     let targetLat = 25.5941;
     let targetLon = 85.1376;
