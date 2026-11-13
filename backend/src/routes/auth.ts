@@ -313,10 +313,36 @@ router.post('/register/otp/verify', async (req, res, next) => {
       orderBy: { createdAt: 'desc' }
     });
 
-    if (!record || record.otp !== otp.trim()) {
+    if (!record) {
       return res.status(400).json({
-        error: 'Invalid or expired OTP. Please enter the correct code or request a new one.'
+        error: 'No active OTP found or code has expired. Please request a new OTP.'
       });
+    }
+
+    if (record.otp !== otp.trim()) {
+      const newAttempts = (record.failedAttempts || 0) + 1;
+      if (newAttempts >= 3) {
+        // Invalidate OTP immediately
+        await prisma.otpVerification.update({
+          where: { id: record.id },
+          data: {
+            failedAttempts: newAttempts,
+            expiresAt: new Date(Date.now() - 1000), // Expire now
+          }
+        });
+        return res.status(400).json({
+          error: 'Maximum 3 incorrect attempts reached. This OTP has been invalidated. Please request a new OTP.'
+        });
+      } else {
+        await prisma.otpVerification.update({
+          where: { id: record.id },
+          data: { failedAttempts: newAttempts }
+        });
+        const remaining = 3 - newAttempts;
+        return res.status(400).json({
+          error: `Incorrect OTP. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`
+        });
+      }
     }
 
     await prisma.otpVerification.update({
@@ -994,8 +1020,36 @@ router.post('/otp/verify', async (req, res, next) => {
       orderBy: { createdAt: 'desc' }
     });
 
-    if (!record || record.otp !== otp.trim()) {
-      return res.status(400).json({ error: 'Invalid or expired OTP. Please enter the correct code or request a new one.' });
+    if (!record) {
+      return res.status(400).json({
+        error: 'No active OTP found or code has expired. Please request a new OTP.'
+      });
+    }
+
+    if (record.otp !== otp.trim()) {
+      const newAttempts = (record.failedAttempts || 0) + 1;
+      if (newAttempts >= 3) {
+        // Invalidate OTP immediately
+        await prisma.otpVerification.update({
+          where: { id: record.id },
+          data: {
+            failedAttempts: newAttempts,
+            expiresAt: new Date(Date.now() - 1000), // Expire now
+          }
+        });
+        return res.status(400).json({
+          error: 'Maximum 3 incorrect attempts reached. This OTP has been invalidated. Please request a new OTP.'
+        });
+      } else {
+        await prisma.otpVerification.update({
+          where: { id: record.id },
+          data: { failedAttempts: newAttempts }
+        });
+        const remaining = 3 - newAttempts;
+        return res.status(400).json({
+          error: `Incorrect OTP. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`
+        });
+      }
     }
 
     await prisma.otpVerification.update({
