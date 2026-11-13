@@ -12,6 +12,7 @@ import 'cluster/cluster_main_screen.dart';
 import 'profile_screen.dart';
 import 'duty_roster_screen.dart';
 import 'attendance/face_enrollment_screen.dart';
+import 'attendance/shift_attendance_screen.dart';
 
 import 'device_registry/device_registry_screen.dart';
 import 'lc_gates/lc_gates_screen.dart';
@@ -1792,6 +1793,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 },
               ),
             ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              child: ListTile(
+                dense: true,
+                tileColor: Colors.transparent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                title: const Text(
+                  'Shift Attendance',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w500,
+                    color: Color(0xFF1E293B),
+                    fontSize: 13.5,
+                  ),
+                ),
+                leading: const Icon(
+                  Icons.how_to_reg_rounded,
+                  color: Color(0xFF64748B),
+                ),
+                onTap: () async {
+                  final nav = Navigator.of(context);
+                  nav.pop();
+                  final token = await _getToken();
+                  if (!mounted) return;
+                  await nav.push(
+                    MaterialPageRoute(
+                      builder: (ctx) => ShiftAttendanceScreen(
+                        user: widget.user,
+                        token: token,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
             ..._systemModules.where((m) {
               final slug = (m['slug'] ?? '').toString().toLowerCase();
               final name = (m['name'] ?? '').toString().toLowerCase();
@@ -2091,6 +2126,61 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 ? 'View your assigned LC Gate shifts & duty timings'
                                 : 'Allocate daily gate duty roster & notify Gatemen',
                             style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: AppColors.primary),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            // Shift Attendance (Biometric Check-In / Check-Out) Quick Access Card
+            InkWell(
+              onTap: () async {
+                final nav = Navigator.of(context);
+                final token = await _getToken();
+                if (!mounted) return;
+                await nav.push(
+                  MaterialPageRoute(builder: (_) => ShiftAttendanceScreen(user: widget.user, token: token)),
+                );
+              },
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFCBD5E1)),
+                  boxShadow: [
+                    BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 6, offset: const Offset(0, 2)),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFECFDF5),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.how_to_reg_rounded, color: Color(0xFF059669), size: 22),
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Shift Attendance (Check-In / Out)',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Color(0xFF0F172A)),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'Mark GPS-geofenced biometric attendance with Rekognition',
+                            style: TextStyle(fontSize: 11.5, color: Color(0xFF64748B)),
                           ),
                         ],
                       ),
