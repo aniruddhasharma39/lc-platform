@@ -121,12 +121,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final Map<int, String> _requestApprovalStates = {}; // 'PENDING' | 'APPROVING' | 'APPROVED' | 'REJECTING'
 
   static const Map<String, int> _roleSeniority = {
-    // Engineering Department
+    // Engineering Department (Top-down Railway Seniority Order)
     'senior den': 10,
     'den': 20,
     'aden': 30,
-    'engineering supervisor': 40,
-    'gateman': 50,
+    'cpwi': 40,
+    'pwi': 50,
+    'engineering supervisor': 50,
+    'restkeeper': 60,
+    'gateman': 70,
 
     // Operating Department
     'senior dom': 110,
@@ -143,7 +146,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   static String _getDepartmentForRole(String roleName) {
     final rn = roleName.trim().toLowerCase();
     if (rn == 'developer') return 'ADMIN';
-    if (rn.contains('den') || rn.contains('engineering') || rn.contains('gateman')) {
+    if (rn.contains('den') || rn.contains('cpwi') || rn.contains('pwi') || rn.contains('engineering') || rn.contains('restkeeper') || rn.contains('gateman')) {
       return 'ENGINEERING';
     }
     if (rn.contains('dom') || rn.contains('operating') || rn.contains('station master') || rn.contains('traffic')) {
@@ -195,6 +198,61 @@ class _DashboardScreenState extends State<DashboardScreen> {
     cleaned = cleaned.trim();
 
     return cleaned.isNotEmpty ? cleaned : raw;
+  }
+
+  Widget _buildExamChip(String type, String? expiryDate, String? status) {
+    if (expiryDate == null && (status == null || status == 'NOT_SET')) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF1F5F9),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: const Color(0xFFCBD5E1)),
+        ),
+        child: Text('$type: Not Recorded', style: const TextStyle(fontSize: 10.5, color: Color(0xFF64748B), fontWeight: FontWeight.w600)),
+      );
+    }
+
+    final statUpper = (status ?? '').toUpperCase();
+    final Color color;
+    final String label;
+    final IconData icon;
+
+    final expStr = expiryDate != null ? expiryDate.split('T')[0] : '';
+
+    if (statUpper == 'EXPIRED') {
+      color = const Color(0xFFDC2626);
+      label = expStr.isNotEmpty ? '$type EXPIRED ($expStr)' : '$type EXPIRED';
+      icon = Icons.cancel_outlined;
+    } else if (statUpper == 'DUE_SOON') {
+      color = const Color(0xFFD97706);
+      label = expStr.isNotEmpty ? '$type Due Soon ($expStr)' : '$type Due Soon';
+      icon = Icons.warning_amber_rounded;
+    } else {
+      color = const Color(0xFF059669);
+      label = expStr.isNotEmpty ? '$type Valid ($expStr)' : '$type Valid';
+      icon = Icons.check_circle_outline_rounded;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: color),
+          ),
+        ],
+      ),
+    );
   }
 
   // Notifications State
@@ -1062,6 +1120,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           const SizedBox(height: 4),
                           Text('Station: ${reqStation['name'] ?? ''} (${reqStation['code'] ?? ''})', style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
                         ],
+                        if (req['pmeExpiryDate'] != null || req['rcExpiryDate'] != null) ...[
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            children: [
+                              _buildExamChip('PME', req['pmeExpiryDate']?.toString(), req['pmeStatus']?.toString()),
+                              _buildExamChip('RC', req['rcExpiryDate']?.toString(), req['rcStatus']?.toString()),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -1137,7 +1206,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (chosenStationId != null) {
         body['stationId'] = chosenStationId;
       }
-      if (chosenGateId != null) {
+      if (assignedRoleName.toLowerCase().contains('restkeeper')) {
+        final reqGateIds = (req['gateIds'] as List?)?.map((id) => int.tryParse(id.toString())).whereType<int>().toList() ?? [];
+        if (reqGateIds.isNotEmpty) {
+          body['gateIds'] = reqGateIds;
+        } else if (requestedGates.isNotEmpty) {
+          body['gateIds'] = requestedGates.map((g) => g is Map ? g['id'] : g).whereType<int>().toList();
+        } else if (chosenGateId != null) {
+          body['gateIds'] = [chosenGateId];
+        }
+      } else if (chosenGateId != null) {
         body['gateIds'] = [chosenGateId];
       }
       _actionUser(req['id'], 'approve', body, true, displayName, assignedRoleName);
@@ -2566,10 +2644,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       'DEN': 2,
       'ADOM/AOM': 3,
       'ADEN': 3,
-      'Station Master': 4,
-      'Engineering Supervisor': 4,
-      'Supervisor': 4,
-      'Gateman': 5,
+      'CPWI': 4,
+      'PWI': 5,
+      'Engineering Supervisor': 5,
+      'Supervisor': 5,
+      'Restkeeper': 6,
+      'Station Master': 6,
+      'Gateman': 7,
     };
 
     final deptMap = <String, String>{
@@ -2580,8 +2661,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       'Senior DEN': 'Engineering',
       'DEN': 'Engineering',
       'ADEN': 'Engineering',
+      'CPWI': 'Engineering',
+      'PWI': 'Engineering',
       'Engineering Supervisor': 'Engineering',
       'Supervisor': 'Engineering',
+      'Restkeeper': 'Engineering',
       'Gateman': 'Engineering',
     };
 
@@ -2894,6 +2978,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   },
                 ),
                 const SizedBox(height: 6),
+
+                // Railway Safety Exam & Course Status for Pending Candidate
+                if (req['pmeExpiryDate'] != null || req['rcExpiryDate'] != null || (reqRoleName ?? '').toLowerCase().contains('gateman') || (reqRoleName ?? '').toLowerCase().contains('restkeeper')) ...[
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.medical_services_outlined, size: 14, color: AppColors.primary),
+                            SizedBox(width: 6),
+                            Text('Safety & Medical Qualifications:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF334155))),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: [
+                            _buildExamChip('PME', req['pmeExpiryDate']?.toString(), req['pmeStatus']?.toString()),
+                            _buildExamChip('RC', req['rcExpiryDate']?.toString(), req['rcStatus']?.toString()),
+                          ],
+                        ),
+                        if (req['pmeCertificateNo'] != null && req['pmeCertificateNo'].toString().trim().isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text('PME Memo No: ${req['pmeCertificateNo']}', style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                        ],
+                        if (req['rcInstitute'] != null && req['rcInstitute'].toString().trim().isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          Text('RC Training Institute: ${req['rcInstitute']}', style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
 
                 // Role approval section:
                 // Admin only can change/assign a role. Other users strictly approve the requested role.
@@ -3601,6 +3728,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                       'Assigned Gate(s)',
                                       cleanGates.isNotEmpty ? cleanGates.join(', ') : 'Not Assigned',
                                     );
+                                  } else if (normRoleLower == 'restkeeper') {
+                                    if (stationDisplay.isNotEmpty) {
+                                      addMetaRow('Station (Gate Rounds)', stationDisplay);
+                                    }
+                                    addMetaRow(
+                                      'Supervised LC Gates',
+                                      cleanGates.isNotEmpty ? cleanGates.join(', ') : (stationDisplay.isNotEmpty ? 'All Gates under $stationDisplay' : 'Station Fleet Gates'),
+                                    );
+                                  } else if (normRoleLower == 'pwi' || normRoleLower == 'engineering supervisor') {
+                                    if (stationDisplay.isNotEmpty) {
+                                      addMetaRow('Supervised Section', stationDisplay);
+                                    }
+                                    addMetaRow(
+                                      'Supervised Gates',
+                                      cleanGates.isNotEmpty ? cleanGates.join(', ') : 'Section LC Gates',
+                                    );
+                                  } else if (normRoleLower == 'cpwi') {
+                                    if (stationDisplay.isNotEmpty) {
+                                      addMetaRow('Chief Section Jurisdiction', stationDisplay);
+                                    }
+                                    addMetaRow(
+                                      'Supervised Gates',
+                                      cleanGates.isNotEmpty ? cleanGates.join(', ') : 'Sub-Division Fleet Gates',
+                                    );
                                   } else if (normRoleLower == 'station master') {
                                     if (stationDisplay.isNotEmpty) {
                                       addMetaRow('Station', stationDisplay);
@@ -3610,14 +3761,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                       cleanGates.isNotEmpty
                                           ? cleanGates.join(', ')
                                           : (stationDisplay.isNotEmpty ? 'All Gates under $stationDisplay' : 'Station Fleet Gates'),
-                                    );
-                                  } else if (normRoleLower == 'engineering supervisor') {
-                                    if (stationDisplay.isNotEmpty) {
-                                      addMetaRow('Supervised Section', stationDisplay);
-                                    }
-                                    addMetaRow(
-                                      'Supervised Gates',
-                                      cleanGates.isNotEmpty ? cleanGates.join(', ') : 'Section LC Gates',
                                     );
                                   } else if (normRoleLower.contains('den')) {
                                     addMetaRow('Jurisdiction Scope', 'All Engineering Gates in $uDivision Division');
@@ -3679,6 +3822,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                               ),
                                             ],
                                           ),
+                                          // Railway Safety Qualifications (PME & RC) row on user card:
+                                          if (u['pmeExpiryDate'] != null || u['rcExpiryDate'] != null || normRoleLower == 'gateman' || normRoleLower == 'restkeeper') ...[
+                                            const SizedBox(height: 8),
+                                            Wrap(
+                                              spacing: 6,
+                                              runSpacing: 4,
+                                              children: [
+                                                _buildExamChip('PME', u['pmeExpiryDate']?.toString(), u['pmeStatus']?.toString()),
+                                                _buildExamChip('RC', u['rcExpiryDate']?.toString(), u['rcStatus']?.toString()),
+                                              ],
+                                            ),
+                                          ],
                                           if (metaWidgets.isNotEmpty) ...[
                                             const Divider(height: 24),
                                             ...metaWidgets
