@@ -14,6 +14,7 @@ import evidenceRoutes from './routes/evidence';
 import notificationsRoutes from './routes/notifications';
 import shiftsRoutes from './routes/shifts';
 import rosterRoutes from './routes/roster';
+import attendanceRoutes from './routes/attendance';
 
 import reportsRoutes from './routes/reports';
 import { errorHandler } from './middleware/error';
@@ -104,6 +105,7 @@ if (isRenderEnvironment) {
   app.use('/api/v1/notifications', notificationsRoutes);
   app.use('/api/v1/shifts', shiftsRoutes);
   app.use('/api/v1/roster', rosterRoutes);
+  app.use('/api/v1/attendance', attendanceRoutes);
 
   app.use('/api/v1/reports', reportsRoutes);
 
