@@ -49,9 +49,17 @@ import {
   exportDeviceMappingExcel,
   exportDeviceMappingPdf,
   exportDeviceMappingCsv,
+  exportAttendanceExcel,
+  exportAttendancePdf,
+  exportAttendanceExceptionExcel,
+  exportAttendanceExceptionPdf,
   DeviceMappingReportData,
   DeviceMappingReportRow
 } from '../lib/reportExporter';
+import {
+  getAttendanceReportData,
+  getAttendanceExceptionReportData,
+} from '../lib/attendanceReportService';
 
 const router = Router();
 router.use(authenticate);
@@ -1271,12 +1279,100 @@ router.get('/device-mapping', async (req: AuthRequest, res: Response, next: any)
   }
 });
 
+/**
+ * GET /api/v1/reports/attendance
+ * Attendance Muster & Geofence telemetry report data
+ */
+router.get('/attendance', async (req: AuthRequest, res: Response, next: any) => {
+  try {
+    const { startDate, endDate, gateId, userId, shiftCode, status } = req.query;
+    const filter = {
+      startDate: startDate as string | undefined,
+      endDate: endDate as string | undefined,
+      gateId: gateId ? parseInt(gateId as string, 10) : undefined,
+      userId: userId ? parseInt(userId as string, 10) : undefined,
+      shiftCode: shiftCode as string | undefined,
+      status: status as string | undefined,
+    };
+    const data = await getAttendanceReportData(filter, req.user);
+    res.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/reports/attendance-exceptions
+ * Attendance Exception Audit (delay duration, unstaffed gates, geofence breaches)
+ */
+router.get('/attendance-exceptions', async (req: AuthRequest, res: Response, next: any) => {
+  try {
+    const { startDate, endDate, gateId, severity, type } = req.query;
+    const filter = {
+      startDate: startDate as string | undefined,
+      endDate: endDate as string | undefined,
+      gateId: gateId ? parseInt(gateId as string, 10) : undefined,
+      severity: severity as string | undefined,
+      type: type as string | undefined,
+    };
+    const data = await getAttendanceExceptionReportData(filter, req.user);
+    res.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/export', async (req: AuthRequest, res: Response, next: any) => {
   try {
     const reportType = (req.query.reportType as string || 'complete_log').toLowerCase();
     const format = (req.query.format as string || 'xlsx').toLowerCase();
     const statusFilter = typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL';
     const shiftFilter = typeof req.query.shift === 'string' ? req.query.shift.toUpperCase() : 'ALL';
+
+    // ── REPORT TYPE: ATTENDANCE MUSTER REPORT ──
+    if (reportType === 'attendance') {
+      const { startDate, endDate, gateId, userId, shiftCode, status } = req.query;
+      const filter = {
+        startDate: startDate as string | undefined,
+        endDate: endDate as string | undefined,
+        gateId: gateId ? parseInt(gateId as string, 10) : undefined,
+        userId: userId ? parseInt(userId as string, 10) : undefined,
+        shiftCode: shiftCode as string | undefined,
+        status: status as string | undefined,
+      };
+      const data = await getAttendanceReportData(filter, req.user);
+      const filenameBase = `Attendance_Muster_Report_${data.startDateStr}_to_${data.endDateStr}`;
+
+      if (format === 'xlsx' || format === 'excel') {
+        return await exportAttendanceExcel(res, data, { filenameBase });
+      } else if (format === 'pdf') {
+        return await exportAttendancePdf(res, data, { filenameBase });
+      } else {
+        return await exportAttendanceExcel(res, data, { filenameBase });
+      }
+    }
+
+    // ── REPORT TYPE: ATTENDANCE EXCEPTION AUDIT REPORT ──
+    if (reportType === 'attendance_exception' || reportType === 'attendance_exceptions' || reportType === 'exception') {
+      const { startDate, endDate, gateId, severity, type } = req.query;
+      const filter = {
+        startDate: startDate as string | undefined,
+        endDate: endDate as string | undefined,
+        gateId: gateId ? parseInt(gateId as string, 10) : undefined,
+        severity: severity as string | undefined,
+        type: type as string | undefined,
+      };
+      const data = await getAttendanceExceptionReportData(filter, req.user);
+      const filenameBase = `Attendance_Exception_Audit_Report_${data.startDateStr}_to_${data.endDateStr}`;
+
+      if (format === 'xlsx' || format === 'excel') {
+        return await exportAttendanceExceptionExcel(res, data, { filenameBase });
+      } else if (format === 'pdf') {
+        return await exportAttendanceExceptionPdf(res, data, { filenameBase });
+      } else {
+        return await exportAttendanceExceptionExcel(res, data, { filenameBase });
+      }
+    }
 
     // ── REPORT TYPE: DEVELOPER GATE & DEVICE MAPPING ──
     if (reportType === 'device_mapping' || reportType === 'mapping') {

@@ -50,6 +50,15 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   String _mappingSearchQuery = '';
   String _mappingGateFilterType = 'all'; // 'all' | 'assigned' | 'unassigned'
 
+  // 1.6 Attendance Muster & Exception Reports
+  Map<String, dynamic>? _attendanceData;
+  bool _isLoadingAttendance = false;
+  Map<String, dynamic>? _attendanceExceptionsData;
+  bool _isLoadingAttendanceExceptions = false;
+  final TextEditingController _attendanceSearchCtrl = TextEditingController();
+  String _attendanceSearchQuery = '';
+  String _attendanceStatusFilter = 'ALL'; // 'ALL' | 'COMPLETED' | 'ON_DUTY' | 'LATE'
+
   // 2. Clusters & Hierarchy Selection
   List<dynamic> _clusters = [];
   bool _isLoadingClusters = true;
@@ -133,6 +142,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     _pollingTimer?.cancel();
     _searchCtrl.dispose();
     _mappingSearchCtrl.dispose();
+    _attendanceSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -241,6 +251,10 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       await _fetchCycleAnalytics();
     } else if (_reportType == 'holistic') {
       await _fetchHolisticAnalytics();
+    } else if (_reportType == 'attendance') {
+      await _fetchAttendanceData(forceReload: forceReload);
+    } else if (_reportType == 'attendance_exception') {
+      await _fetchAttendanceExceptions(forceReload: forceReload);
     } else if (_reportType == 'device_mapping') {
       if (_isDeveloper) {
         await _fetchDeviceMapping(forceReload: forceReload);
@@ -507,6 +521,10 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
           _fetchCycleAnalytics();
         } else if (_reportType == 'holistic') {
           _fetchHolisticAnalytics();
+        } else if (_reportType == 'attendance') {
+          _fetchAttendanceData();
+        } else if (_reportType == 'attendance_exception') {
+          _fetchAttendanceExceptions();
         } else {
           _fetchRecords();
         }
@@ -1252,6 +1270,60 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                               ),
                             ],
                           ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => setModalState(() => selectedReportType = 'attendance'),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: selectedReportType == 'attendance' ? const Color(0xFF0284C7).withValues(alpha: 0.08) : Colors.white,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: selectedReportType == 'attendance' ? const Color(0xFF0284C7) : Colors.grey.shade300,
+                                        width: 2,
+                                      ),
+                                    ),
+                                    child: const Column(
+                                      children: [
+                                        Icon(Icons.badge_outlined, color: Color(0xFF0284C7), size: 22),
+                                        SizedBox(height: 4),
+                                        Text('Attendance', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('Muster Log', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => setModalState(() => selectedReportType = 'attendance_exception'),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: (selectedReportType == 'attendance_exception' || selectedReportType == 'exception') ? const Color(0xFFDC2626).withValues(alpha: 0.08) : Colors.white,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: (selectedReportType == 'attendance_exception' || selectedReportType == 'exception') ? const Color(0xFFDC2626) : Colors.grey.shade300,
+                                        width: 2,
+                                      ),
+                                    ),
+                                    child: const Column(
+                                      children: [
+                                        Icon(Icons.warning_amber_rounded, color: Color(0xFFDC2626), size: 22),
+                                        SizedBox(height: 4),
+                                        Text('Exceptions', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('Safety Audit', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                           if (_isDeveloper) ...[
                             const SizedBox(height: 8),
                             InkWell(
@@ -1718,6 +1790,10 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                     _buildCountReportView(),
                   ] else if (_reportType == 'holistic') ...[
                     _buildHolisticReportView(),
+                  ] else if (_reportType == 'attendance') ...[
+                    _buildAttendanceReportView(),
+                  ] else if (_reportType == 'attendance_exception') ...[
+                    _buildAttendanceExceptionsView(),
                   ] else if (_reportType == 'device_mapping' && _isDeveloper) ...[
                     _buildDeviceMappingReportView(),
                   ] else ...[
@@ -1733,6 +1809,8 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     final tabs = [
       {'key': 'count', 'label': 'Count', 'icon': Icons.format_list_numbered_rounded, 'color': const Color(0xFF2563EB)},
       {'key': 'duration', 'label': 'Duration', 'icon': Icons.timer_outlined, 'color': const Color(0xFF046A38)},
+      {'key': 'attendance', 'label': 'Muster', 'icon': Icons.badge_outlined, 'color': const Color(0xFF0284C7)},
+      {'key': 'attendance_exception', 'label': 'Exceptions', 'icon': Icons.warning_amber_rounded, 'color': const Color(0xFFDC2626)},
       {'key': 'holistic', 'label': 'Holistic', 'icon': Icons.account_tree_outlined, 'color': const Color(0xFF7C3AED)},
       {'key': 'complete_log', 'label': 'Event Log', 'icon': Icons.table_rows_outlined, 'color': AppColors.primary},
     ];
@@ -1754,63 +1832,68 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.grey.shade200),
       ),
-      child: Row(
-        children: tabs.map((tab) {
-          final isSelected = _reportType == tab['key'] || (_reportType == 'cycle' && tab['key'] == 'duration');
-          final color = tab['color'] as Color;
-          return Expanded(
-            child: InkWell(
-              onTap: () {
-                final k = tab['key'] as String;
-                if (_reportType != k) {
-                  setState(() => _reportType = k);
-                  if (k == 'count' && _countAnalytics == null) {
-                    _fetchCountAnalytics();
-                  } else if (k == 'duration' && _cycleAnalytics == null) {
-                    _fetchCycleAnalytics();
-                  } else if (k == 'holistic' && _holisticAnalytics == null) {
-                    _fetchHolisticAnalytics();
-                  } else if (k == 'device_mapping' && _deviceMappingData == null) {
-                    _fetchDeviceMapping();
-                  } else if (k == 'complete_log' && _records.isEmpty) {
-                    _fetchRecords();
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        physics: const BouncingScrollPhysics(),
+        child: Row(
+          children: tabs.map((tab) {
+            final isSelected = _reportType == tab['key'] || (_reportType == 'cycle' && tab['key'] == 'duration');
+            final color = tab['color'] as Color;
+            return Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: InkWell(
+                onTap: () {
+                  final k = tab['key'] as String;
+                  if (_reportType != k) {
+                    setState(() => _reportType = k);
+                    if (k == 'count' && _countAnalytics == null) {
+                      _fetchCountAnalytics();
+                    } else if (k == 'duration' && _cycleAnalytics == null) {
+                      _fetchCycleAnalytics();
+                    } else if (k == 'holistic' && _holisticAnalytics == null) {
+                      _fetchHolisticAnalytics();
+                    } else if (k == 'attendance' && _attendanceData == null) {
+                      _fetchAttendanceData();
+                    } else if (k == 'attendance_exception' && _attendanceExceptionsData == null) {
+                      _fetchAttendanceExceptions();
+                    } else if (k == 'device_mapping' && _deviceMappingData == null) {
+                      _fetchDeviceMapping();
+                    } else if (k == 'complete_log' && _records.isEmpty) {
+                      _fetchRecords();
+                    }
                   }
-                }
-              },
-              borderRadius: BorderRadius.circular(8),
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                decoration: BoxDecoration(
-                  color: isSelected ? color : Colors.transparent,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      tab['icon'] as IconData,
-                      size: 14,
-                      color: isSelected ? Colors.white : Colors.grey.shade700,
-                    ),
-                    const SizedBox(width: 4),
-                    Flexible(
-                      child: Text(
+                },
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: isSelected ? color : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        tab['icon'] as IconData,
+                        size: 14,
+                        color: isSelected ? Colors.white : Colors.grey.shade700,
+                      ),
+                      const SizedBox(width: 5),
+                      Text(
                         tab['label'] as String,
-                        overflow: TextOverflow.ellipsis,
-                        maxLines: 1,
                         style: TextStyle(
                           fontSize: 11.5,
                           fontWeight: FontWeight.bold,
                           color: isSelected ? Colors.white : Colors.grey.shade700,
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
-          );
-        }).toList(),
+            );
+          }).toList(),
+        ),
       ),
     );
   }
@@ -3156,6 +3239,797 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
             fontWeight: isActive ? FontWeight.bold : FontWeight.w500,
             color: isActive ? Colors.white : const Color(0xFF334155),
           ),
+        ),
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 7. ATTENDANCE MUSTER & EXCEPTION AUDIT REPORT INTEGRATION
+  // ─────────────────────────────────────────────────────────────
+
+  Future<void> _fetchAttendanceData({bool forceReload = false}) async {
+    if (!mounted) return;
+    setState(() => _isLoadingAttendance = true);
+    try {
+      final start = _formatDate(_dateRange.start);
+      final end = _formatDate(_dateRange.end);
+      final queryParams = <String, String>{
+        'startDate': start,
+        'endDate': end,
+      };
+      if (_selectedGateIds.length == 1) {
+        queryParams['gateId'] = _selectedGateIds.first.toString();
+      }
+      final uri = Uri.parse('$baseUrl/reports/attendance').replace(queryParameters: queryParams);
+      final res = await http.get(uri, headers: _headers).timeout(const Duration(seconds: 15));
+      if (res.statusCode == 200 && mounted) {
+        setState(() {
+          _attendanceData = json.decode(res.body);
+          _isLoadingAttendance = false;
+        });
+      } else {
+        if (mounted) setState(() => _isLoadingAttendance = false);
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoadingAttendance = false);
+    }
+  }
+
+  Future<void> _fetchAttendanceExceptions({bool forceReload = false}) async {
+    if (!mounted) return;
+    setState(() => _isLoadingAttendanceExceptions = true);
+    try {
+      final start = _formatDate(_dateRange.start);
+      final end = _formatDate(_dateRange.end);
+      final queryParams = <String, String>{
+        'startDate': start,
+        'endDate': end,
+      };
+      if (_selectedGateIds.length == 1) {
+        queryParams['gateId'] = _selectedGateIds.first.toString();
+      }
+      final uri = Uri.parse('$baseUrl/reports/attendance-exceptions').replace(queryParameters: queryParams);
+      final res = await http.get(uri, headers: _headers).timeout(const Duration(seconds: 15));
+      if (res.statusCode == 200 && mounted) {
+        setState(() {
+          _attendanceExceptionsData = json.decode(res.body);
+          _isLoadingAttendanceExceptions = false;
+        });
+      } else {
+        if (mounted) setState(() => _isLoadingAttendanceExceptions = false);
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoadingAttendanceExceptions = false);
+    }
+  }
+
+  // ── 7.1. ATTENDANCE MUSTER VIEW ──
+  Widget _buildAttendanceReportView() {
+    if (_isLoadingAttendance) {
+      return const Padding(
+        padding: EdgeInsets.all(40),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF0284C7)),
+              SizedBox(height: 14),
+              Text(
+                'Compiling Shift Attendance Muster & Geofence Logs...',
+                style: TextStyle(fontSize: 13, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final metrics = (_attendanceData?['metrics'] as Map<String, dynamic>?) ?? {};
+    final rawRecords = (_attendanceData?['records'] as List?) ?? [];
+
+    final query = _attendanceSearchQuery.toLowerCase().trim();
+    final records = rawRecords.where((r) {
+      final user = (r['user'] as Map?) ?? {};
+      final gate = (r['gate'] as Map?) ?? {};
+      final userName = (user['fullName'] ?? '').toString().toLowerCase();
+      final empId = (user['employeeId'] ?? '').toString().toLowerCase();
+      final gateNo = (gate['lcNumber'] ?? '').toString().toLowerCase();
+      final loc = (gate['locationName'] ?? '').toString().toLowerCase();
+      final status = (r['dutyStatus'] ?? '').toString().toUpperCase();
+
+      if (_attendanceStatusFilter != 'ALL' && status != _attendanceStatusFilter) {
+        return false;
+      }
+
+      if (query.isNotEmpty) {
+        return userName.contains(query) || empId.contains(query) || gateNo.contains(query) || loc.contains(query);
+      }
+      return true;
+    }).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 1. Attendance KPI Header Card
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFF0284C7).withValues(alpha: 0.3)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.02),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0284C7).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.badge_outlined, color: Color(0xFF0284C7), size: 22),
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Duty Attendance & Shift Muster',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5, color: Color(0xFF0F172A)),
+                        ),
+                        Text(
+                          'Biometric check-in/out telemetry, geofence audit & net duty duration',
+                          style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              // KPI Strip
+              Row(
+                children: [
+                  _buildAttendanceKpiBadge('Total Shifts', '${metrics['totalSessions'] ?? 0}', const Color(0xFF003580)),
+                  const SizedBox(width: 6),
+                  _buildAttendanceKpiBadge('Completed', '${metrics['completedSessions'] ?? 0}', const Color(0xFF046A38)),
+                  const SizedBox(width: 6),
+                  _buildAttendanceKpiBadge('On Duty', '${metrics['currentlyOnDuty'] ?? 0}', const Color(0xFF0284C7)),
+                  const SizedBox(width: 6),
+                  _buildAttendanceKpiBadge('Late', '${metrics['lateSessions'] ?? 0}', const Color(0xFFDC2626)),
+                  const SizedBox(width: 6),
+                  _buildAttendanceKpiBadge('On-Time', '${metrics['onTimePercentage'] ?? 100}%', const Color(0xFF7C3AED)),
+                ],
+              ),
+              const SizedBox(height: 12),
+              // Export Actions
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF107C41),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        textStyle: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        elevation: 0,
+                      ),
+                      icon: const Icon(Icons.table_view_rounded, size: 16),
+                      label: const Text('Export Excel'),
+                      onPressed: () {
+                        _startExportWithProgress(
+                          parentCtx: context,
+                          selectedReportType: 'attendance',
+                          selectedFormat: 'xlsx',
+                          selectedCols: {},
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFE11D48),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        textStyle: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        elevation: 0,
+                      ),
+                      icon: const Icon(Icons.picture_as_pdf_rounded, size: 16),
+                      label: const Text('Export PDF'),
+                      onPressed: () {
+                        _startExportWithProgress(
+                          parentCtx: context,
+                          selectedReportType: 'attendance',
+                          selectedFormat: 'pdf',
+                          selectedCols: {},
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+
+        // Search & Filter Strip
+        Row(
+          children: [
+            Expanded(
+              child: Container(
+                height: 40,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: TextField(
+                  controller: _attendanceSearchCtrl,
+                  decoration: InputDecoration(
+                    hintText: 'Search staff name, LC gate, emp ID...',
+                    hintStyle: TextStyle(fontSize: 11.5, color: Colors.grey.shade500),
+                    prefixIcon: const Icon(Icons.search, size: 18),
+                    suffixIcon: _attendanceSearchQuery.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear, size: 16),
+                            onPressed: () {
+                              _attendanceSearchCtrl.clear();
+                              setState(() => _attendanceSearchQuery = '');
+                            },
+                          )
+                        : null,
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                  ),
+                  onChanged: (val) => setState(() => _attendanceSearchQuery = val),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              height: 40,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: _attendanceStatusFilter,
+                  items: const [
+                    DropdownMenuItem(value: 'ALL', child: Text('All Status', style: TextStyle(fontSize: 12))),
+                    DropdownMenuItem(value: 'COMPLETED', child: Text('Completed', style: TextStyle(fontSize: 12))),
+                    DropdownMenuItem(value: 'ON_DUTY', child: Text('On Duty', style: TextStyle(fontSize: 12))),
+                    DropdownMenuItem(value: 'LATE', child: Text('Late', style: TextStyle(fontSize: 12))),
+                  ],
+                  onChanged: (val) {
+                    if (val != null) setState(() => _attendanceStatusFilter = val);
+                  },
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+
+        // Records List
+        if (records.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(32),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: Column(
+              children: [
+                Icon(Icons.event_busy, size: 38, color: Colors.grey.shade400),
+                const SizedBox(height: 8),
+                const Text('No Attendance Records Found', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF64748B))),
+                const SizedBox(height: 4),
+                Text('Adjust date range or gate filter to view shifts', style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
+              ],
+            ),
+          )
+        else
+          ...records.map((r) => _buildAttendanceSessionCard(r)),
+      ],
+    );
+  }
+
+  Widget _buildAttendanceKpiBadge(String label, String value, Color color) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: color.withValues(alpha: 0.2)),
+        ),
+        child: Column(
+          children: [
+            Text(value, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: color)),
+            const SizedBox(height: 2),
+            Text(label, style: TextStyle(fontSize: 9.5, color: Colors.grey.shade700, fontWeight: FontWeight.w500), textAlign: TextAlign.center),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAttendanceSessionCard(Map<String, dynamic> r) {
+    final user = (r['user'] as Map?) ?? {};
+    final gate = (r['gate'] as Map?) ?? {};
+    final shift = (r['shift'] as Map?) ?? {};
+    final checkIn = (r['checkIn'] as Map?);
+    final checkOut = (r['checkOut'] as Map?);
+    final status = (r['dutyStatus'] ?? 'COMPLETED').toString();
+
+    Color statusColor;
+    String statusLabel;
+    if (status == 'COMPLETED') {
+      statusColor = const Color(0xFF046A38);
+      statusLabel = 'COMPLETED';
+    } else if (status == 'ON_DUTY') {
+      statusColor = const Color(0xFF0284C7);
+      statusLabel = 'ON DUTY';
+    } else if (status == 'LATE') {
+      statusColor = const Color(0xFFD97706);
+      statusLabel = 'LATE ENTRY';
+    } else {
+      statusColor = const Color(0xFFDC2626);
+      statusLabel = status;
+    }
+
+    final isLate = checkIn != null && (checkIn['minutesLate'] ?? 0) > 0;
+    final minutesLate = checkIn != null ? (checkIn['minutesLate'] ?? 0) : 0;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      elevation: 0.5,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: BorderSide(color: Colors.grey.shade200)),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Row 1: Gate & Shift badges + Status pill
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF003580),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    gate['lcNumber'] ?? 'LC',
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF1F5F9),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: Text(
+                    shift['code'] ?? shift['name'] ?? 'Shift',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF334155)),
+                  ),
+                ),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: statusColor.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: statusColor.withValues(alpha: 0.4)),
+                  ),
+                  child: Text(
+                    statusLabel,
+                    style: TextStyle(color: statusColor, fontWeight: FontWeight.bold, fontSize: 10),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+
+            // Row 2: Staff Name & Designation
+            Row(
+              children: [
+                const Icon(Icons.person, size: 16, color: Color(0xFF64748B)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '${user['fullName'] ?? 'Staff'} (${user['designation'] ?? 'Gateman'})',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                  ),
+                ),
+                Text(
+                  r['dateFormatted'] ?? r['date'] ?? '',
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontWeight: FontWeight.w500),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+
+            // Row 3: Check-In Details
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade50,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: Colors.grey.shade200),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.login_rounded, size: 14, color: Color(0xFF046A38)),
+                            const SizedBox(width: 4),
+                            Text('IN: ${checkIn?['timeFormatted'] ?? '-'}', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 11.5)),
+                            if (isLate) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFDC2626).withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(3),
+                                ),
+                                child: Text('+$minutesLate min late', style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold, color: Color(0xFFDC2626))),
+                              ),
+                            ],
+                          ],
+                        ),
+                        if (checkIn?['geofenceDistanceMeters'] != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              'Geofence: ${checkIn!['geofenceDistanceMeters']}m ${checkIn['isGeofenceVerified'] == true ? '✓ In Bounds' : '⚠ Out of Bounds'}',
+                              style: TextStyle(fontSize: 10, color: checkIn['isGeofenceVerified'] == true ? const Color(0xFF046A38) : const Color(0xFFDC2626)),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.logout_rounded, size: 14, color: Color(0xFF0284C7)),
+                            const SizedBox(width: 4),
+                            Text('OUT: ${checkOut?['timeFormatted'] ?? (status == 'ON_DUTY' ? 'Still On Duty' : '-')}', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 11.5)),
+                          ],
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            'Duty: ${r['totalDurationFormatted'] ?? '-'}',
+                            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── 7.2. ATTENDANCE EXCEPTION AUDIT VIEW ──
+  Widget _buildAttendanceExceptionsView() {
+    if (_isLoadingAttendanceExceptions) {
+      return const Padding(
+        padding: EdgeInsets.all(40),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFFDC2626)),
+              SizedBox(height: 14),
+              Text(
+                'Auditing Shift Delays & Unstaffed Gate Deviations...',
+                style: TextStyle(fontSize: 13, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final metrics = (_attendanceExceptionsData?['metrics'] as Map<String, dynamic>?) ?? {};
+    final rawExceptions = (_attendanceExceptionsData?['exceptions'] as List?) ?? [];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 1. Safety Exception Header Card
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFDC2626).withValues(alpha: 0.3)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.02),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFDC2626).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.warning_amber_rounded, color: Color(0xFFDC2626), size: 22),
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Attendance Safety Audit & Exceptions',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5, color: Color(0xFF0F172A)),
+                        ),
+                        Text(
+                          'Tracking shift delays, unstaffed gate hazards & perimeter violations',
+                          style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              // KPI Strip
+              Row(
+                children: [
+                  _buildAttendanceKpiBadge('Total Deviations', '${metrics['totalExceptions'] ?? 0}', const Color(0xFFDC2626)),
+                  const SizedBox(width: 6),
+                  _buildAttendanceKpiBadge('Delayed Shifts', '${metrics['lateArrivalsCount'] ?? 0}', const Color(0xFFD97706)),
+                  const SizedBox(width: 6),
+                  _buildAttendanceKpiBadge('Unstaffed Gates', '${metrics['unstaffedGateCount'] ?? 0}', const Color(0xFFB91C1C)),
+                  const SizedBox(width: 6),
+                  _buildAttendanceKpiBadge('Total Delay', metrics['totalDelayHoursFormatted'] ?? '0m', const Color(0xFF003580)),
+                  const SizedBox(width: 6),
+                  _buildAttendanceKpiBadge('Safety Score', '${metrics['safetyComplianceScore'] ?? 100}%', const Color(0xFF046A38)),
+                ],
+              ),
+              const SizedBox(height: 12),
+              // Export Actions
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF107C41),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        textStyle: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        elevation: 0,
+                      ),
+                      icon: const Icon(Icons.table_view_rounded, size: 16),
+                      label: const Text('Export Audit Excel'),
+                      onPressed: () {
+                        _startExportWithProgress(
+                          parentCtx: context,
+                          selectedReportType: 'attendance_exception',
+                          selectedFormat: 'xlsx',
+                          selectedCols: {},
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFE11D48),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        textStyle: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        elevation: 0,
+                      ),
+                      icon: const Icon(Icons.picture_as_pdf_rounded, size: 16),
+                      label: const Text('Export Audit PDF'),
+                      onPressed: () {
+                        _startExportWithProgress(
+                          parentCtx: context,
+                          selectedReportType: 'attendance_exception',
+                          selectedFormat: 'pdf',
+                          selectedCols: {},
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+
+        // Exceptions List
+        if (rawExceptions.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(32),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: const Column(
+              children: [
+                Icon(Icons.verified, size: 38, color: Color(0xFF046A38)),
+                SizedBox(height: 8),
+                Text('Zero Safety Deviations Recorded', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF046A38))),
+                SizedBox(height: 4),
+                Text('All shifts commenced on schedule with full staff coverage.', style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+              ],
+            ),
+          )
+        else
+          ...rawExceptions.map((exc) => _buildAttendanceExceptionCard(exc)),
+      ],
+    );
+  }
+
+  Widget _buildAttendanceExceptionCard(Map<String, dynamic> exc) {
+    final severity = (exc['severity'] ?? 'LOW').toString().toUpperCase();
+    final isCritical = severity == 'CRITICAL';
+    final severityColor = isCritical ? const Color(0xFFDC2626) : const Color(0xFFD97706);
+
+    final user = (exc['user'] as Map?);
+    final gate = (exc['gate'] as Map?) ?? {};
+    final shift = (exc['shift'] as Map?) ?? {};
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      elevation: 0.5,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: severityColor.withValues(alpha: 0.3)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Row 1: Severity tag + Gate + Date
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: severityColor,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    exc['severityLabel'] ?? severity,
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 10.5),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF003580).withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    gate['lcNumber'] ?? 'LC Gate',
+                    style: const TextStyle(color: Color(0xFF003580), fontWeight: FontWeight.bold, fontSize: 11),
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  exc['dateFormatted'] ?? exc['date'] ?? '',
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontWeight: FontWeight.w500),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+
+            // Row 2: Delay duration highlight
+            Row(
+              children: [
+                Icon(isCritical ? Icons.cancel : Icons.warning_amber_rounded, size: 16, color: severityColor),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    exc['delayFormatted'] ?? 'Shift Deviation',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: severityColor),
+                  ),
+                ),
+                Text(
+                  'Shift: ${shift['code'] ?? shift['name'] ?? '-'}',
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF64748B)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+
+            // Row 3: Staff & Gate
+            Text(
+              user != null ? '${user['fullName']} (${user['designation'] ?? 'Gateman'})' : 'Staff: Unassigned / Absent',
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: Color(0xFF0F172A)),
+            ),
+            const SizedBox(height: 4),
+
+            // Row 4: Incident Description
+            Text(
+              exc['description'] ?? '',
+              style: const TextStyle(fontSize: 11.5, color: Color(0xFF334155)),
+            ),
+            const SizedBox(height: 6),
+
+            // Row 5: Corrective Action Box
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade50,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: Colors.grey.shade200),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.shield_outlined, size: 13, color: Color(0xFF003580)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Protocol: ${exc['correctiveAction'] ?? 'Recorded in audit log.'}',
+                      style: const TextStyle(fontSize: 10.5, color: Color(0xFF475569), fontStyle: FontStyle.italic),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );

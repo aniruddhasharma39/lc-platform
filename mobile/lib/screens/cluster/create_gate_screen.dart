@@ -30,7 +30,6 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
   String? _division;
   String? _stationCode;
   StationReference? _selectedStation;
-  List<StationReference> _stations = [];
   bool _loadingReference = true;
 
   bool _isLoading = false;
@@ -296,7 +295,6 @@ class _CreateGateScreenState extends State<CreateGateScreen> {
                                       _division = val;
                                       _stationCode = null;
                                       _selectedStation = null;
-                                      _stations = RailwayData.stationsForDivision(val);
                                     });
                                   },
                             hint: Text(_zone == null ? 'Select Zone first...' : 'Select Division'),

@@ -4,6 +4,12 @@ import PDFDocument from 'pdfkit';
 import path from 'path';
 import fs from 'fs';
 import {
+  AttendanceReportResult,
+  AttendanceExceptionReportResult,
+  AttendanceSessionRecord,
+  AttendanceExceptionRecord,
+} from './attendanceReportService';
+import {
   FullCycleAnalyticsResponse,
   GateCycleReport,
   getISTDateString,
@@ -2268,3 +2274,664 @@ export function exportDeviceMappingCsv(
 }
 
 
+
+
+/**
+ * ─────────────────────────────────────────────────────────────
+ * EXPORT ATTENDANCE MASTER REPORT: EXCEL (.xlsx)
+ * ─────────────────────────────────────────────────────────────
+ */
+export async function exportAttendanceExcel(
+  res: Response,
+  data: AttendanceReportResult,
+  options: { filenameBase: string }
+) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Indian Railways - Level Crossing Safety Platform';
+  workbook.created = new Date();
+
+  const sheet = workbook.addWorksheet('Attendance Muster', {
+    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+  });
+
+  const totalCols = 13;
+  const lastColLetter = 'M';
+
+  // Row 1: Government Header
+  sheet.mergeCells(`A1:${lastColLetter}1`);
+  const r1 = sheet.getCell('A1');
+  r1.value = 'GOVERNMENT OF INDIA — MINISTRY OF RAILWAYS';
+  r1.font = { name: 'Calibri', size: 12, bold: true, color: { argb: 'FFFFFFFF' } };
+  r1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
+  r1.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(1).height = 24;
+
+  // Row 2: Title
+  sheet.mergeCells(`A2:${lastColLetter}2`);
+  const r2 = sheet.getCell('A2');
+  r2.value = 'INDIAN RAILWAYS — LEVEL CROSSING PERSONNEL ATTENDANCE REPORT';
+  r2.font = { name: 'Calibri', size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
+  r2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
+  r2.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(2).height = 32;
+
+  // Row 3: Subtitle
+  sheet.mergeCells(`A3:${lastColLetter}3`);
+  const r3 = sheet.getCell('A3');
+  r3.value = `Official Duty Attendance & Biometric Audit Log (${data.startDateStr} to ${data.endDateStr})`;
+  r3.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF003580' } };
+  r3.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8D5A3' } };
+  r3.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(3).height = 22;
+
+  // Tricolor Ribbons
+  sheet.mergeCells(`A4:${lastColLetter}4`);
+  sheet.getCell('A4').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6600' } };
+  sheet.getRow(4).height = 4;
+
+  sheet.mergeCells(`A5:${lastColLetter}5`);
+  sheet.getCell('A5').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+  sheet.getRow(5).height = 3;
+
+  sheet.mergeCells(`A6:${lastColLetter}6`);
+  sheet.getCell('A6').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF046A38' } };
+  sheet.getRow(6).height = 4;
+
+  // KPI Summary Strip (Row 8)
+  const m = data.metrics;
+  const kpiRow = sheet.getRow(8);
+  sheet.mergeCells('A8:C8');
+  sheet.getCell('A8').value = `Total Shifts: ${m.totalSessions} | Completed: ${m.completedSessions} | On Duty: ${m.currentlyOnDuty}`;
+  sheet.getCell('A8').font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF1E293B' } };
+  sheet.getCell('A8').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+  sheet.getCell('A8').alignment = { vertical: 'middle' };
+
+  sheet.mergeCells('D8:G8');
+  sheet.getCell('D8').value = `On-Time Compliance: ${m.onTimePercentage}% | Late Check-Ins: ${m.lateSessions}`;
+  sheet.getCell('D8').font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF15803D' } };
+  sheet.getCell('D8').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+  sheet.getCell('D8').alignment = { vertical: 'middle' };
+
+  sheet.mergeCells('H8:M8');
+  sheet.getCell('H8').value = `Total Hours Logged: ${m.totalDutyHoursFormatted} | Gates: ${m.reportingGatesCount} | Staff: ${m.reportingStaffCount}`;
+  sheet.getCell('H8').font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF0369A1' } };
+  sheet.getCell('H8').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+  sheet.getCell('H8').alignment = { vertical: 'middle' };
+  kpiRow.height = 24;
+
+  // Table Column Headers (Row 10)
+  const headers = [
+    'S.No.', 'Date', 'Staff Name', 'Employee ID', 'Designation',
+    'LC Gate', 'Station', 'Division', 'Scheduled Shift',
+    'Check-In Time', 'Check-Out Time', 'Duty Duration', 'Status'
+  ];
+
+  const headerRow = sheet.getRow(10);
+  headers.forEach((h, idx) => {
+    const cell = headerRow.getCell(idx + 1);
+    cell.value = h;
+    cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+    };
+  });
+  headerRow.height = 26;
+
+  // Set Column Widths
+  sheet.columns = [
+    { width: 8 },  // S.No
+    { width: 14 }, // Date
+    { width: 22 }, // Staff Name
+    { width: 18 }, // Employee ID
+    { width: 15 }, // Designation
+    { width: 14 }, // LC Gate
+    { width: 16 }, // Station
+    { width: 18 }, // Division
+    { width: 20 }, // Scheduled Shift
+    { width: 16 }, // Check-In
+    { width: 16 }, // Check-Out
+    { width: 16 }, // Duration
+    { width: 15 }, // Status
+  ];
+
+  // Data Rows
+  let currentRow = 11;
+  data.records.forEach((rec, idx) => {
+    const row = sheet.getRow(currentRow);
+    const isZebra = idx % 2 === 1;
+    const bgArgb = isZebra ? 'FFF8FAFC' : 'FFFFFFFF';
+
+    const vals = [
+      idx + 1,
+      rec.date,
+      rec.user.fullName,
+      rec.user.employeeId,
+      rec.user.designation,
+      rec.gate.lcNumber,
+      rec.gate.stationName,
+      rec.gate.division,
+      `${rec.shift.name} (${rec.shift.scheduledStart}-${rec.shift.scheduledEnd})`,
+      rec.checkIn ? rec.checkIn.timeFormatted : '-',
+      rec.checkOut ? rec.checkOut.timeFormatted : (rec.dutyStatus === 'ON_DUTY' ? 'Still On Duty' : '-'),
+      rec.totalDurationFormatted,
+      rec.dutyStatus,
+    ];
+
+    vals.forEach((v, vIdx) => {
+      const cell = row.getCell(vIdx + 1);
+      cell.value = v;
+      cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF0F172A' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgArgb } };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+      };
+      cell.alignment = { vertical: 'middle', horizontal: (vIdx === 0 || vIdx === 1 || vIdx === 9 || vIdx === 10 || vIdx === 11 || vIdx === 12) ? 'center' : 'left' };
+
+      // Highlight Late / Completed status
+      if (vIdx === 12) {
+        if (v === 'LATE') {
+          cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFB45309' } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } };
+        } else if (v === 'COMPLETED') {
+          cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF15803D' } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCFCE7' } };
+        } else if (v === 'ON_DUTY') {
+          cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF1D4ED8' } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFF6FF' } };
+        }
+      }
+    });
+
+    row.height = 22;
+    currentRow++;
+  });
+
+  // Footer Sign-Off Box
+  currentRow += 2;
+  sheet.mergeCells(`B${currentRow}:E${currentRow}`);
+  sheet.getCell(`B${currentRow}`).value = 'Prepared by: वरिष्ठ सेक्शन इंजीनियर (रेलपथ-प्रभारी) कराड / SSE/P.WAY/KRD';
+  sheet.getCell(`B${currentRow}`).font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF1E3A8A' } };
+
+  sheet.mergeCells(`I${currentRow}:L${currentRow}`);
+  sheet.getCell(`I${currentRow}`).value = 'Approved by: सहायक मंडल इंजीनियर सातारा / ADEN Satara STR';
+  sheet.getCell(`I${currentRow}`).font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF6B21A8' } };
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.xlsx"`);
+  await workbook.xlsx.write(res);
+  res.end();
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────
+ * EXPORT ATTENDANCE MASTER REPORT: PDF (.pdf)
+ * ─────────────────────────────────────────────────────────────
+ */
+export async function exportAttendancePdf(
+  res: Response,
+  data: AttendanceReportResult,
+  options: { filenameBase: string }
+) {
+  const doc = new PDFDocument({
+    size: 'A4',
+    layout: 'landscape',
+    margin: 36,
+    info: {
+      Title: `LC Gate Attendance Report (${data.startDateStr} - ${data.endDateStr})`,
+      Author: 'Indian Railways - Level Crossing Safety Platform',
+    },
+  });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.pdf"`);
+  doc.pipe(res);
+
+  const { irLogoPath, azadiLogoPath } = resolveLogos();
+
+  function drawAttendanceBanner(docInstance: any, isFirstPage: boolean) {
+    if (isFirstPage) {
+      docInstance.rect(0, 0, docInstance.page.width, 75).fill(NAVY_BLUE);
+      if (irLogoPath) {
+        try { docInstance.image(irLogoPath, 36, 11, { fit: [54, 54], align: 'center', valign: 'center' }); } catch (_) {}
+      }
+      if (azadiLogoPath) {
+        try { docInstance.image(azadiLogoPath, docInstance.page.width - 100, 11, { fit: [84, 68], align: 'center', valign: 'center' }); } catch (_) {}
+      }
+
+      docInstance.fillColor('white').fontSize(9.5).font('Helvetica')
+        .text('Government of India', 0, 11, { align: 'center' })
+        .text('Ministry of Railways', 0, 24, { align: 'center' });
+
+      docInstance.fillColor('white').fontSize(17).font('Helvetica-Bold')
+        .text('INDIAN RAILWAYS', 0, 37, { align: 'center' });
+
+      docInstance.fillColor(GOLDEN_SAND).fontSize(10.5).font('Helvetica')
+        .text('Level Crossing Personnel Attendance & Duty Muster Report', 0, 58, { align: 'center' });
+
+      docInstance.rect(0, 75, docInstance.page.width, 5).fill(SAFFRON);
+      docInstance.rect(0, 80, docInstance.page.width, 5).fill('white');
+      docInstance.rect(0, 85, docInstance.page.width, 5).fill(DEEP_GREEN);
+    } else {
+      docInstance.rect(0, 0, docInstance.page.width, 24).fill(NAVY_BLUE);
+      docInstance.fillColor('white').fontSize(9).font('Helvetica-Bold')
+        .text('INDIAN RAILWAYS — Level Crossing Attendance Report (Continued)', 0, 7, { align: 'center' });
+      docInstance.rect(0, 24, docInstance.page.width, 2).fill(SAFFRON);
+    }
+  }
+
+  drawAttendanceBanner(doc, true);
+
+  // Metadata KPI Box
+  let yPos = 98;
+  doc.rect(36, yPos, doc.page.width - 72, 38).strokeColor('#CCCCCC').lineWidth(1).stroke();
+  const m = data.metrics;
+
+  doc.fillColor('#0F172A').fontSize(9).font('Helvetica-Bold')
+    .text(`Period: ${data.startDateStr} to ${data.endDateStr}`, 46, yPos + 6)
+    .text(`Total Shifts: ${m.totalSessions} (Completed: ${m.completedSessions}, On Duty: ${m.currentlyOnDuty})`, 46, yPos + 20);
+
+  doc.fillColor('#0F172A').fontSize(9).font('Helvetica-Bold')
+    .text(`Compliance: ${m.onTimePercentage}% On-Time (${m.lateSessions} Late)`, doc.page.width * 0.40, yPos + 6)
+    .text(`Total Hours: ${m.totalDutyHoursFormatted}`, doc.page.width * 0.40, yPos + 20);
+
+  doc.fillColor('#0F172A').fontSize(9).font('Helvetica-Bold')
+    .text(`Reporting Gates: ${m.reportingGatesCount}`, doc.page.width * 0.74, yPos + 6)
+    .text(`Staff Count: ${m.reportingStaffCount}`, doc.page.width * 0.74, yPos + 20);
+
+  yPos += 48;
+
+  // Table Column Definitions
+  const colX = [36, 100, 220, 290, 360, 470, 560, 650, 740];
+  const colW = [64, 120, 70, 70, 110, 90, 90, 90, 68];
+  const colHeaders = ['Date', 'Staff Name (ID)', 'Role', 'LC Gate', 'Shift', 'Check-In', 'Check-Out', 'Duty Duration', 'Status'];
+
+  function drawTableHeader(y: number) {
+    doc.rect(36, y, doc.page.width - 72, 18).fill(HEADER_BG);
+    doc.fillColor('white').fontSize(8).font('Helvetica-Bold');
+    colHeaders.forEach((h, i) => {
+      doc.text(h, colX[i] + 2, y + 4, { width: colW[i] - 4, align: i >= 5 ? 'center' : 'left' });
+    });
+  }
+
+  drawTableHeader(yPos);
+  yPos += 18;
+
+  let isZebra = false;
+  for (const rec of data.records) {
+    if (yPos > doc.page.height - 50) {
+      doc.addPage();
+      drawAttendanceBanner(doc, false);
+      yPos = 36;
+      drawTableHeader(yPos);
+      yPos += 18;
+    }
+
+    const rowHeight = 18;
+    if (isZebra) {
+      doc.rect(36, yPos, doc.page.width - 72, rowHeight).fill('#F8FAFC');
+    }
+
+    doc.fillColor('#0F172A').fontSize(7.5).font('Helvetica');
+    doc.text(rec.date, colX[0] + 2, yPos + 4, { width: colW[0] - 4, align: 'left' });
+    doc.font('Helvetica-Bold').text(`${rec.user.fullName} (${rec.user.employeeId})`, colX[1] + 2, yPos + 4, { width: colW[1] - 4, align: 'left' });
+    doc.font('Helvetica').text(rec.user.designation, colX[2] + 2, yPos + 4, { width: colW[2] - 4, align: 'left' });
+    doc.text(`${rec.gate.lcNumber}`, colX[3] + 2, yPos + 4, { width: colW[3] - 4, align: 'left' });
+    doc.text(`${rec.shift.code}`, colX[4] + 2, yPos + 4, { width: colW[4] - 4, align: 'left' });
+    doc.text(rec.checkIn ? rec.checkIn.timeFormatted : '-', colX[5] + 2, yPos + 4, { width: colW[5] - 4, align: 'center' });
+    doc.text(rec.checkOut ? rec.checkOut.timeFormatted : (rec.dutyStatus === 'ON_DUTY' ? 'On Duty' : '-'), colX[6] + 2, yPos + 4, { width: colW[6] - 4, align: 'center' });
+    doc.text(rec.totalDurationFormatted, colX[7] + 2, yPos + 4, { width: colW[7] - 4, align: 'center' });
+
+    // Status chip
+    if (rec.dutyStatus === 'LATE') {
+      doc.fillColor('#B45309').font('Helvetica-Bold').text('LATE', colX[8] + 2, yPos + 4, { width: colW[8] - 4, align: 'center' });
+    } else if (rec.dutyStatus === 'COMPLETED') {
+      doc.fillColor('#15803D').font('Helvetica-Bold').text('DONE', colX[8] + 2, yPos + 4, { width: colW[8] - 4, align: 'center' });
+    } else {
+      doc.fillColor('#1D4ED8').font('Helvetica-Bold').text('ON DUTY', colX[8] + 2, yPos + 4, { width: colW[8] - 4, align: 'center' });
+    }
+
+    doc.rect(36, yPos + rowHeight - 0.5, doc.page.width - 72, 0.5).fill('#E2E8F0');
+    yPos += rowHeight;
+    isZebra = !isZebra;
+  }
+
+  // Footer page numbers & official stamp
+  const range = doc.bufferedPageRange();
+  for (let i = range.start; i < range.start + range.count; i++) {
+    doc.switchToPage(i);
+    doc.fillColor('#64748B').fontSize(7.5).font('Helvetica')
+      .text(`Page ${i + 1} of ${range.count} • Indian Railways Confidential Safety Document`,
+        36, doc.page.height - 24, { align: 'center', width: doc.page.width - 72 });
+  }
+
+  doc.end();
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────
+ * EXPORT ATTENDANCE EXCEPTION REPORT: EXCEL (.xlsx)
+ * ─────────────────────────────────────────────────────────────
+ */
+export async function exportAttendanceExceptionExcel(
+  res: Response,
+  data: AttendanceExceptionReportResult,
+  options: { filenameBase: string }
+) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Indian Railways - Level Crossing Safety Platform';
+  workbook.created = new Date();
+
+  const sheet = workbook.addWorksheet('Safety Exceptions', {
+    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+  });
+
+  const totalCols = 12;
+  const lastColLetter = 'L';
+
+  // Row 1: Government Header
+  sheet.mergeCells(`A1:${lastColLetter}1`);
+  const r1 = sheet.getCell('A1');
+  r1.value = 'GOVERNMENT OF INDIA — MINISTRY OF RAILWAYS';
+  r1.font = { name: 'Calibri', size: 12, bold: true, color: { argb: 'FFFFFFFF' } };
+  r1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
+  r1.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(1).height = 24;
+
+  // Row 2: Title
+  sheet.mergeCells(`A2:${lastColLetter}2`);
+  const r2 = sheet.getCell('A2');
+  r2.value = 'INDIAN RAILWAYS — LEVEL CROSSING ATTENDANCE EXCEPTION & DELAY AUDIT';
+  r2.font = { name: 'Calibri', size: 15, bold: true, color: { argb: 'FFFFFFFF' } };
+  r2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003580' } };
+  r2.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(2).height = 32;
+
+  // Row 3: Subtitle
+  sheet.mergeCells(`A3:${lastColLetter}3`);
+  const r3 = sheet.getCell('A3');
+  r3.value = `Critical Safety Deviations, Unstaffed Gates & Reporting Delays (${data.startDateStr} to ${data.endDateStr})`;
+  r3.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFDC2626' } };
+  r3.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+  r3.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(3).height = 22;
+
+  // Tricolor Ribbons
+  sheet.mergeCells(`A4:${lastColLetter}4`);
+  sheet.getCell('A4').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6600' } };
+  sheet.getRow(4).height = 4;
+
+  sheet.mergeCells(`A5:${lastColLetter}5`);
+  sheet.getCell('A5').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+  sheet.getRow(5).height = 3;
+
+  sheet.mergeCells(`A6:${lastColLetter}6`);
+  sheet.getCell('A6').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF046A38' } };
+  sheet.getRow(6).height = 4;
+
+  // KPI Strip (Row 8)
+  const m = data.metrics;
+  const kpiRow = sheet.getRow(8);
+  sheet.mergeCells('A8:C8');
+  sheet.getCell('A8').value = `Total Exceptions: ${m.totalExceptions} | Late Arrivals: ${m.lateArrivalsCount}`;
+  sheet.getCell('A8').font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF991B1B' } };
+  sheet.getCell('A8').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+  sheet.getCell('A8').alignment = { vertical: 'middle' };
+
+  sheet.mergeCells('D8:G8');
+  sheet.getCell('D8').value = `CRITICAL Unstaffed Gates: ${m.unstaffedGateCount} | Geofence Breaches: ${m.geofenceBreachCount}`;
+  sheet.getCell('D8').font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFDC2626' } };
+  sheet.getCell('D8').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+  sheet.getCell('D8').alignment = { vertical: 'middle' };
+
+  sheet.mergeCells('H8:L8');
+  sheet.getCell('H8').value = `Total Delay Accumulated: ${m.totalDelayHoursFormatted} | Safety Compliance: ${m.safetyComplianceScore}%`;
+  sheet.getCell('H8').font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF0F172A' } };
+  sheet.getCell('H8').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+  sheet.getCell('H8').alignment = { vertical: 'middle' };
+  kpiRow.height = 24;
+
+  // Table Column Headers (Row 10)
+  const headers = [
+    'S.No.', 'Date', 'Severity', 'Exception Category', 'Staff Name',
+    'Emp ID', 'LC Gate', 'Station', 'Shift Schedule', 'Delay / Deviation', 'Incident Description', 'Action Protocol'
+  ];
+
+  const headerRow = sheet.getRow(10);
+  headers.forEach((h, idx) => {
+    const cell = headerRow.getCell(idx + 1);
+    cell.value = h;
+    cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF991B1B' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+    };
+  });
+  headerRow.height = 26;
+
+  sheet.columns = [
+    { width: 8 },  // S.No
+    { width: 14 }, // Date
+    { width: 14 }, // Severity
+    { width: 22 }, // Category
+    { width: 22 }, // Staff Name
+    { width: 18 }, // Emp ID
+    { width: 14 }, // Gate
+    { width: 16 }, // Station
+    { width: 18 }, // Shift
+    { width: 18 }, // Delay
+    { width: 34 }, // Description
+    { width: 28 }, // Action
+  ];
+
+  let currentRow = 11;
+  data.exceptions.forEach((exc, idx) => {
+    const row = sheet.getRow(currentRow);
+    const isCritical = exc.severity === 'CRITICAL';
+    const isModerate = exc.severity === 'MODERATE';
+    const bgArgb = isCritical ? 'FFFEE2E2' : isModerate ? 'FFFFEDD5' : 'FFFFFBEB';
+
+    const vals = [
+      idx + 1,
+      exc.date,
+      exc.severity,
+      exc.severityLabel,
+      exc.user?.fullName || 'Unassigned',
+      exc.user?.employeeId || '-',
+      exc.gate.lcNumber,
+      exc.gate.stationName,
+      `${exc.shift.name} (${exc.shift.scheduledStart}-${exc.shift.scheduledEnd})`,
+      exc.delayFormatted,
+      exc.description,
+      exc.correctiveAction,
+    ];
+
+    vals.forEach((v, vIdx) => {
+      const cell = row.getCell(vIdx + 1);
+      cell.value = v;
+      cell.font = { name: 'Calibri', size: 9.5, color: { argb: isCritical ? 'FF7F1D1D' : 'FF0F172A' }, bold: (vIdx === 2 || isCritical) };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgArgb } };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+      };
+      cell.alignment = { vertical: 'middle', horizontal: (vIdx === 0 || vIdx === 1 || vIdx === 2 || vIdx === 6 || vIdx === 9) ? 'center' : 'left', wrapText: true };
+    });
+
+    row.height = 24;
+    currentRow++;
+  });
+
+  // Footer Signatures
+  currentRow += 2;
+  sheet.mergeCells(`B${currentRow}:E${currentRow}`);
+  sheet.getCell(`B${currentRow}`).value = 'Reported by: वरिष्ठ सेक्शन इंजीनियर (रेलपथ-प्रभारी) कराड / SSE/P.WAY/KRD';
+  sheet.getCell(`B${currentRow}`).font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF1E3A8A' } };
+
+  sheet.mergeCells(`H${currentRow}:K${currentRow}`);
+  sheet.getCell(`H${currentRow}`).value = 'Audited by: सहायक मंडल इंजीनियर सातारा / ADEN Satara STR';
+  sheet.getCell(`H${currentRow}`).font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF991B1B' } };
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.xlsx"`);
+  await workbook.xlsx.write(res);
+  res.end();
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────
+ * EXPORT ATTENDANCE EXCEPTION REPORT: PDF (.pdf)
+ * ─────────────────────────────────────────────────────────────
+ */
+export async function exportAttendanceExceptionPdf(
+  res: Response,
+  data: AttendanceExceptionReportResult,
+  options: { filenameBase: string }
+) {
+  const doc = new PDFDocument({
+    size: 'A4',
+    layout: 'landscape',
+    margin: 36,
+    info: {
+      Title: `LC Gate Attendance Exception Audit (${data.startDateStr} - ${data.endDateStr})`,
+      Author: 'Indian Railways - Level Crossing Safety Platform',
+    },
+  });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${options.filenameBase}.pdf"`);
+  doc.pipe(res);
+
+  const { irLogoPath, azadiLogoPath } = resolveLogos();
+
+  function drawExceptionBanner(docInstance: any, isFirstPage: boolean) {
+    if (isFirstPage) {
+      docInstance.rect(0, 0, docInstance.page.width, 75).fill('#7F1D1D'); // Deep Crimson
+      if (irLogoPath) {
+        try { docInstance.image(irLogoPath, 36, 11, { fit: [54, 54], align: 'center', valign: 'center' }); } catch (_) {}
+      }
+      if (azadiLogoPath) {
+        try { docInstance.image(azadiLogoPath, docInstance.page.width - 100, 11, { fit: [84, 68], align: 'center', valign: 'center' }); } catch (_) {}
+      }
+
+      docInstance.fillColor('white').fontSize(9.5).font('Helvetica')
+        .text('Government of India', 0, 11, { align: 'center' })
+        .text('Ministry of Railways', 0, 24, { align: 'center' });
+
+      docInstance.fillColor('white').fontSize(16).font('Helvetica-Bold')
+        .text('INDIAN RAILWAYS', 0, 37, { align: 'center' });
+
+      docInstance.fillColor('#FDE047').fontSize(10.5).font('Helvetica-Bold')
+        .text('LEVEL CROSSING ATTENDANCE EXCEPTION & SAFETY AUDIT REPORT', 0, 58, { align: 'center' });
+
+      docInstance.rect(0, 75, docInstance.page.width, 5).fill(SAFFRON);
+      docInstance.rect(0, 80, docInstance.page.width, 5).fill('white');
+      docInstance.rect(0, 85, docInstance.page.width, 5).fill(DEEP_GREEN);
+    } else {
+      docInstance.rect(0, 0, docInstance.page.width, 24).fill('#7F1D1D');
+      docInstance.fillColor('white').fontSize(9).font('Helvetica-Bold')
+        .text('INDIAN RAILWAYS — Attendance Exception Audit (Continued)', 0, 7, { align: 'center' });
+      docInstance.rect(0, 24, docInstance.page.width, 2).fill(SAFFRON);
+    }
+  }
+
+  drawExceptionBanner(doc, true);
+
+  // Metadata KPI Box
+  let yPos = 98;
+  doc.rect(36, yPos, doc.page.width - 72, 38).fillAndStroke('#FFF1F2', '#FECDD3');
+  const m = data.metrics;
+
+  doc.fillColor('#991B1B').fontSize(9).font('Helvetica-Bold')
+    .text(`Period: ${data.startDateStr} to ${data.endDateStr}`, 46, yPos + 6)
+    .text(`Total Exceptions: ${m.totalExceptions} (${m.lateArrivalsCount} Late Arrivals)`, 46, yPos + 20);
+
+  doc.fillColor('#991B1B').fontSize(9).font('Helvetica-Bold')
+    .text(`CRITICAL Unstaffed Gates: ${m.unstaffedGateCount}`, doc.page.width * 0.40, yPos + 6)
+    .text(`Geofence Breaches: ${m.geofenceBreachCount}`, doc.page.width * 0.40, yPos + 20);
+
+  doc.fillColor('#991B1B').fontSize(9).font('Helvetica-Bold')
+    .text(`Total Accumulated Delay: ${m.totalDelayHoursFormatted}`, doc.page.width * 0.70, yPos + 6)
+    .text(`Safety Compliance Score: ${m.safetyComplianceScore}%`, doc.page.width * 0.70, yPos + 20);
+
+  yPos += 48;
+
+  const colX = [36, 95, 160, 270, 340, 420, 500, 680];
+  const colW = [59, 65, 110, 70, 80, 80, 180, 128];
+  const colHeaders = ['Date', 'Severity', 'Staff Name', 'LC Gate', 'Shift', 'Deviation', 'Incident Description', 'Action Protocol'];
+
+  function drawExcTableHeader(y: number) {
+    doc.rect(36, y, doc.page.width - 72, 18).fill('#991B1B');
+    doc.fillColor('white').fontSize(8).font('Helvetica-Bold');
+    colHeaders.forEach((h, i) => {
+      doc.text(h, colX[i] + 2, y + 4, { width: colW[i] - 4, align: i === 1 || i === 3 ? 'center' : 'left' });
+    });
+  }
+
+  drawExcTableHeader(yPos);
+  yPos += 18;
+
+  for (const exc of data.exceptions) {
+    if (yPos > doc.page.height - 50) {
+      doc.addPage();
+      drawExceptionBanner(doc, false);
+      yPos = 36;
+      drawExcTableHeader(yPos);
+      yPos += 18;
+    }
+
+    const isCritical = exc.severity === 'CRITICAL';
+    const rowBg = isCritical ? '#FEE2E2' : '#FFFBEB';
+    const rowHeight = 22;
+
+    doc.rect(36, yPos, doc.page.width - 72, rowHeight).fill(rowBg);
+
+    doc.fillColor('#0F172A').fontSize(7.5).font('Helvetica');
+    doc.text(exc.date, colX[0] + 2, yPos + 5, { width: colW[0] - 4 });
+
+    // Severity badge
+    doc.fillColor(isCritical ? '#DC2626' : '#D97706').font('Helvetica-Bold')
+      .text(exc.severity, colX[1] + 2, yPos + 5, { width: colW[1] - 4, align: 'center' });
+
+    doc.fillColor('#0F172A').font('Helvetica')
+      .text(exc.user?.fullName || 'Unassigned', colX[2] + 2, yPos + 5, { width: colW[2] - 4 });
+
+    doc.text(exc.gate.lcNumber, colX[3] + 2, yPos + 5, { width: colW[3] - 4, align: 'center' });
+    doc.text(exc.shift.code, colX[4] + 2, yPos + 5, { width: colW[4] - 4 });
+
+    doc.fillColor(isCritical ? '#DC2626' : '#B45309').font('Helvetica-Bold')
+      .text(exc.delayFormatted, colX[5] + 2, yPos + 5, { width: colW[5] - 4 });
+
+    doc.fillColor('#0F172A').font('Helvetica')
+      .text(exc.description, colX[6] + 2, yPos + 2, { width: colW[6] - 4, lineBreak: false, ellipsis: true });
+
+    doc.fillColor('#64748B').fontSize(7)
+      .text(exc.correctiveAction, colX[7] + 2, yPos + 2, { width: colW[7] - 4, lineBreak: false, ellipsis: true });
+
+    doc.rect(36, yPos + rowHeight - 0.5, doc.page.width - 72, 0.5).fill('#CBD5E1');
+    yPos += rowHeight;
+  }
+
+  const range = doc.bufferedPageRange();
+  for (let i = range.start; i < range.start + range.count; i++) {
+    doc.switchToPage(i);
+    doc.fillColor('#64748B').fontSize(7.5).font('Helvetica')
+      .text(`Page ${i + 1} of ${range.count} • Ministry of Railways Safety Audit Exception Log`,
+        36, doc.page.height - 24, { align: 'center', width: doc.page.width - 72 });
+  }
+
+  doc.end();
+}
