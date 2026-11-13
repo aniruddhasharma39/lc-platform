@@ -445,33 +445,42 @@ router.post('/mark', authenticate, upload.single('image'), async (req: AuthReque
       faceMatchThreshold: DEFAULT_SIMILARITY_THRESHOLD,
     });
 
-    if (searchRes.success && searchRes.matchedFaceId === user.faceId) {
-      faceMatched = true;
-      similarityScore = searchRes.similarity || 98.0;
-    } else if (searchRes.success && searchRes.similarity && searchRes.similarity >= DEFAULT_SIMILARITY_THRESHOLD) {
-      faceMatched = true;
-      similarityScore = searchRes.similarity;
-    } else {
-      // Direct comparison with enrolled reference image if collection search returned empty
-      if (user.faceImageKey && fs.existsSync(path.join(process.cwd(), user.faceImageKey))) {
-        const refBytes = fs.readFileSync(path.join(process.cwd(), user.faceImageKey));
-        const compRes = await compareFaceImages({
-          sourceBytes: refBytes,
-          targetBytes: imageBuffer,
-          similarityThreshold: DEFAULT_SIMILARITY_THRESHOLD,
-        });
-        if (compRes.success && compRes.isMatch) {
+    // Expected ExternalImageId format: emp_{employeeId}
+    const expectedExternalId = `emp_${user.employeeId}`.replace(/[^a-zA-Z0-9_.\-:]/g, '_');
+
+    if (searchRes.success) {
+      const isMatchedToThisUser =
+        (user.faceId && searchRes.matchedFaceId === user.faceId) ||
+        (searchRes.externalImageId && searchRes.externalImageId === expectedExternalId);
+
+      if (isMatchedToThisUser) {
+        if ((searchRes.similarity ?? 0) >= DEFAULT_SIMILARITY_THRESHOLD) {
           faceMatched = true;
-          similarityScore = compRes.similarity || 95.5;
+          similarityScore = searchRes.similarity!;
         }
+      } else {
+        // PROXY DETECTED: The camera captured a face that belongs to ANOTHER employee in the database!
+        console.warn(`[Proxy Detection] Logged in as ${user.employeeId} (${user.fullName}), but live face matched another staff member: ${searchRes.externalImageId} (${searchRes.matchedFaceId})!`);
+        return res.status(401).json({
+          success: false,
+          code: 'PROXY_FACE_DETECTED',
+          error: `Biometric verification failed: The face in front of the camera belongs to another registered employee (${searchRes.externalImageId}). Proxy attendance is strictly prohibited under Indian Railways safety rules.`,
+        });
       }
     }
 
-    // Fallback in test/offline environment
-    if (!faceMatched && (process.env.NODE_ENV === 'test' || !process.env.AWS_ACCESS_KEY_ID)) {
-      console.warn('[Rekognition] Mocking biometric match in test/offline environment');
-      faceMatched = true;
-      similarityScore = 98.6;
+    // 1:1 Fallback comparison directly against enrolled reference image (only for this user)
+    if (!faceMatched && user.faceImageKey && fs.existsSync(path.join(process.cwd(), user.faceImageKey))) {
+      const refBytes = fs.readFileSync(path.join(process.cwd(), user.faceImageKey));
+      const compRes = await compareFaceImages({
+        sourceBytes: refBytes,
+        targetBytes: imageBuffer,
+        similarityThreshold: DEFAULT_SIMILARITY_THRESHOLD,
+      });
+      if (compRes.success && compRes.isMatch && (compRes.similarity ?? 0) >= DEFAULT_SIMILARITY_THRESHOLD) {
+        faceMatched = true;
+        similarityScore = compRes.similarity!;
+      }
     }
 
     if (!faceMatched) {
@@ -480,7 +489,7 @@ router.post('/mark', authenticate, upload.single('image'), async (req: AuthReque
         code: 'FACE_NOT_MATCHED',
         similarityScore: Math.round(similarityScore),
         threshold: DEFAULT_SIMILARITY_THRESHOLD,
-        error: `Facial verification failed (${Math.round(similarityScore)}% similarity). A minimum of ${DEFAULT_SIMILARITY_THRESHOLD}% match is required for Indian Railways safety standards.`,
+        error: `Facial verification failed: Your face does not match the registered profile for ${user.fullName} (${user.employeeId}). Please ensure good lighting and face the camera directly.`,
       });
     }
 
