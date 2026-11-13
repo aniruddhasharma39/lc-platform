@@ -11,6 +11,7 @@ import 'registration_builder_screen.dart';
 import 'cluster/cluster_main_screen.dart';
 import 'profile_screen.dart';
 import 'duty_roster_screen.dart';
+import 'attendance/face_enrollment_screen.dart';
 
 import 'device_registry/device_registry_screen.dart';
 import 'lc_gates/lc_gates_screen.dart';
@@ -109,6 +110,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int? _targetGateId;
   String? _targetGateTab;
   int? _activeGateId;
+  bool _isFaceEnrolled = true;
 
   String get _userId => resolveCurrentUserId(user: widget.user);
 
@@ -277,6 +279,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
     _fetchAuxiliaryData();
     _fetchNotifications();
+    _fetchFaceEnrollmentStatus();
     _notifsTimer = Timer.periodic(const Duration(seconds: 30), (_) => _fetchNotifications());
   }
 
@@ -348,6 +351,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
         LCGatesCacheService.instance.hardClear(_userId);
         ReportsCacheService.instance.clearUserCache(_userId);
         widget.onLogout();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _fetchFaceEnrollmentStatus() async {
+    final rn = (widget.user['role'] ?? widget.user['designation'] ?? '').toString().toLowerCase();
+    if (!rn.contains('gateman') && !rn.contains('restkeeper')) return;
+
+    try {
+      final token = await _getToken();
+      if (token.isEmpty) return;
+      final res = await http.get(
+        Uri.parse('$baseUrl/attendance/enrollment-status'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (mounted && data is Map) {
+          setState(() {
+            _isFaceEnrolled = data['isFaceEnrolled'] == true;
+          });
+        }
       }
     } catch (_) {}
   }
@@ -919,7 +944,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
       }
     } finally {
-      if (mounted) setState(() => _isSyncing = false);
+      if (mounted) {
+        setState(() => _isSyncing = false);
+        _fetchFaceEnrollmentStatus();
+      }
     }
   }
 
@@ -1725,6 +1753,45 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 },
               ),
             ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              child: ListTile(
+                dense: true,
+                tileColor: Colors.transparent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                title: const Text(
+                  'Facial Biometrics',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w500,
+                    color: Color(0xFF1E293B),
+                    fontSize: 13.5,
+                  ),
+                ),
+                leading: const Icon(
+                  Icons.face_retouching_natural,
+                  color: Color(0xFF64748B),
+                ),
+                trailing: _isFaceEnrolled
+                    ? const Icon(Icons.check_circle, color: Color(0xFF16A34A), size: 16)
+                    : const Icon(Icons.warning_amber_rounded, color: Color(0xFFD97706), size: 16),
+                onTap: () async {
+                  final nav = Navigator.of(context);
+                  nav.pop();
+                  final token = await _getToken();
+                  if (!mounted) return;
+                  await nav.push(
+                    MaterialPageRoute(
+                      builder: (ctx) => FaceEnrollmentScreen(
+                        user: widget.user,
+                        token: token,
+                        onEnrollmentComplete: _fetchFaceEnrollmentStatus,
+                      ),
+                    ),
+                  );
+                  _fetchFaceEnrollmentStatus();
+                },
+              ),
+            ),
             ..._systemModules.where((m) {
               final slug = (m['slug'] ?? '').toString().toLowerCase();
               final name = (m['name'] ?? '').toString().toLowerCase();
@@ -1908,6 +1975,77 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
 
             const SizedBox(height: 18),
+
+            // Mandatory Facial Biometrics Registration Banner (For Gateman & Restkeeper)
+            if (!_isFaceEnrolled && (roleName.toLowerCase().contains('gateman') || roleName.toLowerCase().contains('restkeeper'))) ...[
+              InkWell(
+                onTap: () async {
+                  final nav = Navigator.of(context);
+                  final token = await _getToken();
+                  if (!mounted) return;
+                  await nav.push(
+                    MaterialPageRoute(
+                      builder: (ctx) => FaceEnrollmentScreen(
+                        user: widget.user,
+                        token: token,
+                        onEnrollmentComplete: _fetchFaceEnrollmentStatus,
+                      ),
+                    ),
+                  );
+                  _fetchFaceEnrollmentStatus();
+                },
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF2F2),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFF87171), width: 1.5),
+                    boxShadow: [
+                      BoxShadow(color: Colors.red.withValues(alpha: 0.08), blurRadius: 6, offset: const Offset(0, 2)),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEE2E2),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.face_retouching_natural, color: Color(0xFFDC2626), size: 22),
+                      ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Action Required: Register Face Biometrics',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Color(0xFF991B1B)),
+                            ),
+                            SizedBox(height: 2),
+                            Text(
+                              'One-time facial registration required before shift check-in',
+                              style: TextStyle(fontSize: 11.5, color: Color(0xFFB91C1C)),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFDC2626),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text('Register', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
 
             // Duty Roster Quick Access Card
             InkWell(
