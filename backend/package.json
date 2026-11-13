@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-iot-data-plane": "^3.1156.0",
+    "@aws-sdk/client-rekognition": "^3.1168.0",
     "@prisma/client": "^5.13.0",
     "@types/ws": "^8.18.2",
     "bcrypt": "^6.0.0",

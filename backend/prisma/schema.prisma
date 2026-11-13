@@ -60,6 +60,18 @@ model User {
   // Roster relations
   assignedRosters     GateDutyRoster[]       @relation("AssignedGateman")
   createdRosters      GateDutyRoster[]       @relation("RosterCreator")
+
+  // Facial Biometrics & Attendance
+  isFaceEnrolled       Boolean                @default(false)
+  faceId               String?
+  faceImageKey         String?
+  faceEnrolledAt       DateTime?
+  faceEnrollConfidence Float?
+  faceLockoutUntil     DateTime?
+  shiftAttendances     ShiftAttendance[]      @relation("UserAttendances")
+  approvedAttendances  ShiftAttendance[]      @relation("AttendanceApprover")
+  faceReenrollments    FaceReenrollmentRequest[] @relation("UserReenrollments")
+  reviewedReenrollments FaceReenrollmentRequest[] @relation("ReenrollmentReviewer")
 }
 
 model RefreshToken {
@@ -172,6 +184,7 @@ model LCGate {
   userGates        UserGate[]
   shiftConfigs     GateShiftConfig[]
   dutyRosters      GateDutyRoster[]
+  shiftAttendances ShiftAttendance[]
 }
 
 model MasterUnit {
@@ -429,6 +442,7 @@ model Station {
   registrationRequests RegistrationRequest[]
   shiftConfigs         GateShiftConfig[]
   dutyRosters          GateDutyRoster[]
+  shiftAttendances     ShiftAttendance[]
 
   @@index([zone, division])
   @@index([code])
@@ -479,8 +493,73 @@ model GateDutyRoster {
   notifiedAt     DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+  shiftAttendances ShiftAttendance[]
 
   @@unique([gateId, date, shiftName])
   @@index([stationId, date])
   @@index([gatemanUserId])
 }
+
+model ShiftAttendance {
+  id               Int             @id @default(autoincrement())
+  userId           Int
+  user             User            @relation("UserAttendances", fields: [userId], references: [id], onDelete: Cascade)
+  rosterId         Int?
+  roster           GateDutyRoster? @relation(fields: [rosterId], references: [id], onDelete: SetNull)
+  gateId           Int?
+  gate             LCGate?         @relation(fields: [gateId], references: [id], onDelete: SetNull)
+  stationId        Int
+  station          Station         @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  date             String          // YYYY-MM-DD
+  shiftName        String          // e.g. "Morning Shift (06:00 - 14:00)"
+  type             String          // "CHECK_IN" or "CHECK_OUT"
+  timestamp        DateTime        @default(now())
+
+  // Geofence audit
+  latitude         Float
+  longitude        Float
+  distanceMeters   Float           // Computed distance from target gate or station
+  geofencePassed   Boolean         @default(false)
+
+  // Biometric audit
+  similarityScore  Float?          // e.g. 98.6%
+  livenessPassed   Boolean         @default(true)
+  selfieUrl        String?         // Audit thumbnail or file path
+
+  // Shift compliance status
+  status           String          @default("PRESENT") // PRESENT, LATE, EARLY_LEAVING, OVERTIME, MANUAL_PENDING, MANUAL_APPROVED, REJECTED
+  minutesLate      Int             @default(0)
+
+  // Fallback audit
+  isManualFallback Boolean         @default(false)
+  fallbackReason   String?
+  approvedById     Int?
+  approvedBy       User?           @relation("AttendanceApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt       DateTime?
+
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  @@index([userId, date])
+  @@index([gateId, date])
+  @@index([stationId, date])
+}
+
+model FaceReenrollmentRequest {
+  id             Int       @id @default(autoincrement())
+  userId         Int
+  user           User      @relation("UserReenrollments", fields: [userId], references: [id], onDelete: Cascade)
+  reason         String    // e.g. "Facial injury / surgery", "Camera quality issue", "Appearance update"
+  status         String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  requestedAt    DateTime  @default(now())
+  reviewedById   Int?
+  reviewedBy     User?     @relation("ReenrollmentReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt     DateTime?
+  rejectionNotes String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
