@@ -662,7 +662,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                         SizedBox(
                                           height: 48,
                                           child: ElevatedButton(
-                                            onPressed: _isSendingOtp ? null : _sendMobileOtp,
+                                            onPressed: (_isSendingOtp || _otpResendCountdown > 0) ? null : _sendMobileOtp,
                                             style: ElevatedButton.styleFrom(
                                               backgroundColor: AppColors.primary,
                                               foregroundColor: Colors.white,
@@ -675,7 +675,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                                     height: 16,
                                                     child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                                                   )
-                                                : Text(_otpSent ? 'Resend' : 'Verify', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                                : Text(
+                                                    _otpResendCountdown > 0
+                                                        ? '${_otpResendCountdown}s'
+                                                        : (_otpSent ? 'Resend' : 'Verify'),
+                                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                                  ),
                                           ),
                                         )
                                       else

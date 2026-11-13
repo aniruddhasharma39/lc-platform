@@ -115,8 +115,87 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final _userSearchCtrl = TextEditingController();
   String _userSearchQuery = '';
   String _userStatusFilter = 'ALL';
+  String _userDepartmentFilter = 'ALL';
+  List<dynamic> _allGates = [];
   final Map<int, int> _pendingRoleSelections = {};
   final Map<int, String> _requestApprovalStates = {}; // 'PENDING' | 'APPROVING' | 'APPROVED' | 'REJECTING'
+
+  static const Map<String, int> _roleSeniority = {
+    // Engineering Department
+    'senior den': 10,
+    'den': 20,
+    'aden': 30,
+    'engineering supervisor': 40,
+    'gateman': 50,
+
+    // Operating Department
+    'senior dom': 110,
+    'dom': 120,
+    'adom/aom': 130,
+    'adom': 130,
+    'aom': 130,
+    'station master': 140,
+
+    // Developer / Apex
+    'developer': 1,
+  };
+
+  static String _getDepartmentForRole(String roleName) {
+    final rn = roleName.trim().toLowerCase();
+    if (rn == 'developer') return 'ADMIN';
+    if (rn.contains('den') || rn.contains('engineering') || rn.contains('gateman')) {
+      return 'ENGINEERING';
+    }
+    if (rn.contains('dom') || rn.contains('operating') || rn.contains('station master') || rn.contains('traffic')) {
+      return 'OPERATING';
+    }
+    return 'OTHER';
+  }
+
+  String _cleanLcNumber(dynamic gateObjOrStr) {
+    if (gateObjOrStr == null) return '';
+    String raw = '';
+    if (gateObjOrStr is Map) {
+      raw = (gateObjOrStr['lcNumber'] ?? gateObjOrStr['name'] ?? '').toString();
+      if (raw.isEmpty && gateObjOrStr['id'] != null) {
+        final gId = gateObjOrStr['id'].toString();
+        final match = _allGates.firstWhere(
+          (g) => g is Map && g['id']?.toString() == gId,
+          orElse: () => null,
+        );
+        if (match != null && match is Map) {
+          raw = (match['lcNumber'] ?? match['name'] ?? '').toString();
+        }
+      }
+    } else {
+      raw = gateObjOrStr.toString();
+    }
+    raw = raw.trim();
+    if (raw.isEmpty) return '';
+
+    // If matches 'Gate 292' or '#292' or pure number '292'
+    final gateIdMatch = RegExp(r'^(?:Gate\s+|#)?(\d+)$', caseSensitive: false).firstMatch(raw);
+    if (gateIdMatch != null) {
+      final gId = gateIdMatch.group(1);
+      final match = _allGates.firstWhere(
+        (g) => g is Map && g['id']?.toString() == gId,
+        orElse: () => null,
+      );
+      if (match != null && match is Map && match['lcNumber'] != null && match['lcNumber'].toString().isNotEmpty) {
+        return match['lcNumber'].toString().trim();
+      }
+    }
+
+    // Strip parentheses e.g. '(Gate 292)' or '(Km ...)'
+    String cleaned = raw.replaceAll(RegExp(r'\s*\([^)]*\)', caseSensitive: false), '');
+    // Strip trailing '- Km 114/2-3'
+    cleaned = cleaned.replaceAll(RegExp(r'\s*-\s*Km.*$', caseSensitive: false), '');
+    // Replace 'Level Crossing 30' or 'Level Crossing-30' with 'LC-30'
+    cleaned = cleaned.replaceAll(RegExp(r'^Level Crossing\s*-?\s*', caseSensitive: false), 'LC-');
+    cleaned = cleaned.trim();
+
+    return cleaned.isNotEmpty ? cleaned : raw;
+  }
 
   // Notifications State
   List<dynamic> _notifications = [];
@@ -150,6 +229,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _lastSyncedAt = cached.lastSyncedAt;
         _loadingSummary = false;
         final gates = _dashboardSummary!['gates'] as List? ?? [];
+        if (_allGates.isEmpty && gates.isNotEmpty) {
+          _allGates = gates;
+        }
         if (gates.isNotEmpty && _activeGateId == null) {
           _activeGateId = gates[0]['id'];
         }
@@ -751,6 +833,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _lastSyncedAt = result.cacheData!.lastSyncedAt;
             _loadingSummary = false;
             final gates = _dashboardSummary!['gates'] as List? ?? [];
+            if (_allGates.isEmpty && gates.isNotEmpty) {
+              _allGates = gates;
+            }
             if (gates.isNotEmpty && _activeGateId == null) {
               _activeGateId = gates[0]['id'];
             }
@@ -831,6 +916,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           final data = json.decode(resUsers.body);
           _users = data is Map && data['users'] != null ? data['users'] : [];
           _pendingRequests = data is Map && data['pendingRequests'] != null ? data['pendingRequests'] : [];
+          if (data is Map && data['gates'] != null && data['gates'] is List) {
+            _allGates = data['gates'];
+          } else if (_allGates.isEmpty && _dashboardSummary?['gates'] != null && _dashboardSummary!['gates'] is List) {
+            _allGates = _dashboardSummary!['gates'];
+          }
         } catch (_) {}
         
         try {
@@ -887,6 +977,172 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   List<dynamic> _pendingRequests = [];
+
+  Future<void> _showApprovalConfirmationDialog(
+    BuildContext context,
+    Map<String, dynamic> req,
+    int? targetRoleId,
+    String assignedRoleName,
+    String displayName,
+  ) async {
+    final reqStation = req['station'];
+    int? chosenStationId = req['stationId'] ?? (reqStation is Map ? reqStation['id'] : null);
+    final List<dynamic> requestedGates = req['requestedGates'] is List ? req['requestedGates'] : [];
+
+    int? chosenGateId;
+    if (requestedGates.isNotEmpty && requestedGates[0] is Map && requestedGates[0]['id'] != null) {
+      chosenGateId = requestedGates[0]['id'] is int
+          ? requestedGates[0]['id'] as int
+          : int.tryParse(requestedGates[0]['id'].toString());
+    }
+
+    final availableGates = List<dynamic>.from(_allGates);
+    for (var rg in requestedGates) {
+      if (rg is Map && rg['id'] != null && !availableGates.any((g) => g['id']?.toString() == rg['id']?.toString())) {
+        availableGates.add(rg);
+      }
+    }
+
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 20,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFDCFCE7),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(Icons.verified_user_rounded, color: AppColors.success, size: 22),
+                      ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Text(
+                          'Confirm Registration Approval',
+                          style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.grey.shade200),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Candidate: $displayName', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        const SizedBox(height: 4),
+                        Text('Role to Assign: $assignedRoleName', style: const TextStyle(fontSize: 13, color: Color(0xFF1D4ED8), fontWeight: FontWeight.w600)),
+                        if (reqStation != null && reqStation is Map) ...[
+                          const SizedBox(height: 4),
+                          Text('Station: ${reqStation['name'] ?? ''} (${reqStation['code'] ?? ''})', style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text('LC Gate Assignment:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  DropdownButtonFormField<int?>(
+                    value: chosenGateId,
+                    decoration: InputDecoration(
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      hintText: 'Select LC Gate',
+                    ),
+                    items: [
+                      const DropdownMenuItem<int?>(
+                        value: null,
+                        child: Text('No Gate / Divisional Jurisdiction', style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey)),
+                      ),
+                      ...availableGates.map((g) {
+                        final clean = _cleanLcNumber(g);
+                        final loc = (g['locationName'] != null && g['locationName'].toString().isNotEmpty)
+                            ? ' - ${g['locationName']}'
+                            : '';
+                        final isReq = requestedGates.any((rg) => rg['id']?.toString() == g['id']?.toString());
+                        final gId = g['id'] is int ? g['id'] as int : int.tryParse(g['id'].toString());
+                        return DropdownMenuItem<int?>(
+                          value: gId,
+                          child: Text('$clean$loc${isReq ? ' (Requested)' : ''}', overflow: TextOverflow.ellipsis),
+                        );
+                      }),
+                    ],
+                    onChanged: (val) {
+                      setModalState(() => chosenGateId = val);
+                    },
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)),
+                          child: const Text('Cancel'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.success,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text('Approve & Assign', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (confirmed == true) {
+      final body = <String, dynamic>{};
+      if (targetRoleId != null) {
+        body['roleId'] = targetRoleId;
+      }
+      if (chosenStationId != null) {
+        body['stationId'] = chosenStationId;
+      }
+      if (chosenGateId != null) {
+        body['gateIds'] = [chosenGateId];
+      }
+      _actionUser(req['id'], 'approve', body, true, displayName, assignedRoleName);
+    }
+  }
 
   Future<void> _actionUser(
     int id,
@@ -2570,6 +2826,75 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 }),
                 const SizedBox(height: 8),
 
+                // Clean Station and Requested Gate display
+                Builder(
+                  builder: (context) {
+                    final reqStation = req['station'];
+                    final stationStr = reqStation is Map
+                        ? '${reqStation['name'] ?? ''} (${reqStation['code'] ?? ''})'.trim()
+                        : (reqData['station']?.toString() ?? '');
+
+                    final List<dynamic> requestedGates = req['requestedGates'] is List ? req['requestedGates'] : [];
+                    String requestedGateStr = '';
+                    if (requestedGates.isNotEmpty) {
+                      requestedGateStr = requestedGates.map((g) => _cleanLcNumber(g)).where((s) => s.isNotEmpty).join(', ');
+                    } else if (reqData['gateids'] != null || reqData['gateId'] != null) {
+                      final rawG = reqData['gateids'] ?? reqData['gateId'];
+                      if (rawG is List) {
+                        requestedGateStr = rawG.map((g) => _cleanLcNumber(g)).where((s) => s.isNotEmpty).join(', ');
+                      } else {
+                        requestedGateStr = _cleanLcNumber(rawG);
+                      }
+                    }
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (stationStr.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(flex: 2, child: Text('Station', style: TextStyle(color: Colors.grey.shade700, fontSize: 13, fontWeight: FontWeight.w600))),
+                                Expanded(flex: 3, child: Text(stationStr, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF1E293B)))),
+                              ],
+                            ),
+                          ),
+                        if (requestedGateStr.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(flex: 2, child: Text('Requested Gate', style: TextStyle(color: Colors.grey.shade700, fontSize: 13, fontWeight: FontWeight.w600))),
+                                Expanded(
+                                  flex: 3,
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFEFF6FF),
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(color: const Color(0xFFBFDBFE)),
+                                      ),
+                                      child: Text(
+                                        requestedGateStr,
+                                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8)),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    );
+                  },
+                ),
+                const SizedBox(height: 6),
+
                 // Role approval section:
                 // Admin only can change/assign a role. Other users strictly approve the requested role.
                 if (_isDeveloper && allowedRoles.isNotEmpty) ...[
@@ -2670,7 +2995,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               assignedRoleName = matchedRole['name'];
                             }
                           }
-                          _actionUser(reqId, 'approve', {'roleId': targetRoleToAssign}, true, displayName, assignedRoleName);
+                          _showApprovalConfirmationDialog(
+                            context,
+                            req,
+                            targetRoleToAssign,
+                            assignedRoleName,
+                            displayName,
+                          );
                         },
                         child: reqState == 'APPROVING'
                             ? Row(
@@ -2862,6 +3193,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   String? _expandedRole;
 
+  Widget _buildDeptFilterChip(String dept, String label) {
+    final isSelected = _userDepartmentFilter == dept;
+    return ChoiceChip(
+      label: Text(
+        label,
+        style: TextStyle(
+          fontSize: 11.5,
+          fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+          color: isSelected ? Colors.white : Colors.grey.shade700,
+        ),
+      ),
+      selected: isSelected,
+      selectedColor: AppColors.primary,
+      backgroundColor: Colors.grey.shade100,
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: isSelected ? AppColors.primary : Colors.grey.shade300),
+      ),
+      onSelected: (_) {
+        setState(() => _userDepartmentFilter = dept);
+      },
+    );
+  }
+
   Widget _buildStatusFilterChip(String status, String label) {
     final isSelected = _userStatusFilter == status;
     return ChoiceChip(
@@ -2891,9 +3248,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildExistingUsersTab() {
     if (_isLoading) return const Center(child: CircularProgressIndicator());
 
-    // Filter users based on search query and status filter
+    // Compute department counts across all non-pending users
+    final nonPendingUsers = _users.where((u) => u['status'] != 'PENDING').toList();
+    final totalCount = nonPendingUsers.length;
+    final engCount = nonPendingUsers.where((u) => _getDepartmentForRole((u['role']?['name'] ?? '').toString()) == 'ENGINEERING').length;
+    final opsCount = nonPendingUsers.where((u) => _getDepartmentForRole((u['role']?['name'] ?? '').toString()) == 'OPERATING').length;
+    final adminCount = nonPendingUsers.where((u) => _getDepartmentForRole((u['role']?['name'] ?? '').toString()) == 'ADMIN').length;
+
+    // Filter users based on search query, department, and status filter
     final filteredUsers = _users.where((u) {
       if (u['status'] == 'PENDING') return false;
+
+      // Department filter
+      if (_userDepartmentFilter != 'ALL') {
+        final rName = (u['role']?['name'] ?? '').toString();
+        final userDept = _getDepartmentForRole(rName);
+        if (userDept != _userDepartmentFilter) return false;
+      }
 
       // Status filter
       if (_userStatusFilter != 'ALL' && u['status'] != _userStatusFilter) {
@@ -2925,10 +3296,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
     
     final Map<String, List<dynamic>> grouped = {};
     for (var u in filteredUsers) {
-      final rn = u['role']?['name'] ?? 'Unknown';
+      final rn = (u['role']?['name'] ?? 'Unknown').toString();
       if (!grouped.containsKey(rn)) grouped[rn] = [];
       grouped[rn]!.add(u);
     }
+
+    // Sort roles strictly by Indian Railways seniority hierarchy
+    final sortedRoles = grouped.keys.toList()
+      ..sort((a, b) {
+        final rankA = _roleSeniority[a.trim().toLowerCase()] ?? 999;
+        final rankB = _roleSeniority[b.trim().toLowerCase()] ?? 999;
+        if (rankA != rankB) return rankA.compareTo(rankB);
+        return a.compareTo(b);
+      });
     
     return Column(
       children: [
@@ -2976,7 +3356,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
               const SizedBox(height: 10),
 
-              // Filter Chips Row
+              // Department Filter Tabs
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    _buildDeptFilterChip('ALL', 'All ($totalCount)'),
+                    const SizedBox(width: 6),
+                    _buildDeptFilterChip('ENGINEERING', 'Engineering ($engCount)'),
+                    const SizedBox(width: 6),
+                    _buildDeptFilterChip('OPERATING', 'Operating ($opsCount)'),
+                    if (adminCount > 0) ...[
+                      const SizedBox(width: 6),
+                      _buildDeptFilterChip('ADMIN', 'Developer ($adminCount)'),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+
+              // Status Filter Chips Row
               Row(
                 children: [
                   const Text('Status: ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
@@ -2984,7 +3383,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Wrap(
                     spacing: 6,
                     children: [
-                      _buildStatusFilterChip('ALL', 'All (${_users.where((u) => u['status'] != 'PENDING').length})'),
+                      _buildStatusFilterChip('ALL', 'All'),
                       _buildStatusFilterChip('APPROVED', 'Active'),
                       _buildStatusFilterChip('DEACTIVATED', 'Deactivated'),
                     ],
@@ -2998,7 +3397,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
         // List Content
         Expanded(
-          child: grouped.isEmpty
+          child: sortedRoles.isEmpty
               ? Center(
                   child: Padding(
                     padding: const EdgeInsets.all(24),
@@ -3017,7 +3416,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           textAlign: TextAlign.center,
                           style: TextStyle(fontSize: 13, color: Colors.grey.shade500),
                         ),
-                        if (_userSearchQuery.isNotEmpty || _userStatusFilter != 'ALL') ...[
+                        if (_userSearchQuery.isNotEmpty || _userStatusFilter != 'ALL' || _userDepartmentFilter != 'ALL') ...[
                           const SizedBox(height: 16),
                           OutlinedButton.icon(
                             icon: const Icon(Icons.refresh, size: 16),
@@ -3027,8 +3426,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               setState(() {
                                 _userSearchQuery = '';
                                 _userStatusFilter = 'ALL';
+                                _userDepartmentFilter = 'ALL';
                               });
-                              AppFeedback.showInfo(context, 'User search and status filters cleared.');
+                              AppFeedback.showInfo(context, 'User search and department filters cleared.');
                             },
                           ),
                         ],
@@ -3038,305 +3438,397 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 )
               : ListView(
                   padding: const EdgeInsets.all(16),
-                  children: grouped.entries.map((e) {
-                    final isExpanded = _expandedRole == e.key;
+                  children: sortedRoles.map((roleName) {
+                    final usersInRole = grouped[roleName]!;
+                    final isExpanded = _expandedRole == roleName;
                     return Card(
                       margin: const EdgeInsets.only(bottom: 8),
                       child: Column(
                         children: [
                           ListTile(
-                onTap: () {
-                  setState(() {
-                    _expandedRole = isExpanded ? null : e.key;
-                  });
-                },
-                leading: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(color: AppColors.secondary, borderRadius: BorderRadius.circular(16)),
-                  child: Text('${e.value.length}', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-                ),
-                title: Text(e.key, style: const TextStyle(fontWeight: FontWeight.bold)),
-                trailing: Icon(isExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down),
-              ),
-              if (isExpanded)
-                Container(
-                  color: Colors.grey[50],
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    children: e.value.map((u) {
-                      Map<String, dynamic> metadata = {};
-                      try {
-                        if (u['metadata'] != null) {
-                          metadata = json.decode(u['metadata']);
-                        }
-                      } catch (_) {}
-                      
-                      List<Widget> metaWidgets = [];
-                      final seenKeys = <String>{
-                        'fullname', 'name', 'applicantname',
-                        'employeeid', 'empid',
-                        'department', 'dept',
-                        'role', 'roleid', 'status', 'password', 'id'
-                      };
-                      final seenVals = <String>{};
-
-                      void addMetaRow(String label, dynamic val) {
-                        if (val == null) return;
-                        final sVal = val.toString().trim();
-                        if (sVal.isEmpty) return;
-                        final normKey = label.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
-                        if (seenKeys.contains(normKey)) return;
-                        if (seenVals.contains(sVal.toLowerCase())) return;
-
-                        seenKeys.add(normKey);
-                        final isImg = _isImageUrl(val, null);
-                        if (!isImg) seenVals.add(sVal.toLowerCase());
-
-                        metaWidgets.add(
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 6),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                            onTap: () {
+                              setState(() {
+                                _expandedRole = isExpanded ? null : roleName;
+                              });
+                            },
+                            leading: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(color: AppColors.secondary, borderRadius: BorderRadius.circular(16)),
+                              child: Text('${usersInRole.length}', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                            ),
+                            title: Row(
                               children: [
-                                Expanded(flex: 2, child: Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w500))),
                                 Expanded(
-                                  flex: 3, 
-                                  child: isImg
-                                      ? Align(alignment: Alignment.centerLeft, child: _buildImageThumbnail(sVal, label))
-                                      : Text(sVal, style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 12)),
+                                  child: Text(roleName, style: const TextStyle(fontWeight: FontWeight.bold)),
                                 ),
+                                if (roleName.toLowerCase() == 'senior den' || roleName.toLowerCase() == 'senior dom') ...[
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFEF3C7),
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(color: const Color(0xFFF59E0B)),
+                                    ),
+                                    child: const Text(
+                                      'Dept Admin',
+                                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF92400E)),
+                                    ),
+                                  ),
+                                ] else if (roleName.toLowerCase() == 'developer') ...[
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFEDE9FE),
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(color: const Color(0xFF8B5CF6)),
+                                    ),
+                                    child: const Text(
+                                      'Apex Admin',
+                                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF5B21B6)),
+                                    ),
+                                  ),
+                                ],
                               ],
                             ),
+                            trailing: Icon(isExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down),
                           ),
-                        );
-                      }
+                          if (isExpanded)
+                            Container(
+                              color: Colors.grey[50],
+                              padding: const EdgeInsets.all(12),
+                              child: Column(
+                                children: usersInRole.map((u) {
+                                  Map<String, dynamic> metadata = {};
+                                  try {
+                                    if (u['metadata'] != null) {
+                                      metadata = json.decode(u['metadata']);
+                                    }
+                                  } catch (_) {}
+                                  
+                                  List<Widget> metaWidgets = [];
+                                  final seenKeys = <String>{
+                                    'fullname', 'name', 'applicantname',
+                                    'employeeid', 'empid',
+                                    'department', 'dept',
+                                    'role', 'roleid', 'status', 'password', 'id',
+                                    'station', 'stationid', 'assignedgates', 'gateids', 'gateid',
+                                    'zone', 'division', 'designation', 'mobile', 'email',
+                                    'mobilenumber', 'emailaddress',
+                                    'declarationconfirmed', 'confirm', 'declaration', 'agreed',
+                                    'terms', 'idcard', 'form'
+                                  };
+                                  final seenVals = <String>{};
 
-                      if (u['mobile'] != null && u['mobile'].toString().trim().isNotEmpty) {
-                        addMetaRow('Mobile Number', u['mobile']);
-                      }
-                      if (u['email'] != null && u['email'].toString().trim().isNotEmpty) {
-                        addMetaRow('Email Address', u['email']);
-                      }
+                                  void addMetaRow(String label, dynamic val) {
+                                    if (val == null) return;
+                                    final sVal = val.toString().trim();
+                                    if (sVal.isEmpty) return;
+                                    final normKey = label.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+                                    if (seenVals.contains(sVal.toLowerCase()) && normKey != 'zone' && normKey != 'division') return;
 
-                      metadata.forEach((k, v) {
-                        if (k.toLowerCase().contains('password')) return;
-                        final normK = k.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
-                        if (seenKeys.contains(normK)) return;
+                                    final isImg = _isImageUrl(val, null);
+                                    if (!isImg) seenVals.add(sVal.toLowerCase());
 
-                        // Skip internal system fields, confirmations, and empty/null values
-                        if (normK == 'stationid' || normK == 'declarationconfirmed' ||
-                            normK == 'confirm' || normK == 'declaration' || normK == 'agreed' ||
-                            normK == 'terms' || normK == 'idcard' || normK == 'form') {
-                          seenKeys.add(normK);
-                          return;
-                        }
+                                    metaWidgets.add(
+                                      Padding(
+                                        padding: const EdgeInsets.only(bottom: 6),
+                                        child: Row(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Expanded(flex: 2, child: Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w500))),
+                                            Expanded(
+                                              flex: 3, 
+                                              child: isImg
+                                                  ? Align(alignment: Alignment.centerLeft, child: _buildImageThumbnail(sVal, label))
+                                                  : Text(sVal, style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 12)),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  }
 
-                        final valStr = v?.toString().trim() ?? '';
-                        if (valStr.isEmpty || valStr == 'null' || valStr == '[]') {
-                          seenKeys.add(normK);
-                          return;
-                        }
+                                  if (u['mobile'] != null && u['mobile'].toString().trim().isNotEmpty) {
+                                    addMetaRow('Mobile Number', u['mobile']);
+                                  }
+                                  if (u['email'] != null && u['email'].toString().trim().isNotEmpty) {
+                                    addMetaRow('Email Address', u['email']);
+                                  }
 
-                        // Handle gateIds cleanly so divisional officers do not see "Gate Ids: []"
-                        if (normK == 'gateids' || normK == 'gateid') {
-                          seenKeys.add(normK);
-                          if (v is List && v.isNotEmpty) {
-                            addMetaRow('Assigned Gate(s)', v.map((g) => 'Gate $g').join(', '));
-                          } else {
-                            final userDiv = u['division'] ?? u['zone'];
-                            if (userDiv != null && userDiv.toString().trim().isNotEmpty) {
-                              addMetaRow('Jurisdiction Scope', 'All Gates in $userDiv Division (Automatic Access)');
-                            }
-                          }
-                          return;
-                        }
+                                  final desig = (u['designation'] ?? roleName).toString();
+                                  final uDivision = (u['division'] ?? 'Mumbai CST').toString();
+                                  final uZone = (u['zone'] ?? 'Central Railway').toString();
 
-                        final displayKey = _humanizeKey(k);
-                        final normDisplay = displayKey.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
-                        if (seenKeys.contains(normDisplay)) return;
-                        addMetaRow(displayKey, v);
-                      });
+                                  addMetaRow('Designation', desig);
+                                  addMetaRow('Zone', uZone);
+                                  addMetaRow('Division', uDivision);
 
-                      return Card(
-                        elevation: 0,
-                        margin: const EdgeInsets.only(bottom: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          side: BorderSide(color: Colors.grey.shade300)
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(u['fullName'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                                        Text('${u['employeeId']} | ${u['department']}', style: const TextStyle(color: Colors.grey, fontSize: 13)),
-                                      ],
+                                  // Extract Station
+                                  String stationDisplay = '';
+                                  if (u['station'] is Map) {
+                                    final sName = u['station']['name'] ?? '';
+                                    final sCode = u['station']['code'] ?? '';
+                                    stationDisplay = sCode.toString().isNotEmpty ? '$sName ($sCode)' : sName.toString();
+                                  } else if (metadata['station'] != null && metadata['station'].toString().trim().isNotEmpty) {
+                                    stationDisplay = metadata['station'].toString().trim();
+                                  }
+
+                                  // Extract Assigned Gates (clean LC numbers)
+                                  final assignedGatesList = (u['assignedGates'] as List?) ?? [];
+                                  List<String> cleanGates = [];
+                                  for (var ag in assignedGatesList) {
+                                    final g = ag is Map ? (ag['gate'] ?? ag) : null;
+                                    if (g != null) {
+                                      final clean = _cleanLcNumber(g);
+                                      if (clean.isNotEmpty && !cleanGates.contains(clean)) cleanGates.add(clean);
+                                    }
+                                  }
+                                  if (cleanGates.isEmpty && metadata['gateids'] is List) {
+                                    for (var rawG in metadata['gateids']) {
+                                      final clean = _cleanLcNumber(rawG);
+                                      if (clean.isNotEmpty && !cleanGates.contains(clean)) cleanGates.add(clean);
+                                    }
+                                  }
+
+                                  final normRoleLower = roleName.trim().toLowerCase();
+                                  if (normRoleLower == 'gateman') {
+                                    if (stationDisplay.isNotEmpty) {
+                                      addMetaRow('Station', stationDisplay);
+                                    }
+                                    addMetaRow(
+                                      'Assigned Gate(s)',
+                                      cleanGates.isNotEmpty ? cleanGates.join(', ') : 'Not Assigned',
+                                    );
+                                  } else if (normRoleLower == 'station master') {
+                                    if (stationDisplay.isNotEmpty) {
+                                      addMetaRow('Station', stationDisplay);
+                                    }
+                                    addMetaRow(
+                                      'Jurisdiction Gate(s)',
+                                      cleanGates.isNotEmpty
+                                          ? cleanGates.join(', ')
+                                          : (stationDisplay.isNotEmpty ? 'All Gates under $stationDisplay' : 'Station Fleet Gates'),
+                                    );
+                                  } else if (normRoleLower == 'engineering supervisor') {
+                                    if (stationDisplay.isNotEmpty) {
+                                      addMetaRow('Supervised Section', stationDisplay);
+                                    }
+                                    addMetaRow(
+                                      'Supervised Gates',
+                                      cleanGates.isNotEmpty ? cleanGates.join(', ') : 'Section LC Gates',
+                                    );
+                                  } else if (normRoleLower.contains('den')) {
+                                    addMetaRow('Jurisdiction Scope', 'All Engineering Gates in $uDivision Division');
+                                  } else if (normRoleLower.contains('dom')) {
+                                    addMetaRow('Jurisdiction Scope', 'All Operating Gates in $uDivision Division');
+                                  } else if (normRoleLower == 'developer') {
+                                    addMetaRow('Jurisdiction Scope', 'System-Wide (All Zones & Gates)');
+                                  } else {
+                                    if (cleanGates.isNotEmpty) {
+                                      addMetaRow('Assigned Gate(s)', cleanGates.join(', '));
+                                    } else if (stationDisplay.isNotEmpty) {
+                                      addMetaRow('Station', stationDisplay);
+                                    }
+                                  }
+
+                                  // Add any extra custom metadata fields
+                                  metadata.forEach((k, v) {
+                                    if (k.toLowerCase().contains('password')) return;
+                                    final normK = k.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+                                    if (seenKeys.contains(normK)) return;
+
+                                    final valStr = v?.toString().trim() ?? '';
+                                    if (valStr.isEmpty || valStr == 'null' || valStr == '[]') return;
+
+                                    final displayKey = _humanizeKey(k);
+                                    final normDisplay = displayKey.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+                                    if (seenKeys.contains(normDisplay)) return;
+                                    addMetaRow(displayKey, v);
+                                  });
+
+                                  return Card(
+                                    elevation: 0,
+                                    margin: const EdgeInsets.only(bottom: 12),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      side: BorderSide(color: Colors.grey.shade300)
                                     ),
-                                  ),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                    decoration: BoxDecoration(color: u['status'] == 'APPROVED' ? AppColors.success : Colors.grey, borderRadius: BorderRadius.circular(16)),
-                                    child: Text(u['status'], style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-                                  ),
-                                ],
-                              ),
-                              if (metaWidgets.isNotEmpty) ...[
-                                const Divider(height: 24),
-                                ...metaWidgets
-                              ],
-                              const SizedBox(height: 12),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.end,
-                                children: [
-                                  Builder(
-                                    builder: (context) {
-                                      final isSelf = u['id'] == widget.user['id'] || u['employeeId'] == widget.user['employeeId'];
-                                      final targetRole = (u['role'] is Map ? u['role']['name'] : u['role']?.toString()) ?? '';
-                                      final isDeveloper = targetRole == 'Developer';
-
-                                      if (isSelf) {
-                                        return Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                                          decoration: BoxDecoration(
-                                            color: const Color(0xFFEFF6FF),
-                                            borderRadius: BorderRadius.circular(6),
-                                            border: Border.all(color: const Color(0xFFBFDBFE)),
-                                          ),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: const [
-                                              Icon(Icons.person, size: 14, color: AppColors.primary),
-                                              SizedBox(width: 4),
-                                              Text(
-                                                'Current User (You)',
-                                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary),
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(16),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(u['fullName'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                                    Text('${u['employeeId']} | ${u['department']}', style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                                                  ],
+                                                ),
+                                              ),
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                                decoration: BoxDecoration(color: u['status'] == 'APPROVED' ? AppColors.success : Colors.grey, borderRadius: BorderRadius.circular(16)),
+                                                child: Text(u['status'], style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
                                               ),
                                             ],
                                           ),
-                                        );
-                                      }
+                                          if (metaWidgets.isNotEmpty) ...[
+                                            const Divider(height: 24),
+                                            ...metaWidgets
+                                          ],
+                                          const SizedBox(height: 12),
+                                          Row(
+                                            mainAxisAlignment: MainAxisAlignment.end,
+                                            children: [
+                                              Builder(
+                                                builder: (context) {
+                                                  final isSelf = u['id'] == widget.user['id'] || u['employeeId'] == widget.user['employeeId'];
+                                                  final targetRole = (u['role'] is Map ? u['role']['name'] : u['role']?.toString()) ?? '';
+                                                  final isDeveloper = targetRole == 'Developer';
 
-                                      if (isDeveloper) {
-                                        return Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                                          decoration: BoxDecoration(
-                                            color: const Color(0xFFF1F5F9),
-                                            borderRadius: BorderRadius.circular(6),
-                                          ),
-                                          child: const Text(
-                                            'Root Developer Account',
-                                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
-                                          ),
-                                        );
-                                      }
+                                                  if (isSelf) {
+                                                    return Container(
+                                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                                      decoration: BoxDecoration(
+                                                        color: const Color(0xFFEFF6FF),
+                                                        borderRadius: BorderRadius.circular(6),
+                                                        border: Border.all(color: const Color(0xFFBFDBFE)),
+                                                      ),
+                                                      child: Row(
+                                                        mainAxisSize: MainAxisSize.min,
+                                                        children: const [
+                                                          Icon(Icons.person, size: 14, color: AppColors.primary),
+                                                          SizedBox(width: 4),
+                                                          Text(
+                                                            'Current User (You)',
+                                                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    );
+                                                  }
 
-                                      final isDeactivated = u['status'] == 'DEACTIVATED';
-                                      final actionName = isDeactivated ? 'reactivate' : 'deactivate';
-                                      final userName = (u['fullName'] ?? 'User').toString();
+                                                  if (isDeveloper) {
+                                                    return Container(
+                                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                                      decoration: BoxDecoration(
+                                                        color: const Color(0xFFF1F5F9),
+                                                        borderRadius: BorderRadius.circular(6),
+                                                      ),
+                                                      child: const Text(
+                                                        'Root Developer Account',
+                                                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+                                                      ),
+                                                    );
+                                                  }
 
-                                      return TextButton.icon(
-                                        style: TextButton.styleFrom(foregroundColor: isDeactivated ? AppColors.success : AppColors.danger),
-                                        icon: Icon(isDeactivated ? Icons.check_circle : Icons.block, size: 16),
-                                        label: Text(isDeactivated ? 'Reactivate' : 'Deactivate'),
-                                        onPressed: () async {
-                                          final confirm = await showDialog<bool>(
-                                            context: context,
-                                            builder: (context) => AlertDialog(
-                                              title: Text('Confirm ${isDeactivated ? 'Reactivation' : 'Deactivation'}'),
-                                              content: Text('Are you sure you want to $actionName user "$userName"?'),
-                                              actions: [
-                                                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-                                                ElevatedButton(
-                                                  onPressed: () => Navigator.pop(context, true),
-                                                  style: ElevatedButton.styleFrom(backgroundColor: isDeactivated ? AppColors.success : AppColors.danger),
-                                                  child: const Text('Confirm', style: TextStyle(color: Colors.white)),
-                                                ),
-                                              ],
-                                            ),
-                                          );
-                                          if (confirm == true) {
-                                            _actionUser(u['id'], actionName, null, false, userName);
-                                          }
-                                        },
-                                      );
-                                    },
-                                  ),
-                                  if (u['id'] != widget.user['id']) ...[
-                                    const SizedBox(width: 8),
-                                    TextButton.icon(
-                                      style: TextButton.styleFrom(foregroundColor: AppColors.danger),
-                                      icon: const Icon(Icons.delete_forever_rounded, size: 16, color: AppColors.danger),
-                                      label: const Text('Delete User', style: TextStyle(color: AppColors.danger, fontWeight: FontWeight.bold)),
-                                      onPressed: () async {
-                                        final userName = (u['fullName'] ?? 'User').toString();
-                                        final userRole = (u['role']?['name'] ?? 'User').toString();
-                                        
-                                        final confirm = await showDialog<bool>(
-                                          context: context,
-                                          builder: (context) => AlertDialog(
-                                            title: Row(
-                                              children: const [
-                                                Icon(Icons.delete_forever_rounded, color: AppColors.danger),
-                                                SizedBox(width: 8),
-                                                Text('Delete User Account'),
-                                              ],
-                                            ),
-                                            content: Column(
-                                              mainAxisSize: MainAxisSize.min,
-                                              crossAxisAlignment: CrossAxisAlignment.start,
-                                              children: [
-                                                Text('Are you sure you want to permanently delete user "$userName"?', style: const TextStyle(fontWeight: FontWeight.bold)),
-                                                const SizedBox(height: 6),
-                                                Text('Role: $userRole', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
-                                                const SizedBox(height: 8),
-                                                Text(
-                                                  'This will permanently delete their account credentials, scope group memberships, and revoke active sessions. This action cannot be undone.',
-                                                  style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600),
-                                                ),
-                                              ],
-                                            ),
-                                            actions: [
-                                              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-                                              ElevatedButton(
-                                                onPressed: () => Navigator.pop(context, true),
-                                                style: ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
-                                                child: const Text('Delete Permanently', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                                  final isDeactivated = u['status'] == 'DEACTIVATED';
+                                                  final actionName = isDeactivated ? 'reactivate' : 'deactivate';
+                                                  final userName = (u['fullName'] ?? 'User').toString();
+
+                                                  return TextButton.icon(
+                                                    style: TextButton.styleFrom(foregroundColor: isDeactivated ? AppColors.success : AppColors.danger),
+                                                    icon: Icon(isDeactivated ? Icons.check_circle : Icons.block, size: 16),
+                                                    label: Text(isDeactivated ? 'Reactivate' : 'Deactivate'),
+                                                    onPressed: () async {
+                                                      final confirm = await showDialog<bool>(
+                                                        context: context,
+                                                        builder: (context) => AlertDialog(
+                                                          title: Text('Confirm ${isDeactivated ? 'Reactivation' : 'Deactivation'}'),
+                                                          content: Text('Are you sure you want to $actionName user "$userName"?'),
+                                                          actions: [
+                                                            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                                                            ElevatedButton(
+                                                              onPressed: () => Navigator.pop(context, true),
+                                                              style: ElevatedButton.styleFrom(backgroundColor: isDeactivated ? AppColors.success : AppColors.danger),
+                                                              child: const Text('Confirm', style: TextStyle(color: Colors.white)),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      );
+                                                      if (confirm == true) {
+                                                        _actionUser(u['id'], actionName, null, false, userName);
+                                                      }
+                                                    },
+                                                  );
+                                                },
                                               ),
+                                              // Only Developer role is authorized to see permanent Delete User button
+                                              if (_isDeveloper && u['id'] != widget.user['id']) ...[
+                                                const SizedBox(width: 8),
+                                                TextButton.icon(
+                                                  style: TextButton.styleFrom(foregroundColor: AppColors.danger),
+                                                  icon: const Icon(Icons.delete_forever_rounded, size: 16, color: AppColors.danger),
+                                                  label: const Text('Delete User', style: TextStyle(color: AppColors.danger, fontWeight: FontWeight.bold)),
+                                                  onPressed: () async {
+                                                    final userName = (u['fullName'] ?? 'User').toString();
+                                                    final userRole = (u['role']?['name'] ?? 'User').toString();
+                                                    
+                                                    final confirm = await showDialog<bool>(
+                                                      context: context,
+                                                      builder: (context) => AlertDialog(
+                                                        title: Row(
+                                                          children: const [
+                                                            Icon(Icons.delete_forever_rounded, color: AppColors.danger),
+                                                            SizedBox(width: 8),
+                                                            Text('Delete User Account'),
+                                                          ],
+                                                        ),
+                                                        content: Column(
+                                                          mainAxisSize: MainAxisSize.min,
+                                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                                          children: [
+                                                            Text('Are you sure you want to permanently delete user "$userName"?', style: const TextStyle(fontWeight: FontWeight.bold)),
+                                                            const SizedBox(height: 6),
+                                                            Text('Role: $userRole', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                                                            const SizedBox(height: 8),
+                                                            Text(
+                                                              'This will permanently delete their account credentials, scope group memberships, and revoke active sessions. This action cannot be undone.',
+                                                              style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                        actions: [
+                                                          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                                                          ElevatedButton(
+                                                            onPressed: () => Navigator.pop(context, true),
+                                                            style: ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
+                                                            child: const Text('Delete Permanently', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    );
+                                                    if (confirm == true) {
+                                                      _deleteUser(u['id'], userName);
+                                                    }
+                                                  },
+                                                ),
+                                              ],
                                             ],
                                           ),
-                                        );
-                                        if (confirm == true) {
-                                          _deleteUser(u['id'], userName);
-                                        }
-                                      },
+                                        ],
+                                      ),
                                     ),
-                                  ],
-                                ],
+                                  );
+                                }).toList(),
                               ),
-                            ],
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                  ),
+                            ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
                 ),
-            ],
-          ),
-        );
-      }).toList(),
-    ),
-  ),
-],
-);
-}
+        ),
+      ],
+    );
+  }
 }
 
 

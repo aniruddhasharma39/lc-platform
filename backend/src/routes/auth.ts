@@ -32,6 +32,72 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+/**
+ * Enforces multi-tier OTP rate limiting:
+ * 1. 60-second resend cooldown
+ * 2. Max 5 OTP requests per hour per identifier
+ * 3. Max 10 OTP requests per 24 hours per identifier
+ */
+async function checkOtpRateLimit(
+  identifier: string,
+  type: 'PHONE' | 'EMAIL'
+): Promise<{ allowed: boolean; message?: string }> {
+  const now = new Date();
+  const oneMinuteAgo = new Date(now.getTime() - 60 * 1000);
+  const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+  const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+  // 1. Resend cooldown (60 seconds)
+  const recentOtp = await prisma.otpVerification.findFirst({
+    where: {
+      identifier,
+      type,
+      createdAt: { gte: oneMinuteAgo },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (recentOtp) {
+    const elapsedSec = Math.floor((now.getTime() - recentOtp.createdAt.getTime()) / 1000);
+    const waitSec = Math.max(1, 60 - elapsedSec);
+    return {
+      allowed: false,
+      message: `Please wait ${waitSec} seconds before requesting another OTP.`,
+    };
+  }
+
+  // 2. Hourly limit (max 5 OTPs per hour)
+  const hourlyCount = await prisma.otpVerification.count({
+    where: {
+      identifier,
+      type,
+      createdAt: { gte: oneHourAgo },
+    },
+  });
+  if (hourlyCount >= 5) {
+    return {
+      allowed: false,
+      message: 'Hourly OTP limit reached (5 requests/hour). Please try again after 1 hour.',
+    };
+  }
+
+  // 3. Daily limit (max 10 OTPs per day)
+  const dailyCount = await prisma.otpVerification.count({
+    where: {
+      identifier,
+      type,
+      createdAt: { gte: oneDayAgo },
+    },
+  });
+  if (dailyCount >= 10) {
+    return {
+      allowed: false,
+      message: 'Daily OTP limit reached (10 requests/day). Please try again tomorrow.',
+    };
+  }
+
+  return { allowed: true };
+}
+
 router.get('/installed-hierarchy', async (req, res, next) => {
   try {
     const gates = await prisma.lCGate.findMany({
@@ -175,6 +241,12 @@ router.post('/register/otp/send', async (req, res, next) => {
       });
     }
 
+    // 2.5 Multi-tier rate limit check (60s cooldown, 5/hr, 10/day)
+    const rateCheck = await checkOtpRateLimit(cleanDigits, 'PHONE');
+    if (!rateCheck.allowed) {
+      return res.status(429).json({ error: rateCheck.message });
+    }
+
     // 3. Generate 6-digit OTP & 10-minute expiry
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
@@ -187,10 +259,11 @@ router.post('/register/otp/send', async (req, res, next) => {
       });
     }
 
-    // 5. Store OTP in database
+    // 5. Store OTP in database (clean older records past 24h, keep recent for rate limit tracking)
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     await prisma.otpVerification.deleteMany({
-      where: { identifier: cleanDigits, type: 'PHONE' }
-    });
+      where: { identifier: cleanDigits, type: 'PHONE', createdAt: { lt: oneDayAgo } }
+    }).catch(() => {});
 
     await prisma.otpVerification.create({
       data: {
@@ -834,9 +907,17 @@ router.post('/otp/send', async (req, res, next) => {
       return res.status(403).json({ error: 'Account is deactivated. Please contact your administrator.' });
     }
 
+    const targetIdentifier = type === 'email' ? cleanId.toLowerCase() : cleanId.replace(/\D/g, '');
+    const otpType = (type === 'email' ? 'EMAIL' : 'PHONE') as 'EMAIL' | 'PHONE';
+
+    // Multi-tier rate limit check (60s cooldown, 5/hr, 10/day)
+    const rateCheck = await checkOtpRateLimit(targetIdentifier, otpType);
+    if (!rateCheck.allowed) {
+      return res.status(429).json({ error: rateCheck.message });
+    }
+
     let otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-    const targetIdentifier = type === 'email' ? cleanId.toLowerCase() : cleanId.replace(/\D/g, '');
 
     // For Phone OTP: Dispatch SMS text message via 2Factor TSMS using approved DLT template (MIRTHA)
     if (type === 'phone') {
@@ -855,14 +936,16 @@ router.post('/otp/send', async (req, res, next) => {
       }
     }
 
+    // Clean older than 24h, preserve recent rows for rate limiting
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     await prisma.otpVerification.deleteMany({
-      where: { identifier: targetIdentifier, type: type.toUpperCase() }
-    });
+      where: { identifier: targetIdentifier, type: otpType, createdAt: { lt: oneDayAgo } }
+    }).catch(() => {});
 
     await prisma.otpVerification.create({
       data: {
         identifier: targetIdentifier,
-        type: type.toUpperCase(),
+        type: otpType,
         otp,
         expiresAt,
         verified: false,

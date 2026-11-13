@@ -173,6 +173,7 @@ const approveSchema = z.object({
     (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
     z.number().int().optional().nullable()
   ),
+  gateIds: z.array(z.number().int()).optional(),
 });
 
 router.put('/request/:id/approve', requireModule('manage-users'), async (req: any, res, next) => {
@@ -361,7 +362,9 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
       });
 
       // Link explicitly assigned LC Gates in UserGate table (Section 9)
-      const gateIdsToAssign: number[] = Array.isArray(request.gateIds) ? request.gateIds : [];
+      const gateIdsToAssign: number[] = (data.gateIds && Array.isArray(data.gateIds) && data.gateIds.length > 0)
+        ? data.gateIds
+        : (Array.isArray(request.gateIds) ? request.gateIds : []);
       for (const gId of gateIdsToAssign) {
         await prisma.userGate.upsert({
           where: { userId_gateId: { userId: user.id, gateId: gId } },
@@ -686,6 +689,13 @@ router.put('/:id/railway-mapping', requireModule('manage-users'), async (req: an
 router.delete('/:id', requireModule('manage-users'), async (req: any, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
+
+    // Only Developer role is authorized to permanently purge users
+    if (!isDeveloperUser(req.user)) {
+      return res.status(403).json({
+        error: 'Permanent user deletion is restricted strictly to Developer console. You may deactivate this user instead.'
+      });
+    }
 
     if (id === req.user.id) {
       return res.status(400).json({ error: 'You cannot delete your own account' });
