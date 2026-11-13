@@ -493,6 +493,7 @@ model GateDutyRoster {
   weekStartDate  String?   // e.g. "2026-11-09" (Week start date)
   dayOfWeek      String?   // "SUNDAY", "MONDAY", ..., "SATURDAY"
   shiftCode      String?   // "07-19", "19-24", "00-07", "W/R", "N/R", "-"
+  isPermanent    Boolean   @default(false)
   isSplitShift   Boolean   @default(false)
   secondaryStart String?   // "19:00" for split night shifts
   secondaryEnd   String?   // "24:00"
@@ -508,6 +509,8 @@ model GateDutyRoster {
   @@unique([gateId, date, shiftName])
   @@index([stationId, date])
   @@index([gatemanUserId])
+  @@index([gateId, isPermanent, dayOfWeek])
+  @@index([gatemanUserId, isPermanent, dayOfWeek])
 }
 
 model ShiftAttendance {

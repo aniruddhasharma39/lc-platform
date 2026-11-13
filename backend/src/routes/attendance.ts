@@ -258,11 +258,15 @@ router.get('/active-duty', authenticate, async (req: AuthRequest, res: Response)
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Find active duty roster for today
-    const roster = await prisma.gateDutyRoster.findFirst({
+    // Find active duty roster for today (Dynamic 2-Tier Fallback: Specific Date Override -> Permanent Master Cycle)
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const todayDayOfWeek = dayNames[new Date().getDay()];
+
+    let roster = await prisma.gateDutyRoster.findFirst({
       where: {
         gatemanUserId: userId,
         date: today,
+        isPermanent: false,
       },
       include: {
         gate: true,
@@ -270,6 +274,21 @@ router.get('/active-duty', authenticate, async (req: AuthRequest, res: Response)
       },
       orderBy: { id: 'desc' },
     });
+
+    if (!roster) {
+      roster = await prisma.gateDutyRoster.findFirst({
+        where: {
+          gatemanUserId: userId,
+          dayOfWeek: todayDayOfWeek,
+          isPermanent: true,
+        },
+        include: {
+          gate: true,
+          station: true,
+        },
+        orderBy: { id: 'desc' },
+      });
+    }
 
     // Determine target location and geofence radius
     let targetLocation = null;
@@ -829,11 +848,19 @@ router.get('/station-matrix', authenticate, async (req: AuthRequest, res: Respon
       return res.status(400).json({ error: 'Station ID is required' });
     }
 
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const todayDayOfWeek = dayNames[new Date().getDay()];
+
     const gates = await prisma.lCGate.findMany({
       where: { stationId },
       include: {
         dutyRosters: {
-          where: { date: today },
+          where: {
+            OR: [
+              { date: today, isPermanent: false },
+              { dayOfWeek: todayDayOfWeek, isPermanent: true },
+            ],
+          },
           include: { gateman: { select: { id: true, fullName: true, mobile: true, designation: true } } },
         },
         shiftAttendances: {
@@ -846,7 +873,10 @@ router.get('/station-matrix', authenticate, async (req: AuthRequest, res: Respon
     });
 
     const matrix = gates.map(gate => {
-      const todayRoster = gate.dutyRosters[0] || null;
+      // Dynamic Priority: Specific date override today > Permanent master cycle today
+      const specificRoster = gate.dutyRosters.find(r => r.date === today && !r.isPermanent);
+      const permRoster = gate.dutyRosters.find(r => r.dayOfWeek === todayDayOfWeek && r.isPermanent);
+      const todayRoster = specificRoster || permRoster || null;
       const attendances = gate.shiftAttendances;
       const checkIn = attendances.find(a => a.type === 'CHECK_IN');
       const checkOut = attendances.find(a => a.type === 'CHECK_OUT');

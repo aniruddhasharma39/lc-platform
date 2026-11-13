@@ -416,6 +416,7 @@ router.get('/my-shifts', async (req: any, res, next) => {
 const publishWeeklySchema = z.object({
   gateId: z.number().int(),
   weekStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'weekStartDate must be YYYY-MM-DD'),
+  mode: z.enum(['PERMANENT', 'SPECIFIC_WEEK', 'RESET']).optional().default('SPECIFIC_WEEK'),
   assignments: z.array(z.object({
     gatemanId: z.number().int(),
     dayOfWeek: z.enum(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']),
@@ -532,11 +533,12 @@ router.get('/weekly', async (req: any, res, next) => {
       staffList = [...staffList, ...additionalStaff];
     }
 
-    // Fetch existing roster allocations across the 7 days for this gate
-    const existingEntries = await prisma.gateDutyRoster.findMany({
+    // 1. Fetch specific date overrides for this week
+    const specificEntries = await prisma.gateDutyRoster.findMany({
       where: {
         gateId,
         date: { in: weekDates },
+        isPermanent: false,
       },
       include: {
         gateman: { select: { id: true, fullName: true, employeeId: true } },
@@ -544,35 +546,73 @@ router.get('/weekly', async (req: any, res, next) => {
       },
     });
 
-    // Build staff 7-day matrix
+    // 2. Fetch permanent master cycle entries for this gate (repeats across all 52 weeks)
+    const permanentEntries = await prisma.gateDutyRoster.findMany({
+      where: {
+        gateId,
+        isPermanent: true,
+      },
+      include: {
+        gateman: { select: { id: true, fullName: true, employeeId: true } },
+        createdBy: { select: { id: true, fullName: true, designation: true } },
+      },
+    });
+
+    // 3. Build staff 7-day matrix dynamically (2-tier fallback: Specific override takes precedence, else Permanent Master Cycle)
     const matrix = staffList.map(staff => {
       const schedule: Record<string, any> = {};
 
       for (const wd of weekDays) {
-        const entry = existingEntries.find(e => e.gatemanUserId === staff.id && e.date === wd.date);
-        if (entry) {
+        // Priority 1: Check for date-specific override
+        const overrideEntry = specificEntries.find(e => e.gatemanUserId === staff.id && e.date === wd.date);
+        if (overrideEntry) {
           schedule[wd.dayOfWeek] = {
-            id: entry.id,
-            date: entry.date,
-            shiftCode: entry.shiftCode || (entry.startTime && entry.endTime ? `${entry.startTime.slice(0, 2)}-${entry.endTime.slice(0, 2)}` : '07-19'),
-            shiftName: entry.shiftName,
-            startTime: entry.startTime,
-            endTime: entry.endTime,
-            isSplitShift: entry.isSplitShift,
-            secondaryStart: entry.secondaryStart,
-            secondaryEnd: entry.secondaryEnd,
+            id: overrideEntry.id,
+            date: overrideEntry.date,
+            shiftCode: overrideEntry.shiftCode || (overrideEntry.startTime && overrideEntry.endTime ? `${overrideEntry.startTime.slice(0, 2)}-${overrideEntry.endTime.slice(0, 2)}` : '07-19'),
+            shiftName: overrideEntry.shiftName,
+            startTime: overrideEntry.startTime,
+            endTime: overrideEntry.endTime,
+            isSplitShift: overrideEntry.isSplitShift,
+            secondaryStart: overrideEntry.secondaryStart,
+            secondaryEnd: overrideEntry.secondaryEnd,
+            isOverride: true,
+            source: 'SPECIFIC_OVERRIDE',
           };
-        } else {
-          schedule[wd.dayOfWeek] = {
-            id: null,
-            date: wd.date,
-            shiftCode: '-',
-            shiftName: 'Off / Not Assigned',
-            startTime: '07:00',
-            endTime: '19:00',
-            isSplitShift: false,
-          };
+          continue;
         }
+
+        // Priority 2: Check for permanent standing master cycle
+        const permEntry = permanentEntries.find(e => e.gatemanUserId === staff.id && e.dayOfWeek === wd.dayOfWeek);
+        if (permEntry) {
+          schedule[wd.dayOfWeek] = {
+            id: permEntry.id,
+            date: wd.date,
+            shiftCode: permEntry.shiftCode || (permEntry.startTime && permEntry.endTime ? `${permEntry.startTime.slice(0, 2)}-${permEntry.endTime.slice(0, 2)}` : '07-19'),
+            shiftName: permEntry.shiftName,
+            startTime: permEntry.startTime,
+            endTime: permEntry.endTime,
+            isSplitShift: permEntry.isSplitShift,
+            secondaryStart: permEntry.secondaryStart,
+            secondaryEnd: permEntry.secondaryEnd,
+            isOverride: false,
+            source: 'PERMANENT_CYCLE',
+          };
+          continue;
+        }
+
+        // Priority 3: Not assigned
+        schedule[wd.dayOfWeek] = {
+          id: null,
+          date: wd.date,
+          shiftCode: '-',
+          shiftName: 'Off / Not Assigned',
+          startTime: '07:00',
+          endTime: '19:00',
+          isSplitShift: false,
+          isOverride: false,
+          source: 'UNASSIGNED',
+        };
       }
 
       return {
@@ -588,7 +628,7 @@ router.get('/weekly', async (req: any, res, next) => {
     });
 
     // Endorsement sign-off metadata
-    const lastEntry = existingEntries[0];
+    const lastEntry = specificEntries[0] || permanentEntries[0];
     const preparedByName = lastEntry?.createdBy
       ? `${lastEntry.createdBy.fullName} (${lastEntry.createdBy.designation || 'PWI'})`
       : 'वरिष्ठ/कनिष्ठ सेक्शन इंजीनियर (SSE/JE P.WAY INCHARGE)';
@@ -613,6 +653,9 @@ router.get('/weekly', async (req: any, res, next) => {
         approvedByName: 'ADEN / CPWI Section Incharge',
       },
       canEdit: isRosterAuthor(req.user),
+      hasPermanentRoster: permanentEntries.length > 0,
+      overridesCount: specificEntries.length,
+      hasOverridesThisWeek: specificEntries.length > 0,
     });
   } catch (error) {
     next(error);
@@ -644,10 +687,130 @@ router.post('/publish-weekly', async (req: any, res, next) => {
     }
 
     const stationId = gate.stationId || 1;
+    const mode = data.mode || 'SPECIFIC_WEEK';
+
+    // Collect week dates for cleanup/reset operations
+    const startDate = new Date(data.weekStartDate + 'T00:00:00Z');
+    const weekDates = [0, 1, 2, 3, 4, 5, 6].map(i => {
+      const d = new Date(startDate);
+      d.setUTCDate(startDate.getUTCDate() + i);
+      return d.toISOString().split('T')[0];
+    });
+
+    // -------------------------------------------------------------
+    // MODE: RESET (Revert specific week back to Permanent Master Cycle)
+    // -------------------------------------------------------------
+    if (mode === 'RESET') {
+      const deleted = await prisma.gateDutyRoster.deleteMany({
+        where: {
+          gateId: data.gateId,
+          date: { in: weekDates },
+          isPermanent: false,
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: 'RESET_WEEKLY_ROSTER',
+          details: `Reset week ${data.weekStartDate} for LC Gate ${gate.lcNumber} to Permanent Master Roster (removed ${deleted.count} overrides) by ${req.user.role}`,
+        },
+      });
+
+      return res.json({
+        success: true,
+        mode: 'RESET',
+        message: `Week ${data.weekStartDate} has been reset to follow the Permanent Master Roster cycle.`,
+        clearedCount: deleted.count,
+      });
+    }
+
     const results = [];
 
+    // -------------------------------------------------------------
+    // MODE: PERMANENT (Sets 52-week recurring Master Cycle)
+    // -------------------------------------------------------------
+    if (mode === 'PERMANENT') {
+      for (const item of data.assignments) {
+        if (item.shiftCode === '-') continue;
+
+        const permShiftName = `${item.dayOfWeek}_${item.gatemanId}`;
+
+        const permEntry = await prisma.gateDutyRoster.upsert({
+          where: {
+            gateId_date_shiftName: {
+              gateId: data.gateId,
+              date: 'PERMANENT',
+              shiftName: permShiftName,
+            },
+          },
+          update: {
+            startTime: item.startTime,
+            endTime: item.endTime,
+            gatemanUserId: item.gatemanId,
+            createdById: req.user.id,
+            stationId,
+            weekStartDate: 'PERMANENT',
+            dayOfWeek: item.dayOfWeek,
+            shiftCode: item.shiftCode,
+            isPermanent: true,
+            isSplitShift: item.isSplitShift || false,
+            secondaryStart: item.secondaryStart || null,
+            secondaryEnd: item.secondaryEnd || null,
+          },
+          create: {
+            gateId: data.gateId,
+            stationId,
+            date: 'PERMANENT',
+            shiftName: permShiftName,
+            startTime: item.startTime,
+            endTime: item.endTime,
+            gatemanUserId: item.gatemanId,
+            createdById: req.user.id,
+            weekStartDate: 'PERMANENT',
+            dayOfWeek: item.dayOfWeek,
+            shiftCode: item.shiftCode,
+            isPermanent: true,
+            isSplitShift: item.isSplitShift || false,
+            secondaryStart: item.secondaryStart || null,
+            secondaryEnd: item.secondaryEnd || null,
+          },
+        });
+
+        results.push(permEntry);
+      }
+
+      // Purge any old overrides for this week so current week immediately shows the new permanent baseline
+      await prisma.gateDutyRoster.deleteMany({
+        where: {
+          gateId: data.gateId,
+          date: { in: weekDates },
+          isPermanent: false,
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: 'PUBLISH_PERMANENT_ROSTER',
+          details: `Published Permanent Master Roster for LC Gate ${gate.lcNumber} (7-day cycle, ${results.length} shifts, all 52 weeks) by ${req.user.role}`,
+        },
+      });
+
+      return res.json({
+        success: true,
+        mode: 'PERMANENT',
+        message: `Permanent Master Duty Roster for LC Gate ${gate.lcNumber} published. This 7-day cycle will repeat automatically across all 52 weeks of the year.`,
+        gateNumber: gate.lcNumber,
+        assignedCount: results.length,
+      });
+    }
+
+    // -------------------------------------------------------------
+    // MODE: SPECIFIC_WEEK (Creates temporary overrides for this week only)
+    // -------------------------------------------------------------
     for (const item of data.assignments) {
-      if (item.shiftCode === '-') continue; // Skip unassigned days
+      if (item.shiftCode === '-') continue;
 
       const resolvedShiftName = item.shiftName ||
         (item.shiftCode === '07-19' ? 'Day Shift (07:00 - 19:00)' :
@@ -673,6 +836,7 @@ router.post('/publish-weekly', async (req: any, res, next) => {
           weekStartDate: data.weekStartDate,
           dayOfWeek: item.dayOfWeek,
           shiftCode: item.shiftCode,
+          isPermanent: false,
           isSplitShift: item.isSplitShift || false,
           secondaryStart: item.secondaryStart || null,
           secondaryEnd: item.secondaryEnd || null,
@@ -689,6 +853,7 @@ router.post('/publish-weekly', async (req: any, res, next) => {
           weekStartDate: data.weekStartDate,
           dayOfWeek: item.dayOfWeek,
           shiftCode: item.shiftCode,
+          isPermanent: false,
           isSplitShift: item.isSplitShift || false,
           secondaryStart: item.secondaryStart || null,
           secondaryEnd: item.secondaryEnd || null,
@@ -698,18 +863,18 @@ router.post('/publish-weekly', async (req: any, res, next) => {
       results.push(entry);
     }
 
-    // Audit log
     await prisma.auditLog.create({
       data: {
         userId: req.user.id,
-        action: 'PUBLISH_WEEKLY_ROSTER',
-        details: `Published weekly roster for LC Gate ${gate.lcNumber} (Week: ${data.weekStartDate}) with ${results.length} assignments by ${req.user.role}`,
+        action: 'PUBLISH_SPECIFIC_WEEK_ROSTER',
+        details: `Published specific week overrides for LC Gate ${gate.lcNumber} (Week: ${data.weekStartDate}, ${results.length} assignments) by ${req.user.role}`,
       },
     });
 
     return res.json({
       success: true,
-      message: `Weekly duty roster for LC Gate ${gate.lcNumber} published successfully.`,
+      mode: 'SPECIFIC_WEEK',
+      message: `Specific week duty roster for LC Gate ${gate.lcNumber} published. Other weeks remain on their standard cycle.`,
       gateNumber: gate.lcNumber,
       weekStartDate: data.weekStartDate,
       assignedCount: results.length,

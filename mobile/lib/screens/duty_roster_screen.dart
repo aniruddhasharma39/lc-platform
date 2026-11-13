@@ -736,7 +736,180 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
     );
   }
 
-  Future<void> _publishWeeklyRoster() async {
+  void _openPublishScopeDialog() {
+    if (_selectedWeeklyGateId == null || _weeklyRosterData == null) return;
+    final hasOverrides = _weeklyRosterData!['hasOverridesThisWeek'] == true;
+    final weekStartStr = _weeklyRosterData!['weekStartDate'] ?? '';
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.rule_folder_outlined, color: AppColors.primary, size: 22),
+                        SizedBox(width: 8),
+                        Text('Select Roster Application Scope', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx)),
+                  ],
+                ),
+                Text(
+                  'Choose whether this updated roster applies as the Permanent Master Cycle (all 52 weeks) or as a temporary exception for this week only.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                ),
+                const SizedBox(height: 16),
+
+                // Option 1: Permanent Master Cycle (Yearly 52 Weeks)
+                InkWell(
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _executePublishWeekly(mode: 'PERMANENT');
+                  },
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFF93C5FD), width: 1.5),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: const BoxDecoration(color: Color(0xFF1D4ED8), shape: BoxShape.circle),
+                          child: const Icon(Icons.all_inclusive, color: Colors.white, size: 20),
+                        ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Permanent Master Cycle (Yearly)',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Color(0xFF1E3A8A)),
+                              ),
+                              SizedBox(height: 3),
+                              Text(
+                                'Applies automatically to all 52 weeks (365 days). Standard cyclical roster sanctioned by SSE/P.WAY & ADEN. No weekly manual re-entry needed.',
+                                style: TextStyle(fontSize: 11, color: Color(0xFF334155), height: 1.3),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Option 2: Specific Week Only (Temporary Exception)
+                InkWell(
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _executePublishWeekly(mode: 'SPECIFIC_WEEK');
+                  },
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFFBEB),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFFCD34D), width: 1.5),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: const BoxDecoration(color: Color(0xFFD97706), shape: BoxShape.circle),
+                          child: const Icon(Icons.date_range, color: Colors.white, size: 20),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Specific Week Only ($weekStartStr)',
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Color(0xFF92400E)),
+                              ),
+                              const SizedBox(height: 3),
+                              const Text(
+                                'Temporary override for this week only (e.g. sick leave, PME course, or Restkeeper relief). Leaves the permanent cycle for all other weeks completely untouched.',
+                                style: TextStyle(fontSize: 11, color: Color(0xFF334155), height: 1.3),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // Option 3: Reset Week to Permanent Cycle (if overrides exist)
+                if (hasOverrides) ...[
+                  const SizedBox(height: 12),
+                  InkWell(
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _executePublishWeekly(mode: 'RESET');
+                    },
+                    borderRadius: BorderRadius.circular(10),
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: const Color(0xFFCBD5E1)),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.restart_alt, color: Color(0xFF64748B), size: 22),
+                          SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Reset This Week to Permanent Cycle',
+                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF334155)),
+                                ),
+                                Text(
+                                  'Clears all temporary overrides for this week and reverts back to the standard cycle.',
+                                  style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _executePublishWeekly({required String mode}) async {
     if (_selectedWeeklyGateId == null || _weeklyRosterData == null) return;
 
     final days = (_weeklyRosterData!['days'] as List?) ?? [];
@@ -797,6 +970,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
       final body = {
         'gateId': _selectedWeeklyGateId,
         'weekStartDate': _weeklyRosterData!['weekStartDate'],
+        'mode': mode,
         'assignments': assignments,
       };
 
@@ -807,12 +981,10 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
       );
 
       if (res.statusCode >= 200 && res.statusCode < 300) {
-        final gateNum = _weeklyRosterData!['gate']?['lcNumber'] ?? 'LC';
+        final data = json.decode(res.body);
+        final msg = data['message'] ?? 'Roster changes published successfully!';
         if (mounted) {
-          AppFeedback.showSuccess(
-            context,
-            'Weekly Duty Roster for $gateNum published successfully by PWI Incharge!',
-          );
+          AppFeedback.showSuccess(context, msg);
         }
         await _loadWeeklyRosterData();
       } else {
@@ -922,6 +1094,41 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
             ),
           ),
           const SizedBox(height: 14),
+
+          // Temporary Overrides Notice Banner
+          if (_weeklyRosterData?['hasOverridesThisWeek'] == true) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFFBEB),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFFDE68A)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline, size: 16, color: Color(0xFFB45309)),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Notice: This week contains specific date overrides. Other weeks automatically follow the Permanent Master Cycle.',
+                      style: TextStyle(fontSize: 11.5, color: Color(0xFF92400E)),
+                    ),
+                  ),
+                  if (_canManageRoster)
+                    TextButton(
+                      onPressed: () => _executePublishWeekly(mode: 'RESET'),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        minimumSize: const Size(0, 26),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      child: const Text('Reset Week', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFFB45309))),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
 
           // 2. Official Document Header Card (LC-91 Format)
           Container(
@@ -1066,6 +1273,9 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                               bgChipColor = const Color(0xFFFFEDD5);
                             }
 
+                            final cellData = (staff['schedule'] as Map<String, dynamic>?)?[dayOfWeek];
+                            final isOverride = cellData?['isOverride'] == true;
+
                             return DataCell(
                               InkWell(
                                 onTap: _canManageRoster
@@ -1075,19 +1285,34 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
                                   decoration: BoxDecoration(
-                                    color: bgChipColor,
+                                    color: isOverride ? const Color(0xFFFFFBEB) : bgChipColor,
                                     borderRadius: BorderRadius.circular(6),
-                                    border: Border.all(color: chipColor.withOpacity(0.4)),
+                                    border: Border.all(color: isOverride ? const Color(0xFFD97706) : chipColor.withValues(alpha: 0.4), width: isOverride ? 1.5 : 1),
                                   ),
                                   child: Column(
                                     mainAxisSize: MainAxisSize.min,
                                     mainAxisAlignment: MainAxisAlignment.center,
                                     children: [
-                                      Text(
-                                        code,
-                                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: chipColor),
+                                      Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Text(
+                                            code,
+                                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: isOverride ? const Color(0xFFB45309) : chipColor),
+                                          ),
+                                          if (isOverride) ...[
+                                            const SizedBox(width: 3),
+                                            Container(
+                                              width: 5,
+                                              height: 5,
+                                              decoration: const BoxDecoration(color: Color(0xFFD97706), shape: BoxShape.circle),
+                                            ),
+                                          ],
+                                        ],
                                       ),
-                                      if (_canManageRoster)
+                                      if (isOverride)
+                                        const Text('Override', style: TextStyle(fontSize: 8.5, color: Color(0xFFD97706), fontWeight: FontWeight.bold))
+                                      else if (_canManageRoster)
                                         const Icon(Icons.edit_note, size: 10, color: Color(0xFF94A3B8)),
                                     ],
                                   ),
@@ -1256,7 +1481,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                   _isPublishingWeekly ? 'Publishing Weekly Schedule...' : 'Publish Weekly Roster (SSE/P.WAY)',
                   style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
                 ),
-                onPressed: _isPublishingWeekly ? null : _publishWeeklyRoster,
+                onPressed: _isPublishingWeekly ? null : _openPublishScopeDialog,
               ),
             ),
           ],
