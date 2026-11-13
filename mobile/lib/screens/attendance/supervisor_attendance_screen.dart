@@ -31,10 +31,26 @@ class _SupervisorAttendanceScreenState extends State<SupervisorAttendanceScreen>
   List<dynamic> _pendingRequests = [];
   bool _isProcessingAction = false;
 
+  // PWI/CPWI Authority Check for Face Re-Enrollment Approvals
+  bool get _canApproveReenrollment {
+    final role = (widget.user['role'] ?? '').toString().toLowerCase();
+    final desig = (widget.user['designation'] ?? '').toString().toLowerCase();
+    return role == 'pwi' ||
+        role == 'cpwi' ||
+        role == 'developer' ||
+        role == 'admin' ||
+        desig.contains('pwi') ||
+        desig.contains('sse/p.way') ||
+        desig.contains('je/p.way');
+  }
+
+  // Pending Face Re-Enrollment Requests
+  List<dynamic> _pendingReenrollments = [];
+
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: _canApproveReenrollment ? 3 : 2, vsync: this);
     _fetchAllData();
   }
 
@@ -46,10 +62,14 @@ class _SupervisorAttendanceScreenState extends State<SupervisorAttendanceScreen>
 
   Future<void> _fetchAllData() async {
     setState(() => _isLoading = true);
-    await Future.wait([
+    final futures = <Future>[
       _fetchStationMatrix(),
       _fetchPendingManualRequests(),
-    ]);
+    ];
+    if (_canApproveReenrollment) {
+      futures.add(_fetchPendingReenrollments());
+    }
+    await Future.wait(futures);
     if (mounted) setState(() => _isLoading = false);
   }
 
@@ -134,6 +154,65 @@ class _SupervisorAttendanceScreenState extends State<SupervisorAttendanceScreen>
     }
   }
 
+  Future<void> _fetchPendingReenrollments() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$baseUrl/attendance/pending-reenrollments'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (mounted) {
+          setState(() {
+            _pendingReenrollments = List.from(data['requests'] ?? []);
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error fetching pending re-enrollments: $e');
+    }
+  }
+
+  Future<void> _handleReviewReenrollment(int reqId, String action, {String? notes}) async {
+    setState(() => _isProcessingAction = true);
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/attendance/approve-reenrollment/$reqId'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: json.encode({'action': action, 'notes': notes}),
+      );
+
+      if (!mounted) return;
+
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Re-enrollment ${action == "APPROVE" ? "approved (Face profile unlocked)" : "rejected"} successfully'),
+            backgroundColor: action == 'APPROVE' ? const Color(0xFF16A34A) : Colors.red,
+          ),
+        );
+        await _fetchAllData();
+      } else {
+        final data = json.decode(res.body);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(data['error'] ?? 'Action failed'), backgroundColor: Colors.red),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessingAction = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -167,8 +246,17 @@ class _SupervisorAttendanceScreenState extends State<SupervisorAttendanceScreen>
                 label: Text('${_pendingRequests.length}'),
                 child: const Icon(Icons.pending_actions_rounded, size: 20),
               ),
-              text: 'Pending Requests (${_pendingRequests.length})',
+              text: 'Pending (${_pendingRequests.length})',
             ),
+            if (_canApproveReenrollment)
+              Tab(
+                icon: Badge(
+                  isLabelVisible: _pendingReenrollments.isNotEmpty,
+                  label: Text('${_pendingReenrollments.length}'),
+                  child: const Icon(Icons.face_retouching_natural, size: 20),
+                ),
+                text: 'Face Re-Enroll (${_pendingReenrollments.length})',
+              ),
           ],
         ),
       ),
@@ -179,6 +267,7 @@ class _SupervisorAttendanceScreenState extends State<SupervisorAttendanceScreen>
               children: [
                 _buildMatrixTab(),
                 _buildPendingRequestsTab(),
+                if (_canApproveReenrollment) _buildPendingReenrollmentsTab(),
               ],
             ),
     );
@@ -651,6 +740,208 @@ class _SupervisorAttendanceScreenState extends State<SupervisorAttendanceScreen>
                         icon: const Icon(Icons.check, size: 18),
                         label: const Text('One-Tap Approve', style: TextStyle(fontWeight: FontWeight.bold)),
                         onPressed: _isProcessingAction ? null : () => _handleReviewRequest(reqId, 'APPROVE'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildPendingReenrollmentsTab() {
+    if (_pendingReenrollments.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.verified_user_outlined, size: 54, color: Colors.green.shade300),
+            const SizedBox(height: 12),
+            const Text(
+              'No Pending Face Re-Enrollment Requests',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Color(0xFF1E293B)),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'All Gateman and Restkeeper biometric profiles are active.',
+              style: TextStyle(color: Colors.black54, fontSize: 12),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _fetchPendingReenrollments,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: _pendingReenrollments.length,
+        itemBuilder: (context, index) {
+          final req = _pendingReenrollments[index];
+          final reqId = req['id'] as int;
+          final user = req['user'] ?? {};
+          final fullName = user['fullName'] ?? 'Field Staff';
+          final empId = user['employeeId'] ?? 'N/A';
+          final desig = user['designation'] ?? 'Gateman';
+          final station = user['station']?['name'] ?? 'Section';
+          final reason = req['reason'] ?? 'Face matching failure / physical change';
+          final faceImg = user['faceImageKey'];
+          final createdAt = req['createdAt'] != null ? req['createdAt'].toString().substring(0, 10) : '';
+
+          final assignedGates = (user['assignedGates'] as List?)
+                  ?.map((ag) => ag['gate']?['lcNumber'] ?? '')
+                  .where((n) => n.toString().isNotEmpty)
+                  .join(', ') ??
+              '';
+
+          return Container(
+            margin: const EdgeInsets.only(bottom: 14),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6, offset: const Offset(0, 2)),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEFF6FF),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: const Color(0xFFBFDBFE)),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.shield_outlined, size: 12, color: Color(0xFF1D4ED8)),
+                          SizedBox(width: 4),
+                          Text(
+                            'PWI Incharge Review',
+                            style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Text(
+                      createdAt,
+                      style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (faceImg != null && faceImg.toString().startsWith('http'))
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.network(
+                          faceImg,
+                          width: 52,
+                          height: 52,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Container(
+                            width: 52,
+                            height: 52,
+                            color: const Color(0xFFE2E8F0),
+                            child: const Icon(Icons.person, color: Color(0xFF64748B)),
+                          ),
+                        ),
+                      )
+                    else
+                      Container(
+                        width: 52,
+                        height: 52,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEFF6FF),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(Icons.face, color: Color(0xFF2563EB)),
+                      ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            fullName,
+                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '$desig • Emp ID: $empId',
+                            style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                          ),
+                          if (assignedGates.isNotEmpty)
+                            Text(
+                              'Assigned: $assignedGates ($station)',
+                              style: const TextStyle(fontSize: 11, color: Color(0xFF0284C7), fontWeight: FontWeight.w600),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFFBEB),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFFDE68A)),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.info_outline, size: 16, color: Color(0xFFB45309)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Reason: $reason',
+                          style: const TextStyle(fontSize: 12, color: Color(0xFF92400E)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.red,
+                          side: const BorderSide(color: Colors.red),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                        icon: const Icon(Icons.close, size: 16),
+                        label: const Text('Reject'),
+                        onPressed: _isProcessingAction ? null : () => _handleReviewReenrollment(reqId, 'REJECT'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF2563EB),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                        icon: const Icon(Icons.lock_open, size: 18),
+                        label: const Text('Approve & Unlock Face', style: TextStyle(fontWeight: FontWeight.bold)),
+                        onPressed: _isProcessingAction ? null : () => _handleReviewReenrollment(reqId, 'APPROVE'),
                       ),
                     ),
                   ],

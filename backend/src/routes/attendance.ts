@@ -523,7 +523,7 @@ router.post('/mark', authenticate, upload.single('image'), async (req: AuthReque
         return res.status(401).json({
           success: false,
           code: 'PROXY_FACE_DETECTED',
-          error: 'Biometric verification failed: Face does not match the registered profile for this account. Proxy attendance is strictly prohibited under Indian Railways safety rules.',
+          error: 'Biometric verification failed: Face does not match your registered profile. Please look directly into the camera with clear lighting and try again.',
         });
       }
     }
@@ -886,11 +886,29 @@ router.get('/station-matrix', authenticate, async (req: AuthRequest, res: Respon
 });
 
 // =========================================================================
-// 6. FACE RE-ENROLLMENT REQUEST & APPROVAL
+// 6. FACE RE-ENROLLMENT REQUEST & APPROVAL (PWI / CPWI ONLY)
 // =========================================================================
+
+function isPwiOrCpwi(user: any): boolean {
+  if (!user) return false;
+  const role = (user.role || '').toUpperCase();
+  const desig = (user.designation || '').toUpperCase();
+  return (
+    role === 'PWI' ||
+    role === 'CPWI' ||
+    role === 'DEVELOPER' ||
+    role === 'ADMIN' ||
+    desig.includes('PWI') ||
+    desig.includes('PERMANENT WAY') ||
+    desig.includes('SSE/P.WAY') ||
+    desig.includes('JE/P.WAY')
+  );
+}
 
 /**
  * POST /api/v1/attendance/request-reenrollment
+ * Submitted by Gatemen or Restkeepers when facial biometrics need re-registration.
+ * Routed strictly to PWI / CPWI.
  */
 router.post('/request-reenrollment', authenticate, async (req: AuthRequest, res: Response) => {
   try {
@@ -917,7 +935,7 @@ router.post('/request-reenrollment', authenticate, async (req: AuthRequest, res:
 
     return res.json({
       success: true,
-      message: 'Face re-enrollment request submitted. Awaiting Restkeeper / Admin approval.',
+      message: 'Face re-enrollment request submitted. Awaiting PWI / Section Incharge approval.',
       request,
     });
   } catch (err: any) {
@@ -926,10 +944,61 @@ router.post('/request-reenrollment', authenticate, async (req: AuthRequest, res:
 });
 
 /**
+ * GET /api/v1/attendance/pending-reenrollments
+ * Lists all pending face re-enrollment requests awaiting PWI / CPWI review.
+ * Strictly forbidden for Restkeepers and Gatemen.
+ */
+router.get('/pending-reenrollments', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!isPwiOrCpwi(req.user)) {
+      return res.status(403).json({
+        error: 'Forbidden: Only PWI or CPWI can review face re-enrollment requests.',
+      });
+    }
+
+    const requests = await prisma.faceReenrollmentRequest.findMany({
+      where: { status: 'PENDING' },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            employeeId: true,
+            mobile: true,
+            designation: true,
+            faceImageKey: true,
+            station: { select: { id: true, name: true, code: true } },
+            assignedGates: {
+              include: { gate: { select: { id: true, lcNumber: true, locationName: true } } },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return res.json({
+      success: true,
+      count: requests.length,
+      requests,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to fetch pending re-enrollments' });
+  }
+});
+
+/**
  * POST /api/v1/attendance/approve-reenrollment/:id
+ * Approves or rejects face re-enrollment. Restricted strictly to PWI, CPWI, and Admin.
  */
 router.post('/approve-reenrollment/:id', authenticate, async (req: AuthRequest, res: Response) => {
   try {
+    if (!isPwiOrCpwi(req.user)) {
+      return res.status(403).json({
+        error: 'Forbidden: Only PWI or CPWI can approve or reject face re-enrollment requests.',
+      });
+    }
+
     const requestId = parseInt(req.params.id);
     const { action, notes } = req.body; // action: 'APPROVE' or 'REJECT'
 

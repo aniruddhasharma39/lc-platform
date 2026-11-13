@@ -365,9 +365,11 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
           pmeDate: request.pmeDate || (formData.pmeDate ? new Date(formData.pmeDate) : null),
           pmeExpiryDate: request.pmeExpiryDate || (formData.pmeExpiryDate ? new Date(formData.pmeExpiryDate) : null),
           pmeCertificateNo: request.pmeCertificateNo || formData.pmeCertificateNo || null,
+          pmeCertificatePhotoUrl: request.pmeCertificatePhotoUrl || formData.pmeCertificatePhotoUrl || null,
           rcDate: request.rcDate || (formData.rcDate ? new Date(formData.rcDate) : null),
           rcExpiryDate: request.rcExpiryDate || (formData.rcExpiryDate ? new Date(formData.rcExpiryDate) : null),
           rcInstitute: request.rcInstitute || formData.rcInstitute || null,
+          rcCertificatePhotoUrl: request.rcCertificatePhotoUrl || formData.rcCertificatePhotoUrl || null,
           metadata: JSON.stringify(mappedMetadata)
         },
         include: {

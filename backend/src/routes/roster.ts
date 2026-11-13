@@ -18,6 +18,28 @@ export function getExamCompliance(expiryDate: Date | null): 'VALID' | 'DUE_SOON'
   return 'VALID';
 }
 
+/**
+ * Validates whether the logged in user is authorized to create/edit duty rosters.
+ * Primary: PWI (Permanent Way Inspector / JE P-Way)
+ * Secondary: CPWI (Chief PWI / SSE P-Way Incharge)
+ * System: Developer / Admin
+ */
+export function isRosterAuthor(user: any): boolean {
+  if (!user) return false;
+  const role = (user.role || '').toUpperCase();
+  const desig = (user.designation || '').toUpperCase();
+  return (
+    role === 'PWI' ||
+    role === 'CPWI' ||
+    role === 'DEVELOPER' ||
+    role === 'ADMIN' ||
+    desig.includes('PWI') ||
+    desig.includes('PERMANENT WAY') ||
+    desig.includes('SSE/P.WAY') ||
+    desig.includes('JE/P.WAY')
+  );
+}
+
 const publishRosterSchema = z.object({
   stationId: z.number().int(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD'),
@@ -212,6 +234,12 @@ router.get('/', async (req: any, res, next) => {
  */
 router.post('/publish', async (req: any, res, next) => {
   try {
+    if (!isRosterAuthor(req.user)) {
+      return res.status(403).json({
+        error: 'Forbidden: Roster charts can only be prepared by PWI primarily or CPWI.',
+      });
+    }
+
     const data = publishRosterSchema.parse(req.body);
 
     const results = [];
@@ -373,8 +401,318 @@ router.get('/my-shifts', async (req: any, res, next) => {
         gateNumber: `LC-${s.gate.lcNumber}`,
         locationName: s.gate.locationName,
         stationName: s.gate.station?.name || 'Assigned Station',
-        assignedBy: s.createdBy?.fullName || 'Restkeeper / Supervisor',
+        assignedBy: s.createdBy?.fullName || 'PWI / CPWI',
       }))
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// =========================================================================
+// WEEKLY ROSTER ENGINE (Mirroring Official LC-91 Indian Railways Chart)
+// =========================================================================
+
+const publishWeeklySchema = z.object({
+  gateId: z.number().int(),
+  weekStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'weekStartDate must be YYYY-MM-DD'),
+  assignments: z.array(z.object({
+    gatemanId: z.number().int(),
+    dayOfWeek: z.enum(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    shiftCode: z.string().min(1), // "07-19", "19-24", "00-07", "W/R", "N/R", "-"
+    startTime: z.string().default('07:00'),
+    endTime: z.string().default('19:00'),
+    shiftName: z.string().optional(),
+    isSplitShift: z.boolean().optional().default(false),
+    secondaryStart: z.string().optional().nullable(),
+    secondaryEnd: z.string().optional().nullable(),
+  })).min(1, 'At least one shift assignment is required'),
+});
+
+/**
+ * GET /api/v1/roster/weekly
+ * Fetches the 7-day Weekly Duty Roster Matrix for an LC Gate.
+ * Returns staff rows with 7-day schedule chips (07-19, 19-24, 00-07, W/R, N/R, -)
+ * and PWI / CPWI endorsement metadata.
+ */
+router.get('/weekly', async (req: any, res, next) => {
+  try {
+    const gateId = req.query.gateId ? parseInt(req.query.gateId as string, 10) : undefined;
+    if (!gateId) {
+      return res.status(400).json({ error: 'gateId query parameter is required (e.g. ?gateId=91)' });
+    }
+
+    const gate = await prisma.lCGate.findUnique({
+      where: { id: gateId },
+      include: {
+        station: { select: { id: true, name: true, code: true, division: true, zone: true } },
+      },
+    });
+
+    if (!gate) {
+      return res.status(404).json({ error: 'LC Gate not found' });
+    }
+
+    // Determine week dates (Sunday through Saturday)
+    let weekStartDateStr = req.query.weekStartDate as string;
+    let startDate: Date;
+    if (weekStartDateStr && /^\d{4}-\d{2}-\d{2}$/.test(weekStartDateStr)) {
+      startDate = new Date(weekStartDateStr + 'T00:00:00Z');
+    } else {
+      const now = new Date();
+      const day = now.getUTCDay(); // 0 = Sunday
+      startDate = new Date(now);
+      startDate.setUTCDate(now.getUTCDate() - day);
+      weekStartDateStr = startDate.toISOString().split('T')[0];
+    }
+
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const weekDays = dayNames.map((name, idx) => {
+      const d = new Date(startDate);
+      d.setUTCDate(startDate.getUTCDate() + idx);
+      return {
+        dayOfWeek: name,
+        date: d.toISOString().split('T')[0],
+      };
+    });
+
+    const weekDates = weekDays.map(w => w.date);
+
+    // Fetch assigned Gatemen and Restkeepers for this gate
+    const assignedUserGates = await prisma.userGate.findMany({
+      where: { gateId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            employeeId: true,
+            mobile: true,
+            email: true,
+            designation: true,
+            pmeExpiryDate: true,
+            rcExpiryDate: true,
+            role: { select: { name: true } },
+          },
+        },
+      },
+      orderBy: { user: { fullName: 'asc' } },
+    });
+
+    let staffList = assignedUserGates.map(ug => ug.user);
+
+    // If fewer than 3 staff members assigned, fetch additional available Gatemen/Restkeepers from station
+    if (staffList.length < 3 && gate.stationId) {
+      const additionalStaff = await prisma.user.findMany({
+        where: {
+          stationId: gate.stationId,
+          status: 'APPROVED',
+          OR: [
+            { role: { name: 'Gateman' } },
+            { role: { name: 'Restkeeper' } },
+            { designation: { contains: 'Gateman', mode: 'insensitive' } },
+            { designation: { contains: 'Restkeeper', mode: 'insensitive' } },
+          ],
+          id: { notIn: staffList.map(s => s.id) },
+        },
+        select: {
+          id: true,
+          fullName: true,
+          employeeId: true,
+          mobile: true,
+          email: true,
+          designation: true,
+          pmeExpiryDate: true,
+          rcExpiryDate: true,
+          role: { select: { name: true } },
+        },
+        take: 5,
+      });
+      staffList = [...staffList, ...additionalStaff];
+    }
+
+    // Fetch existing roster allocations across the 7 days for this gate
+    const existingEntries = await prisma.gateDutyRoster.findMany({
+      where: {
+        gateId,
+        date: { in: weekDates },
+      },
+      include: {
+        gateman: { select: { id: true, fullName: true, employeeId: true } },
+        createdBy: { select: { id: true, fullName: true, designation: true } },
+      },
+    });
+
+    // Build staff 7-day matrix
+    const matrix = staffList.map(staff => {
+      const schedule: Record<string, any> = {};
+
+      for (const wd of weekDays) {
+        const entry = existingEntries.find(e => e.gatemanUserId === staff.id && e.date === wd.date);
+        if (entry) {
+          schedule[wd.dayOfWeek] = {
+            id: entry.id,
+            date: entry.date,
+            shiftCode: entry.shiftCode || (entry.startTime && entry.endTime ? `${entry.startTime.slice(0, 2)}-${entry.endTime.slice(0, 2)}` : '07-19'),
+            shiftName: entry.shiftName,
+            startTime: entry.startTime,
+            endTime: entry.endTime,
+            isSplitShift: entry.isSplitShift,
+            secondaryStart: entry.secondaryStart,
+            secondaryEnd: entry.secondaryEnd,
+          };
+        } else {
+          schedule[wd.dayOfWeek] = {
+            id: null,
+            date: wd.date,
+            shiftCode: '-',
+            shiftName: 'Off / Not Assigned',
+            startTime: '07:00',
+            endTime: '19:00',
+            isSplitShift: false,
+          };
+        }
+      }
+
+      return {
+        userId: staff.id,
+        fullName: staff.fullName,
+        employeeId: staff.employeeId,
+        designation: staff.designation || staff.role?.name || 'Gateman',
+        isRestkeeper: staff.role?.name === 'Restkeeper' || (staff.designation || '').toLowerCase().includes('restkeeper'),
+        pmeStatus: getExamCompliance(staff.pmeExpiryDate),
+        rcStatus: getExamCompliance(staff.rcExpiryDate),
+        schedule,
+      };
+    });
+
+    // Endorsement sign-off metadata
+    const lastEntry = existingEntries[0];
+    const preparedByName = lastEntry?.createdBy
+      ? `${lastEntry.createdBy.fullName} (${lastEntry.createdBy.designation || 'PWI'})`
+      : 'वरिष्ठ/कनिष्ठ सेक्शन इंजीनियर (SSE/JE P.WAY INCHARGE)';
+
+    return res.json({
+      success: true,
+      gate: {
+        id: gate.id,
+        lcNumber: gate.lcNumber,
+        locationName: gate.locationName,
+        stationName: gate.station ? `${gate.station.name} (${gate.station.code})` : 'N/A',
+        division: gate.station?.division || 'Central Railway',
+      },
+      weekStartDate: weekStartDateStr,
+      weekEndDate: weekDates[6],
+      days: weekDays,
+      matrix,
+      signOff: {
+        preparedByTitle: 'वरिष्ठ सेक्शन इंजीनियर (रेलवे - ट्रैक), प्रभार (SSE/P.WAY INCHARGE)',
+        preparedByName,
+        approvedByTitle: 'सहायक मंडल इंजीनियर (Assistant Divisional Engineer / CPWI)',
+        approvedByName: 'ADEN / CPWI Section Incharge',
+      },
+      canEdit: isRosterAuthor(req.user),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/roster/publish-weekly
+ * Publishes/updates 7-day Weekly Gate Duty Roster for an LC Gate.
+ * Enforces strict PWI (Primary) & CPWI (Secondary/Section) authoring permission.
+ */
+router.post('/publish-weekly', async (req: any, res, next) => {
+  try {
+    if (!isRosterAuthor(req.user)) {
+      return res.status(403).json({
+        error: 'Forbidden: Weekly roster charts can only be prepared by PWI primarily or CPWI.',
+      });
+    }
+
+    const data = publishWeeklySchema.parse(req.body);
+
+    const gate = await prisma.lCGate.findUnique({
+      where: { id: data.gateId },
+      include: { station: true },
+    });
+
+    if (!gate) {
+      return res.status(404).json({ error: 'LC Gate not found' });
+    }
+
+    const stationId = gate.stationId || 1;
+    const results = [];
+
+    for (const item of data.assignments) {
+      if (item.shiftCode === '-') continue; // Skip unassigned days
+
+      const resolvedShiftName = item.shiftName ||
+        (item.shiftCode === '07-19' ? 'Day Shift (07:00 - 19:00)' :
+         item.shiftCode === '19-24' ? 'Evening Shift (19:00 - 24:00)' :
+         item.shiftCode === '00-07' ? 'Night Shift (00:00 - 07:00)' :
+         item.shiftCode === 'W/R' ? 'Weekly Rest (W/R)' :
+         item.shiftCode === 'N/R' ? 'Night Rest (N/R)' : `Shift ${item.shiftCode}`);
+
+      const entry = await prisma.gateDutyRoster.upsert({
+        where: {
+          gateId_date_shiftName: {
+            gateId: data.gateId,
+            date: item.date,
+            shiftName: resolvedShiftName,
+          },
+        },
+        update: {
+          startTime: item.startTime,
+          endTime: item.endTime,
+          gatemanUserId: item.gatemanId,
+          createdById: req.user.id,
+          stationId,
+          weekStartDate: data.weekStartDate,
+          dayOfWeek: item.dayOfWeek,
+          shiftCode: item.shiftCode,
+          isSplitShift: item.isSplitShift || false,
+          secondaryStart: item.secondaryStart || null,
+          secondaryEnd: item.secondaryEnd || null,
+        },
+        create: {
+          gateId: data.gateId,
+          stationId,
+          date: item.date,
+          shiftName: resolvedShiftName,
+          startTime: item.startTime,
+          endTime: item.endTime,
+          gatemanUserId: item.gatemanId,
+          createdById: req.user.id,
+          weekStartDate: data.weekStartDate,
+          dayOfWeek: item.dayOfWeek,
+          shiftCode: item.shiftCode,
+          isSplitShift: item.isSplitShift || false,
+          secondaryStart: item.secondaryStart || null,
+          secondaryEnd: item.secondaryEnd || null,
+        },
+      });
+
+      results.push(entry);
+    }
+
+    // Audit log
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        action: 'PUBLISH_WEEKLY_ROSTER',
+        details: `Published weekly roster for LC Gate ${gate.lcNumber} (Week: ${data.weekStartDate}) with ${results.length} assignments by ${req.user.role}`,
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: `Weekly duty roster for LC Gate ${gate.lcNumber} published successfully.`,
+      gateNumber: gate.lcNumber,
+      weekStartDate: data.weekStartDate,
+      assignedCount: results.length,
     });
   } catch (error) {
     next(error);

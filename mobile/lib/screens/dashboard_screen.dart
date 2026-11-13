@@ -279,9 +279,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool get _isAttendanceStaff =>
       _cleanedRole.contains('gateman') || _cleanedRole.contains('restkeeper');
 
-  // Field supervisors who monitor gate staffing and approve manual fallbacks
+  // Field supervisors who author rosters, oversee sections, and approve re-enrollments
   bool get _isFieldSupervisor =>
-      _cleanedRole.contains('restkeeper') ||
       _cleanedRole.contains('pwi') ||
       _cleanedRole.contains('cpwi');
 
@@ -297,9 +296,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool get _isSystemAdmin =>
       _isDeveloper || _cleanedRole == 'system admin';
 
-  // Anyone with gate staffing monitoring rights (excluding Gateman)
+  // Anyone with gate staffing monitoring rights (excluding Gateman & Restkeeper field staff)
   bool get _canViewGateStaffingMonitor =>
-      !_cleanedRole.contains('gateman') &&
+      !_isAttendanceStaff &&
       (_isFieldSupervisor || _isDivisionalOfficer || _isStationMaster || _isSystemAdmin);
 
   @override

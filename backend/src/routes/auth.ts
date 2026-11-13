@@ -418,6 +418,9 @@ router.post('/register', upload.any(), async (req, res, next) => {
 
     // Upload files to Cloudinary with safe base64 fallback
     let idCardUploadedUrl = parsedData.idCard || parsedData.idCardUrl || null;
+    let pmeCertificateUploadedUrl = parsedData.pmeCertificatePhotoUrl || parsedData.pmeCertificatePhoto || parsedData.pmeCertificate || null;
+    let rcCertificateUploadedUrl = parsedData.rcCertificatePhotoUrl || parsedData.rcCertificatePhoto || parsedData.rcCertificate || null;
+
     if (req.files && Array.isArray(req.files)) {
       for (const file of req.files) {
         let fileUrl = '';
@@ -443,6 +446,10 @@ router.post('/register', upload.any(), async (req, res, next) => {
         parsedData[file.fieldname] = fileUrl;
         if (file.fieldname === 'idCard' || file.fieldname === 'idCardUrl' || file.fieldname === 'identityCard') {
           idCardUploadedUrl = fileUrl;
+        } else if (file.fieldname === 'pmeCertificate' || file.fieldname === 'pmeCertificatePhoto' || file.fieldname === 'pmeCertificatePhotoUrl') {
+          pmeCertificateUploadedUrl = fileUrl;
+        } else if (file.fieldname === 'rcCertificate' || file.fieldname === 'rcCertificatePhoto' || file.fieldname === 'rcCertificatePhotoUrl') {
+          rcCertificateUploadedUrl = fileUrl;
         }
       }
     }
@@ -620,9 +627,11 @@ router.post('/register', upload.any(), async (req, res, next) => {
         pmeDate,
         pmeExpiryDate,
         pmeCertificateNo,
+        pmeCertificatePhotoUrl: pmeCertificateUploadedUrl || null,
         rcDate,
         rcExpiryDate,
         rcInstitute,
+        rcCertificatePhotoUrl: rcCertificateUploadedUrl || null,
         status: 'PENDING'
       }
     });

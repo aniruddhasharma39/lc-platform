@@ -56,6 +56,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
   DateTime? _rcExpiryDate;
   final _rcInstituteCtrl = TextEditingController();
 
+  XFile? _pmeCertificateFile;
+  XFile? _rcCertificateFile;
+
   // Official ID Card Document
   XFile? _idCardFile;
   final ImagePicker _picker = ImagePicker();
@@ -328,6 +331,127 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
   }
 
+  Future<void> _pickCertificatePhoto({required bool isPme}) async {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt, color: AppColors.primary),
+              title: Text('Take Photo of ' + (isPme ? 'PME' : 'RC') + ' Certificate'),
+              onTap: () async {
+                Navigator.pop(ctx);
+                try {
+                  final img = await _picker.pickImage(source: ImageSource.camera, imageQuality: 85);
+                  if (img != null && mounted) {
+                    setState(() {
+                      if (isPme) {
+                        _pmeCertificateFile = img;
+                      } else {
+                        _rcCertificateFile = img;
+                      }
+                    });
+                  }
+                } catch (e) {
+                  debugPrint('Error picking certificate photo: $e');
+                }
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library, color: AppColors.primary),
+              title: Text('Choose ' + (isPme ? 'PME' : 'RC') + ' Certificate from Gallery'),
+              onTap: () async {
+                Navigator.pop(ctx);
+                try {
+                  final img = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+                  if (img != null && mounted) {
+                    setState(() {
+                      if (isPme) {
+                        _pmeCertificateFile = img;
+                      } else {
+                        _rcCertificateFile = img;
+                      }
+                    });
+                  }
+                } catch (e) {
+                  debugPrint('Error picking certificate photo: $e');
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCertificatePhotoPicker({
+    required String title,
+    required XFile? file,
+    required VoidCallback onPick,
+    required VoidCallback onClear,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.description_outlined, size: 16, color: Color(0xFF0284C7)),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF334155)),
+                ),
+              ),
+              OutlinedButton.icon(
+                onPressed: onPick,
+                icon: const Icon(Icons.upload_file, size: 14),
+                label: Text(file == null ? 'Upload Photo' : 'Change', style: const TextStyle(fontSize: 11)),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  minimumSize: const Size(0, 30),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ],
+          ),
+          if (file != null) ...[
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                const Icon(Icons.check_circle, size: 14, color: Color(0xFF059669)),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    file.name,
+                    style: const TextStyle(fontSize: 11, color: Color(0xFF059669), fontWeight: FontWeight.bold),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 16, color: Colors.red),
+                  onPressed: onClear,
+                  tooltip: 'Remove',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Future<void> _sendMobileOtp() async {
     final mobile = _mobileCtrl.text.replaceAll(RegExp(r'\D'), '');
     if (mobile.length != 10 || !RegExp(r'^[6-9]\d{9}$').hasMatch(mobile)) {
@@ -574,6 +698,24 @@ class _RegisterScreenState extends State<RegisterScreen> {
           'idCard',
           bytes,
           filename: _idCardFile!.name,
+        ));
+      }
+
+      if (_pmeCertificateFile != null) {
+        final bytes = await _pmeCertificateFile!.readAsBytes();
+        request.files.add(http.MultipartFile.fromBytes(
+          'pmeCertificate',
+          bytes,
+          filename: _pmeCertificateFile!.name,
+        ));
+      }
+
+      if (_rcCertificateFile != null) {
+        final bytes = await _rcCertificateFile!.readAsBytes();
+        request.files.add(http.MultipartFile.fromBytes(
+          'rcCertificate',
+          bytes,
+          filename: _rcCertificateFile!.name,
         ));
       }
 
@@ -1368,6 +1510,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                         ),
                                         style: const TextStyle(fontSize: 12),
                                       ),
+                                      const SizedBox(height: 8),
+                                      _buildCertificatePhotoPicker(
+                                        title: 'PME Certificate Photo (Optional)',
+                                        file: _pmeCertificateFile,
+                                        onPick: () => _pickCertificatePhoto(isPme: true),
+                                        onClear: () => setState(() => _pmeCertificateFile = null),
+                                      ),
                                     ],
                                   ),
                                 ),
@@ -1441,6 +1590,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                           contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                                         ),
                                         style: const TextStyle(fontSize: 12),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      _buildCertificatePhotoPicker(
+                                        title: 'RC Certificate Photo (Optional)',
+                                        file: _rcCertificateFile,
+                                        onPick: () => _pickCertificatePhoto(isPme: false),
+                                        onClear: () => setState(() => _rcCertificateFile = null),
                                       ),
                                     ],
                                   ),

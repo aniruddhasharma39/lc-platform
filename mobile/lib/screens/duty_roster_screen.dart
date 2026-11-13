@@ -29,6 +29,14 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
   List<dynamic> _roster = [];
   List<dynamic> _myShifts = [];
 
+  // Weekly Gate Roster State (LC-91 Official Chart Format)
+  int? _selectedWeeklyGateId;
+  DateTime _weeklyStartDate = DateTime.now();
+  Map<String, dynamic>? _weeklyRosterData;
+  bool _isLoadingWeekly = false;
+  bool _isPublishingWeekly = false;
+  final Map<String, String> _weeklyDraft = {};
+
   // Local allocations map: key is "${gateId}_${shiftName}", value is gatemanUserId
   final Map<String, int?> _selectedAssignments = {};
 
@@ -36,34 +44,42 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
   bool _isPublishing = false;
   String _errorMessage = '';
 
-  bool get _isGateman {
-    final roleName = (widget.user['role'] is Map ? widget.user['role']['name'] : widget.user['role']?.toString()) ?? '';
-    final desig = (widget.user['designation'] ?? '').toString();
-    return roleName.toLowerCase() == 'gateman' || desig.toLowerCase().contains('gateman');
+  bool get _isDutyStaff {
+    final roleName = ((widget.user['role'] is Map ? widget.user['role']['name'] : widget.user['role']?.toString()) ?? '').toLowerCase();
+    final desig = (widget.user['designation'] ?? '').toString().toLowerCase();
+    return roleName.contains('gateman') ||
+        roleName.contains('restkeeper') ||
+        desig.contains('gateman') ||
+        desig.contains('restkeeper');
   }
+
+  bool get _isGateman => _isDutyStaff;
 
   bool get _canManageRoster {
     final roleName = ((widget.user['role'] is Map ? widget.user['role']['name'] : widget.user['role']?.toString()) ?? '').toLowerCase();
     final desig = (widget.user['designation'] ?? '').toString().toLowerCase();
+    // Strictly restricted to PWI (Primary author) and CPWI (Secondary/Section Incharge) + Developer/Admin
     return roleName == 'developer' ||
-        roleName.contains('restkeeper') ||
-        desig.contains('restkeeper') ||
+        roleName == 'admin' ||
         roleName.contains('pwi') ||
-        desig.contains('pwi') ||
         roleName.contains('cpwi') ||
-        desig.contains('cpwi') ||
-        roleName.contains('station master') ||
-        roleName.contains('supervisor') ||
-        roleName.contains('den');
+        desig.contains('pwi') ||
+        desig.contains('sse/p.way') ||
+        desig.contains('je/p.way');
   }
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: _isGateman ? 2 : 1, vsync: this);
-    if (_isGateman) {
-      _tabController.index = 0; // My Shifts first for Gatemen
-    }
+    // 2 tabs for all: Duty staff has (My Shifts, Weekly LC Roster), Supervisors have (Weekly LC Roster, Daily Matrix)
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() {
+      if (mounted) setState(() {});
+    });
+
+    // Snap _weeklyStartDate to Sunday
+    final dayOffset = _weeklyStartDate.weekday % 7;
+    _weeklyStartDate = _weeklyStartDate.subtract(Duration(days: dayOffset));
 
     if (widget.user['stationId'] != null) {
       _stationId = widget.user['stationId'] is int
@@ -71,8 +87,14 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
           : int.tryParse(widget.user['stationId'].toString());
     }
 
-    _loadRosterData();
-    if (_isGateman) {
+    _loadRosterData().then((_) {
+      if (_gates.isNotEmpty) {
+        _selectedWeeklyGateId = _gates[0]['id'];
+        _loadWeeklyRosterData();
+      }
+    });
+
+    if (_isDutyStaff) {
       _loadMyShifts();
     }
   }
@@ -562,6 +584,687 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
     }
   }
 
+
+  // =========================================================================
+  // WEEKLY LC GATE ROSTER (LC-91 Physical Chart Model)
+  // =========================================================================
+
+  Future<void> _loadWeeklyRosterData({int? gateId, DateTime? weekStart}) async {
+    final gid = gateId ?? _selectedWeeklyGateId ?? (_gates.isNotEmpty ? _gates[0]['id'] : null);
+    if (gid == null) return;
+    _selectedWeeklyGateId = gid;
+
+    DateTime start = weekStart ?? _weeklyStartDate;
+    // Snap to Sunday (weekday 7 in Dart)
+    final dayOffset = start.weekday % 7;
+    start = start.subtract(Duration(days: dayOffset));
+    _weeklyStartDate = start;
+
+    setState(() => _isLoadingWeekly = true);
+    try {
+      final token = await _getToken();
+      final weekStartStr = _formatDate(start);
+      final uri = Uri.parse('$baseUrl/roster/weekly?gateId=$gid&weekStartDate=$weekStartStr');
+      final res = await http.get(uri, headers: {'Authorization': 'Bearer $token'});
+
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (mounted) {
+          setState(() {
+            _weeklyRosterData = data;
+            _weeklyDraft.clear();
+            final matrix = (data['matrix'] as List?) ?? [];
+            for (final staff in matrix) {
+              final uid = staff['userId'].toString();
+              final schedule = staff['schedule'] as Map<String, dynamic>? ?? {};
+              schedule.forEach((day, item) {
+                _weeklyDraft['${uid}_$day'] = (item['shiftCode'] ?? '-').toString();
+              });
+            }
+            _isLoadingWeekly = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _isLoadingWeekly = false);
+      }
+    } catch (e) {
+      debugPrint('Error loading weekly roster: $e');
+      if (mounted) setState(() => _isLoadingWeekly = false);
+    }
+  }
+
+  void _nextWeek() {
+    _loadWeeklyRosterData(weekStart: _weeklyStartDate.add(const Duration(days: 7)));
+  }
+
+  void _previousWeek() {
+    _loadWeeklyRosterData(weekStart: _weeklyStartDate.subtract(const Duration(days: 7)));
+  }
+
+  Future<void> _pickWeekStartDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _weeklyStartDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now().add(const Duration(days: 180)),
+      helpText: 'SELECT WEEK START DATE',
+    );
+    if (picked != null) {
+      _loadWeeklyRosterData(weekStart: picked);
+    }
+  }
+
+  void _showShiftPickerSheet(int userId, String staffName, String dayOfWeek, String dateStr) {
+    if (!_canManageRoster) return;
+
+    final currentCode = _weeklyDraft['${userId}_$dayOfWeek'] ?? '-';
+
+    final options = [
+      {'code': '07-19', 'label': 'Day Shift (07:00 - 19:00)', 'desc': '12h Standard Day Duty', 'color': const Color(0xFF16A34A)},
+      {'code': '19-24', 'label': 'Evening Shift (19:00 - 24:00)', 'desc': '5h Night Duty Part 1', 'color': const Color(0xFF4F46E5)},
+      {'code': '00-07', 'label': 'Night Shift (00:00 - 07:00)', 'desc': '7h Night Duty Part 2', 'color': const Color(0xFF0284C7)},
+      {'code': '00-07, 19-24', 'label': 'Split Shift (00-07 & 19-24)', 'desc': 'Continuous 24h Coverage Split', 'color': const Color(0xFF9333EA)},
+      {'code': 'W/R', 'label': 'Weekly Rest (W/R)', 'desc': '30 Hours Mandatory Consecutive Rest', 'color': const Color(0xFFD97706)},
+      {'code': 'N/R', 'label': 'Night Rest (N/R)', 'desc': 'Post-Night Shift Rest Period', 'color': const Color(0xFFEA580C)},
+      {'code': '-', 'label': 'Relief / Off Duty (-)', 'desc': 'Covered by Restkeeper or Spare', 'color': const Color(0xFF64748B)},
+    ];
+
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Assign Shift: $dayOfWeek', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        Text('$staffName • $dateStr', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                      ],
+                    ),
+                    IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx)),
+                  ],
+                ),
+                const Divider(),
+                ...options.map((opt) {
+                  final code = opt['code'] as String;
+                  final label = opt['label'] as String;
+                  final desc = opt['desc'] as String;
+                  final color = opt['color'] as Color;
+                  final isSelected = currentCode == code;
+
+                  return ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    leading: Container(
+                      width: 44,
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: color.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: color, width: 1.5),
+                      ),
+                      child: Text(
+                        code,
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: color),
+                      ),
+                    ),
+                    title: Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                    subtitle: Text(desc, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                    trailing: isSelected ? const Icon(Icons.check_circle, color: Color(0xFF16A34A)) : null,
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      setState(() {
+                        _weeklyDraft['${userId}_$dayOfWeek'] = code;
+                      });
+                    },
+                  );
+                }),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _publishWeeklyRoster() async {
+    if (_selectedWeeklyGateId == null || _weeklyRosterData == null) return;
+
+    final days = (_weeklyRosterData!['days'] as List?) ?? [];
+    final matrix = (_weeklyRosterData!['matrix'] as List?) ?? [];
+
+    final assignments = <Map<String, dynamic>>[];
+
+    for (final staff in matrix) {
+      final uid = staff['userId'];
+      for (final d in days) {
+        final dayOfWeek = d['dayOfWeek'].toString();
+        final dateStr = d['date'].toString();
+        final code = _weeklyDraft['${uid}_$dayOfWeek'] ?? '-';
+
+        String startTime = '07:00';
+        String endTime = '19:00';
+        bool isSplit = false;
+        String? secStart;
+        String? secEnd;
+
+        if (code == '07-19') {
+          startTime = '07:00';
+          endTime = '19:00';
+        } else if (code == '19-24') {
+          startTime = '19:00';
+          endTime = '24:00';
+        } else if (code == '00-07') {
+          startTime = '00:00';
+          endTime = '07:00';
+        } else if (code.contains('00-07') && code.contains('19-24')) {
+          startTime = '00:00';
+          endTime = '07:00';
+          isSplit = true;
+          secStart = '19:00';
+          secEnd = '24:00';
+        } else if (code == 'W/R' || code == 'N/R' || code == '-') {
+          startTime = '00:00';
+          endTime = '00:00';
+        }
+
+        assignments.add({
+          'gatemanUserId': uid,
+          'date': dateStr,
+          'dayOfWeek': dayOfWeek,
+          'shiftCode': code,
+          'startTime': startTime,
+          'endTime': endTime,
+          'isSplitShift': isSplit,
+          'secondaryStart': secStart,
+          'secondaryEnd': secEnd,
+        });
+      }
+    }
+
+    setState(() => _isPublishingWeekly = true);
+    try {
+      final token = await _getToken();
+      final body = {
+        'gateId': _selectedWeeklyGateId,
+        'weekStartDate': _weeklyRosterData!['weekStartDate'],
+        'assignments': assignments,
+      };
+
+      final res = await http.post(
+        Uri.parse('$baseUrl/roster/publish-weekly'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: json.encode(body),
+      );
+
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        final gateNum = _weeklyRosterData!['gate']?['lcNumber'] ?? 'LC';
+        if (mounted) {
+          AppFeedback.showSuccess(
+            context,
+            'Weekly Duty Roster for $gateNum published successfully by PWI Incharge!',
+          );
+        }
+        await _loadWeeklyRosterData();
+      } else {
+        final err = json.decode(res.body)['error'] ?? 'Failed to publish weekly roster.';
+        if (mounted) AppFeedback.showError(context, err);
+      }
+    } catch (e) {
+      if (mounted) AppFeedback.showError(context, 'Network error publishing weekly roster: $e');
+    } finally {
+      if (mounted) setState(() => _isPublishingWeekly = false);
+    }
+  }
+
+  Widget _buildWeeklyRosterView() {
+    if (_isLoadingWeekly) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    final gate = _weeklyRosterData?['gate'] ?? {};
+    final days = (_weeklyRosterData?['days'] as List?) ?? [];
+    final matrix = (_weeklyRosterData?['matrix'] as List?) ?? [];
+    final signOff = _weeklyRosterData?['signOff'] ?? {};
+
+    final weekStartDateStr = _weeklyRosterData?['weekStartDate'] ?? _formatDate(_weeklyStartDate);
+    final weekEndDateStr = _weeklyRosterData?['weekEndDate'] ?? '';
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 1. LC Gate Selector & Week Nav
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFCBD5E1)),
+            ),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.directions_railway, size: 18, color: AppColors.primary),
+                        SizedBox(width: 6),
+                        Text('Select LC Gate:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                      ],
+                    ),
+                    if (_gates.isNotEmpty)
+                      DropdownButton<int>(
+                        value: _selectedWeeklyGateId,
+                        isDense: true,
+                        underline: const SizedBox(),
+                        items: _gates.map<DropdownMenuItem<int>>((g) {
+                          final num = g['lcNumber'] ?? 'LC';
+                          final loc = g['locationName'] ?? '';
+                          return DropdownMenuItem<int>(
+                            value: g['id'] as int,
+                            child: Text(
+                              loc.isNotEmpty ? '$num ($loc)' : num,
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.primary),
+                            ),
+                          );
+                        }).toList(),
+                        onChanged: (val) {
+                          if (val != null) {
+                            setState(() => _selectedWeeklyGateId = val);
+                            _loadWeeklyRosterData(gateId: val);
+                          }
+                        },
+                      ),
+                  ],
+                ),
+                const Divider(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.chevron_left_rounded),
+                      onPressed: _previousWeek,
+                      tooltip: 'Previous Week',
+                    ),
+                    InkWell(
+                      onTap: _pickWeekStartDate,
+                      child: Row(
+                        children: [
+                          const Icon(Icons.calendar_month_outlined, size: 16, color: AppColors.primary),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Week: $weekStartDateStr to $weekEndDateStr',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5, color: Color(0xFF0F172A)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.chevron_right_rounded),
+                      onPressed: _nextWeek,
+                      tooltip: 'Next Week',
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+
+          // 2. Official Document Header Card (LC-91 Format)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFF94A3B8)),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 4, offset: const Offset(0, 2)),
+              ],
+            ),
+            child: Column(
+              children: [
+                const Text(
+                  'DUTY ROSTER',
+                  style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17, letterSpacing: 1.5, color: Color(0xFF0F172A)),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'LC NO. - ${gate['lcNumber'] ?? '91'}',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF1E3A8A)),
+                ),
+                if (gate['locationName'] != null)
+                  Text(
+                    '${gate['locationName']} • ${gate['stationName'] ?? ''}',
+                    style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // 3. Weekly Matrix Table
+          if (matrix.isEmpty)
+            Container(
+              padding: const EdgeInsets.all(24),
+              alignment: Alignment.center,
+              child: const Text('No Gatemen or Restkeepers assigned to this LC Gate.'),
+            )
+          else
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFCBD5E1)),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: DataTable(
+                    columnSpacing: 14,
+                    horizontalMargin: 12,
+                    headingRowHeight: 46,
+                    dataRowMinHeight: 52,
+                    dataRowMaxHeight: 64,
+                    headingRowColor: WidgetStateProperty.all(const Color(0xFFF1F5F9)),
+                    columns: [
+                      const DataColumn(
+                        label: Text('Name', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A))),
+                      ),
+                      ...days.map((d) {
+                        final name = d['dayOfWeek'].toString();
+                        final dStr = (d['date'] as String).substring(5); // MM-DD
+                        return DataColumn(
+                          label: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF0F172A))),
+                              Text(dStr, style: const TextStyle(fontSize: 10, color: Color(0xFF64748B))),
+                            ],
+                          ),
+                        );
+                      }),
+                    ],
+                    rows: matrix.map((staff) {
+                      final uid = staff['userId'].toString();
+                      final fullName = staff['fullName'] ?? 'Staff';
+                      final isRestkeeper = staff['isRestkeeper'] == true;
+
+                      return DataRow(
+                        cells: [
+                          DataCell(
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  fullName,
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5, color: Color(0xFF0F172A)),
+                                ),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                      decoration: BoxDecoration(
+                                        color: isRestkeeper ? const Color(0xFFFEF3C7) : const Color(0xFFEFF6FF),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        isRestkeeper ? 'Restkeeper' : 'Gateman',
+                                        style: TextStyle(
+                                          fontSize: 9.5,
+                                          fontWeight: FontWeight.bold,
+                                          color: isRestkeeper ? const Color(0xFFB45309) : const Color(0xFF1D4ED8),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          ...days.map((d) {
+                            final dayOfWeek = d['dayOfWeek'].toString();
+                            final dateStr = d['date'].toString();
+                            final code = _weeklyDraft['${uid}_$dayOfWeek'] ?? '-';
+
+                            Color chipColor = const Color(0xFF64748B);
+                            Color bgChipColor = const Color(0xFFF1F5F9);
+
+                            if (code == '07-19') {
+                              chipColor = const Color(0xFF15803D);
+                              bgChipColor = const Color(0xFFDCFCE7);
+                            } else if (code == '19-24') {
+                              chipColor = const Color(0xFF4338CA);
+                              bgChipColor = const Color(0xFFEEF2FF);
+                            } else if (code == '00-07') {
+                              chipColor = const Color(0xFF0369A1);
+                              bgChipColor = const Color(0xFFE0F2FE);
+                            } else if (code.contains('00-07') && code.contains('19-24')) {
+                              chipColor = const Color(0xFF7E22CE);
+                              bgChipColor = const Color(0xFFF3E8FF);
+                            } else if (code == 'W/R') {
+                              chipColor = const Color(0xFFB45309);
+                              bgChipColor = const Color(0xFFFEF3C7);
+                            } else if (code == 'N/R') {
+                              chipColor = const Color(0xFFC2410C);
+                              bgChipColor = const Color(0xFFFFEDD5);
+                            }
+
+                            return DataCell(
+                              InkWell(
+                                onTap: _canManageRoster
+                                    ? () => _showShiftPickerSheet(staff['userId'], fullName, dayOfWeek, dateStr)
+                                    : null,
+                                borderRadius: BorderRadius.circular(6),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: bgChipColor,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: chipColor.withOpacity(0.4)),
+                                  ),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Text(
+                                        code,
+                                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: chipColor),
+                                      ),
+                                      if (_canManageRoster)
+                                        const Icon(Icons.edit_note, size: 10, color: Color(0xFF94A3B8)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          }),
+                        ],
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ),
+            ),
+          const SizedBox(height: 14),
+
+          // 4. Shift Legend Card
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFC),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Standard Shift Codes (24h Safety Coverage):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11.5, color: Color(0xFF334155))),
+                SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    Text('07-19: Day Shift (12h)', style: TextStyle(fontSize: 10.5, color: Color(0xFF15803D), fontWeight: FontWeight.w600)),
+                    Text('19-24: Night Part 1 (5h)', style: TextStyle(fontSize: 10.5, color: Color(0xFF4338CA), fontWeight: FontWeight.w600)),
+                    Text('00-07: Night Part 2 (7h)', style: TextStyle(fontSize: 10.5, color: Color(0xFF0369A1), fontWeight: FontWeight.w600)),
+                    Text('W/R: Weekly Rest (30h)', style: TextStyle(fontSize: 10.5, color: Color(0xFFB45309), fontWeight: FontWeight.bold)),
+                    Text('N/R: Night Rest', style: TextStyle(fontSize: 10.5, color: Color(0xFFC2410C), fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+
+          // 5. Official Stamps Footer (Matching Official Document)
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFCBD5E1)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.verified, size: 16, color: Color(0xFF1E3A8A)),
+                    SizedBox(width: 6),
+                    Text('Official Indian Railways Sign-Off & Approvals', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF0F172A))),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Prepared By (PWI / SSE)
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEFF6FF),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFF93C5FD)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'वरिष्ठ सेक्शन इंजीनियर (रेलपथ-प्रभारी)',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Color(0xFF1E3A8A)),
+                            ),
+                            const Text(
+                              '(SSE/P.WAY/INCHARGE/KRD)',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Color(0xFF1E3A8A)),
+                            ),
+                            const Text('CENTRAL RAILWAY (मध्य रेल)', style: TextStyle(fontSize: 9, color: Color(0xFF1E3A8A))),
+                            const SizedBox(height: 6),
+                            Text(
+                              signOff['preparedByName'] ?? 'SSE / P.WAY Incharge',
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF0F172A)),
+                            ),
+                            const Text('Primary Author', style: TextStyle(fontSize: 9.5, color: Color(0xFF2563EB), fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+
+                    // Approved By (CPWI / ADEN Satara)
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFAF5FF),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFD8B4FE)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'सहायक मंडल इंजीनियर सातारा',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Color(0xFF6B21A8)),
+                            ),
+                            const Text(
+                              'Assistant Divisional Engineer STR',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Color(0xFF6B21A8)),
+                            ),
+                            const Text('Central Railway STR (मध्य रेल)', style: TextStyle(fontSize: 9, color: Color(0xFF6B21A8))),
+                            const SizedBox(height: 6),
+                            Text(
+                              signOff['approvedByName'] ?? 'ADEN / CPWI Section Incharge',
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF0F172A)),
+                            ),
+                            const Text('Section Incharge (Countersigned)', style: TextStyle(fontSize: 9.5, color: Color(0xFF9333EA), fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 80),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWeeklyPublishActionBar() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 10, offset: const Offset(0, -3)),
+        ],
+      ),
+      child: SafeArea(
+        child: Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E3A8A),
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                icon: _isPublishingWeekly
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.verified_user_rounded, size: 18, color: Colors.white),
+                label: Text(
+                  _isPublishingWeekly ? 'Publishing Weekly Schedule...' : 'Publish Weekly Roster (SSE/P.WAY)',
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                ),
+                onPressed: _isPublishingWeekly ? null : _publishWeeklyRoster,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -600,32 +1303,43 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
             },
           ),
         ],
-        bottom: _isGateman
-            ? TabBar(
-                controller: _tabController,
-                indicatorColor: Colors.white,
-                indicatorWeight: 3.0,
-                labelColor: Colors.white,
-                unselectedLabelColor: Colors.white60,
-                labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
-                unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13.5),
-                tabs: [
+        bottom: TabBar(
+          controller: _tabController,
+          indicatorColor: Colors.white,
+          indicatorWeight: 3.0,
+          labelColor: Colors.white,
+          unselectedLabelColor: Colors.white60,
+          labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
+          unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13.5),
+          tabs: _isDutyStaff
+              ? [
                   Tab(text: 'My Shifts (${_myShifts.length})'),
-                  const Tab(text: 'Station Roster Chart'),
+                  const Tab(text: 'Weekly Gate Roster (Official)'),
+                ]
+              : [
+                  const Tab(text: 'Weekly Gate Roster (LC-91)'),
+                  const Tab(text: 'Daily Station Matrix'),
                 ],
-              )
-            : null,
+        ),
       ),
-      body: _isGateman
+      body: _isDutyStaff
           ? TabBarView(
               controller: _tabController,
               children: [
                 _buildMyShiftsView(),
-                _buildRosterChartContent(),
+                _buildWeeklyRosterView(),
               ],
             )
-          : _buildRosterChartContent(),
-      bottomNavigationBar: _canManageRoster ? _buildPublishActionBar() : null,
+          : TabBarView(
+              controller: _tabController,
+              children: [
+                _buildWeeklyRosterView(),
+                _buildRosterChartContent(),
+              ],
+            ),
+      bottomNavigationBar: _canManageRoster && !_isDutyStaff
+          ? (_tabController.index == 0 ? _buildWeeklyPublishActionBar() : _buildPublishActionBar())
+          : null,
     );
   }
 
