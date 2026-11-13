@@ -10,6 +10,7 @@ import 'branding_screen.dart';
 import 'registration_builder_screen.dart';
 import 'cluster/cluster_main_screen.dart';
 import 'profile_screen.dart';
+import 'duty_roster_screen.dart';
 
 import 'device_registry/device_registry_screen.dart';
 import 'lc_gates/lc_gates_screen.dart';
@@ -1700,6 +1701,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   },
                 ),
               ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              child: ListTile(
+                dense: true,
+                tileColor: _currentView == 'duty-roster' ? AppColors.primary : Colors.transparent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                title: Text(
+                  'Duty Roster & Shifts',
+                  style: TextStyle(
+                    fontWeight: _currentView == 'duty-roster' ? FontWeight.bold : FontWeight.w500,
+                    color: _currentView == 'duty-roster' ? Colors.white : const Color(0xFF1E293B),
+                    fontSize: 13.5,
+                  ),
+                ),
+                leading: Icon(
+                  Icons.calendar_month_rounded,
+                  color: _currentView == 'duty-roster' ? Colors.white : const Color(0xFF64748B),
+                ),
+                onTap: () {
+                  setState(() { _currentView = 'duty-roster'; });
+                  Navigator.pop(context);
+                },
+              ),
+            ),
             ..._systemModules.where((m) {
               final slug = (m['slug'] ?? '').toString().toLowerCase();
               final name = (m['name'] ?? '').toString().toLowerCase();
@@ -1759,6 +1784,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildBody() {
     if (_currentView == 'home') return _buildUserDashboard();
+    if (_currentView == 'duty-roster' || _currentView == 'roster') {
+      return DutyRosterScreen(user: widget.user);
+    }
     if (_currentView == 'lc-gates') {
       return LCGatesScreen(
         user: widget.user,
@@ -1880,6 +1908,61 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
 
             const SizedBox(height: 18),
+
+            // Duty Roster Quick Access Card
+            InkWell(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => DutyRosterScreen(user: widget.user)),
+                );
+              },
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFCBD5E1)),
+                  boxShadow: [
+                    BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 6, offset: const Offset(0, 2)),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEFF6FF),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.assignment_ind_rounded, color: Color(0xFF1D4ED8), size: 22),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Gate Duty Roster & Shifts',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Color(0xFF0F172A)),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            roleName.toLowerCase() == 'gateman'
+                                ? 'View your assigned LC Gate shifts & duty timings'
+                                : 'Allocate daily gate duty roster & notify Gatemen',
+                            style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: AppColors.primary),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
 
             // Top KPI Metric Cards Grid (6 Metric Tiles)
             Row(
