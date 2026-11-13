@@ -12,6 +12,8 @@ import {
   deleteStaffFace,
   DEFAULT_SIMILARITY_THRESHOLD,
 } from '../lib/rekognitionClient';
+import { uploadBufferToCloudinary, deleteFromCloudinary } from '../lib/cloudinaryUploader';
+import { runAttendanceRetentionSweep } from '../workers/attendanceRetentionWorker';
 
 const router = Router();
 const upload = multer({
@@ -80,6 +82,7 @@ router.get('/enrollment-status', authenticate, async (req: AuthRequest, res: Res
         fullName: true,
         isFaceEnrolled: true,
         faceId: true,
+        faceImageKey: true,
         faceEnrolledAt: true,
         faceEnrollConfidence: true,
       },
@@ -93,6 +96,7 @@ router.get('/enrollment-status', authenticate, async (req: AuthRequest, res: Res
       success: true,
       isFaceEnrolled: user.isFaceEnrolled,
       faceId: user.faceId,
+      faceImageKey: user.faceImageKey,
       faceEnrolledAt: user.faceEnrolledAt,
       faceEnrollConfidence: user.faceEnrollConfidence,
     });
@@ -109,7 +113,7 @@ router.post('/enroll-face', authenticate, upload.single('image'), async (req: Au
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user!.id },
-      select: { id: true, employeeId: true, fullName: true, isFaceEnrolled: true },
+      select: { id: true, employeeId: true, fullName: true, isFaceEnrolled: true, faceImageKey: true },
     });
 
     if (!user) {
@@ -148,16 +152,26 @@ router.post('/enroll-face', authenticate, upload.single('image'), async (req: Au
       if (process.env.NODE_ENV === 'test' || !process.env.AWS_ACCESS_KEY_ID) {
         console.warn('[Rekognition] Mocking face indexing in test/offline environment');
         const mockFaceId = `mock_face_${user.employeeId}_${Date.now()}`;
-        const filename = `face_${user.id}_${Date.now()}.jpg`;
-        const filePath = path.join(FACES_DIR, filename);
-        fs.writeFileSync(filePath, imageBuffer);
+        
+        let mockFaceUrl: string | null = null;
+        try {
+          const cldRes = await uploadBufferToCloudinary(imageBuffer, {
+            folder: 'lc_platform/face_profiles',
+            publicIdPrefix: `face_${user.id}_${user.employeeId}`,
+            tags: ['lc-platform', 'face-profile', `emp_${user.employeeId}`],
+            maxDimension: 800,
+          });
+          mockFaceUrl = cldRes.secureUrl;
+        } catch {
+          mockFaceUrl = null;
+        }
 
         await prisma.user.update({
           where: { id: user.id },
           data: {
             isFaceEnrolled: true,
             faceId: mockFaceId,
-            faceImageKey: `uploads/faces/${filename}`,
+            faceImageKey: mockFaceUrl,
             faceEnrolledAt: new Date(),
             faceEnrollConfidence: 99.5,
           },
@@ -176,18 +190,32 @@ router.post('/enroll-face', authenticate, upload.single('image'), async (req: Au
       });
     }
 
-    // 3. Save reference image locally
-    const filename = `face_${user.id}_${Date.now()}.jpg`;
-    const filePath = path.join(FACES_DIR, filename);
-    fs.writeFileSync(filePath, imageBuffer);
+    // 3. Purge any previous face image from Cloudinary to keep media library clean
+    if (user.faceImageKey) {
+      await deleteFromCloudinary(user.faceImageKey);
+    }
 
-    // 4. Update user record with Rekognition FaceId and lock profile
+    // 4. Stream reference face photo to Cloudinary CDN (Zero local EC2 storage)
+    let faceCloudinaryUrl: string | null = null;
+    try {
+      const uploadRes = await uploadBufferToCloudinary(imageBuffer, {
+        folder: 'lc_platform/face_profiles',
+        publicIdPrefix: `face_${user.id}_${user.employeeId}`,
+        tags: ['lc-platform', 'face-profile', `emp_${user.employeeId}`],
+        maxDimension: 800,
+      });
+      faceCloudinaryUrl = uploadRes.secureUrl;
+    } catch (cldErr: any) {
+      console.warn('[Cloudinary] Face profile upload failed, continuing with Rekognition FaceId:', cldErr.message);
+    }
+
+    // 5. Update user record with Rekognition FaceId and lock profile
     const updatedUser = await prisma.user.update({
       where: { id: user.id },
       data: {
         isFaceEnrolled: true,
         faceId: indexResult.faceId,
-        faceImageKey: `uploads/faces/${filename}`,
+        faceImageKey: faceCloudinaryUrl,
         faceEnrolledAt: new Date(),
         faceEnrollConfidence: indexResult.confidence || 99.0,
       },
@@ -198,6 +226,7 @@ router.post('/enroll-face', authenticate, upload.single('image'), async (req: Au
       message: 'Facial biometric profile successfully registered and locked.',
       faceId: updatedUser.faceId,
       confidence: updatedUser.faceEnrollConfidence,
+      photoUrl: updatedUser.faceImageKey,
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Face enrollment failed' });
@@ -500,16 +529,32 @@ router.post('/mark', authenticate, upload.single('image'), async (req: AuthReque
     }
 
     // 1:1 Fallback comparison directly against enrolled reference image (only for this user)
-    if (!faceMatched && user.faceImageKey && fs.existsSync(path.join(process.cwd(), user.faceImageKey))) {
-      const refBytes = fs.readFileSync(path.join(process.cwd(), user.faceImageKey));
-      const compRes = await compareFaceImages({
-        sourceBytes: refBytes,
-        targetBytes: imageBuffer,
-        similarityThreshold: DEFAULT_SIMILARITY_THRESHOLD,
-      });
-      if (compRes.success && compRes.isMatch && (compRes.similarity ?? 0) >= DEFAULT_SIMILARITY_THRESHOLD) {
-        faceMatched = true;
-        similarityScore = compRes.similarity!;
+    if (!faceMatched && user.faceImageKey) {
+      let refBytes: Buffer | null = null;
+      if (user.faceImageKey.startsWith('http')) {
+        try {
+          const resp = await fetch(user.faceImageKey);
+          if (resp.ok) {
+            const arrayBuf = await resp.arrayBuffer();
+            refBytes = Buffer.from(arrayBuf);
+          }
+        } catch (fetchErr: any) {
+          console.warn('[Rekognition 1:1] Failed to fetch reference image from Cloudinary:', fetchErr.message);
+        }
+      } else if (fs.existsSync(path.join(process.cwd(), user.faceImageKey))) {
+        refBytes = fs.readFileSync(path.join(process.cwd(), user.faceImageKey));
+      }
+
+      if (refBytes) {
+        const compRes = await compareFaceImages({
+          sourceBytes: refBytes,
+          targetBytes: imageBuffer,
+          similarityThreshold: DEFAULT_SIMILARITY_THRESHOLD,
+        });
+        if (compRes.success && compRes.isMatch && (compRes.similarity ?? 0) >= DEFAULT_SIMILARITY_THRESHOLD) {
+          faceMatched = true;
+          similarityScore = compRes.similarity!;
+        }
       }
     }
 
@@ -523,10 +568,19 @@ router.post('/mark', authenticate, upload.single('image'), async (req: AuthReque
       });
     }
 
-    // 4. Save live attendance selfie
-    const selfieFilename = `attendance_${user.id}_${Date.now()}.jpg`;
-    const selfiePath = path.join(ATTENDANCE_DIR, selfieFilename);
-    fs.writeFileSync(selfiePath, imageBuffer);
+    // 4. Stream live attendance selfie directly to Cloudinary (Zero local EC2 storage)
+    let selfieUrl: string | null = null;
+    try {
+      const uploadRes = await uploadBufferToCloudinary(imageBuffer, {
+        folder: 'lc_platform/attendance',
+        publicIdPrefix: `att_${type.toLowerCase()}_u${user.id}_${user.employeeId}`,
+        tags: ['lc-platform', 'attendance', type.toLowerCase()],
+        maxDimension: 800,
+      });
+      selfieUrl = uploadRes.secureUrl;
+    } catch (cldErr: any) {
+      console.warn('[Cloudinary] Attendance selfie upload failed, preserving biometric match log:', cldErr.message);
+    }
 
     // 5. Check Punctuality (Grace period: 15 minutes)
     let minutesLate = 0;
@@ -571,7 +625,7 @@ router.post('/mark', authenticate, upload.single('image'), async (req: AuthReque
         livenessPassed: true,
         status: attendanceStatus,
         minutesLate,
-        selfieUrl: `uploads/attendance/${selfieFilename}`,
+        selfieUrl,
       },
       include: {
         gate: true,
@@ -625,11 +679,19 @@ router.post('/manual-fallback', authenticate, upload.single('image'), async (req
     const resolvedStationId = stationId ? parseInt(stationId) : (user.stationId || 1);
     const resolvedGateId = gateId ? parseInt(gateId) : null;
 
-    let selfieUrl = null;
+    let selfieUrl: string | null = null;
     if (req.file && req.file.buffer) {
-      const filename = `manual_fallback_${user.id}_${Date.now()}.jpg`;
-      fs.writeFileSync(path.join(ATTENDANCE_DIR, filename), req.file.buffer);
-      selfieUrl = `uploads/attendance/${filename}`;
+      try {
+        const uploadRes = await uploadBufferToCloudinary(req.file.buffer, {
+          folder: 'lc_platform/manual_fallback',
+          publicIdPrefix: `fallback_${type.toLowerCase()}_u${user.id}`,
+          tags: ['lc-platform', 'manual-fallback'],
+          maxDimension: 800,
+        });
+        selfieUrl = uploadRes.secureUrl;
+      } catch (cldErr: any) {
+        console.warn('[Cloudinary] Manual fallback photo upload failed:', cldErr.message);
+      }
     }
 
     const attendance = await prisma.shiftAttendance.create({
@@ -901,6 +963,9 @@ router.post('/approve-reenrollment/:id', authenticate, async (req: AuthRequest, 
     if (reenrollReq.user.faceId) {
       await deleteStaffFace(reenrollReq.user.faceId);
     }
+    if (reenrollReq.user.faceImageKey) {
+      await deleteFromCloudinary(reenrollReq.user.faceImageKey);
+    }
 
     await prisma.user.update({
       where: { id: reenrollReq.userId },
@@ -929,6 +994,28 @@ router.post('/approve-reenrollment/:id', authenticate, async (req: AuthRequest, 
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to process re-enrollment approval' });
+  }
+});
+
+// =========================================================================
+// 7. ROLLING RETENTION SWEEP (Manual Trigger / Health Check)
+// =========================================================================
+
+/**
+ * POST /api/v1/attendance/retention-sweep
+ * Triggers a manual 24-hour rolling retention sweep to purge expired attendance photos from Cloudinary CDN.
+ */
+router.post('/retention-sweep', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const hours = req.body && req.body.hours ? parseInt(req.body.hours, 10) : undefined;
+    const sweepResult = await runAttendanceRetentionSweep(hours);
+    return res.json({
+      success: true,
+      message: 'Attendance photo retention sweep completed successfully.',
+      sweepResult,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to execute retention sweep' });
   }
 });
 

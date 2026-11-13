@@ -30,6 +30,7 @@ class _FaceEnrollmentScreenState extends State<FaceEnrollmentScreen> {
   String? _enrolledAt;
   double? _enrollConfidence;
   String? _faceId;
+  String? _photoUrl;
 
   XFile? _capturedImage;
   bool _screenFlashEnabled = false;
@@ -58,6 +59,7 @@ class _FaceEnrollmentScreenState extends State<FaceEnrollmentScreen> {
               ? (data['faceEnrollConfidence'] as num).toDouble()
               : null;
           _faceId = data['faceId'];
+          _photoUrl = data['faceImageKey'];
         });
       }
     } catch (e) {
@@ -577,8 +579,34 @@ class _FaceEnrollmentScreenState extends State<FaceEnrollmentScreen> {
               ),
               child: Column(
                 children: [
-                  const Icon(Icons.verified_user, color: Color(0xFF2E7D32), size: 56),
-                  const SizedBox(height: 10),
+                  if (_photoUrl != null && _photoUrl!.startsWith('http')) ...[
+                    Stack(
+                      alignment: Alignment.bottomRight,
+                      children: [
+                        CircleAvatar(
+                          radius: 46,
+                          backgroundColor: const Color(0xFF2E7D32),
+                          child: CircleAvatar(
+                            radius: 43,
+                            backgroundImage: NetworkImage(_photoUrl!),
+                            backgroundColor: Colors.white,
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: const BoxDecoration(
+                            color: Color(0xFF2E7D32),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.check, color: Colors.white, size: 16),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                  ] else ...[
+                    const Icon(Icons.verified_user, color: Color(0xFF2E7D32), size: 56),
+                    const SizedBox(height: 10),
+                  ],
                   const Text(
                     'Facial Biometrics Registered',
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF1B5E20)),

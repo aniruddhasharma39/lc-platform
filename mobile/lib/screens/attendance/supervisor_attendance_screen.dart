@@ -519,7 +519,106 @@ class _SupervisorAttendanceScreenState extends State<SupervisorAttendanceScreen>
                     style: const TextStyle(fontSize: 12, color: Color(0xFF475569), fontStyle: FontStyle.italic),
                   ),
                 ),
-                if (selfieUrl != null) ...[
+                if (selfieUrl != null && selfieUrl.toString().startsWith('http')) ...[
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: GestureDetector(
+                          onTap: () {
+                            showDialog(
+                              context: context,
+                              builder: (ctx) => Dialog(
+                                backgroundColor: Colors.transparent,
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: Image.network(
+                                        selfieUrl,
+                                        fit: BoxFit.contain,
+                                        errorBuilder: (context, error, stackTrace) => Container(
+                                          padding: const EdgeInsets.all(24),
+                                          color: Colors.white,
+                                          child: const Text('Failed to load image from Cloudinary CDN'),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    IconButton(
+                                      icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                                      onPressed: () => Navigator.pop(ctx),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                          child: Stack(
+                            alignment: Alignment.bottomRight,
+                            children: [
+                              Image.network(
+                                selfieUrl,
+                                width: 64,
+                                height: 64,
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, error, stackTrace) => Container(
+                                  width: 64,
+                                  height: 64,
+                                  color: const Color(0xFFF1F5F9),
+                                  child: const Icon(Icons.broken_image, size: 24, color: Colors.grey),
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.all(2),
+                                color: Colors.black54,
+                                child: const Icon(Icons.zoom_in, color: Colors.white, size: 14),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Proof Photo Attached',
+                              style: TextStyle(fontSize: 12, color: Color(0xFF16A34A), fontWeight: FontWeight.bold),
+                            ),
+                            Text(
+                              'Tap thumbnail to view full resolution on Cloudinary CDN',
+                              style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ] else if (selfieUrl != null && selfieUrl.toString().startsWith('[PURGED')) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.auto_delete, size: 14, color: Color(0xFF64748B)),
+                        SizedBox(width: 6),
+                        Text(
+                          'Photo Purged (24h Retention Expired)',
+                          style: TextStyle(fontSize: 11, color: Color(0xFF64748B), fontStyle: FontStyle.italic),
+                        ),
+                      ],
+                    ),
+                  ),
+                ] else if (selfieUrl != null) ...[
                   const SizedBox(height: 8),
                   const Text('Proof Photo: Attached by device camera', style: TextStyle(fontSize: 11, color: Colors.green, fontWeight: FontWeight.bold)),
                 ],

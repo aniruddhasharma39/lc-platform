@@ -22,6 +22,7 @@ import { prisma } from './lib/prisma';
 import { startTelemetryMonitor } from './lib/telemetryMonitor';
 import { initTelemetryWebSocket } from './lib/telemetryWs';
 import { getJwtRefreshSecret, getJwtSecret } from './middleware/auth';
+import { startAttendanceRetentionWorker } from './workers/attendanceRetentionWorker';
 
 import path from 'path';
 
@@ -144,6 +145,7 @@ if (isRenderEnvironment) {
   server.listen(port, () => {
     ensureSystemModules();
     startTelemetryMonitor(3000);
+    startAttendanceRetentionWorker();
     console.log(`Server is running on port ${port} with WebSocket telemetry stream`);
   });
 }
