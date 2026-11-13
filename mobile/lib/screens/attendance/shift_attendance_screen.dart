@@ -716,6 +716,27 @@ class _ShiftAttendanceScreenState extends State<ShiftAttendanceScreen> {
     );
   }
 
+  String _formatAttendanceTime(dynamic raw) {
+    if (raw == null) return 'Recorded';
+    try {
+      DateTime dt;
+      if (raw is DateTime) {
+        dt = raw.toLocal();
+      } else {
+        dt = DateTime.parse(raw.toString()).toLocal();
+      }
+      final h = dt.hour.toString().padLeft(2, '0');
+      final m = dt.minute.toString().padLeft(2, '0');
+      return '$h:$m';
+    } catch (_) {
+      final str = raw.toString();
+      if (str.contains('T') && str.length >= 16) {
+        return str.split('T')[1].substring(0, 5);
+      }
+      return str;
+    }
+  }
+
   Widget _buildDutyInfoCard(
     String dutyStatus,
     dynamic roster,
@@ -802,7 +823,11 @@ class _ShiftAttendanceScreenState extends State<ShiftAttendanceScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  target != null ? target['name'] : 'Assigned Railway Post',
+                  target != null
+                      ? (target['name'].toString().startsWith('LC-LC-')
+                          ? target['name'].toString().substring(3)
+                          : target['name'].toString())
+                      : 'Assigned Railway Post',
                   style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Color(0xFF1E293B)),
                 ),
               ),
@@ -815,7 +840,7 @@ class _ShiftAttendanceScreenState extends State<ShiftAttendanceScreen> {
                 const Icon(Icons.login_rounded, color: Color(0xFF16A34A), size: 18),
                 const SizedBox(width: 8),
                 Text(
-                  'Checked In: ${checkIn['timestamp']?.toString().split('T')[1].substring(0, 5) ?? 'Recorded'}',
+                  'Checked In: ${_formatAttendanceTime(checkIn['timestamp'])}',
                   style: const TextStyle(fontSize: 12.5, color: Color(0xFF16A34A), fontWeight: FontWeight.w600),
                 ),
                 if (checkIn['similarityScore'] != null)
@@ -830,7 +855,7 @@ class _ShiftAttendanceScreenState extends State<ShiftAttendanceScreen> {
                 const Icon(Icons.logout_rounded, color: Color(0xFF2563EB), size: 18),
                 const SizedBox(width: 8),
                 Text(
-                  'Checked Out: ${checkOut['timestamp']?.toString().split('T')[1].substring(0, 5) ?? 'Recorded'}',
+                  'Checked Out: ${_formatAttendanceTime(checkOut['timestamp'])}',
                   style: const TextStyle(fontSize: 12.5, color: Color(0xFF2563EB), fontWeight: FontWeight.w600),
                 ),
               ],

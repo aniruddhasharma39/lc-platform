@@ -272,6 +272,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool get _isDeveloper =>
       (widget.user['role'] ?? '').toString().trim().toLowerCase() == 'developer';
 
+  String get _cleanedRole =>
+      (widget.user['role'] ?? '').toString().trim().toLowerCase();
+
+  // Field staff who punch biometric attendance (Gateman & Restkeeper)
+  bool get _isAttendanceStaff =>
+      _cleanedRole.contains('gateman') || _cleanedRole.contains('restkeeper');
+
+  // Field supervisors who monitor gate staffing and approve manual fallbacks
+  bool get _isFieldSupervisor =>
+      _cleanedRole.contains('restkeeper') ||
+      _cleanedRole.contains('pwi') ||
+      _cleanedRole.contains('cpwi');
+
+  // Divisional Executives (Sr. DEN, DEN, ADEN, Sr. DOM, DOM)
+  bool get _isDivisionalOfficer =>
+      _cleanedRole.contains('den') || _cleanedRole.contains('dom');
+
+  // Station Master
+  bool get _isStationMaster =>
+      _cleanedRole.contains('station master');
+
+  // Apex Administrators
+  bool get _isSystemAdmin =>
+      _isDeveloper || _cleanedRole == 'system admin';
+
+  // Anyone with gate staffing monitoring rights (excluding Gateman)
+  bool get _canViewGateStaffingMonitor =>
+      !_cleanedRole.contains('gateman') &&
+      (_isFieldSupervisor || _isDivisionalOfficer || _isStationMaster || _isSystemAdmin);
+
   @override
   void initState() {
     super.initState();
@@ -1738,7 +1768,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 tileColor: _currentView == 'duty-roster' ? AppColors.primary : Colors.transparent,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 title: Text(
-                  'Duty Roster & Shifts',
+                  _cleanedRole.contains('gateman')
+                      ? 'My Duty Shifts'
+                      : (_isFieldSupervisor ? 'Gate Duty Roster' : 'Division Duty Roster'),
                   style: TextStyle(
                     fontWeight: _currentView == 'duty-roster' ? FontWeight.bold : FontWeight.w500,
                     color: _currentView == 'duty-roster' ? Colors.white : const Color(0xFF1E293B),
@@ -1755,113 +1787,116 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 },
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              child: ListTile(
-                dense: true,
-                tileColor: Colors.transparent,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                title: const Text(
-                  'Facial Biometrics',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w500,
-                    color: Color(0xFF1E293B),
-                    fontSize: 13.5,
-                  ),
-                ),
-                leading: const Icon(
-                  Icons.face_retouching_natural,
-                  color: Color(0xFF64748B),
-                ),
-                trailing: _isFaceEnrolled
-                    ? const Icon(Icons.check_circle, color: Color(0xFF16A34A), size: 16)
-                    : const Icon(Icons.warning_amber_rounded, color: Color(0xFFD97706), size: 16),
-                onTap: () async {
-                  final nav = Navigator.of(context);
-                  nav.pop();
-                  final token = await _getToken();
-                  if (!mounted) return;
-                  await nav.push(
-                    MaterialPageRoute(
-                      builder: (ctx) => FaceEnrollmentScreen(
-                        user: widget.user,
-                        token: token,
-                        onEnrollmentComplete: _fetchFaceEnrollmentStatus,
-                      ),
+            if (_isAttendanceStaff)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                child: ListTile(
+                  dense: true,
+                  tileColor: Colors.transparent,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  title: const Text(
+                    'Facial Biometrics',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF1E293B),
+                      fontSize: 13.5,
                     ),
-                  );
-                  _fetchFaceEnrollmentStatus();
-                },
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              child: ListTile(
-                dense: true,
-                tileColor: Colors.transparent,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                title: const Text(
-                  'Shift Attendance',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w500,
-                    color: Color(0xFF1E293B),
-                    fontSize: 13.5,
                   ),
-                ),
-                leading: const Icon(
-                  Icons.how_to_reg_rounded,
-                  color: Color(0xFF64748B),
-                ),
-                onTap: () async {
-                  final nav = Navigator.of(context);
-                  nav.pop();
-                  final token = await _getToken();
-                  if (!mounted) return;
-                  await nav.push(
-                    MaterialPageRoute(
-                      builder: (ctx) => ShiftAttendanceScreen(
-                        user: widget.user,
-                        token: token,
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              child: ListTile(
-                dense: true,
-                tileColor: Colors.transparent,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                title: const Text(
-                  'Gate Staffing Monitor',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w500,
-                    color: Color(0xFF1E293B),
-                    fontSize: 13.5,
+                  leading: const Icon(
+                    Icons.face_retouching_natural,
+                    color: Color(0xFF64748B),
                   ),
-                ),
-                leading: const Icon(
-                  Icons.grid_view_rounded,
-                  color: Color(0xFF64748B),
-                ),
-                onTap: () async {
-                  final nav = Navigator.of(context);
-                  nav.pop();
-                  final token = await _getToken();
-                  if (!mounted) return;
-                  await nav.push(
-                    MaterialPageRoute(
-                      builder: (ctx) => SupervisorAttendanceScreen(
-                        user: widget.user,
-                        token: token,
+                  trailing: _isFaceEnrolled
+                      ? const Icon(Icons.check_circle, color: Color(0xFF16A34A), size: 16)
+                      : const Icon(Icons.warning_amber_rounded, color: Color(0xFFD97706), size: 16),
+                  onTap: () async {
+                    final nav = Navigator.of(context);
+                    nav.pop();
+                    final token = await _getToken();
+                    if (!mounted) return;
+                    await nav.push(
+                      MaterialPageRoute(
+                        builder: (ctx) => FaceEnrollmentScreen(
+                          user: widget.user,
+                          token: token,
+                          onEnrollmentComplete: _fetchFaceEnrollmentStatus,
+                        ),
                       ),
-                    ),
-                  );
-                },
+                    );
+                    _fetchFaceEnrollmentStatus();
+                  },
+                ),
               ),
-            ),
+            if (_isAttendanceStaff)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                child: ListTile(
+                  dense: true,
+                  tileColor: Colors.transparent,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  title: const Text(
+                    'Shift Attendance',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF1E293B),
+                      fontSize: 13.5,
+                    ),
+                  ),
+                  leading: const Icon(
+                    Icons.how_to_reg_rounded,
+                    color: Color(0xFF64748B),
+                  ),
+                  onTap: () async {
+                    final nav = Navigator.of(context);
+                    nav.pop();
+                    final token = await _getToken();
+                    if (!mounted) return;
+                    await nav.push(
+                      MaterialPageRoute(
+                        builder: (ctx) => ShiftAttendanceScreen(
+                          user: widget.user,
+                          token: token,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            if (_canViewGateStaffingMonitor)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                child: ListTile(
+                  dense: true,
+                  tileColor: Colors.transparent,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  title: const Text(
+                    'Gate Staffing Monitor',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF1E293B),
+                      fontSize: 13.5,
+                    ),
+                  ),
+                  leading: const Icon(
+                    Icons.grid_view_rounded,
+                    color: Color(0xFF64748B),
+                  ),
+                  onTap: () async {
+                    final nav = Navigator.of(context);
+                    nav.pop();
+                    final token = await _getToken();
+                    if (!mounted) return;
+                    await nav.push(
+                      MaterialPageRoute(
+                        builder: (ctx) => SupervisorAttendanceScreen(
+                          user: widget.user,
+                          token: token,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
             ..._systemModules.where((m) {
               final slug = (m['slug'] ?? '').toString().toLowerCase();
               final name = (m['name'] ?? '').toString().toLowerCase();
@@ -2046,8 +2081,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
             const SizedBox(height: 18),
 
-            // Mandatory Facial Biometrics Registration Banner (For Gateman & Restkeeper)
-            if (!_isFaceEnrolled && (roleName.toLowerCase().contains('gateman') || roleName.toLowerCase().contains('restkeeper'))) ...[
+            // Mandatory Facial Biometrics Registration Banner (Strictly For Gateman & Restkeeper)
+            if (!_isFaceEnrolled && _isAttendanceStaff) ...[
               InkWell(
                 onTap: () async {
                   final nav = Navigator.of(context);
@@ -2151,15 +2186,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
-                            'Gate Duty Roster & Shifts',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Color(0xFF0F172A)),
+                          Text(
+                            _cleanedRole.contains('gateman')
+                                ? 'My Duty Shifts'
+                                : (_isFieldSupervisor ? 'Gate Duty Roster & Shifts' : 'Division Duty Roster & Shifts'),
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Color(0xFF0F172A)),
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            roleName.toLowerCase() == 'gateman'
+                            _cleanedRole.contains('gateman')
                                 ? 'View your assigned LC Gate shifts & duty timings'
-                                : 'Allocate daily gate duty roster & notify Gatemen',
+                                : (_isFieldSupervisor
+                                    ? 'Allocate daily gate duty roster & notify Gatemen'
+                                    : 'Division LC Gate duty roster & shift oversight'),
                             style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
                           ),
                         ],
@@ -2172,60 +2211,63 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             const SizedBox(height: 10),
 
-            // Shift Attendance (Biometric Check-In / Check-Out) Quick Access Card
-            InkWell(
-              onTap: () async {
-                final nav = Navigator.of(context);
-                final token = await _getToken();
-                if (!mounted) return;
-                await nav.push(
-                  MaterialPageRoute(builder: (_) => ShiftAttendanceScreen(user: widget.user, token: token)),
-                );
-              },
-              borderRadius: BorderRadius.circular(12),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFFCBD5E1)),
-                  boxShadow: [
-                    BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 6, offset: const Offset(0, 2)),
-                  ],
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFECFDF5),
-                        borderRadius: BorderRadius.circular(10),
+            // Shift Attendance (Biometric Check-In / Check-Out) Quick Access Card (Strictly For Gateman & Restkeeper)
+            if (_isAttendanceStaff) ...[
+              InkWell(
+                onTap: () async {
+                  final nav = Navigator.of(context);
+                  final token = await _getToken();
+                  if (!mounted) return;
+                  await nav.push(
+                    MaterialPageRoute(builder: (_) => ShiftAttendanceScreen(user: widget.user, token: token)),
+                  );
+                },
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFCBD5E1)),
+                    boxShadow: [
+                      BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 6, offset: const Offset(0, 2)),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFECFDF5),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.how_to_reg_rounded, color: Color(0xFF059669), size: 22),
                       ),
-                      child: const Icon(Icons.how_to_reg_rounded, color: Color(0xFF059669), size: 22),
-                    ),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Shift Attendance (Check-In / Out)',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Color(0xFF0F172A)),
-                          ),
-                          SizedBox(height: 2),
-                          Text(
-                            'Mark GPS-geofenced biometric attendance with Rekognition',
-                            style: TextStyle(fontSize: 11.5, color: Color(0xFF64748B)),
-                          ),
-                        ],
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Shift Attendance (Check-In / Out)',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Color(0xFF0F172A)),
+                            ),
+                            SizedBox(height: 2),
+                            Text(
+                              'Mark GPS-geofenced biometric attendance with Rekognition',
+                              style: TextStyle(fontSize: 11.5, color: Color(0xFF64748B)),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: AppColors.primary),
-                  ],
+                      const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: AppColors.primary),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            if (roleName.toLowerCase().contains('restkeeper') || roleName.toLowerCase().contains('pwi') || roleName.toLowerCase().contains('cpwi') || roleName.toLowerCase().contains('den') || roleName.toLowerCase().contains('admin')) ...[
+              const SizedBox(height: 10),
+            ],
+            if (_canViewGateStaffingMonitor) ...[
               const SizedBox(height: 10),
               InkWell(
                 onTap: () async {

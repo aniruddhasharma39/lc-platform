@@ -246,11 +246,16 @@ router.get('/active-duty', authenticate, async (req: AuthRequest, res: Response)
     let targetLocation = null;
     let allowedRadius = 150; // Default 150m for LC Gates
 
+    const formatGateLabel = (lcNumber: string, locName?: string | null) => {
+      const cleanNum = lcNumber.startsWith('LC-') ? lcNumber : `LC-${lcNumber}`;
+      return locName ? `${cleanNum} (${locName})` : cleanNum;
+    };
+
     if (roster && roster.gate) {
       targetLocation = {
         type: 'GATE',
         id: roster.gate.id,
-        name: `LC-${roster.gate.lcNumber} (${roster.gate.locationName})`,
+        name: formatGateLabel(roster.gate.lcNumber, roster.gate.locationName),
         latitude: roster.gate.latitude ?? 25.5941,
         longitude: roster.gate.longitude ?? 85.1376,
       };
@@ -260,7 +265,7 @@ router.get('/active-duty', authenticate, async (req: AuthRequest, res: Response)
       targetLocation = {
         type: 'GATE',
         id: primaryGate.id,
-        name: `LC-${primaryGate.lcNumber} (${primaryGate.locationName})`,
+        name: formatGateLabel(primaryGate.lcNumber, primaryGate.locationName),
         latitude: primaryGate.latitude ?? 25.5941,
         longitude: primaryGate.longitude ?? 85.1376,
       };
@@ -310,7 +315,7 @@ router.get('/active-duty', authenticate, async (req: AuthRequest, res: Response)
         shiftName: roster.shiftName,
         startTime: roster.startTime,
         endTime: roster.endTime,
-        gateName: `LC-${roster.gate.lcNumber}`,
+        gateName: roster.gate.lcNumber.startsWith('LC-') ? roster.gate.lcNumber : `LC-${roster.gate.lcNumber}`,
         stationName: roster.station.name,
       } : null,
       targetLocation,
