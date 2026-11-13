@@ -43,6 +43,7 @@ dependencies:
   open_filex: ^5.0.0
   flutter_map: ^8.3.2
   latlong2: ^0.10.1
+  camera: ^0.12.2
 
 dev_dependencies:
   flutter_test:

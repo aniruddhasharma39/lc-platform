@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import '../../config.dart';
 import '../../widgets/face_scanner_overlay.dart';
+import 'live_face_camera_screen.dart';
 
 class FaceEnrollmentScreen extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -23,8 +24,6 @@ class FaceEnrollmentScreen extends StatefulWidget {
 }
 
 class _FaceEnrollmentScreenState extends State<FaceEnrollmentScreen> {
-  final ImagePicker _picker = ImagePicker();
-
   bool _isLoading = false;
   bool _isCheckingStatus = true;
   bool _isEnrolled = false;
@@ -70,12 +69,14 @@ class _FaceEnrollmentScreenState extends State<FaceEnrollmentScreen> {
 
   Future<void> _captureSelfie() async {
     try {
-      final photo = await _picker.pickImage(
-        source: ImageSource.camera,
-        preferredCameraDevice: CameraDevice.front,
-        imageQuality: 92,
-        maxWidth: 1200,
-        maxHeight: 1200,
+      final XFile? photo = await Navigator.push<XFile?>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const LiveFaceCameraScreen(
+            title: 'Enrollment Selfie Capture',
+            subtitle: 'Align your face inside the oval frame',
+          ),
+        ),
       );
 
       if (photo != null && mounted) {

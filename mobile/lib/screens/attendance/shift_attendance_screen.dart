@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import '../../config.dart';
 import 'face_enrollment_screen.dart';
+import 'live_face_camera_screen.dart';
 
 class ShiftAttendanceScreen extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -167,14 +168,17 @@ class _ShiftAttendanceScreenState extends State<ShiftAttendanceScreen> {
       return;
     }
 
-    // 3. Open Camera with FaceScannerOverlay
+    // 3. Open Live In-App Camera with Oval Face Scanner Overlay
     try {
-      final photo = await _picker.pickImage(
-        source: ImageSource.camera,
-        preferredCameraDevice: CameraDevice.front,
-        imageQuality: 90,
-        maxWidth: 1200,
-        maxHeight: 1200,
+      final isCheckIn = type == 'CHECK_IN';
+      final XFile? photo = await Navigator.push<XFile?>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => LiveFaceCameraScreen(
+            title: isCheckIn ? 'Shift Check-In Biometrics' : 'Shift Check-Out Biometrics',
+            subtitle: 'Align your face inside the oval frame to verify identity',
+          ),
+        ),
       );
 
       if (photo == null || !mounted) return;

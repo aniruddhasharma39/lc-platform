@@ -570,24 +570,29 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Duty Roster & Shifts', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+            const Text(
+              'Duty Roster & Shifts',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Colors.white),
+            ),
             Text(
               _stationData != null ? '${_stationData!['name']} (${_stationData!['code']})' : 'Railway Station',
               style: const TextStyle(fontSize: 11.5, color: Colors.white70),
             ),
           ],
         ),
-        backgroundColor: AppColors.primary,
+        backgroundColor: const Color(0xFF0D47A1),
+        foregroundColor: Colors.white,
+        iconTheme: const IconThemeData(color: Colors.white),
         actions: [
           if (_canManageRoster) ...[
             IconButton(
-              icon: const Icon(Icons.tune_rounded),
+              icon: const Icon(Icons.tune_rounded, color: Colors.white),
               tooltip: 'Shift Timings Configurator',
               onPressed: _openShiftConfigDialog,
             ),
           ],
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh, color: Colors.white),
             tooltip: 'Refresh',
             onPressed: () {
               _loadRosterData();
@@ -599,6 +604,11 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
             ? TabBar(
                 controller: _tabController,
                 indicatorColor: Colors.white,
+                indicatorWeight: 3.0,
+                labelColor: Colors.white,
+                unselectedLabelColor: Colors.white60,
+                labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
+                unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13.5),
                 tabs: [
                   Tab(text: 'My Shifts (${_myShifts.length})'),
                   const Tab(text: 'Station Roster Chart'),
