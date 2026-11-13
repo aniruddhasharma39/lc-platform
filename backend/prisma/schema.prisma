@@ -48,6 +48,18 @@ model User {
   idCardUrl           String?
   assignedGates       UserGate[]
   approvedRequests    RegistrationRequest[]  @relation("ApprovedRequests")
+
+  // PME and RC Safety & Medical Qualifications
+  pmeDate             DateTime?
+  pmeExpiryDate       DateTime?
+  pmeCertificateNo    String?
+  rcDate              DateTime?
+  rcExpiryDate        DateTime?
+  rcInstitute         String?
+
+  // Roster relations
+  assignedRosters     GateDutyRoster[]       @relation("AssignedGateman")
+  createdRosters      GateDutyRoster[]       @relation("RosterCreator")
 }
 
 model RefreshToken {
@@ -128,6 +140,14 @@ model RegistrationRequest {
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
 
+  // PME and RC Safety & Medical Qualifications
+  pmeDate               DateTime?
+  pmeExpiryDate         DateTime?
+  pmeCertificateNo      String?
+  rcDate                DateTime?
+  rcExpiryDate          DateTime?
+  rcInstitute           String?
+
   @@index([status])
   @@index([zone, division])
   @@index([designation])
@@ -150,6 +170,8 @@ model LCGate {
   deviceRegistries DeviceRegistry[]
   events           LCGateEvent[]
   userGates        UserGate[]
+  shiftConfigs     GateShiftConfig[]
+  dutyRosters      GateDutyRoster[]
 }
 
 model MasterUnit {
@@ -405,6 +427,8 @@ model Station {
   gates                LCGate[]
   users                User[]
   registrationRequests RegistrationRequest[]
+  shiftConfigs         GateShiftConfig[]
+  dutyRosters          GateDutyRoster[]
 
   @@index([zone, division])
   @@index([code])
@@ -421,4 +445,42 @@ model UserGate {
   @@unique([userId, gateId])
   @@index([userId])
   @@index([gateId])
+}
+
+model GateShiftConfig {
+  id          Int      @id @default(autoincrement())
+  stationId   Int?
+  station     Station? @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  gateId      Int?
+  gate        LCGate?  @relation(fields: [gateId], references: [id], onDelete: Cascade)
+  name        String   // "Standard 3-Shift 8hr", "2-Shift 12hr", "Custom"
+  shiftsJson  String   // JSON array of [{ id, name, startTime, endTime }]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([stationId])
+  @@index([gateId])
+}
+
+model GateDutyRoster {
+  id             Int       @id @default(autoincrement())
+  gateId         Int
+  gate           LCGate    @relation(fields: [gateId], references: [id], onDelete: Cascade)
+  stationId      Int
+  station        Station   @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  date           String    // YYYY-MM-DD
+  shiftName      String    // e.g. "Morning Shift"
+  startTime      String    // "06:00"
+  endTime        String    // "14:00"
+  gatemanUserId  Int
+  gateman        User      @relation("AssignedGateman", fields: [gatemanUserId], references: [id], onDelete: Cascade)
+  createdById    Int
+  createdBy      User      @relation("RosterCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  notifiedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([gateId, date, shiftName])
+  @@index([stationId, date])
+  @@index([gatemanUserId])
 }

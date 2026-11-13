@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 
 export type DepartmentType = 'Operations' | 'Engineering';
-export type DesignationLevel = 'DIVISIONAL' | 'STATION' | 'GATE';
+export type DesignationLevel = 'DIVISIONAL' | 'SECTION' | 'STATION' | 'GATE';
 
 export interface DesignationConfig {
   name: string;
@@ -78,7 +78,7 @@ export const DESIGNATIONS: Record<string, DesignationConfig> = {
 
   // ==========================================
   // ENGINEERING DEPARTMENT
-  // Senior DEN -> DEN -> ADEN -> Engineering Supervisor -> Gateman
+  // Senior DEN (1) -> DEN (2) -> ADEN (3) -> CPWI (4) -> PWI (5) -> Restkeeper (6) -> Gateman (7)
   // ==========================================
   'Senior DEN': {
     name: 'Senior DEN',
@@ -86,7 +86,7 @@ export const DESIGNATIONS: Record<string, DesignationConfig> = {
     seniority: 1,
     level: 'DIVISIONAL',
     immediateSuperior: null,
-    description: 'Senior Divisional Engineer (Divisional-level officer)',
+    description: 'Senior Divisional Engineer (Divisional-level Department Admin)',
     defaultRoleName: 'Senior DEN',
     defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'manage-users']
   },
@@ -106,27 +106,47 @@ export const DESIGNATIONS: Record<string, DesignationConfig> = {
     seniority: 3,
     level: 'DIVISIONAL',
     immediateSuperior: 'DEN',
-    description: 'Assistant Divisional Engineer (Divisional-level officer)',
+    description: 'Assistant Divisional Engineer (Sub-Divisional officer)',
     defaultRoleName: 'ADEN',
     defaultModuleSlugs: ['lc-gates', 'reports', 'cluster', 'manage-users']
   },
-  'Engineering Supervisor': {
-    name: 'Engineering Supervisor',
+  'CPWI': {
+    name: 'CPWI',
     department: 'Engineering',
     seniority: 4,
-    level: 'STATION',
+    level: 'SECTION',
     immediateSuperior: 'ADEN',
-    description: 'Engineering Supervisor (Station/Gate supervisory role)',
-    defaultRoleName: 'Engineering Supervisor',
+    description: 'Chief Permanent Way Inspector / SSE P-Way (Senior section in-charge)',
+    defaultRoleName: 'CPWI',
+    defaultModuleSlugs: ['lc-gates', 'reports', 'manage-users', 'cluster']
+  },
+  'PWI': {
+    name: 'PWI',
+    department: 'Engineering',
+    seniority: 5,
+    level: 'SECTION',
+    immediateSuperior: 'CPWI',
+    description: 'Permanent Way Inspector / JE P-Way (Section field in-charge)',
+    defaultRoleName: 'PWI',
     defaultModuleSlugs: ['lc-gates', 'reports', 'manage-users']
+  },
+  'Restkeeper': {
+    name: 'Restkeeper',
+    department: 'Engineering',
+    seniority: 6,
+    level: 'STATION',
+    immediateSuperior: 'PWI',
+    description: 'Restkeeper (Station gate rounds, shift roster & relief in-charge)',
+    defaultRoleName: 'Restkeeper',
+    defaultModuleSlugs: ['lc-gates', 'reports']
   },
   'Gateman': {
     name: 'Gateman',
     department: 'Engineering',
-    seniority: 5,
+    seniority: 7,
     level: 'GATE',
     maxGates: 1,
-    immediateSuperior: 'Engineering Supervisor',
+    immediateSuperior: 'PWI',
     description: 'Gateman (Individual LC Gate-level role, strictly 1 gate)',
     defaultRoleName: 'Gateman',
     defaultModuleSlugs: ['lc-gates', 'reports']
@@ -156,8 +176,14 @@ export function getDesignationConfig(name?: string | null): DesignationConfig | 
     if (clean === 'adom' || clean === 'aom' || clean === 'adom/aom') {
       if (key === 'ADOM/AOM') return cfg;
     }
-    if (clean === 'supervisor' || clean === 'engineering supervisor') {
-      if (key === 'Engineering Supervisor') return cfg;
+    if (clean === 'cpwi' || clean === 'chief permanent way inspector' || clean === 'sse/p-way' || clean === 'sse p-way' || clean === 'chief p-way inspector') {
+      if (key === 'CPWI') return cfg;
+    }
+    if (clean === 'pwi' || clean === 'permanent way inspector' || clean === 'je/p-way' || clean === 'je p-way' || clean === 'engineering supervisor' || clean === 'supervisor') {
+      if (key === 'PWI') return cfg;
+    }
+    if (clean === 'restkeeper' || clean === 'rest keeper') {
+      if (key === 'Restkeeper') return cfg;
     }
     if (clean === 'gatesman' || clean === 'gateman') {
       if (key === 'Gateman') return cfg;
@@ -224,7 +250,12 @@ export function canApproveRequest(approver: any, request: any, approverGateIds: 
     return { allowed: true, isGovernanceIntervention: true };
   }
 
-  if (!approverCfg || approverCfg.name !== targetCfg.immediateSuperior) {
+  const isAuthorizedSuperior =
+    approverCfg &&
+    (approverCfg.name === targetCfg.immediateSuperior ||
+      (targetCfg.name === 'Gateman' && (approverCfg.name === 'PWI' || approverCfg.name === 'Restkeeper')));
+
+  if (!isAuthorizedSuperior) {
     return {
       allowed: false,
       reason: `Only an official holding designation "${targetCfg.immediateSuperior}" can review requests for "${targetCfg.name}".`
