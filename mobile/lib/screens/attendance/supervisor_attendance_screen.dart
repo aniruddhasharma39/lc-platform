@@ -294,15 +294,15 @@ class _SupervisorAttendanceScreenState extends State<SupervisorAttendanceScreen>
     int manualCount = 0;
 
     for (final g in _gateMatrix) {
-      final s = (g['currentStatus'] ?? '').toString();
-      if (s == 'PRESENT') {
+      final s = (g['currentStatus'] ?? 'UNSTAFFED').toString().toUpperCase();
+      if (s == 'PRESENT' || s == 'MANUAL_APPROVED' || s == 'COMPLETED') {
         presentCount++;
       } else if (s == 'LATE') {
         lateCount++;
-      } else if (s == 'UNSTAFFED') {
-        unstaffedCount++;
-      } else if (s.contains('MANUAL')) {
+      } else if (s == 'MANUAL_PENDING') {
         manualCount++;
+      } else {
+        unstaffedCount++;
       }
     }
 
