@@ -114,6 +114,8 @@ export interface ReconciledRosterResult {
     role: string;
     pmeStatus: string;
     rcStatus: string;
+    isGateAssigned?: boolean;
+    stationName?: string;
   }>;
   authorities: {
     preparedByPwi: string;
@@ -373,8 +375,19 @@ export async function reconcileRosterExtraction(
   const digitsMatch = rawGateLc.match(/\d+/);
   const gateNumber = digitsMatch ? digitsMatch[0] : '';
 
-  // Priority A: Match by extracted lcNumber
-  if (rawGateLc) {
+  // Priority 1: Match by hintGateId (the LC Gate currently selected on the mobile screen)
+  if (options.hintGateId) {
+    matchedGate = await prisma.lCGate.findUnique({
+      where: { id: options.hintGateId },
+      include: {
+        station: { select: { id: true, name: true, code: true, division: true } }
+      }
+    });
+    if (matchedGate) gateMatchMethod = 'EXACT';
+  }
+
+  // Priority 2: Match by extracted lcNumber from OCR
+  if (!matchedGate && rawGateLc) {
     matchedGate = await prisma.lCGate.findFirst({
       where: {
         OR: [
@@ -392,18 +405,7 @@ export async function reconcileRosterExtraction(
     }
   }
 
-  // Priority B: Match by hintGateId if supplied and not yet matched
-  if (!matchedGate && options.hintGateId) {
-    matchedGate = await prisma.lCGate.findUnique({
-      where: { id: options.hintGateId },
-      include: {
-        station: { select: { id: true, name: true, code: true, division: true } }
-      }
-    });
-    if (matchedGate) gateMatchMethod = 'FALLBACK';
-  }
-
-  // Priority C: Match first gate in hintStationId
+  // Priority 3: Match first gate in hintStationId
   if (!matchedGate && options.hintStationId) {
     matchedGate = await prisma.lCGate.findFirst({
       where: { stationId: options.hintStationId },
@@ -414,7 +416,7 @@ export async function reconcileRosterExtraction(
     if (matchedGate) gateMatchMethod = 'FALLBACK';
   }
 
-  // Priority D: Fallback to any gate in division
+  // Priority 4: Fallback to any gate in division
   if (!matchedGate) {
     matchedGate = await prisma.lCGate.findFirst({
       where: options.division ? {
@@ -480,45 +482,131 @@ export async function reconcileRosterExtraction(
     ];
   }
 
-  // 4. Fetch Candidate Gatemen & Restkeepers in division/station
-  const allCandidateUsers = await prisma.user.findMany({
+  // 4. Fetch Candidate Gatemen & Restkeepers strictly for THIS Gate & Station
+  // Priority 1: Gatemen & Restkeepers explicitly assigned to this gate in UserGate
+  const gateAssignedUserGates = await prisma.userGate.findMany({
     where: {
-      status: 'APPROVED',
-      OR: [
-        { role: { name: { in: ['Gateman', 'Restkeeper'] } } },
-        { designation: { contains: 'Gateman', mode: 'insensitive' } },
-        { designation: { contains: 'Restkeeper', mode: 'insensitive' } }
-      ],
-      ...(effectiveDivision ? {
+      gateId: matchedGate.id,
+      user: {
+        status: 'APPROVED',
         OR: [
-          { division: { equals: effectiveDivision, mode: 'insensitive' } },
-          { station: { division: { equals: effectiveDivision, mode: 'insensitive' } } }
+          { role: { name: { in: ['Gateman', 'Restkeeper'] } } },
+          { designation: { contains: 'Gateman', mode: 'insensitive' } },
+          { designation: { contains: 'Restkeeper', mode: 'insensitive' } }
         ]
-      } : {})
+      }
     },
-    select: {
-      id: true,
-      fullName: true,
-      employeeId: true,
-      mobile: true,
-      email: true,
-      designation: true,
-      pmeExpiryDate: true,
-      rcExpiryDate: true,
-      role: { select: { name: true } },
-      station: { select: { id: true, name: true, code: true } }
+    include: {
+      user: {
+        select: {
+          id: true,
+          fullName: true,
+          employeeId: true,
+          mobile: true,
+          email: true,
+          designation: true,
+          pmeExpiryDate: true,
+          rcExpiryDate: true,
+          role: { select: { name: true } },
+          station: { select: { id: true, name: true, code: true } }
+        }
+      }
     },
-    orderBy: { fullName: 'asc' }
+    orderBy: { user: { fullName: 'asc' } }
   });
 
-  const candidateGatemenList = allCandidateUsers.map((u: any) => ({
+  const gateStaffUsers = gateAssignedUserGates.map(ug => ({
+    ...ug.user,
+    isGateAssigned: true
+  }));
+  const gateStaffUserIds = new Set(gateStaffUsers.map(u => u.id));
+
+  // Priority 2: Restkeepers and Gatemen belonging to this gate's station (e.g. Kasu station)
+  let stationStaffUsers: any[] = [];
+  if (matchedGate.stationId) {
+    const rawStationStaff = await prisma.user.findMany({
+      where: {
+        stationId: matchedGate.stationId,
+        status: 'APPROVED',
+        OR: [
+          { role: { name: { in: ['Gateman', 'Restkeeper'] } } },
+          { designation: { contains: 'Gateman', mode: 'insensitive' } },
+          { designation: { contains: 'Restkeeper', mode: 'insensitive' } }
+        ],
+        id: { notIn: Array.from(gateStaffUserIds) }
+      },
+      select: {
+        id: true,
+        fullName: true,
+        employeeId: true,
+        mobile: true,
+        email: true,
+        designation: true,
+        pmeExpiryDate: true,
+        rcExpiryDate: true,
+        role: { select: { name: true } },
+        station: { select: { id: true, name: true, code: true } }
+      },
+      orderBy: { fullName: 'asc' }
+    });
+
+    stationStaffUsers = rawStationStaff.map(u => ({
+      ...u,
+      isGateAssigned: false
+    }));
+  }
+
+  // Combined candidate pool: Gate-assigned Gatemen first, then Station Restkeepers
+  let candidateUsers = [...gateStaffUsers, ...stationStaffUsers];
+
+  // If this gate or station has no staff yet, only then fallback to division
+  if (candidateUsers.length === 0) {
+    const rawDivisionStaff = await prisma.user.findMany({
+      where: {
+        status: 'APPROVED',
+        OR: [
+          { role: { name: { in: ['Gateman', 'Restkeeper'] } } },
+          { designation: { contains: 'Gateman', mode: 'insensitive' } },
+          { designation: { contains: 'Restkeeper', mode: 'insensitive' } }
+        ],
+        ...(effectiveDivision ? {
+          OR: [
+            { division: { equals: effectiveDivision, mode: 'insensitive' } },
+            { station: { division: { equals: effectiveDivision, mode: 'insensitive' } } }
+          ]
+        } : {})
+      },
+      select: {
+        id: true,
+        fullName: true,
+        employeeId: true,
+        mobile: true,
+        email: true,
+        designation: true,
+        pmeExpiryDate: true,
+        rcExpiryDate: true,
+        role: { select: { name: true } },
+        station: { select: { id: true, name: true, code: true } }
+      },
+      orderBy: { fullName: 'asc' }
+    });
+
+    candidateUsers = rawDivisionStaff.map(u => ({
+      ...u,
+      isGateAssigned: false
+    }));
+  }
+
+  const candidateGatemenList = candidateUsers.map((u: any) => ({
     id: u.id,
     fullName: u.fullName,
     employeeId: u.employeeId,
     designation: u.designation || u.role?.name || 'Gateman',
     role: u.role?.name || 'Gateman',
     pmeStatus: getExamCompliance(u.pmeExpiryDate),
-    rcStatus: getExamCompliance(u.rcExpiryDate)
+    rcStatus: getExamCompliance(u.rcExpiryDate),
+    isGateAssigned: !!u.isGateAssigned,
+    stationName: u.station?.name || ''
   }));
 
   // 5. Match Staff Rows
@@ -533,7 +621,7 @@ export async function reconcileRosterExtraction(
     let bestMatch: any = null;
     let bestScore = 0;
 
-    for (const cand of allCandidateUsers) {
+    for (const cand of candidateUsers) {
       if (usedUserIds.has(cand.id)) continue;
 
       let score = 0;
@@ -542,6 +630,10 @@ export async function reconcileRosterExtraction(
         score = 1.0;
       } else {
         score = calculateNameSimilarity(rawName, cand.fullName);
+        // Priority boost if already assigned to this gate
+        if (cand.isGateAssigned) {
+          score += 0.15;
+        }
       }
 
       if (score > bestScore) {
@@ -550,8 +642,23 @@ export async function reconcileRosterExtraction(
       }
     }
 
+    // Auto-match if confidence is at least 0.35, or if there's an unused gate-assigned staff
+    if (!bestMatch || bestScore < 0.35) {
+      const unusedGateStaff = candidateUsers.find(c => !usedUserIds.has(c.id) && c.isGateAssigned);
+      if (unusedGateStaff) {
+        bestMatch = unusedGateStaff;
+        bestScore = 0.50;
+      } else {
+        const unusedStationStaff = candidateUsers.find(c => !usedUserIds.has(c.id));
+        if (unusedStationStaff) {
+          bestMatch = unusedStationStaff;
+          bestScore = 0.40;
+        }
+      }
+    }
+
     let matchedUserObj: any = null;
-    if (bestMatch && bestScore >= 0.50) {
+    if (bestMatch) {
       usedUserIds.add(bestMatch.id);
       matchedUserObj = {
         id: bestMatch.id,
@@ -610,28 +717,7 @@ export async function reconcileRosterExtraction(
   // If no staff extracted or table was empty, fallback with candidate gatemen assigned to this gate
   if (staffRows.length === 0) {
     warnings.push('No staff assignments were detected from the image. Populated default roster slots.');
-    const gateUsers = await prisma.userGate.findMany({
-      where: { gateId: matchedGate.id },
-      include: {
-        user: {
-          select: {
-            id: true,
-            fullName: true,
-            employeeId: true,
-            mobile: true,
-            email: true,
-            designation: true,
-            pmeExpiryDate: true,
-            rcExpiryDate: true,
-            role: { select: { name: true } }
-          }
-        }
-      },
-      take: 3
-    });
-
-    for (const gu of gateUsers) {
-      const u = gu.user;
+    for (const u of candidateUsers.slice(0, 3)) {
       const defaultSchedule: Record<string, string> = {};
       const dateAssignments: ReconciledStaffRow['dateAssignments'] = [];
       for (const wd of weekDays) {
@@ -661,7 +747,8 @@ export async function reconcileRosterExtraction(
           pmeExpiryDate: u.pmeExpiryDate ? u.pmeExpiryDate.toISOString().split('T')[0] : null,
           rcExpiryDate: u.rcExpiryDate ? u.rcExpiryDate.toISOString().split('T')[0] : null,
           pmeStatus: getExamCompliance(u.pmeExpiryDate),
-          rcStatus: getExamCompliance(u.rcExpiryDate)
+          rcStatus: getExamCompliance(u.rcExpiryDate),
+          stationName: u.station?.name
         },
         matchConfidence: 1.0,
         schedule: defaultSchedule,

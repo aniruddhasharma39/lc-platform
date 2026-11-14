@@ -493,44 +493,89 @@ class _RosterAiReviewDialogState extends State<RosterAiReviewDialog> {
                                       ),
                                     ),
                                   ),
+                                  const SizedBox(width: 4),
+                                  IconButton(
+                                    icon: const Icon(Icons.close_rounded, size: 18, color: Color(0xFF94A3B8)),
+                                    tooltip: 'Remove Row',
+                                    onPressed: () {
+                                      setState(() {
+                                        _staffRows.removeAt(rowIndex);
+                                      });
+                                    },
+                                    visualDensity: VisualDensity.compact,
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                                  ),
                                 ],
                               ),
                             ),
 
                             // Mapped User Selector
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
-                              child: Row(
-                                children: [
-                                  const Text('Assign to: ', style: TextStyle(fontSize: 11.5, color: Color(0xFF64748B))),
-                                  const SizedBox(width: 4),
-                                  Expanded(
-                                    child: DropdownButton<int>(
-                                      value: matchedUser?['id'] as int?,
-                                      isDense: true,
-                                      isExpanded: true,
-                                      underline: const SizedBox(),
-                                      hint: const Text('Select active Gateman', style: TextStyle(fontSize: 12, color: Colors.red)),
-                                      items: _candidateGatemen.map<DropdownMenuItem<int>>((c) {
-                                        final name = c['fullName'] ?? 'Unknown';
-                                        final empId = c['employeeId'] ?? '';
-                                        final desig = c['designation'] ?? 'Gateman';
-                                        return DropdownMenuItem<int>(
-                                          value: c['id'] as int,
-                                          child: Text(
-                                            '$name ($desig${empId.isNotEmpty ? " • $empId" : ""})',
-                                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF0F172A)),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        );
-                                      }).toList(),
-                                      onChanged: (val) {
-                                        if (val != null) _onReassignUser(rowIndex, val);
-                                      },
-                                    ),
+                            Builder(
+                              builder: (context) {
+                                final currentMatchedId = matchedUser?['id'] as int?;
+                                final isMatchedValid = currentMatchedId != null &&
+                                    _candidateGatemen.any((c) => c['id'] == currentMatchedId);
+                                final dropdownValue = isMatchedValid ? currentMatchedId : null;
+
+                                return Padding(
+                                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+                                  child: Row(
+                                    children: [
+                                      const Text('Assign to: ', style: TextStyle(fontSize: 11.5, color: Color(0xFF64748B))),
+                                      const SizedBox(width: 4),
+                                      Expanded(
+                                        child: DropdownButton<int>(
+                                          value: dropdownValue,
+                                          isDense: true,
+                                          isExpanded: true,
+                                          underline: const SizedBox(),
+                                          hint: const Text('Select active Gateman', style: TextStyle(fontSize: 12, color: Colors.red)),
+                                          items: _candidateGatemen.map<DropdownMenuItem<int>>((c) {
+                                            final name = c['fullName'] ?? 'Unknown';
+                                            final empId = c['employeeId'] ?? '';
+                                            final desig = c['designation'] ?? c['role'] ?? 'Gateman';
+                                            final isGateAssigned = c['isGateAssigned'] == true;
+                                            return DropdownMenuItem<int>(
+                                              value: c['id'] as int,
+                                              child: Row(
+                                                children: [
+                                                  Expanded(
+                                                    child: Text(
+                                                      '$name ($desig${empId.isNotEmpty ? " • $empId" : ""})',
+                                                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF0F172A)),
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                  ),
+                                                  Container(
+                                                    margin: const EdgeInsets.only(left: 4),
+                                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                                    decoration: BoxDecoration(
+                                                      color: isGateAssigned ? const Color(0xFFDCFCE7) : const Color(0xFFFEF3C7),
+                                                      borderRadius: BorderRadius.circular(4),
+                                                    ),
+                                                    child: Text(
+                                                      isGateAssigned ? 'Gate Staff' : 'Relief',
+                                                      style: TextStyle(
+                                                        fontSize: 9.5,
+                                                        fontWeight: FontWeight.bold,
+                                                        color: isGateAssigned ? const Color(0xFF15803D) : const Color(0xFFB45309),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            );
+                                          }).toList(),
+                                          onChanged: (val) {
+                                            if (val != null) _onReassignUser(rowIndex, val);
+                                          },
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ],
-                              ),
+                                );
+                              },
                             ),
 
                             // Daily Shift Chips (Sunday to Saturday)
@@ -581,6 +626,52 @@ class _RosterAiReviewDialogState extends State<RosterAiReviewDialog> {
                         ),
                       );
                     }),
+
+                    if (_candidateGatemen.isNotEmpty && _staffRows.length < _candidateGatemen.length)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4, bottom: 12),
+                        child: Center(
+                          child: OutlinedButton.icon(
+                            onPressed: () {
+                              final usedIds = _staffRows.map((r) => r['matchedUser']?['id']).toSet();
+                              final unused = _candidateGatemen.firstWhere(
+                                (c) => !usedIds.contains(c['id']),
+                                orElse: () => _candidateGatemen.first,
+                              );
+                              setState(() {
+                                final defaultSched = <String, String>{};
+                                for (final d in _daysOfWeek) {
+                                  defaultSched[d] = '06-14';
+                                }
+                                _staffRows.add({
+                                  'rawName': unused['fullName'],
+                                  'rawDesignation': unused['designation'],
+                                  'rawEmployeeId': unused['employeeId'],
+                                  'matchedUser': {
+                                    'id': unused['id'],
+                                    'fullName': unused['fullName'],
+                                    'employeeId': unused['employeeId'],
+                                    'designation': unused['designation'],
+                                    'role': unused['role'],
+                                    'pmeStatus': unused['pmeStatus'],
+                                    'rcStatus': unused['rcStatus'],
+                                  },
+                                  'matchConfidence': 1.0,
+                                  'schedule': defaultSched,
+                                });
+                              });
+                            },
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.primary,
+                              side: const BorderSide(color: Color(0xFFCBD5E1)),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            ),
+                            icon: const Icon(Icons.person_add_alt_1_outlined, size: 16),
+                            label: const Text('Add Gatekeeper Row', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
