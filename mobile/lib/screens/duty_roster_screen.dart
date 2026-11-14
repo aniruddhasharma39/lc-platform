@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
+import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config.dart';
@@ -1564,7 +1565,13 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
         request.fields['stationId'] = _stationId.toString();
       }
       request.fields['weekStartDate'] = _formatDate(_weeklyStartDate);
-      request.files.add(await http.MultipartFile.fromPath('image', imageFile.path));
+      final ext = imageFile.path.split('.').last.toLowerCase();
+      final subType = (ext == 'png') ? 'png' : (ext == 'webp' ? 'webp' : 'jpeg');
+      request.files.add(await http.MultipartFile.fromPath(
+        'image',
+        imageFile.path,
+        contentType: MediaType('image', subType),
+      ));
 
       final streamedResponse = await request.send();
       final response = await http.Response.fromStream(streamedResponse);
@@ -1816,58 +1823,56 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                 ],
               ),
               padding: const EdgeInsets.all(12),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF10B981).withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Icon(Icons.document_scanner_rounded, color: Color(0xFF10B981), size: 24),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            const Text(
-                              'Scan Physical Roster Sheet',
-                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13.5),
-                            ),
-                            const SizedBox(width: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF10B981),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: const Text('Gemini AI', style: TextStyle(color: Colors.white, fontSize: 9.5, fontWeight: FontWeight.w800)),
-                            ),
-                          ],
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(8),
                         ),
-                        const SizedBox(height: 3),
-                        Text(
-                          'Auto-extract shifts & gatemen from PWI/CPWI duty charts',
-                          style: TextStyle(color: Colors.white.withValues(alpha: 0.75), fontSize: 11),
+                        child: const Icon(Icons.document_scanner_rounded, color: Color(0xFF10B981), size: 18),
+                      ),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          'Scan Physical Roster Sheet',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13.5),
                         ),
-                      ],
-                    ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF10B981),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text('Gemini AI', style: TextStyle(color: Colors.white, fontSize: 9.5, fontWeight: FontWeight.w800)),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 6),
-                  ElevatedButton.icon(
-                    onPressed: _openRosterScanPicker,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF10B981),
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Auto-extract shifts & gatemen from PWI/CPWI physical duty charts',
+                    style: TextStyle(color: Colors.white.withValues(alpha: 0.75), fontSize: 11),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _openRosterScanPicker,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF10B981),
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 9),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      icon: const Icon(Icons.camera_alt_outlined, size: 16),
+                      label: const Text('Scan & Digitize Roster', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
                     ),
-                    icon: const Icon(Icons.camera_alt_outlined, size: 15),
-                    label: const Text('Scan', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                   ),
                 ],
               ),
@@ -2142,25 +2147,25 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
           children: [
             const Text(
               'Duty Roster & Shifts',
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Colors.white),
+              style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold, color: Colors.white),
             ),
             InkWell(
               onTap: _stations.length > 1 ? _openStationSelectionDialog : null,
               borderRadius: BorderRadius.circular(4),
               child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
+                padding: const EdgeInsets.symmetric(vertical: 1),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Flexible(
                       child: Text(
                         _stationData != null ? '${_stationData!['name']} (${_stationData!['code']})' : 'Railway Station',
-                        style: const TextStyle(fontSize: 11.5, color: Colors.white70),
+                        style: const TextStyle(fontSize: 11, color: Colors.white70),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
                     if (_stations.length > 1) ...[
-                      const SizedBox(width: 4),
+                      const SizedBox(width: 3),
                       const Icon(Icons.arrow_drop_down, size: 16, color: Colors.white70),
                     ],
                   ],
@@ -2173,28 +2178,18 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
         foregroundColor: Colors.white,
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
-          if (_stations.length > 1) ...[
-            IconButton(
-              icon: const Icon(Icons.location_on_outlined, color: Colors.white),
-              tooltip: 'Switch Station',
-              onPressed: _openStationSelectionDialog,
-            ),
-          ],
           if (_canManageRoster) ...[
             IconButton(
-              icon: const Icon(Icons.document_scanner_rounded, color: Colors.white),
-              tooltip: 'Scan Physical Roster (Gemini AI)',
-              onPressed: _openRosterScanPicker,
-            ),
-            IconButton(
-              icon: const Icon(Icons.tune_rounded, color: Colors.white),
+              icon: const Icon(Icons.tune_rounded, color: Colors.white, size: 22),
               tooltip: 'Shift Timings Configurator',
+              visualDensity: VisualDensity.compact,
               onPressed: _openShiftConfigDialog,
             ),
           ],
           IconButton(
-            icon: const Icon(Icons.refresh, color: Colors.white),
+            icon: const Icon(Icons.refresh, color: Colors.white, size: 22),
             tooltip: 'Refresh',
+            visualDensity: VisualDensity.compact,
             onPressed: () {
               _loadRosterData();
               if (_isGateman) _loadMyShifts();
@@ -2207,16 +2202,16 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
           indicatorWeight: 3.0,
           labelColor: Colors.white,
           unselectedLabelColor: Colors.white60,
-          labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
-          unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13.5),
+          labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+          unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13),
           tabs: _isDutyStaff
               ? [
                   Tab(text: 'My Shifts (${_myShifts.length})'),
-                  const Tab(text: 'Weekly Gate Roster (Official)'),
+                  const Tab(text: 'Weekly Roster'),
                 ]
               : [
-                  Tab(text: 'Weekly Gate Roster (${_weeklyGateNumber.isNotEmpty ? _weeklyGateNumber : 'LC Gate'})'),
-                  const Tab(text: 'Daily Station Matrix'),
+                  Tab(text: _weeklyGateNumber.isNotEmpty ? 'Weekly ($_weeklyGateNumber)' : 'Weekly Roster'),
+                  const Tab(text: 'Station Matrix'),
                 ],
         ),
       ),

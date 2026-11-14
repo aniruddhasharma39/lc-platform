@@ -2,11 +2,24 @@ import { prisma } from './prisma';
 import { getExamCompliance } from '../routes/roster';
 
 const GEMINI_MODELS = [
-  'gemini-3.5-flash',
-  'gemini-2.5-flash',
-  'gemini-1.5-flash',
-  'gemini-2.0-flash'
+  'gemini-3.5-flash'
 ];
+
+/**
+ * Detects correct image MIME type from buffer magic bytes if mimeType is octet-stream or missing
+ */
+function detectMimeType(buffer: Buffer, originalMime?: string): string {
+  if (originalMime && originalMime.startsWith('image/') && originalMime !== 'application/octet-stream') {
+    return originalMime;
+  }
+  if (buffer && buffer.length >= 4) {
+    if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) return 'image/jpeg';
+    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) return 'image/png';
+    if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) return 'image/gif';
+    if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46) return 'image/webp';
+  }
+  return 'image/jpeg';
+}
 
 export interface ExtractedShiftTiming {
   name: string;
@@ -199,6 +212,7 @@ export async function analyzeRosterChartWithGemini(
     throw new Error('GEMINI_API_KEY environment variable is not set.');
   }
 
+  const effectiveMimeType = detectMimeType(imageBuffer, mimeType);
   const base64Data = imageBuffer.toString('base64');
 
   const promptText = `
@@ -283,7 +297,7 @@ Return ONLY raw JSON in this exact structure:
               { text: promptText },
               {
                 inline_data: {
-                  mime_type: mimeType,
+                  mime_type: effectiveMimeType,
                   data: base64Data
                 }
               }
@@ -297,8 +311,13 @@ Return ONLY raw JSON in this exact structure:
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.warn(`[GeminiVision] Model ${model} returned HTTP ${response.status}: ${errorText.slice(0, 200)}`);
-        lastError = new Error(`Model ${model} failed with HTTP ${response.status}`);
+        console.warn(`[GeminiVision] Model ${model} returned HTTP ${response.status}: ${errorText.slice(0, 300)}`);
+        let detailMsg = `HTTP ${response.status}`;
+        try {
+          const parsed = JSON.parse(errorText);
+          if (parsed?.error?.message) detailMsg = parsed.error.message;
+        } catch (_) {}
+        lastError = new Error(detailMsg);
         continue;
       }
 

@@ -9,10 +9,13 @@ import 'screens/dashboard_screen.dart';
 import 'services/home_cache_service.dart';
 import 'services/lc_gates_cache_service.dart';
 import 'services/reports_cache_service.dart';
+import 'services/push_notification_service.dart';
 import 'utils/app_feedback.dart';
 import 'utils/user_utils.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await PushNotificationService.initialize();
   runApp(const MyApp());
 }
 
@@ -215,6 +218,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
         await prefs.setString('token', t);
         await prefs.setString('user', json.encode(u));
         await persistUserSessionPrefs(prefs, Map<String, dynamic>.from(u));
+        await PushNotificationService.syncTokenWithBackend();
         if (!mounted) return;
         setState(() {
           isAuthenticated = true;

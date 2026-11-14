@@ -68,6 +68,9 @@ model User {
   faceId               String?
   faceImageKey         String?
   faceEnrolledAt       DateTime?
+
+  // Firebase Cloud Messaging (FCM) Push Token
+  fcmToken             String?
   faceEnrollConfidence Float?
   faceLockoutUntil     DateTime?
   shiftAttendances     ShiftAttendance[]      @relation("UserAttendances")

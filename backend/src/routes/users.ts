@@ -844,5 +844,27 @@ router.delete('/:id', requireModule('manage-users'), async (req: any, res, next)
   }
 });
 
+/**
+ * POST /api/v1/users/device-token
+ * Registers or updates the user's Firebase Cloud Messaging (FCM) device token.
+ */
+router.post('/device-token', async (req: any, res, next) => {
+  try {
+    const { fcmToken } = req.body;
+    if (!fcmToken || typeof fcmToken !== 'string') {
+      return res.status(400).json({ error: 'fcmToken string is required' });
+    }
+
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: { fcmToken: fcmToken.trim() }
+    });
+
+    res.json({ success: true, message: 'Device token registered successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;
 
