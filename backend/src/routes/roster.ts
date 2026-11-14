@@ -65,11 +65,28 @@ router.get('/', async (req: any, res, next) => {
       stationId = req.user.stationId;
     }
 
+    // If still no stationId, check if the user has an assigned gate with a station
+    if (!stationId) {
+      const userGateWithStation = await prisma.userGate.findFirst({
+        where: { userId: req.user.id, gate: { stationId: { not: null } } },
+        include: { gate: { select: { stationId: true } } }
+      });
+      if (userGateWithStation?.gate?.stationId) {
+        stationId = userGateWithStation.gate.stationId;
+      }
+    }
+
     // Default date to today in YYYY-MM-DD
     let dateStr = req.query.date as string;
     if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
       const now = new Date();
       dateStr = now.toISOString().split('T')[0];
+    }
+
+    // Scoping for division
+    let stationWhere: any = {};
+    if (req.user.division && !isDeveloperUser(req.user)) {
+      stationWhere.division = { equals: req.user.division, mode: 'insensitive' };
     }
 
     // Fetch station
@@ -82,17 +99,26 @@ router.get('/', async (req: any, res, next) => {
     }
 
     if (!station) {
-      // Find first available station if viewer has no assigned station
+      // Find first available station in viewer's division (strictly division-scoped, never unconstrained)
       station = await prisma.station.findFirst({
-        select: { id: true, code: true, name: true, division: true, zone: true }
+        where: stationWhere,
+        select: { id: true, code: true, name: true, division: true, zone: true },
+        orderBy: { name: 'asc' }
       });
       if (station) stationId = station.id;
     }
 
-    // Fetch LC gates: for PWI / CPWI / Supervisor, restrict to their division and zone
+    // Fetch all stations in user's jurisdiction for switcher dropdown
+    const stations = await prisma.station.findMany({
+      where: stationWhere,
+      select: { id: true, code: true, name: true, division: true, zone: true },
+      orderBy: { name: 'asc' }
+    });
+
+    // Fetch LC gates: for PWI / CPWI / Supervisor, restrict to their station or division
     let gateWhere: any = {};
-    if (req.query.stationId) {
-      gateWhere = { stationId: parseInt(req.query.stationId as string, 10) };
+    if (stationId) {
+      gateWhere = { stationId };
     } else if (req.user.division && !isDeveloperUser(req.user)) {
       gateWhere = {
         OR: [
@@ -224,6 +250,7 @@ router.get('/', async (req: any, res, next) => {
 
     res.json({
       station,
+      stations,
       date: dateStr,
       shiftConfig,
       gates: gates.map(g => ({
@@ -484,6 +511,41 @@ router.get('/weekly', async (req: any, res, next) => {
       return res.status(404).json({ error: 'LC Gate not found' });
     }
 
+    // Fetch active shift configuration for this gate or its station
+    let shiftConfig: any = null;
+    const dbConfig = await prisma.gateShiftConfig.findFirst({
+      where: {
+        OR: [
+          { gateId },
+          ...(gate.stationId ? [{ stationId: gate.stationId, gateId: null }] : [])
+        ]
+      },
+      orderBy: [
+        { gateId: 'desc' },
+        { updatedAt: 'desc' }
+      ]
+    });
+
+    if (dbConfig) {
+      try {
+        shiftConfig = {
+          id: dbConfig.id,
+          name: dbConfig.name,
+          shifts: JSON.parse(dbConfig.shiftsJson),
+          isDefault: false
+        };
+      } catch (_) {}
+    }
+
+    if (!shiftConfig) {
+      shiftConfig = {
+        id: null,
+        name: DEFAULT_3_SHIFT_CONFIG.name,
+        shifts: DEFAULT_3_SHIFT_CONFIG.shifts,
+        isDefault: true
+      };
+    }
+
     // Determine week dates (Sunday through Saturday)
     let weekStartDateStr = req.query.weekStartDate as string;
     let startDate: Date;
@@ -714,9 +776,12 @@ router.get('/weekly', async (req: any, res, next) => {
         id: gate.id,
         lcNumber: gate.lcNumber,
         locationName: gate.locationName,
+        stationId: gate.stationId,
         stationName: gate.station ? `${gate.station.name} (${gate.station.code})` : 'N/A',
         division: gate.station?.division || 'Central Railway',
       },
+      station: gate.station,
+      shiftConfig,
       weekStartDate: weekStartDateStr,
       weekEndDate: weekDates[6],
       days: weekDays,

@@ -22,6 +22,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
 
   int? _stationId;
   Map<String, dynamic>? _stationData;
+  List<dynamic> _stations = [];
   List<dynamic> _gates = [];
   List<dynamic> _shifts = [];
   String _shiftConfigName = 'Standard 3-Shift 8hr';
@@ -171,6 +172,9 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
           if (_stationData != null && _stationData!['id'] != null) {
             _stationId = _stationData!['id'] as int;
           }
+          if (data['stations'] is List) {
+            _stations = data['stations'];
+          }
           _gates = data['gates'] ?? [];
           final shiftCfg = data['shiftConfig'] ?? {};
           _shifts = shiftCfg['shifts'] ?? [];
@@ -275,6 +279,181 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
     );
   }
 
+  Map<String, Color> _getShiftColors(String code) {
+    if (code == 'W/R') {
+      return {'text': const Color(0xFFB45309), 'bg': const Color(0xFFFEF3C7)};
+    } else if (code == 'N/R') {
+      return {'text': const Color(0xFFC2410C), 'bg': const Color(0xFFFFEDD5)};
+    } else if (code == '-') {
+      return {'text': const Color(0xFF64748B), 'bg': const Color(0xFFF1F5F9)};
+    } else if (code.contains(',') || code.contains('&')) {
+      return {'text': const Color(0xFF7E22CE), 'bg': const Color(0xFFF3E8FF)};
+    }
+
+    final shiftPalette = [
+      {'text': const Color(0xFF15803D), 'bg': const Color(0xFFDCFCE7)}, // Green
+      {'text': const Color(0xFF4338CA), 'bg': const Color(0xFFEEF2FF)}, // Indigo
+      {'text': const Color(0xFF0369A1), 'bg': const Color(0xFFE0F2FE)}, // Sky Blue
+      {'text': const Color(0xFF0F766E), 'bg': const Color(0xFFCCFBF1)}, // Teal
+      {'text': const Color(0xFF7C3AED), 'bg': const Color(0xFFF3E8FF)}, // Purple
+      {'text': const Color(0xFFD97706), 'bg': const Color(0xFFFEF3C7)}, // Amber
+    ];
+
+    for (int i = 0; i < _shifts.length; i++) {
+      final s = _shifts[i];
+      final start = (s['startTime'] ?? '').toString();
+      final end = (s['endTime'] ?? '').toString();
+      final sStartHr = start.split(':').first.padLeft(2, '0');
+      final sEndHr = (end == '24:00' ? '24' : end.split(':').first).padLeft(2, '0');
+      if (code == '$sStartHr-$sEndHr' || code == '${start.split(':').first}-${end.split(':').first}') {
+        return shiftPalette[i % shiftPalette.length];
+      }
+    }
+
+    if (code == '07-19') {
+      return {'text': const Color(0xFF15803D), 'bg': const Color(0xFFDCFCE7)};
+    } else if (code == '19-24') {
+      return {'text': const Color(0xFF4338CA), 'bg': const Color(0xFFEEF2FF)};
+    } else if (code == '00-07') {
+      return {'text': const Color(0xFF0369A1), 'bg': const Color(0xFFE0F2FE)};
+    }
+
+    return {'text': const Color(0xFF0F766E), 'bg': const Color(0xFFCCFBF1)};
+  }
+
+  void _openStationSelectionDialog() {
+    if (_stations.isEmpty) return;
+    String searchQuery = '';
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) {
+            final filteredStations = _stations.where((st) {
+              final q = searchQuery.trim().toLowerCase();
+              if (q.isEmpty) return true;
+              final name = (st['name'] ?? '').toString().toLowerCase();
+              final code = (st['code'] ?? '').toString().toLowerCase();
+              return name.contains(q) || code.contains(q);
+            }).toList();
+
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 18,
+                  right: 18,
+                  top: 20,
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.train_outlined, color: AppColors.primary, size: 22),
+                            SizedBox(width: 8),
+                            Text('Select Station', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx)),
+                      ],
+                    ),
+                    Text(
+                      'Switch station to view and manage its LC gates and duty shifts.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      decoration: InputDecoration(
+                        hintText: 'Search station by name or code...',
+                        prefixIcon: const Icon(Icons.search, size: 20),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        isDense: true,
+                        filled: true,
+                        fillColor: const Color(0xFFF1F5F9),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                      ),
+                      onChanged: (val) => setSheetState(() => searchQuery = val),
+                    ),
+                    const SizedBox(height: 12),
+                    ConstrainedBox(
+                      constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.45),
+                      child: filteredStations.isEmpty
+                          ? const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(24),
+                                child: Text('No stations match search criteria.'),
+                              ),
+                            )
+                          : ListView.separated(
+                              shrinkWrap: true,
+                              itemCount: filteredStations.length,
+                              separatorBuilder: (context, index) => const Divider(height: 1),
+                              itemBuilder: (_, idx) {
+                                final st = filteredStations[idx];
+                                final isSelected = st['id'] == _stationId;
+                                return ListTile(
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  leading: Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: isSelected ? AppColors.primary.withValues(alpha: 0.12) : const Color(0xFFF1F5F9),
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: Icon(Icons.location_on, size: 18, color: isSelected ? AppColors.primary : Colors.grey.shade600),
+                                  ),
+                                  title: Text(
+                                    '${st['name']} (${st['code']})',
+                                    style: TextStyle(
+                                      fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                                      fontSize: 14,
+                                      color: isSelected ? AppColors.primary : const Color(0xFF0F172A),
+                                    ),
+                                  ),
+                                  subtitle: Text(
+                                    '${st['division'] ?? 'Division'} • ${st['zone'] ?? 'Zone'}',
+                                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                  ),
+                                  trailing: isSelected ? const Icon(Icons.check_circle, color: AppColors.primary, size: 20) : null,
+                                  onTap: () {
+                                    Navigator.pop(ctx);
+                                    if (st['id'] != _stationId) {
+                                      setState(() {
+                                        _stationId = st['id'];
+                                        _stationData = st;
+                                        _selectedWeeklyGateId = null;
+                                        _gates.clear();
+                                      });
+                                      _loadRosterData().then((_) {
+                                        if (_gates.isNotEmpty) {
+                                          _selectedWeeklyGateId = _gates[0]['id'] as int;
+                                          _loadWeeklyRosterData();
+                                        }
+                                      });
+                                    }
+                                  },
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _openShiftConfigDialog() {
     final List<Map<String, String>> localShifts = _shifts.map((s) => {
       'id': (s['id'] ?? '').toString(),
@@ -284,6 +463,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
     }).toList();
 
     String templateName = _shiftConfigName;
+    bool applyToGateOnly = false;
 
     showModalBottomSheet(
       context: context,
@@ -324,7 +504,89 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                     'Configure dynamic shift count and start/end timings for ${_stationData?['name'] ?? 'Station'}.',
                     style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 12),
+
+                  // Configuration Target Scope
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Configuration Target:',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: InkWell(
+                                onTap: () => setModalState(() => applyToGateOnly = false),
+                                borderRadius: BorderRadius.circular(8),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                                  decoration: BoxDecoration(
+                                    color: !applyToGateOnly ? AppColors.primary : Colors.white,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: !applyToGateOnly ? AppColors.primary : Colors.grey.shade300,
+                                    ),
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: Text(
+                                    'Station Fleet (${_stationData?['name'] ?? 'Station'})',
+                                    style: TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.bold,
+                                      color: !applyToGateOnly ? Colors.white : const Color(0xFF475569),
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: InkWell(
+                                onTap: _selectedWeeklyGateId != null
+                                    ? () => setModalState(() => applyToGateOnly = true)
+                                    : null,
+                                borderRadius: BorderRadius.circular(8),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                                  decoration: BoxDecoration(
+                                    color: applyToGateOnly ? AppColors.primary : Colors.white,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: applyToGateOnly ? AppColors.primary : Colors.grey.shade300,
+                                    ),
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: Text(
+                                    _weeklyGateNumber.isNotEmpty ? 'This Gate ($_weeklyGateNumber)' : 'Selected Gate Only',
+                                    style: TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.bold,
+                                      color: applyToGateOnly ? Colors.white : const Color(0xFF475569),
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
 
                   // Quick Presets
                   const Text('Standard Presets:', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF334155))),
@@ -335,8 +597,8 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                         child: OutlinedButton(
                           style: OutlinedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(vertical: 8),
-                            side: BorderSide(color: localShifts.length == 3 ? AppColors.primary : Colors.grey.shade300),
-                            backgroundColor: localShifts.length == 3 ? AppColors.primary.withValues(alpha: 0.08) : Colors.white,
+                            side: BorderSide(color: templateName.contains('8hr') ? AppColors.primary : Colors.grey.shade300),
+                            backgroundColor: templateName.contains('8hr') ? AppColors.primary.withValues(alpha: 0.08) : Colors.white,
                           ),
                           onPressed: () {
                             setModalState(() {
@@ -349,16 +611,16 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                               ]);
                             });
                           },
-                          child: const Text('3 Shifts (8 hrs)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          child: const Text('3 Shifts (8h)', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                         ),
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: 6),
                       Expanded(
                         child: OutlinedButton(
                           style: OutlinedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(vertical: 8),
-                            side: BorderSide(color: localShifts.length == 2 ? AppColors.primary : Colors.grey.shade300),
-                            backgroundColor: localShifts.length == 2 ? AppColors.primary.withValues(alpha: 0.08) : Colors.white,
+                            side: BorderSide(color: templateName.contains('12hr') ? AppColors.primary : Colors.grey.shade300),
+                            backgroundColor: templateName.contains('12hr') ? AppColors.primary.withValues(alpha: 0.08) : Colors.white,
                           ),
                           onPressed: () {
                             setModalState(() {
@@ -370,7 +632,29 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                               ]);
                             });
                           },
-                          child: const Text('2 Shifts (12 hrs)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          child: const Text('2 Shifts (12h)', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            side: BorderSide(color: templateName.contains('LC-91') ? AppColors.primary : Colors.grey.shade300),
+                            backgroundColor: templateName.contains('LC-91') ? AppColors.primary.withValues(alpha: 0.08) : Colors.white,
+                          ),
+                          onPressed: () {
+                            setModalState(() {
+                              templateName = 'LC-91 Standard 3-Shift';
+                              localShifts.clear();
+                              localShifts.addAll([
+                                {'id': 'shift_1', 'name': 'Day Shift', 'startTime': '07:00', 'endTime': '19:00'},
+                                {'id': 'shift_2', 'name': 'Evening Shift', 'startTime': '19:00', 'endTime': '24:00'},
+                                {'id': 'shift_3', 'name': 'Night Shift', 'startTime': '00:00', 'endTime': '07:00'},
+                              ]);
+                            });
+                          },
+                          child: const Text('LC-91 (3-Shift)', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                         ),
                       ),
                     ],
@@ -482,7 +766,11 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                       ),
                       onPressed: () async {
                         Navigator.pop(ctx);
-                        await _saveShiftConfig(templateName, localShifts);
+                        await _saveShiftConfig(
+                          templateName,
+                          localShifts,
+                          targetGateId: applyToGateOnly ? _selectedWeeklyGateId : null,
+                        );
                       },
                       child: const Text('Save & Apply Shift Schedule', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                     ),
@@ -496,12 +784,13 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
     );
   }
 
-  Future<void> _saveShiftConfig(String name, List<Map<String, String>> shifts) async {
+  Future<void> _saveShiftConfig(String name, List<Map<String, String>> shifts, {int? targetGateId}) async {
     setState(() => _isLoading = true);
     try {
       final token = await _getToken();
       final body = {
         'stationId': _stationId,
+        'gateId': targetGateId,
         'name': name,
         'shifts': shifts,
       };
@@ -514,9 +803,18 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
 
       if (res.statusCode == 200) {
         if (mounted) {
-          AppFeedback.showSuccess(context, 'Shift schedule updated successfully.');
+          AppFeedback.showSuccess(
+            context,
+            targetGateId != null
+                ? 'Shift timings applied specifically to $_weeklyGateNumber.'
+                : 'Shift timings applied across ${_stationData?['name'] ?? 'station'} fleet.',
+          );
         }
-        _loadRosterData();
+        _loadRosterData().then((_) {
+          if (_selectedWeeklyGateId != null) {
+            _loadWeeklyRosterData();
+          }
+        });
       } else {
         if (mounted) {
           AppFeedback.showError(context, 'Failed to update shift schedule.');
@@ -631,6 +929,10 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
         if (mounted) {
           setState(() {
             _weeklyRosterData = data;
+            if (data['shiftConfig'] != null && data['shiftConfig']['shifts'] is List) {
+              _shifts = data['shiftConfig']['shifts'];
+              _shiftConfigName = data['shiftConfig']['name'] ?? 'Shift Schedule';
+            }
             _weeklyDraft.clear();
             final matrix = (data['matrix'] as List?) ?? [];
             for (final staff in matrix) {
@@ -678,15 +980,67 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
 
     final currentCode = _weeklyDraft['${userId}_$dayOfWeek'] ?? '-';
 
-    final options = [
-      {'code': '07-19', 'label': 'Day Shift (07:00 - 19:00)', 'desc': '12h Standard Day Duty', 'color': const Color(0xFF16A34A)},
-      {'code': '19-24', 'label': 'Evening Shift (19:00 - 24:00)', 'desc': '5h Night Duty Part 1', 'color': const Color(0xFF4F46E5)},
-      {'code': '00-07', 'label': 'Night Shift (00:00 - 07:00)', 'desc': '7h Night Duty Part 2', 'color': const Color(0xFF0284C7)},
-      {'code': '00-07, 19-24', 'label': 'Split Shift (00-07 & 19-24)', 'desc': 'Continuous 24h Coverage Split', 'color': const Color(0xFF9333EA)},
+    final options = <Map<String, dynamic>>[];
+
+    final shiftPalette = [
+      const Color(0xFF16A34A), // Green
+      const Color(0xFF4F46E5), // Indigo
+      const Color(0xFF0284C7), // Blue
+      const Color(0xFF0891B2), // Cyan
+      const Color(0xFF7C3AED), // Purple
+      const Color(0xFFD97706), // Amber
+    ];
+
+    if (_shifts.isNotEmpty) {
+      for (int i = 0; i < _shifts.length; i++) {
+        final s = _shifts[i];
+        final name = s['name'] ?? 'Shift ${i + 1}';
+        final start = (s['startTime'] ?? '00:00').toString();
+        final end = (s['endTime'] ?? '00:00').toString();
+
+        final startHour = start.split(':')[0].padLeft(2, '0');
+        final endHour = (end == '24:00' ? '24' : end.split(':')[0]).padLeft(2, '0');
+        final code = '$startHour-$endHour';
+        final color = shiftPalette[i % shiftPalette.length];
+
+        options.add({
+          'code': code,
+          'label': '$name ($start - $end)',
+          'desc': '$name Duty Timing',
+          'color': color,
+        });
+      }
+    } else {
+      options.addAll([
+        {'code': '07-19', 'label': 'Day Shift (07:00 - 19:00)', 'desc': '12h Standard Day Duty', 'color': const Color(0xFF16A34A)},
+        {'code': '19-24', 'label': 'Evening Shift (19:00 - 24:00)', 'desc': '5h Night Duty Part 1', 'color': const Color(0xFF4F46E5)},
+        {'code': '00-07', 'label': 'Night Shift (00:00 - 07:00)', 'desc': '7h Night Duty Part 2', 'color': const Color(0xFF0284C7)},
+      ]);
+    }
+
+    if (_shifts.length == 3 && options.any((o) => o['code'] == '00-07') && options.any((o) => o['code'] == '19-24')) {
+      options.add({
+        'code': '00-07, 19-24',
+        'label': 'Split Shift (00-07 & 19-24)',
+        'desc': 'Continuous 24h Coverage Split',
+        'color': const Color(0xFF9333EA),
+      });
+    }
+
+    options.addAll([
       {'code': 'W/R', 'label': 'Weekly Rest (W/R)', 'desc': '30 Hours Mandatory Consecutive Rest', 'color': const Color(0xFFD97706)},
       {'code': 'N/R', 'label': 'Night Rest (N/R)', 'desc': 'Post-Night Shift Rest Period', 'color': const Color(0xFFEA580C)},
       {'code': '-', 'label': 'Relief / Off Duty (-)', 'desc': 'Covered by Restkeeper or Spare', 'color': const Color(0xFF64748B)},
-    ];
+    ]);
+
+    if (currentCode != '-' && !options.any((o) => o['code'] == currentCode)) {
+      options.insert(0, {
+        'code': currentCode,
+        'label': 'Custom Shift ($currentCode)',
+        'desc': 'Current Assigned Code',
+        'color': const Color(0xFF0D9488),
+      });
+    }
 
     showModalBottomSheet(
       context: context,
@@ -944,30 +1298,49 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
           final dateStr = d['date'].toString();
           final code = _weeklyDraft['${uid}_$dayOfWeek'] ?? '-';
 
-          String startTime = '07:00';
-          String endTime = '19:00';
+          String startTime = '00:00';
+          String endTime = '00:00';
           bool isSplit = false;
           String? secStart;
           String? secEnd;
 
-          if (code == '07-19') {
-            startTime = '07:00';
-            endTime = '19:00';
-          } else if (code == '19-24') {
-            startTime = '19:00';
-            endTime = '24:00';
-          } else if (code == '00-07') {
-            startTime = '00:00';
-            endTime = '07:00';
-          } else if (code.contains('00-07') && code.contains('19-24')) {
-            startTime = '00:00';
-            endTime = '07:00';
-            isSplit = true;
-            secStart = '19:00';
-            secEnd = '24:00';
-          } else if (code == 'W/R' || code == 'N/R' || code == '-') {
+          if (code == 'W/R' || code == 'N/R' || code == '-') {
             startTime = '00:00';
             endTime = '00:00';
+          } else if (code.contains(',') || code.contains('&')) {
+            isSplit = true;
+            startTime = '00:00';
+            endTime = '07:00';
+            secStart = '19:00';
+            secEnd = '24:00';
+          } else {
+            final matchedShift = _shifts.firstWhere((s) {
+              final start = (s['startTime'] ?? '').toString();
+              final end = (s['endTime'] ?? '').toString();
+              final sStartHr = start.split(':').first.padLeft(2, '0');
+              final sEndHr = (end == '24:00' ? '24' : end.split(':').first).padLeft(2, '0');
+              return code == '$sStartHr-$sEndHr' || code == '${start.split(':').first}-${end.split(':').first}';
+            }, orElse: () => null);
+
+            if (matchedShift != null) {
+              startTime = matchedShift['startTime'] ?? '08:00';
+              endTime = matchedShift['endTime'] ?? '20:00';
+            } else if (code == '07-19') {
+              startTime = '07:00';
+              endTime = '19:00';
+            } else if (code == '19-24') {
+              startTime = '19:00';
+              endTime = '24:00';
+            } else if (code == '00-07') {
+              startTime = '00:00';
+              endTime = '07:00';
+            } else if (code.contains('-')) {
+              final parts = code.split('-');
+              final p0 = parts[0].trim().padLeft(2, '0');
+              final p1 = parts[1].trim().padLeft(2, '0');
+              startTime = '$p0:00';
+              endTime = p1 == '24' ? '24:00' : '$p1:00';
+            }
           }
 
           assignments.add({
@@ -1280,28 +1653,9 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                             final dateStr = d['date'].toString();
                             final code = _weeklyDraft['${uid}_$dayOfWeek'] ?? '-';
 
-                            Color chipColor = const Color(0xFF64748B);
-                            Color bgChipColor = const Color(0xFFF1F5F9);
-
-                            if (code == '07-19') {
-                              chipColor = const Color(0xFF15803D);
-                              bgChipColor = const Color(0xFFDCFCE7);
-                            } else if (code == '19-24') {
-                              chipColor = const Color(0xFF4338CA);
-                              bgChipColor = const Color(0xFFEEF2FF);
-                            } else if (code == '00-07') {
-                              chipColor = const Color(0xFF0369A1);
-                              bgChipColor = const Color(0xFFE0F2FE);
-                            } else if (code.contains('00-07') && code.contains('19-24')) {
-                              chipColor = const Color(0xFF7E22CE);
-                              bgChipColor = const Color(0xFFF3E8FF);
-                            } else if (code == 'W/R') {
-                              chipColor = const Color(0xFFB45309);
-                              bgChipColor = const Color(0xFFFEF3C7);
-                            } else if (code == 'N/R') {
-                              chipColor = const Color(0xFFC2410C);
-                              bgChipColor = const Color(0xFFFFEDD5);
-                            }
+                            final colors = _getShiftColors(code);
+                            final chipColor = colors['text']!;
+                            final bgChipColor = colors['bg']!;
 
                             final cellData = (staff['schedule'] as Map<String, dynamic>?)?[dayOfWeek];
                             final isOverride = cellData?['isOverride'] == true;
@@ -1410,9 +1764,28 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
               'Duty Roster & Shifts',
               style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Colors.white),
             ),
-            Text(
-              _stationData != null ? '${_stationData!['name']} (${_stationData!['code']})' : 'Railway Station',
-              style: const TextStyle(fontSize: 11.5, color: Colors.white70),
+            InkWell(
+              onTap: _stations.length > 1 ? _openStationSelectionDialog : null,
+              borderRadius: BorderRadius.circular(4),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        _stationData != null ? '${_stationData!['name']} (${_stationData!['code']})' : 'Railway Station',
+                        style: const TextStyle(fontSize: 11.5, color: Colors.white70),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (_stations.length > 1) ...[
+                      const SizedBox(width: 4),
+                      const Icon(Icons.arrow_drop_down, size: 16, color: Colors.white70),
+                    ],
+                  ],
+                ),
+              ),
             ),
           ],
         ),
@@ -1420,6 +1793,13 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
         foregroundColor: Colors.white,
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
+          if (_stations.length > 1) ...[
+            IconButton(
+              icon: const Icon(Icons.location_on_outlined, color: Colors.white),
+              tooltip: 'Switch Station',
+              onPressed: _openStationSelectionDialog,
+            ),
+          ],
           if (_canManageRoster) ...[
             IconButton(
               icon: const Icon(Icons.tune_rounded, color: Colors.white),
