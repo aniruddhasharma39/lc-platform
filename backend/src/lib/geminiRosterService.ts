@@ -3,9 +3,9 @@ import { getExamCompliance } from '../routes/roster';
 
 const GEMINI_MODELS = [
   'gemini-3.5-flash',
-  'gemini-3.8-flash',
-  'gemini-2.5-flash',
-  'gemini-flash-latest'
+  'gemini-3-flash-preview',
+  'gemini-3.1-flash-lite-preview',
+  'gemini-flash-lite-latest'
 ];
 
 /**
@@ -226,7 +226,7 @@ Analyze the provided weekly duty roster chart image (Official LC Gate Duty Roste
 Extract all details with extreme precision into a JSON object conforming exactly to the schema.
 
 Guidelines:
-1. "gate": Identify LC Gate Number (e.g. "LC-30", "LC-40", "LC-91", "Gate 91"), Station Name (e.g. "Kasu", "Nagothane", "Danapur"), Station Code (e.g. "KASU", "NGTN", "DNR"), and Railway Division.
+1. "gate": Identify LC Gate Number (e.g. "LC-30", "LC-40", "LC-91", "LC-63", "Gate 91"), Station Name (e.g. "Kasu", "Nagothane", "Satara", "Targaon", "Viramgam"), Station Code (e.g. "KASU", "NGTN", "STR", "TAZ", "VG"), and Railway Division.
 2. "week": Identify the 7-day week date range if indicated (Start Date and End Date in YYYY-MM-DD format). If year is missing, assume 2026. If only day/month is visible, calculate 7 days starting from Sunday.
 3. "shiftTimings": Identify shift definitions (e.g. Morning 06:00-14:00, Evening 14:00-22:00, Night 22:00-06:00; or 12hr shifts 07:00-19:00, 19:00-07:00 / 08:00-20:00, 20:00-08:00).
    For each shift, provide name, startTime (HH:mm), endTime (HH:mm), and code (e.g. "06-14", "14-22", "22-06", "07-19", "08-20").

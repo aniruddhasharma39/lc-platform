@@ -339,6 +339,8 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
         return StatefulBuilder(
           builder: (ctx, setSheetState) {
             final filteredStations = _stations.where((st) {
+              final gatesCount = st['_count']?['gates'] ?? 0;
+              if (gatesCount <= 0) return false;
               final q = searchQuery.trim().toLowerCase();
               if (q.isEmpty) return true;
               final name = (st['name'] ?? '').toString().toLowerCase();
@@ -1730,43 +1732,55 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
             child: Column(
               children: [
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Row(
-                      children: [
-                        Icon(Icons.directions_railway, size: 18, color: AppColors.primary),
-                        SizedBox(width: 6),
-                        Text('Select LC Gate:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                      ],
-                    ),
-                    if (_gates.isNotEmpty) ...[
-                      Builder(builder: (context) {
-                        final hasMatch = _gates.any((g) => g['id'] == _selectedWeeklyGateId);
-                        final validId = hasMatch ? _selectedWeeklyGateId : (_gates[0]['id'] as int);
-                        return DropdownButton<int>(
-                          value: validId,
-                          isDense: true,
-                          underline: const SizedBox(),
-                          items: _gates.map<DropdownMenuItem<int>>((g) {
-                            final num = g['lcNumber'] ?? 'LC';
-                            final loc = g['locationName'] ?? '';
-                            return DropdownMenuItem<int>(
-                              value: g['id'] as int,
-                              child: Text(
-                                loc.isNotEmpty ? '$num ($loc)' : num,
-                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.primary),
-                              ),
+                    const Icon(Icons.directions_railway, size: 18, color: AppColors.primary),
+                    const SizedBox(width: 8),
+                    const Text('Select LC Gate: ', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF1E293B))),
+                    const SizedBox(width: 4),
+                    if (_gates.isNotEmpty)
+                      Expanded(
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: Builder(builder: (context) {
+                            final hasMatch = _gates.any((g) => g['id'] == _selectedWeeklyGateId);
+                            final validId = hasMatch ? _selectedWeeklyGateId : (_gates[0]['id'] as int);
+                            return DropdownButton<int>(
+                              value: validId,
+                              isDense: true,
+                              isExpanded: true,
+                              underline: const SizedBox(),
+                              alignment: AlignmentDirectional.centerEnd,
+                              items: _gates.map<DropdownMenuItem<int>>((g) {
+                                final num = g['lcNumber'] ?? 'LC';
+                                final loc = g['locationName'] ?? '';
+                                return DropdownMenuItem<int>(
+                                  value: g['id'] as int,
+                                  alignment: AlignmentDirectional.centerEnd,
+                                  child: Text(
+                                    loc.isNotEmpty ? '$num ($loc)' : num,
+                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.primary),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                );
+                              }).toList(),
+                              onChanged: (val) {
+                                if (val != null) {
+                                  setState(() => _selectedWeeklyGateId = val);
+                                  _loadWeeklyRosterData(gateId: val);
+                                }
+                              },
                             );
-                          }).toList(),
-                          onChanged: (val) {
-                            if (val != null) {
-                              setState(() => _selectedWeeklyGateId = val);
-                              _loadWeeklyRosterData(gateId: val);
-                            }
-                          },
-                        );
-                      }),
-                    ],
+                          }),
+                        ),
+                      )
+                    else
+                      const Expanded(
+                        child: Text(
+                          'No Gates Configured',
+                          textAlign: TextAlign.end,
+                          style: TextStyle(fontSize: 12, color: Colors.grey, fontStyle: FontStyle.italic),
+                        ),
+                      ),
                   ],
                 ),
                 const Divider(height: 16),

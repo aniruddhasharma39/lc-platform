@@ -1737,7 +1737,8 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
               }
             },
           ),
-          title: const Text('Operational Reports', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          title: const Text('Operational Reports', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          titleSpacing: 0,
           backgroundColor: Colors.white,
           foregroundColor: AppColors.primary,
           elevation: 0.5,
@@ -1746,11 +1747,13 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
             IconButton(
               icon: const Icon(Icons.refresh),
               tooltip: 'Force Refresh',
+              visualDensity: VisualDensity.compact,
               onPressed: () => _triggerReportFetch(forceReload: true),
             ),
             IconButton(
               icon: const Icon(Icons.download, color: Color(0xFF10B981)),
               tooltip: 'Generate Report',
+              visualDensity: VisualDensity.compact,
               onPressed: _showGenerateModal,
             ),
           ],
@@ -3792,14 +3795,16 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                       style: OutlinedButton.styleFrom(
                         foregroundColor: const Color(0xFF0284C7),
                         side: const BorderSide(color: Color(0xFF0284C7)),
-                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       ),
-                      icon: const Icon(Icons.download_rounded, size: 16),
-                      label: const Text(
-                        'Download Muster',
-                        style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
-                        overflow: TextOverflow.ellipsis,
+                      icon: const Icon(Icons.download_rounded, size: 15),
+                      label: const FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          'Download Muster',
+                          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                        ),
                       ),
                       onPressed: () => _showDownloadOptionsSheet(
                         reportType: 'attendance',
@@ -3814,14 +3819,16 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                       style: OutlinedButton.styleFrom(
                         foregroundColor: const Color(0xFFDC2626),
                         side: const BorderSide(color: Color(0xFFDC2626)),
-                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       ),
-                      icon: const Icon(Icons.download_rounded, size: 16),
-                      label: const Text(
-                        'Download Exception',
-                        style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
-                        overflow: TextOverflow.ellipsis,
+                      icon: const Icon(Icons.download_rounded, size: 15),
+                      label: const FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          'Download Exception',
+                          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                        ),
                       ),
                       onPressed: () => _showDownloadOptionsSheet(
                         reportType: 'attendance_exception',
@@ -3939,18 +3946,26 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                 ],
               ),
               const SizedBox(height: 12),
-              // KPI Strip
-              Row(
+              // KPI Strip (2 clean responsive rows to prevent awkward word breaks like "Complete d")
+              Column(
                 children: [
-                  _buildAttendanceKpiBadge('Total Shifts', '${metrics['totalSessions'] ?? 0}', const Color(0xFF003580)),
-                  const SizedBox(width: 6),
-                  _buildAttendanceKpiBadge('Completed', '${metrics['completedSessions'] ?? 0}', const Color(0xFF046A38)),
-                  const SizedBox(width: 6),
-                  _buildAttendanceKpiBadge('On Duty', '${metrics['currentlyOnDuty'] ?? 0}', const Color(0xFF0284C7)),
-                  const SizedBox(width: 6),
-                  _buildAttendanceKpiBadge('Late', '${metrics['lateSessions'] ?? 0}', const Color(0xFFDC2626)),
-                  const SizedBox(width: 6),
-                  _buildAttendanceKpiBadge('On-Time', '${metrics['onTimePercentage'] ?? 100}%', const Color(0xFF7C3AED)),
+                  Row(
+                    children: [
+                      _buildAttendanceKpiBadge('Total Shifts', '${metrics['totalSessions'] ?? 0}', const Color(0xFF003580)),
+                      const SizedBox(width: 6),
+                      _buildAttendanceKpiBadge('Completed', '${metrics['completedSessions'] ?? 0}', const Color(0xFF046A38)),
+                      const SizedBox(width: 6),
+                      _buildAttendanceKpiBadge('On Duty', '${metrics['currentlyOnDuty'] ?? 0}', const Color(0xFF0284C7)),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      _buildAttendanceKpiBadge('Late / Delayed', '${metrics['lateSessions'] ?? 0}', const Color(0xFFDC2626)),
+                      const SizedBox(width: 6),
+                      _buildAttendanceKpiBadge('On-Time Compliance', '${metrics['onTimePercentage'] ?? 100}%', const Color(0xFF7C3AED)),
+                    ],
+                  ),
                 ],
               ),
               const SizedBox(height: 12),
@@ -4099,17 +4114,25 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   Widget _buildAttendanceKpiBadge(String label, String value, Color color) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.08),
           borderRadius: BorderRadius.circular(6),
           border: Border.all(color: color.withValues(alpha: 0.2)),
         ),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Text(value, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: color)),
             const SizedBox(height: 2),
-            Text(label, style: TextStyle(fontSize: 9.5, color: Colors.grey.shade700, fontWeight: FontWeight.w500), textAlign: TextAlign.center),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                label,
+                style: TextStyle(fontSize: 10, color: Colors.grey.shade700, fontWeight: FontWeight.w600),
+                maxLines: 1,
+              ),
+            ),
           ],
         ),
       ),
@@ -4362,18 +4385,26 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                 ],
               ),
               const SizedBox(height: 12),
-              // KPI Strip
-              Row(
+              // KPI Strip (2 clean responsive rows)
+              Column(
                 children: [
-                  _buildAttendanceKpiBadge('Total Deviations', '${metrics['totalExceptions'] ?? 0}', const Color(0xFFDC2626)),
-                  const SizedBox(width: 6),
-                  _buildAttendanceKpiBadge('Delayed Shifts', '${metrics['lateArrivalsCount'] ?? 0}', const Color(0xFFD97706)),
-                  const SizedBox(width: 6),
-                  _buildAttendanceKpiBadge('Unstaffed Gates', '${metrics['unstaffedGateCount'] ?? 0}', const Color(0xFFB91C1C)),
-                  const SizedBox(width: 6),
-                  _buildAttendanceKpiBadge('Total Delay', metrics['totalDelayHoursFormatted'] ?? '0m', const Color(0xFF003580)),
-                  const SizedBox(width: 6),
-                  _buildAttendanceKpiBadge('Safety Score', '${metrics['safetyComplianceScore'] ?? 100}%', const Color(0xFF046A38)),
+                  Row(
+                    children: [
+                      _buildAttendanceKpiBadge('Total Deviations', '${metrics['totalExceptions'] ?? 0}', const Color(0xFFDC2626)),
+                      const SizedBox(width: 6),
+                      _buildAttendanceKpiBadge('Delayed Shifts', '${metrics['lateArrivalsCount'] ?? 0}', const Color(0xFFD97706)),
+                      const SizedBox(width: 6),
+                      _buildAttendanceKpiBadge('Unstaffed Gates', '${metrics['unstaffedGateCount'] ?? 0}', const Color(0xFFB91C1C)),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      _buildAttendanceKpiBadge('Total Delay', metrics['totalDelayHoursFormatted'] ?? '0m', const Color(0xFF003580)),
+                      const SizedBox(width: 6),
+                      _buildAttendanceKpiBadge('Safety Score', '${metrics['safetyComplianceScore'] ?? 100}%', const Color(0xFF046A38)),
+                    ],
+                  ),
                 ],
               ),
               const SizedBox(height: 12),

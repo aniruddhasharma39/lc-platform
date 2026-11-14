@@ -105,7 +105,7 @@ router.get('/', async (req: any, res, next) => {
       });
     }
 
-    if (!station) {
+    if (!station || (station && (await prisma.lCGate.count({ where: { stationId: station.id } })) === 0)) {
       // 1. Try first station in viewer's division that HAS active LC gates
       station = await prisma.station.findFirst({
         where: {
@@ -116,16 +116,7 @@ router.get('/', async (req: any, res, next) => {
         orderBy: { name: 'asc' }
       });
 
-      // 2. Fallback to any station in viewer's division
-      if (!station) {
-        station = await prisma.station.findFirst({
-          where: stationWhere,
-          select: { id: true, code: true, name: true, division: true, zone: true },
-          orderBy: { name: 'asc' }
-        });
-      }
-
-      // 3. Fallback to any station system-wide that HAS active LC gates
+      // 2. Fallback to any station system-wide that HAS active LC gates
       if (!station) {
         station = await prisma.station.findFirst({
           where: { gates: { some: {} } },
@@ -137,9 +128,12 @@ router.get('/', async (req: any, res, next) => {
       if (station) stationId = station.id;
     }
 
-    // Fetch all stations in user's jurisdiction for switcher dropdown (stations with gates first)
-    const stations = await prisma.station.findMany({
-      where: stationWhere,
+    // Fetch ONLY stations in user's jurisdiction that actually have LC gates created
+    let stations = await prisma.station.findMany({
+      where: {
+        ...stationWhere,
+        gates: { some: {} }
+      },
       select: {
         id: true,
         code: true,
@@ -149,10 +143,29 @@ router.get('/', async (req: any, res, next) => {
         _count: { select: { gates: true } }
       },
       orderBy: [
-        { gates: { _count: 'desc' } },
         { name: 'asc' }
       ]
     });
+
+    // If division has no stations with gates, fallback system-wide to stations with gates
+    if (stations.length === 0) {
+      stations = await prisma.station.findMany({
+        where: {
+          gates: { some: {} }
+        },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          division: true,
+          zone: true,
+          _count: { select: { gates: true } }
+        },
+        orderBy: [
+          { name: 'asc' }
+        ]
+      });
+    }
 
     // Fetch LC gates: for PWI / CPWI / Supervisor, restrict to their station or division
     let gateWhere: any = {};
