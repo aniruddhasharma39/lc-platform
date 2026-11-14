@@ -51,7 +51,7 @@ class PushNotificationService {
       const initializationSettings = InitializationSettings(android: initializationSettingsAndroid);
 
       await _localNotifications.initialize(
-        settings: initializationSettings,
+        initializationSettings,
         onDidReceiveNotificationResponse: (NotificationResponse response) {
           debugPrint('Notification tapped: ${response.payload}');
         },
@@ -66,10 +66,10 @@ class PushNotificationService {
         final notification = message.notification;
         if (notification != null) {
           _localNotifications.show(
-            id: notification.hashCode,
-            title: notification.title ?? 'LC Platform Alert',
-            body: notification.body ?? '',
-            notificationDetails: NotificationDetails(
+            notification.hashCode,
+            notification.title ?? 'LC Platform Alert',
+            notification.body ?? '',
+            NotificationDetails(
               android: AndroidNotificationDetails(
                 _channel.id,
                 _channel.name,
