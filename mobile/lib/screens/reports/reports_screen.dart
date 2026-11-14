@@ -935,12 +935,18 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
 
   // 3.5. Staged Progress Report Export Dialog
   void _startExportWithProgress({
-    required BuildContext parentCtx,
+    BuildContext? parentCtx,
     required String selectedReportType,
     required String selectedFormat,
     required Set<String> selectedCols,
   }) async {
-    Navigator.pop(parentCtx);
+    if (parentCtx != null) {
+      try {
+        if (Navigator.of(parentCtx).canPop()) {
+          Navigator.of(parentCtx).pop();
+        }
+      } catch (_) {}
+    }
     if (selectedReportType == 'device_mapping' && !_isDeveloper) {
       AppFeedback.showError(context, 'Device Mapping export is restricted to Developer role.');
       return;
@@ -958,8 +964,6 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         if (dialogCtx != null && dialogCtx!.mounted) {
           Navigator.of(dialogCtx!).pop();
           dialogCtx = null;
-        } else if (mounted && Navigator.of(context, rootNavigator: true).canPop()) {
-          Navigator.of(context, rootNavigator: true).pop();
         }
       } catch (_) {}
     }
@@ -1156,12 +1160,15 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     }
   }
 
-  // 4. Generate Report Modal (Excel & PDF)
+  // 4. Generate Report Modal (Excel, PDF & CSV)
   void _showGenerateModal() {
-    String selectedReportType = _reportType;
-    if (!_isDeveloper && selectedReportType == 'device_mapping') {
-      selectedReportType = 'count';
+    String selectedCategory = (_reportType == 'attendance' || _reportType == 'attendance_exception')
+        ? 'attendance'
+        : ((_reportType == 'cycle' || _reportType == 'duration') ? 'duration' : _reportType);
+    if (!_isDeveloper && selectedCategory == 'device_mapping') {
+      selectedCategory = 'count';
     }
+    String selectedAttendanceSub = (_reportType == 'attendance_exception' || _attendanceSubView == 'exception') ? 'exception' : 'muster';
     String selectedFormat = 'xlsx';
     final Set<String> selectedCols = _reportColumns.map((c) => c['key']!).toSet();
 
@@ -1172,6 +1179,83 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
+            Widget buildCategoryCard({
+              required String key,
+              required String title,
+              required String subtitle,
+              required IconData icon,
+              required Color color,
+            }) {
+              final isSelected = selectedCategory == key;
+              return Expanded(
+                child: InkWell(
+                  onTap: () => setModalState(() => selectedCategory = key),
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    height: 72,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: isSelected ? color.withValues(alpha: 0.08) : Colors.white,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: isSelected ? color : Colors.grey.shade300,
+                        width: isSelected ? 2 : 1,
+                      ),
+                      boxShadow: isSelected
+                          ? [
+                              BoxShadow(
+                                color: color.withValues(alpha: 0.12),
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
+                              )
+                            ]
+                          : null,
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(7),
+                          decoration: BoxDecoration(
+                            color: isSelected ? color.withValues(alpha: 0.18) : color.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Icon(icon, size: 20, color: color),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                title,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12.5,
+                                  color: isSelected ? color : const Color(0xFF1E293B),
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                subtitle,
+                                style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (isSelected)
+                          Icon(Icons.check_circle, size: 16, color: color),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }
+
             return Material(
               color: Colors.white,
               borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
@@ -1202,198 +1286,201 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                         padding: const EdgeInsets.all(16),
                         children: [
                           const Text('SELECT REPORT TYPE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
-                          const SizedBox(height: 8),
+                          const SizedBox(height: 10),
+                          // Row 1: Count & Duration
                           Row(
                             children: [
-                              Expanded(
-                                child: InkWell(
-                                  onTap: () => setModalState(() => selectedReportType = 'count'),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: selectedReportType == 'count' ? const Color(0xFF2563EB).withValues(alpha: 0.08) : Colors.white,
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: selectedReportType == 'count' ? const Color(0xFF2563EB) : Colors.grey.shade300,
-                                        width: 2,
-                                      ),
-                                    ),
-                                    child: Column(
-                                      children: const [
-                                        Icon(Icons.format_list_numbered_rounded, color: Color(0xFF2563EB), size: 22),
-                                        SizedBox(height: 4),
-                                        Text('Count', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                                        Text('Ops Rollup', style: TextStyle(fontSize: 10, color: Colors.grey)),
-                                      ],
-                                    ),
-                                  ),
-                                ),
+                              buildCategoryCard(
+                                key: 'count',
+                                title: 'Count',
+                                subtitle: 'Ops Rollup',
+                                icon: Icons.format_list_numbered_rounded,
+                                color: const Color(0xFF2563EB),
                               ),
                               const SizedBox(width: 8),
-                              Expanded(
-                                child: InkWell(
-                                  onTap: () => setModalState(() => selectedReportType = 'duration'),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: (selectedReportType == 'duration' || selectedReportType == 'cycle') ? const Color(0xFF046A38).withValues(alpha: 0.08) : Colors.white,
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: (selectedReportType == 'duration' || selectedReportType == 'cycle') ? const Color(0xFF046A38) : Colors.grey.shade300,
-                                        width: 2,
-                                      ),
-                                    ),
-                                    child: Column(
-                                      children: const [
-                                        Icon(Icons.timer_outlined, color: Color(0xFF046A38), size: 22),
-                                        SizedBox(height: 4),
-                                        Text('Duration', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                                        Text('Open/Close', style: TextStyle(fontSize: 10, color: Colors.grey)),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: InkWell(
-                                  onTap: () => setModalState(() => selectedReportType = 'holistic'),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: selectedReportType == 'holistic' ? const Color(0xFF7C3AED).withValues(alpha: 0.08) : Colors.white,
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: selectedReportType == 'holistic' ? const Color(0xFF7C3AED) : Colors.grey.shade300,
-                                        width: 2,
-                                      ),
-                                    ),
-                                    child: Column(
-                                      children: const [
-                                        Icon(Icons.account_tree_outlined, color: Color(0xFF7C3AED), size: 22),
-                                        SizedBox(height: 4),
-                                        Text('Holistic', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                                        Text('Exec Tree', style: TextStyle(fontSize: 10, color: Colors.grey)),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: InkWell(
-                                  onTap: () => setModalState(() => selectedReportType = 'complete_log'),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: selectedReportType == 'complete_log' ? AppColors.primary.withValues(alpha: 0.08) : Colors.white,
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: selectedReportType == 'complete_log' ? AppColors.primary : Colors.grey.shade300,
-                                        width: 2,
-                                      ),
-                                    ),
-                                    child: Column(
-                                      children: const [
-                                        Icon(Icons.table_rows_outlined, color: AppColors.primary, size: 22),
-                                        SizedBox(height: 4),
-                                        Text('Event Log', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                                        Text('Raw Events', style: TextStyle(fontSize: 10, color: Colors.grey)),
-                                      ],
-                                    ),
-                                  ),
-                                ),
+                              buildCategoryCard(
+                                key: 'duration',
+                                title: 'Duration',
+                                subtitle: 'Open / Close',
+                                icon: Icons.timer_outlined,
+                                color: const Color(0xFF046A38),
                               ),
                             ],
                           ),
                           const SizedBox(height: 8),
+                          // Row 2: Attendance & Holistic
                           Row(
                             children: [
-                              Expanded(
-                                child: InkWell(
-                                  onTap: () => setModalState(() => selectedReportType = 'attendance'),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: selectedReportType == 'attendance' ? const Color(0xFF0284C7).withValues(alpha: 0.08) : Colors.white,
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: selectedReportType == 'attendance' ? const Color(0xFF0284C7) : Colors.grey.shade300,
-                                        width: 2,
-                                      ),
-                                    ),
-                                    child: const Column(
-                                      children: [
-                                        Icon(Icons.badge_outlined, color: Color(0xFF0284C7), size: 22),
-                                        SizedBox(height: 4),
-                                        Text('Muster', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                                        Text('Duty Shift Muster', style: TextStyle(fontSize: 10, color: Colors.grey)),
-                                      ],
-                                    ),
-                                  ),
-                                ),
+                              buildCategoryCard(
+                                key: 'attendance',
+                                title: 'Attendance',
+                                subtitle: 'Muster & Deviation',
+                                icon: Icons.badge_outlined,
+                                color: const Color(0xFF0284C7),
                               ),
                               const SizedBox(width: 8),
-                              Expanded(
-                                child: InkWell(
-                                  onTap: () => setModalState(() => selectedReportType = 'attendance_exception'),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: (selectedReportType == 'attendance_exception' || selectedReportType == 'exception') ? const Color(0xFFDC2626).withValues(alpha: 0.08) : Colors.white,
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: (selectedReportType == 'attendance_exception' || selectedReportType == 'exception') ? const Color(0xFFDC2626) : Colors.grey.shade300,
-                                        width: 2,
-                                      ),
-                                    ),
-                                    child: const Column(
-                                      children: [
-                                        Icon(Icons.warning_amber_rounded, color: Color(0xFFDC2626), size: 22),
-                                        SizedBox(height: 4),
-                                        Text('Exception', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                                        Text('Safety Deviations', style: TextStyle(fontSize: 10, color: Colors.grey)),
-                                      ],
-                                    ),
-                                  ),
-                                ),
+                              buildCategoryCard(
+                                key: 'holistic',
+                                title: 'Holistic',
+                                subtitle: 'Exec Fleet Tree',
+                                icon: Icons.account_tree_outlined,
+                                color: const Color(0xFF7C3AED),
                               ),
                             ],
                           ),
-                          if (_isDeveloper) ...[
-                            const SizedBox(height: 8),
-                            InkWell(
-                              onTap: () => setModalState(() => selectedReportType = 'device_mapping'),
-                              child: Container(
-                                padding: const EdgeInsets.all(10),
-                                decoration: BoxDecoration(
-                                  color: selectedReportType == 'device_mapping' ? const Color(0xFFD97706).withValues(alpha: 0.08) : Colors.white,
-                                  borderRadius: BorderRadius.circular(10),
-                                  border: Border.all(
-                                    color: selectedReportType == 'device_mapping' ? const Color(0xFFD97706) : Colors.grey.shade300,
-                                    width: 2,
-                                  ),
+                          const SizedBox(height: 8),
+                          // Row 3: Event Log & (Developer Mapping or Spacer)
+                          Row(
+                            children: [
+                              buildCategoryCard(
+                                key: 'complete_log',
+                                title: 'Event Log',
+                                subtitle: 'Raw Events',
+                                icon: Icons.table_rows_outlined,
+                                color: AppColors.primary,
+                              ),
+                              if (_isDeveloper) ...[
+                                const SizedBox(width: 8),
+                                buildCategoryCard(
+                                  key: 'device_mapping',
+                                  title: 'Mapping',
+                                  subtitle: 'IoT Devices',
+                                  icon: Icons.developer_board,
+                                  color: const Color(0xFFD97706),
                                 ),
-                                child: const Row(
-                                  children: [
-                                    Icon(Icons.developer_board, color: Color(0xFFD97706), size: 22),
-                                    SizedBox(width: 10),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text('Gate & Device Mapping (Developer Only)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
-                                          Text('Physical Master Unit · AWS IoT Thing · SIM ICCID cross-linkage', style: TextStyle(fontSize: 10.5, color: Colors.grey)),
-                                        ],
+                              ] else ...[
+                                const SizedBox(width: 8),
+                                const Spacer(),
+                              ],
+                            ],
+                          ),
+
+                          // Attendance Sub-Type Selection (Muster vs Exception)
+                          if (selectedCategory == 'attendance') ...[
+                            const SizedBox(height: 14),
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF0284C7).withValues(alpha: 0.05),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: const Color(0xFF0284C7).withValues(alpha: 0.25), width: 1.2),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: const [
+                                      Icon(Icons.tune_rounded, size: 15, color: Color(0xFF0284C7)),
+                                      SizedBox(width: 6),
+                                      Text(
+                                        'SELECT ATTENDANCE REPORT SUB-TYPE:',
+                                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF0284C7), letterSpacing: 0.3),
                                       ),
-                                    ),
-                                  ],
-                                ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Row(
+                                    children: [
+                                      // Sub-card 1: Muster
+                                      Expanded(
+                                        child: InkWell(
+                                          onTap: () => setModalState(() => selectedAttendanceSub = 'muster'),
+                                          borderRadius: BorderRadius.circular(10),
+                                          child: Container(
+                                            height: 64,
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                            decoration: BoxDecoration(
+                                              color: selectedAttendanceSub == 'muster' ? const Color(0xFF0284C7).withValues(alpha: 0.12) : Colors.white,
+                                              borderRadius: BorderRadius.circular(10),
+                                              border: Border.all(
+                                                color: selectedAttendanceSub == 'muster' ? const Color(0xFF0284C7) : Colors.grey.shade300,
+                                                width: selectedAttendanceSub == 'muster' ? 2 : 1,
+                                              ),
+                                            ),
+                                            child: Row(
+                                              children: [
+                                                Container(
+                                                  padding: const EdgeInsets.all(6),
+                                                  decoration: BoxDecoration(
+                                                    color: const Color(0xFF0284C7).withValues(alpha: 0.15),
+                                                    borderRadius: BorderRadius.circular(8),
+                                                  ),
+                                                  child: const Icon(Icons.assignment_ind_outlined, size: 20, color: Color(0xFF0284C7)),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Expanded(
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    mainAxisAlignment: MainAxisAlignment.center,
+                                                    children: const [
+                                                      Text('Muster', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5, color: Color(0xFF0284C7))),
+                                                      SizedBox(height: 2),
+                                                      Text('Duty Shift Muster', style: TextStyle(fontSize: 10, color: Colors.grey), maxLines: 1, overflow: TextOverflow.ellipsis),
+                                                    ],
+                                                  ),
+                                                ),
+                                                if (selectedAttendanceSub == 'muster')
+                                                  const Icon(Icons.check_circle, size: 16, color: Color(0xFF0284C7)),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      // Sub-card 2: Exception
+                                      Expanded(
+                                        child: InkWell(
+                                          onTap: () => setModalState(() => selectedAttendanceSub = 'exception'),
+                                          borderRadius: BorderRadius.circular(10),
+                                          child: Container(
+                                            height: 64,
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                            decoration: BoxDecoration(
+                                              color: selectedAttendanceSub == 'exception' ? const Color(0xFFDC2626).withValues(alpha: 0.12) : Colors.white,
+                                              borderRadius: BorderRadius.circular(10),
+                                              border: Border.all(
+                                                color: selectedAttendanceSub == 'exception' ? const Color(0xFFDC2626) : Colors.grey.shade300,
+                                                width: selectedAttendanceSub == 'exception' ? 2 : 1,
+                                              ),
+                                            ),
+                                            child: Row(
+                                              children: [
+                                                Container(
+                                                  padding: const EdgeInsets.all(6),
+                                                  decoration: BoxDecoration(
+                                                    color: const Color(0xFFDC2626).withValues(alpha: 0.15),
+                                                    borderRadius: BorderRadius.circular(8),
+                                                  ),
+                                                  child: const Icon(Icons.warning_amber_rounded, size: 20, color: Color(0xFFDC2626)),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Expanded(
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    mainAxisAlignment: MainAxisAlignment.center,
+                                                    children: const [
+                                                      Text('Exception', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5, color: Color(0xFFDC2626))),
+                                                      SizedBox(height: 2),
+                                                      Text('Safety Deviations', style: TextStyle(fontSize: 10, color: Colors.grey), maxLines: 1, overflow: TextOverflow.ellipsis),
+                                                    ],
+                                                  ),
+                                                ),
+                                                if (selectedAttendanceSub == 'exception')
+                                                  const Icon(Icons.check_circle, size: 16, color: Color(0xFFDC2626)),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
                               ),
                             ),
                           ],
                           const SizedBox(height: 16),
 
+                          // Scope and Range preview card
                           Container(
                             padding: const EdgeInsets.all(12),
                             decoration: BoxDecoration(
@@ -1408,32 +1495,45 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                 const SizedBox(height: 4),
                                 Text('Selected: ${_selectedGateIds.length} LC Gate${_selectedGateIds.length == 1 ? "" : "s"}', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
                                 Text(
-                                  selectedReportType == 'cycle' ? 'Scope: Analytical cycle audit & daily KPIs' : 'Events in range: ${_records.length}',
+                                  selectedCategory == 'duration'
+                                      ? 'Scope: Analytical cycle audit & daily KPIs'
+                                      : (selectedCategory == 'attendance'
+                                          ? 'Scope: Staff shift muster & biometric sign-in log'
+                                          : 'Events in range: ${_records.length}'),
                                   style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
                                 ),
                               ],
                             ),
                           ),
                           const SizedBox(height: 16),
+
+                          // Format Selection: Exactly one uniform height and proportion for all 3 cards
                           const Text('SELECT DOCUMENT FORMAT', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
                           const SizedBox(height: 8),
                           Row(
                             children: [
+                              // Excel Card
                               Expanded(
                                 child: InkWell(
                                   onTap: () => setModalState(() => selectedFormat = 'xlsx'),
+                                  borderRadius: BorderRadius.circular(10),
                                   child: Container(
-                                    padding: const EdgeInsets.all(10),
+                                    height: 72,
+                                    padding: const EdgeInsets.all(8),
                                     decoration: BoxDecoration(
                                       color: selectedFormat == 'xlsx' ? const Color(0xFF107C41).withValues(alpha: 0.08) : Colors.white,
                                       borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(color: selectedFormat == 'xlsx' ? const Color(0xFF107C41) : Colors.grey.shade300, width: 2),
+                                      border: Border.all(
+                                        color: selectedFormat == 'xlsx' ? const Color(0xFF107C41) : Colors.grey.shade300,
+                                        width: selectedFormat == 'xlsx' ? 2 : 1,
+                                      ),
                                     ),
                                     child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
                                       children: const [
                                         Icon(Icons.table_view_rounded, color: Color(0xFF107C41), size: 24),
                                         SizedBox(height: 4),
-                                        Text('Excel', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('Excel', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
                                         Text('.xlsx', style: TextStyle(fontSize: 10, color: Colors.grey)),
                                       ],
                                     ),
@@ -1441,21 +1541,28 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                 ),
                               ),
                               const SizedBox(width: 8),
+                              // PDF Card
                               Expanded(
                                 child: InkWell(
                                   onTap: () => setModalState(() => selectedFormat = 'pdf'),
+                                  borderRadius: BorderRadius.circular(10),
                                   child: Container(
-                                    padding: const EdgeInsets.all(10),
+                                    height: 72,
+                                    padding: const EdgeInsets.all(8),
                                     decoration: BoxDecoration(
                                       color: selectedFormat == 'pdf' ? const Color(0xFFE11D48).withValues(alpha: 0.08) : Colors.white,
                                       borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(color: selectedFormat == 'pdf' ? const Color(0xFFE11D48) : Colors.grey.shade300, width: 2),
+                                      border: Border.all(
+                                        color: selectedFormat == 'pdf' ? const Color(0xFFE11D48) : Colors.grey.shade300,
+                                        width: selectedFormat == 'pdf' ? 2 : 1,
+                                      ),
                                     ),
                                     child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
                                       children: const [
                                         Icon(Icons.picture_as_pdf_rounded, color: Color(0xFFE11D48), size: 24),
                                         SizedBox(height: 4),
-                                        Text('PDF', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('PDF', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
                                         Text('.pdf', style: TextStyle(fontSize: 10, color: Colors.grey)),
                                       ],
                                     ),
@@ -1463,21 +1570,28 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                 ),
                               ),
                               const SizedBox(width: 8),
+                              // CSV Card
                               Expanded(
                                 child: InkWell(
                                   onTap: () => setModalState(() => selectedFormat = 'csv'),
+                                  borderRadius: BorderRadius.circular(10),
                                   child: Container(
-                                    padding: const EdgeInsets.all(10),
+                                    height: 72,
+                                    padding: const EdgeInsets.all(8),
                                     decoration: BoxDecoration(
                                       color: selectedFormat == 'csv' ? const Color(0xFF2563EB).withValues(alpha: 0.08) : Colors.white,
                                       borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(color: selectedFormat == 'csv' ? const Color(0xFF2563EB) : Colors.grey.shade300, width: 2),
+                                      border: Border.all(
+                                        color: selectedFormat == 'csv' ? const Color(0xFF2563EB) : Colors.grey.shade300,
+                                        width: selectedFormat == 'csv' ? 2 : 1,
+                                      ),
                                     ),
                                     child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
                                       children: const [
                                         Icon(Icons.file_present_rounded, color: Color(0xFF2563EB), size: 24),
                                         SizedBox(height: 4),
-                                        Text('CSV', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('CSV', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
                                         Text('.csv', style: TextStyle(fontSize: 10, color: Colors.grey)),
                                       ],
                                     ),
@@ -1487,7 +1601,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                             ],
                           ),
                           const SizedBox(height: 18),
-                          if (selectedReportType == 'complete_log') ...[
+                          if (selectedCategory == 'complete_log') ...[
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
@@ -1529,7 +1643,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                 },
                               );
                             }),
-                          ] else ...[
+                          ] else if (selectedCategory == 'duration') ...[
                             Container(
                               padding: const EdgeInsets.all(12),
                               decoration: BoxDecoration(
@@ -1543,7 +1657,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                   SizedBox(width: 10),
                                   Expanded(
                                     child: Text(
-                                      'Cycle Report includes daily operating cycle counts, average opening/closing durations, and total operational window metrics.',
+                                      'Duration Report includes daily operating cycle counts, average opening/closing durations, and total operational window metrics.',
                                       style: TextStyle(fontSize: 11.5, color: Color(0xFF046A38)),
                                     ),
                                   ),
@@ -1562,7 +1676,9 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                           height: 48,
                           child: ElevatedButton.icon(
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: selectedFormat == 'xlsx' ? const Color(0xFF107C41) : const Color(0xFFE11D48),
+                              backgroundColor: selectedFormat == 'xlsx'
+                                  ? const Color(0xFF107C41)
+                                  : (selectedFormat == 'pdf' ? const Color(0xFFE11D48) : const Color(0xFF2563EB)),
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                             ),
                             icon: _isExporting ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) : const Icon(Icons.download, color: Colors.white),
@@ -1570,9 +1686,13 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                             onPressed: _isExporting
                                 ? null
                                 : () {
+                                    final finalReportType = selectedCategory == 'attendance'
+                                        ? (selectedAttendanceSub == 'exception' ? 'attendance_exception' : 'attendance')
+                                        : (selectedCategory == 'duration' ? 'cycle' : selectedCategory);
+                                    Navigator.pop(ctx);
                                     _startExportWithProgress(
-                                      parentCtx: ctx,
-                                      selectedReportType: selectedReportType,
+                                      parentCtx: null,
+                                      selectedReportType: finalReportType,
                                       selectedFormat: selectedFormat,
                                       selectedCols: selectedCols,
                                     );
@@ -1861,95 +1981,133 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     );
   }
 
+  void _switchReportType(String k) {
+    if (_reportType != k) {
+      setState(() => _reportType = k);
+      if (k == 'count' && _countAnalytics == null) {
+        _fetchCountAnalytics();
+      } else if (k == 'duration' && _cycleAnalytics == null) {
+        _fetchCycleAnalytics();
+      } else if (k == 'holistic' && _holisticAnalytics == null) {
+        _fetchHolisticAnalytics();
+      } else if (k == 'attendance') {
+        if (_attendanceSubView == 'muster' && _attendanceData == null) {
+          _fetchAttendanceData();
+        } else if (_attendanceSubView == 'exception' && _attendanceExceptionsData == null) {
+          _fetchAttendanceExceptions();
+        }
+      } else if (k == 'device_mapping' && _deviceMappingData == null) {
+        _fetchDeviceMapping();
+      } else if (k == 'complete_log' && _records.isEmpty) {
+        _fetchRecords();
+      }
+    }
+  }
+
   Widget _buildReportTypeSelector() {
-    final tabs = [
-      {'key': 'count', 'label': 'Count', 'icon': Icons.format_list_numbered_rounded, 'color': const Color(0xFF2563EB)},
-      {'key': 'duration', 'label': 'Duration', 'icon': Icons.timer_outlined, 'color': const Color(0xFF046A38)},
-      {'key': 'attendance', 'label': 'Attendance', 'icon': Icons.badge_outlined, 'color': const Color(0xFF0284C7)},
-      {'key': 'holistic', 'label': 'Holistic', 'icon': Icons.account_tree_outlined, 'color': const Color(0xFF7C3AED)},
-      {'key': 'complete_log', 'label': 'Event Log', 'icon': Icons.table_rows_outlined, 'color': AppColors.primary},
+    final reportOptions = [
+      {
+        'key': 'count',
+        'label': 'Operations Count Report (Rollup)',
+        'short': 'Count',
+        'icon': Icons.format_list_numbered_rounded,
+        'color': const Color(0xFF2563EB),
+      },
+      {
+        'key': 'duration',
+        'label': 'Gate Open / Close Duration Report',
+        'short': 'Duration',
+        'icon': Icons.timer_outlined,
+        'color': const Color(0xFF046A38),
+      },
+      {
+        'key': 'attendance',
+        'label': 'Staff Attendance (Muster & Exceptions)',
+        'short': 'Attendance',
+        'icon': Icons.badge_outlined,
+        'color': const Color(0xFF0284C7),
+      },
+      {
+        'key': 'holistic',
+        'label': 'Holistic Executive Summary',
+        'short': 'Holistic',
+        'icon': Icons.account_tree_outlined,
+        'color': const Color(0xFF7C3AED),
+      },
+      {
+        'key': 'complete_log',
+        'label': 'Complete Gate Event Log',
+        'short': 'Event Log',
+        'icon': Icons.table_rows_outlined,
+        'color': AppColors.primary,
+      },
     ];
 
     if (_isDeveloper) {
-      tabs.add({
+      reportOptions.add({
         'key': 'device_mapping',
-        'label': 'Mapping',
+        'label': 'Gate & IoT Device Hardware Mapping',
+        'short': 'Mapping',
         'icon': Icons.developer_board,
         'color': const Color(0xFFD97706),
       });
     }
 
+    final currentKey = (_reportType == 'cycle') ? 'duration' : _reportType;
+    final hasMatch = reportOptions.any((opt) => opt['key'] == currentKey);
+    final effectiveKey = hasMatch ? currentKey : 'count';
+
     return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(4),
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade200),
+        border: Border.all(color: Colors.grey.shade300, width: 1.2),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(),
-        child: Row(
-          children: tabs.map((tab) {
-            final isSelected = _reportType == tab['key'] || (_reportType == 'cycle' && tab['key'] == 'duration');
-            final color = tab['color'] as Color;
-            return Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: InkWell(
-                onTap: () {
-                  final k = tab['key'] as String;
-                  if (_reportType != k) {
-                    setState(() => _reportType = k);
-                    if (k == 'count' && _countAnalytics == null) {
-                      _fetchCountAnalytics();
-                    } else if (k == 'duration' && _cycleAnalytics == null) {
-                      _fetchCycleAnalytics();
-                    } else if (k == 'holistic' && _holisticAnalytics == null) {
-                      _fetchHolisticAnalytics();
-                    } else if (k == 'attendance') {
-                      if (_attendanceSubView == 'muster' && _attendanceData == null) {
-                        _fetchAttendanceData();
-                      } else if (_attendanceSubView == 'exception' && _attendanceExceptionsData == null) {
-                        _fetchAttendanceExceptions();
-                      }
-                    } else if (k == 'device_mapping' && _deviceMappingData == null) {
-                      _fetchDeviceMapping();
-                    } else if (k == 'complete_log' && _records.isEmpty) {
-                      _fetchRecords();
-                    }
-                  }
-                },
-                borderRadius: BorderRadius.circular(8),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: isSelected ? color : Colors.transparent,
-                    borderRadius: BorderRadius.circular(8),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: effectiveKey,
+          isExpanded: true,
+          icon: const Icon(Icons.keyboard_arrow_down_rounded, color: AppColors.primary),
+          items: reportOptions.map((opt) {
+            final color = opt['color'] as Color;
+            return DropdownMenuItem<String>(
+              value: opt['key'] as String,
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(opt['icon'] as IconData, size: 18, color: color),
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        tab['icon'] as IconData,
-                        size: 14,
-                        color: isSelected ? Colors.white : Colors.grey.shade700,
-                      ),
-                      const SizedBox(width: 5),
-                      Text(
-                        tab['label'] as String,
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.bold,
-                          color: isSelected ? Colors.white : Colors.grey.shade700,
-                        ),
-                      ),
-                    ],
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      opt['label'] as String,
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-                ),
+                ],
               ),
             );
           }).toList(),
+          onChanged: (newKey) {
+            if (newKey != null) {
+              _switchReportType(newKey);
+            }
+          },
         ),
       ),
     );

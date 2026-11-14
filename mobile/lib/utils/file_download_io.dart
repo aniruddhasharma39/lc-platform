@@ -10,6 +10,8 @@ Future<void> saveAndOpenFilePlatform({
   final dir = await getApplicationDocumentsDirectory();
   final file = File('${dir.path}/$filename');
   await file.writeAsBytes(bytes, flush: true);
-  await OpenFilex.open(file.path);
+  try {
+    await OpenFilex.open(file.path);
+  } catch (_) {}
 }
 

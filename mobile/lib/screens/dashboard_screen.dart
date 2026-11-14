@@ -1120,6 +1120,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     int? chosenStationId = req['stationId'] ?? (reqStation is Map ? reqStation['id'] : null);
     final List<dynamic> requestedGates = req['requestedGates'] is List ? req['requestedGates'] : [];
 
+    final isGateman = assignedRoleName.toLowerCase().contains('gateman') && !assignedRoleName.toLowerCase().contains('restkeeper');
+
     // Pre-populate selectedGateIds with requested gates if any
     final Set<int> selectedGateIds = {};
     for (var rg in requestedGates) {
@@ -1135,6 +1137,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final gId = id is int ? id : int.tryParse(id.toString());
         if (gId != null) selectedGateIds.add(gId);
       }
+    }
+
+    // For Gateman, strictly restrict to at most 1 gate
+    if (isGateman && selectedGateIds.length > 1) {
+      final first = selectedGateIds.first;
+      selectedGateIds.clear();
+      selectedGateIds.add(first);
     }
 
     // Build unified list of available gates
@@ -1352,12 +1361,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ),
                           const SizedBox(height: 16),
 
-                          // LC Gate Multi-Assignment Header
+                          // LC Gate Assignment Header
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Text(
-                                'Assigned LC Gate(s): (${selectedGateIds.length})',
+                                isGateman
+                                    ? 'Assigned LC Gate (Single Gate Only):'
+                                    : 'Assigned LC Gate(s): (${selectedGateIds.length})',
                                 style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
                               ),
                               if (selectedGateIds.isNotEmpty)
@@ -1376,19 +1387,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ),
                           const SizedBox(height: 6),
 
-                          // Quick selection shortcuts
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 6,
-                            children: [
-                              if (chosenStationId != null)
+                          // Quick selection shortcuts (Multi-select roles only: Restkeeper, CPWI, PWI, etc.)
+                          if (!isGateman) ...[
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 6,
+                              children: [
+                                if (chosenStationId != null)
+                                  ActionChip(
+                                    avatar: const Icon(Icons.add, size: 16, color: Color(0xFF1D4ED8)),
+                                    label: const Text('All Station Gates', style: TextStyle(fontSize: 11.5)),
+                                    onPressed: () {
+                                      setModalState(() {
+                                        for (var g in divisionGates) {
+                                          if (g is Map && g['stationId'] == chosenStationId && g['id'] != null) {
+                                            final gId = g['id'] is int ? g['id'] as int : int.tryParse(g['id'].toString());
+                                            if (gId != null) selectedGateIds.add(gId);
+                                          }
+                                        }
+                                      });
+                                    },
+                                  ),
                                 ActionChip(
-                                  avatar: const Icon(Icons.add, size: 16, color: Color(0xFF1D4ED8)),
-                                  label: const Text('All Station Gates', style: TextStyle(fontSize: 11.5)),
+                                  avatar: const Icon(Icons.select_all, size: 16, color: Color(0xFF1D4ED8)),
+                                  label: const Text('All Section Gates', style: TextStyle(fontSize: 11.5)),
                                   onPressed: () {
                                     setModalState(() {
                                       for (var g in divisionGates) {
-                                        if (g is Map && g['stationId'] == chosenStationId && g['id'] != null) {
+                                        if (g is Map && g['id'] != null) {
                                           final gId = g['id'] is int ? g['id'] as int : int.tryParse(g['id'].toString());
                                           if (gId != null) selectedGateIds.add(gId);
                                         }
@@ -1396,29 +1422,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     });
                                   },
                                 ),
-                              ActionChip(
-                                avatar: const Icon(Icons.select_all, size: 16, color: Color(0xFF1D4ED8)),
-                                label: const Text('All Section Gates', style: TextStyle(fontSize: 11.5)),
-                                onPressed: () {
-                                  setModalState(() {
-                                    for (var g in divisionGates) {
-                                      if (g is Map && g['id'] != null) {
-                                        final gId = g['id'] is int ? g['id'] as int : int.tryParse(g['id'].toString());
-                                        if (gId != null) selectedGateIds.add(gId);
-                                      }
-                                    }
-                                  });
-                                },
+                                ActionChip(
+                                  avatar: const Icon(Icons.clear, size: 16, color: Colors.grey),
+                                  label: const Text('Divisional (0 Gates)', style: TextStyle(fontSize: 11.5)),
+                                  onPressed: () {
+                                    setModalState(() => selectedGateIds.clear());
+                                  },
+                                ),
+                              ],
+                            ),
+                          ] else ...[
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF1F5F9),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: Colors.grey.shade300),
                               ),
-                              ActionChip(
-                                avatar: const Icon(Icons.clear, size: 16, color: Colors.grey),
-                                label: const Text('Divisional (0 Gates)', style: TextStyle(fontSize: 11.5)),
-                                onPressed: () {
-                                  setModalState(() => selectedGateIds.clear());
-                                },
+                              child: const Row(
+                                children: [
+                                  Icon(Icons.info_outline, size: 14, color: Color(0xFF64748B)),
+                                  SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      'Gateman is strictly restricted to exactly one designated LC gate.',
+                                      style: TextStyle(fontSize: 11, color: Color(0xFF475569), fontStyle: FontStyle.italic),
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
                           const SizedBox(height: 10),
 
                           // Selected Gates Chips
@@ -1538,10 +1572,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                         ),
                                         onChanged: (val) {
                                           setModalState(() {
-                                            if (val == true) {
-                                              selectedGateIds.add(gId);
+                                            if (isGateman) {
+                                              selectedGateIds.clear();
+                                              if (val == true) {
+                                                selectedGateIds.add(gId);
+                                              }
                                             } else {
-                                              selectedGateIds.remove(gId);
+                                              if (val == true) {
+                                                selectedGateIds.add(gId);
+                                              } else {
+                                                selectedGateIds.remove(gId);
+                                              }
                                             }
                                           });
                                         },
@@ -1569,15 +1610,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       Expanded(
                         child: ElevatedButton(
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.success,
+                            backgroundColor: (isGateman && selectedGateIds.isEmpty) ? Colors.grey : AppColors.success,
                             padding: const EdgeInsets.symmetric(vertical: 12),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                           ),
-                          onPressed: () => Navigator.pop(ctx, true),
+                          onPressed: (isGateman && selectedGateIds.isEmpty) ? null : () => Navigator.pop(ctx, true),
                           child: Text(
-                            selectedGateIds.isEmpty
-                                ? 'Approve & Assign (Divisional)'
-                                : 'Approve & Assign (${selectedGateIds.length} Gate${selectedGateIds.length == 1 ? '' : 's'})',
+                            isGateman
+                                ? (selectedGateIds.isEmpty ? 'Select Gate to Approve' : 'Approve & Assign (1 Gate)')
+                                : (selectedGateIds.isEmpty
+                                    ? 'Approve & Assign (Divisional)'
+                                    : 'Approve & Assign (${selectedGateIds.length} Gate${selectedGateIds.length == 1 ? '' : 's'})'),
                             style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
                             overflow: TextOverflow.ellipsis,
                           ),

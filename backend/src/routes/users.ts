@@ -360,6 +360,17 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
       return res.status(400).json({ error: 'Cannot approve: Unable to resolve a valid role for this registration request.' });
     }
 
+    // Link explicitly assigned LC Gates in UserGate table (Section 9)
+    const gateIdsToAssign: number[] = (data.gateIds !== undefined && Array.isArray(data.gateIds))
+      ? data.gateIds.map(Number).filter((id: number) => !isNaN(id) && id > 0)
+      : (Array.isArray(request.gateIds) ? (request.gateIds as any[]).map(Number).filter((id: number) => !isNaN(id) && id > 0) : []);
+
+    mappedMetadata['gateIds'] = gateIdsToAssign;
+    mappedMetadata['gateids'] = gateIdsToAssign;
+    if (data.stationId !== undefined && data.stationId !== null) {
+      mappedMetadata['stationId'] = data.stationId;
+    }
+
     // Create the actual user with relation to role included
     let user;
     try {
@@ -400,11 +411,6 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
           station: { select: { id: true, name: true, code: true } }
         }
       });
-
-      // Link explicitly assigned LC Gates in UserGate table (Section 9)
-      const gateIdsToAssign: number[] = (data.gateIds !== undefined && Array.isArray(data.gateIds))
-        ? data.gateIds.map(Number).filter((id: number) => !isNaN(id) && id > 0)
-        : (Array.isArray(request.gateIds) ? (request.gateIds as any[]).map(Number).filter((id: number) => !isNaN(id) && id > 0) : []);
 
       // Synchronize with approver's exact gate assignments
       await prisma.userGate.deleteMany({
