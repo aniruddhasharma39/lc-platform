@@ -1541,8 +1541,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
     }
 
-    return Scaffold(
-      appBar: AppBar(
+    return PopScope(
+      canPop: _currentView == 'home',
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (_currentView != 'home') {
+          setState(() => _currentView = 'home');
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
         centerTitle: false,
         titleSpacing: 0,
         title: Row(
@@ -1950,8 +1958,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       ),
       body: _buildBody(),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildBody() {
     if (_currentView == 'home') return _buildUserDashboard();
@@ -1965,7 +1974,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
         initialTab: _targetGateTab,
       );
     }
-    if (_currentView == 'reports') return ReportsScreen(user: widget.user);
+    if (_currentView == 'reports') {
+      return ReportsScreen(
+        user: widget.user,
+        onBack: () => setState(() => _currentView = 'home'),
+      );
+    }
     if (_currentView == 'manage-users') return _buildAdminDashboard();
     if (_currentView == 'roles') return RolesScreen(user: widget.user);
     if (_currentView == 'branding') return BrandingScreen(user: widget.user);

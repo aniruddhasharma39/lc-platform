@@ -22,7 +22,8 @@ Color parseHexColor(String? hexString) {
 
 class ReportsScreen extends StatefulWidget {
   final Map<String, dynamic> user;
-  const ReportsScreen({super.key, required this.user});
+  final VoidCallback? onBack;
+  const ReportsScreen({super.key, required this.user, this.onBack});
 
   @override
   State<ReportsScreen> createState() => _ReportsScreenState();
@@ -51,6 +52,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
   String _mappingGateFilterType = 'all'; // 'all' | 'assigned' | 'unassigned'
 
   // 1.6 Attendance Muster & Exception Reports
+  String _attendanceSubView = 'muster'; // 'muster' | 'exception'
   Map<String, dynamic>? _attendanceData;
   bool _isLoadingAttendance = false;
   Map<String, dynamic>? _attendanceExceptionsData;
@@ -211,6 +213,8 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     _countAnalytics = null;
     _cycleAnalytics = null;
     _holisticAnalytics = null;
+    _attendanceData = null;
+    _attendanceExceptionsData = null;
     _records = [];
     _cursor = null;
     _metrics = {
@@ -252,7 +256,11 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     } else if (_reportType == 'holistic') {
       await _fetchHolisticAnalytics();
     } else if (_reportType == 'attendance') {
-      await _fetchAttendanceData(forceReload: forceReload);
+      if (_attendanceSubView == 'muster') {
+        await _fetchAttendanceData(forceReload: forceReload);
+      } else {
+        await _fetchAttendanceExceptions(forceReload: forceReload);
+      }
     } else if (_reportType == 'attendance_exception') {
       await _fetchAttendanceExceptions(forceReload: forceReload);
     } else if (_reportType == 'device_mapping') {
@@ -522,7 +530,11 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
         } else if (_reportType == 'holistic') {
           _fetchHolisticAnalytics();
         } else if (_reportType == 'attendance') {
-          _fetchAttendanceData();
+          if (_attendanceSubView == 'muster') {
+            _fetchAttendanceData();
+          } else {
+            _fetchAttendanceExceptions();
+          }
         } else if (_reportType == 'attendance_exception') {
           _fetchAttendanceExceptions();
         } else {
@@ -939,84 +951,105 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     String stage = 'Initiating export request...';
     Timer? progressTimer;
     StateSetter? updateDialog;
+    BuildContext? dialogCtx;
+
+    void closeExportDialog() {
+      try {
+        if (dialogCtx != null && dialogCtx!.mounted) {
+          Navigator.of(dialogCtx!).pop();
+          dialogCtx = null;
+        } else if (mounted && Navigator.of(context, rootNavigator: true).canPop()) {
+          Navigator.of(context, rootNavigator: true).pop();
+        }
+      } catch (_) {}
+    }
 
     showDialog(
       context: context,
-      barrierDismissible: false,
-      builder: (dCtx) => StatefulBuilder(
-        builder: (dCtx, setDlgState) {
-          updateDialog = setDlgState;
-          return Dialog(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 54,
-                    height: 54,
-                    decoration: BoxDecoration(
-                      color: (selectedFormat == 'pdf' ? const Color(0xFFE11D48) : const Color(0xFF107C41)).withValues(alpha: 0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                      selectedFormat == 'pdf' ? Icons.picture_as_pdf_rounded : Icons.table_view_rounded,
-                      color: selectedFormat == 'pdf' ? const Color(0xFFE11D48) : const Color(0xFF107C41),
-                      size: 28,
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  Text(
-                    'Generating ${selectedFormat.toUpperCase()} Report',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF0F172A)),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    selectedReportType == 'device_mapping'
-                        ? 'Compiling physical controller & AWS IoT Thing mapping...'
-                        : (selectedReportType == 'cycle' ? 'Compiling operating cycle analytics...' : 'Compiling operational logs & metrics...'),
-                    style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
-                  ),
-                  const SizedBox(height: 18),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: LinearProgressIndicator(
-                      value: progress,
-                      minHeight: 8,
-                      backgroundColor: Colors.grey.shade200,
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        selectedFormat == 'pdf' ? const Color(0xFFE11D48) : const Color(0xFF107C41),
+      barrierDismissible: true,
+      builder: (dCtx) {
+        dialogCtx = dCtx;
+        return StatefulBuilder(
+          builder: (sbCtx, setDlgState) {
+            updateDialog = setDlgState;
+            return Dialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 54,
+                      height: 54,
+                      decoration: BoxDecoration(
+                        color: (selectedFormat == 'pdf' ? const Color(0xFFE11D48) : const Color(0xFF107C41)).withValues(alpha: 0.1),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        selectedFormat == 'pdf' ? Icons.picture_as_pdf_rounded : Icons.table_view_rounded,
+                        color: selectedFormat == 'pdf' ? const Color(0xFFE11D48) : const Color(0xFF107C41),
+                        size: 28,
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Expanded(
-                        child: Text(
-                          stage,
-                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: Color(0xFF475569)),
-                          overflow: TextOverflow.ellipsis,
+                    const SizedBox(height: 14),
+                    Text(
+                      'Generating ${selectedFormat.toUpperCase()} Report',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF0F172A)),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      selectedReportType == 'device_mapping'
+                          ? 'Compiling physical controller & AWS IoT Thing mapping...'
+                          : (selectedReportType == 'cycle'
+                              ? 'Compiling operating cycle analytics...'
+                              : (selectedReportType == 'attendance'
+                                  ? 'Compiling staff duty shift muster records...'
+                                  : (selectedReportType == 'attendance_exception'
+                                      ? 'Auditing shift safety deviations & unstaffed gates...'
+                                      : 'Compiling operational logs & metrics...'))),
+                      style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
+                    ),
+                    const SizedBox(height: 18),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: LinearProgressIndicator(
+                        value: progress,
+                        minHeight: 8,
+                        backgroundColor: Colors.grey.shade200,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          selectedFormat == 'pdf' ? const Color(0xFFE11D48) : const Color(0xFF107C41),
                         ),
                       ),
-                      Text(
-                        '${(progress * 100).toInt()}%',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          color: selectedFormat == 'pdf' ? const Color(0xFFE11D48) : const Color(0xFF107C41),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            stage,
+                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: Color(0xFF475569)),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                ],
+                        Text(
+                          '${(progress * 100).toInt()}%',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: selectedFormat == 'pdf' ? const Color(0xFFE11D48) : const Color(0xFF107C41),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ),
-          );
-        },
-      ),
+            );
+          },
+        );
+      },
     );
 
     progressTimer = Timer.periodic(const Duration(milliseconds: 300), (_) {
@@ -1069,9 +1102,8 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
           });
         }
         await Future.delayed(const Duration(milliseconds: 350));
-        if (mounted && Navigator.canPop(context)) {
-          Navigator.pop(context);
-        }
+        closeExportDialog();
+        await Future.delayed(const Duration(milliseconds: 150));
 
         try {
           final ext = selectedFormat == 'pdf' ? 'pdf' : (selectedFormat == 'csv' ? 'csv' : 'xlsx');
@@ -1087,7 +1119,11 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                       ? 'LC_Gate_Holistic_Report_$timestamp.$ext'
                       : selectedReportType == 'cycle' || selectedReportType == 'duration'
                           ? 'LC_Gate_Duration_Report_$timestamp.$ext'
-                          : 'LC_Gate_Complete_Log_$timestamp.$ext';
+                          : selectedReportType == 'attendance'
+                              ? 'Staff_Attendance_Muster_$timestamp.$ext'
+                              : selectedReportType == 'attendance_exception'
+                                  ? 'Staff_Attendance_Exceptions_$timestamp.$ext'
+                                  : 'LC_Gate_Complete_Log_$timestamp.$ext';
 
           await downloadFileUniversal(
             bytes: res.bodyBytes,
@@ -1107,12 +1143,12 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
           }
         }
       } else {
-        if (mounted && Navigator.canPop(context)) Navigator.pop(context);
+        closeExportDialog();
         if (mounted) AppFeedback.showError(context, 'Export failed: HTTP ${res.statusCode}');
       }
     } catch (e) {
       progressTimer.cancel();
-      if (mounted && Navigator.canPop(context)) Navigator.pop(context);
+      closeExportDialog();
       if (mounted) AppFeedback.showError(context, 'Export error: $e');
     } finally {
       progressTimer.cancel();
@@ -1290,8 +1326,8 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                       children: [
                                         Icon(Icons.badge_outlined, color: Color(0xFF0284C7), size: 22),
                                         SizedBox(height: 4),
-                                        Text('Attendance', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                                        Text('Muster Log', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                                        Text('Muster', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('Duty Shift Muster', style: TextStyle(fontSize: 10, color: Colors.grey)),
                                       ],
                                     ),
                                   ),
@@ -1315,8 +1351,8 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                                       children: [
                                         Icon(Icons.warning_amber_rounded, color: Color(0xFFDC2626), size: 22),
                                         SizedBox(height: 4),
-                                        Text('Exceptions', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                                        Text('Safety Audit', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                                        Text('Exception', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                        Text('Safety Deviations', style: TextStyle(fontSize: 10, color: Colors.grey)),
                                       ],
                                     ),
                                   ),
@@ -1557,27 +1593,48 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.grey.shade50,
-      appBar: AppBar(
-        title: const Text('Operational Reports', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-        backgroundColor: Colors.white,
-        foregroundColor: AppColors.primary,
-        elevation: 0.5,
-        actions: [
-          _buildSyncStatusBadge(),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Force Refresh',
-            onPressed: () => _triggerReportFetch(forceReload: true),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (widget.onBack != null) {
+          widget.onBack!();
+        } else if (Navigator.canPop(context)) {
+          Navigator.pop(context);
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.grey.shade50,
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: 'Back to Dashboard',
+            onPressed: () {
+              if (widget.onBack != null) {
+                widget.onBack!();
+              } else if (Navigator.canPop(context)) {
+                Navigator.pop(context);
+              }
+            },
           ),
-          IconButton(
-            icon: const Icon(Icons.download, color: Color(0xFF10B981)),
-            tooltip: 'Generate Report',
-            onPressed: _showGenerateModal,
-          ),
-        ],
-      ),
+          title: const Text('Operational Reports', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          backgroundColor: Colors.white,
+          foregroundColor: AppColors.primary,
+          elevation: 0.5,
+          actions: [
+            _buildSyncStatusBadge(),
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Force Refresh',
+              onPressed: () => _triggerReportFetch(forceReload: true),
+            ),
+            IconButton(
+              icon: const Icon(Icons.download, color: Color(0xFF10B981)),
+              tooltip: 'Generate Report',
+              onPressed: _showGenerateModal,
+            ),
+          ],
+        ),
       body: _isLoadingClusters
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
@@ -1791,9 +1848,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                   ] else if (_reportType == 'holistic') ...[
                     _buildHolisticReportView(),
                   ] else if (_reportType == 'attendance') ...[
-                    _buildAttendanceReportView(),
-                  ] else if (_reportType == 'attendance_exception') ...[
-                    _buildAttendanceExceptionsView(),
+                    _buildUnifiedAttendanceView(),
                   ] else if (_reportType == 'device_mapping' && _isDeveloper) ...[
                     _buildDeviceMappingReportView(),
                   ] else ...[
@@ -1802,6 +1857,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                 ],
               ),
             ),
+      ),
     );
   }
 
@@ -1809,8 +1865,7 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     final tabs = [
       {'key': 'count', 'label': 'Count', 'icon': Icons.format_list_numbered_rounded, 'color': const Color(0xFF2563EB)},
       {'key': 'duration', 'label': 'Duration', 'icon': Icons.timer_outlined, 'color': const Color(0xFF046A38)},
-      {'key': 'attendance', 'label': 'Muster', 'icon': Icons.badge_outlined, 'color': const Color(0xFF0284C7)},
-      {'key': 'attendance_exception', 'label': 'Exceptions', 'icon': Icons.warning_amber_rounded, 'color': const Color(0xFFDC2626)},
+      {'key': 'attendance', 'label': 'Attendance', 'icon': Icons.badge_outlined, 'color': const Color(0xFF0284C7)},
       {'key': 'holistic', 'label': 'Holistic', 'icon': Icons.account_tree_outlined, 'color': const Color(0xFF7C3AED)},
       {'key': 'complete_log', 'label': 'Event Log', 'icon': Icons.table_rows_outlined, 'color': AppColors.primary},
     ];
@@ -1852,10 +1907,12 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
                       _fetchCycleAnalytics();
                     } else if (k == 'holistic' && _holisticAnalytics == null) {
                       _fetchHolisticAnalytics();
-                    } else if (k == 'attendance' && _attendanceData == null) {
-                      _fetchAttendanceData();
-                    } else if (k == 'attendance_exception' && _attendanceExceptionsData == null) {
-                      _fetchAttendanceExceptions();
+                    } else if (k == 'attendance') {
+                      if (_attendanceSubView == 'muster' && _attendanceData == null) {
+                        _fetchAttendanceData();
+                      } else if (_attendanceSubView == 'exception' && _attendanceExceptionsData == null) {
+                        _fetchAttendanceExceptions();
+                      }
                     } else if (k == 'device_mapping' && _deviceMappingData == null) {
                       _fetchDeviceMapping();
                     } else if (k == 'complete_log' && _records.isEmpty) {
@@ -3302,6 +3359,332 @@ class _ReportsScreenState extends State<ReportsScreen> with WidgetsBindingObserv
     } catch (e) {
       if (mounted) setState(() => _isLoadingAttendanceExceptions = false);
     }
+  }
+
+  // ── 7.0. ATTENDANCE ACTIONS & UNIFIED VIEW ──
+  void _showDownloadOptionsSheet({
+    required String reportType,
+    required String title,
+    required String subtitle,
+  }) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: (reportType == 'attendance' ? const Color(0xFF0284C7) : const Color(0xFFDC2626)).withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    reportType == 'attendance' ? Icons.badge_outlined : Icons.warning_amber_rounded,
+                    color: reportType == 'attendance' ? const Color(0xFF0284C7) : const Color(0xFFDC2626),
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      Text(subtitle, style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF107C41),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      elevation: 0,
+                    ),
+                    icon: const Icon(Icons.table_view_rounded, size: 18),
+                    label: const Text('Excel (.xlsx)', style: TextStyle(fontWeight: FontWeight.bold)),
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _startExportWithProgress(
+                        parentCtx: context,
+                        selectedReportType: reportType,
+                        selectedFormat: 'xlsx',
+                        selectedCols: {},
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFE11D48),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      elevation: 0,
+                    ),
+                    icon: const Icon(Icons.picture_as_pdf_rounded, size: 18),
+                    label: const Text('PDF Document', style: TextStyle(fontWeight: FontWeight.bold)),
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _startExportWithProgress(
+                        parentCtx: context,
+                        selectedReportType: reportType,
+                        selectedFormat: 'pdf',
+                        selectedCols: {},
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUnifiedAttendanceView() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Unified Header & Sub-Tab Switcher Card
+        Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFF0284C7).withValues(alpha: 0.25)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.03),
+                blurRadius: 4,
+                offset: const Offset(0, 1),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0284C7).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.badge_outlined, color: Color(0xFF0284C7), size: 20),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Staff Attendance Center',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+                        ),
+                        Text(
+                          _attendanceSubView == 'muster'
+                              ? 'Viewing Duty Shift Muster (check-in/out telemetry & hours)'
+                              : 'Viewing Safety Exceptions (late arrivals, missing check-outs & hazards)',
+                          style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              // Segmented Sub-Toggle: [ 📋 Muster ]  [ ⚠️ Exception ]
+              Container(
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: InkWell(
+                        onTap: () {
+                          if (_attendanceSubView != 'muster') {
+                            setState(() => _attendanceSubView = 'muster');
+                            if (_attendanceData == null) _fetchAttendanceData();
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(8),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          padding: const EdgeInsets.symmetric(vertical: 9),
+                          decoration: BoxDecoration(
+                            color: _attendanceSubView == 'muster' ? Colors.white : Colors.transparent,
+                            borderRadius: BorderRadius.circular(8),
+                            boxShadow: _attendanceSubView == 'muster'
+                                ? [
+                                    BoxShadow(
+                                      color: Colors.black.withValues(alpha: 0.08),
+                                      blurRadius: 4,
+                                      offset: const Offset(0, 1),
+                                    )
+                                  ]
+                                : null,
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.badge_outlined,
+                                size: 16,
+                                color: _attendanceSubView == 'muster' ? const Color(0xFF0284C7) : Colors.grey.shade600,
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Muster',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: _attendanceSubView == 'muster' ? FontWeight.bold : FontWeight.w500,
+                                  color: _attendanceSubView == 'muster' ? const Color(0xFF0284C7) : Colors.grey.shade700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: InkWell(
+                        onTap: () {
+                          if (_attendanceSubView != 'exception') {
+                            setState(() => _attendanceSubView = 'exception');
+                            if (_attendanceExceptionsData == null) _fetchAttendanceExceptions();
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(8),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          padding: const EdgeInsets.symmetric(vertical: 9),
+                          decoration: BoxDecoration(
+                            color: _attendanceSubView == 'exception' ? Colors.white : Colors.transparent,
+                            borderRadius: BorderRadius.circular(8),
+                            boxShadow: _attendanceSubView == 'exception'
+                                ? [
+                                    BoxShadow(
+                                      color: Colors.black.withValues(alpha: 0.08),
+                                      blurRadius: 4,
+                                      offset: const Offset(0, 1),
+                                    )
+                                  ]
+                                : null,
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.warning_amber_rounded,
+                                size: 16,
+                                color: _attendanceSubView == 'exception' ? const Color(0xFFDC2626) : Colors.grey.shade600,
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Exception',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: _attendanceSubView == 'exception' ? FontWeight.bold : FontWeight.w500,
+                                  color: _attendanceSubView == 'exception' ? const Color(0xFFDC2626) : Colors.grey.shade700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 10),
+
+              // Unified Single-Place Download Bar
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF0284C7),
+                        side: const BorderSide(color: Color(0xFF0284C7)),
+                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      icon: const Icon(Icons.download_rounded, size: 16),
+                      label: const Text(
+                        'Download Muster',
+                        style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      onPressed: () => _showDownloadOptionsSheet(
+                        reportType: 'attendance',
+                        title: 'Download Muster Report',
+                        subtitle: 'Gateman & staff duty shift muster records',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFFDC2626),
+                        side: const BorderSide(color: Color(0xFFDC2626)),
+                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      icon: const Icon(Icons.download_rounded, size: 16),
+                      label: const Text(
+                        'Download Exception',
+                        style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      onPressed: () => _showDownloadOptionsSheet(
+                        reportType: 'attendance_exception',
+                        title: 'Download Exception Report',
+                        subtitle: 'Safety audit, late arrivals & unstaffed gate hazards',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+
+        // Active Sub-Report View
+        if (_attendanceSubView == 'muster')
+          _buildAttendanceReportView()
+        else
+          _buildAttendanceExceptionsView(),
+      ],
+    );
   }
 
   // ── 7.1. ATTENDANCE MUSTER VIEW ──
