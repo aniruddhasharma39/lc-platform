@@ -258,19 +258,35 @@ export function canApproveRequest(approver: any, request: any, approverGateIds: 
   const approverCfg = getDesignationConfig(approverDesigName);
   
   if (isDeveloper) {
-    // Developer can approve as a governance intervention (e.g. when immediate superior is not yet registered)
+    // Developer & System Admin can approve all roles in Engineering and Operations
     return { allowed: true, isGovernanceIntervention: true };
   }
 
-  const isAuthorizedSuperior =
-    approverCfg &&
-    (approverCfg.name === targetCfg.immediateSuperior ||
-      (targetCfg.name === 'Gateman' && (approverCfg.name === 'PWI' || approverCfg.name === 'Restkeeper')));
+  let isAuthorizedSuperior = false;
+  if (approverCfg) {
+    if (targetCfg.name === 'Gateman' || targetCfg.name === 'Restkeeper') {
+      // Both Gateman and Restkeeper are approved strictly by PWI only (Restkeeper cannot approve Gatemen)
+      isAuthorizedSuperior = approverCfg.name === 'PWI';
+    } else if (targetCfg.name === 'PWI') {
+      isAuthorizedSuperior = approverCfg.name === 'CPWI';
+    } else if (targetCfg.name === 'CPWI') {
+      isAuthorizedSuperior = approverCfg.name === 'ADEN';
+    } else if (targetCfg.name === 'ADEN') {
+      isAuthorizedSuperior = approverCfg.name === 'DEN';
+    } else if (targetCfg.name === 'DEN') {
+      isAuthorizedSuperior = approverCfg.name === 'Senior DEN';
+    } else {
+      isAuthorizedSuperior = approverCfg.name === targetCfg.immediateSuperior;
+    }
+  }
 
-  if (!isAuthorizedSuperior) {
+  if (!isAuthorizedSuperior || !approverCfg) {
+    const superiorLabel = (targetCfg.name === 'Gateman' || targetCfg.name === 'Restkeeper')
+      ? 'PWI'
+      : (targetCfg.immediateSuperior || 'System Admin');
     return {
       allowed: false,
-      reason: `Only an official holding designation "${targetCfg.immediateSuperior}" can review requests for "${targetCfg.name}".`
+      reason: `Only an official holding designation "${superiorLabel}" can review requests for "${targetCfg.name}".`
     };
   }
 

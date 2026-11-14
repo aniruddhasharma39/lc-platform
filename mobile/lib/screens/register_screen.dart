@@ -45,6 +45,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   String _selectedDepartment = 'Operations';
   String? _selectedDesignation;
   int? _selectedStationId;
+  final Set<int> _selectedStationIds = {};
   final Set<int> _selectedGateIds = {};
 
   // Railway Safety & Medical Qualifications (PME & RC)
@@ -178,7 +179,28 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   List<dynamic> get _availableGates {
-    return (_currentStationObj?['gates'] as List?) ?? [];
+    if (_isGateman) {
+      return (_currentStationObj?['gates'] as List?) ?? [];
+    }
+    final List<dynamic> gates = [];
+    final activeStationIds = _selectedStationIds.isNotEmpty
+        ? _selectedStationIds
+        : (_selectedStationId != null ? {_selectedStationId!} : <int>{});
+
+    if (activeStationIds.isNotEmpty) {
+      for (final st in _availableStations) {
+        if (activeStationIds.contains(st['id'])) {
+          final stGates = (st['gates'] as List?) ?? [];
+          gates.addAll(stGates);
+        }
+      }
+    } else {
+      for (final st in _availableStations) {
+        final stGates = (st['gates'] as List?) ?? [];
+        gates.addAll(stGates);
+      }
+    }
+    return gates;
   }
 
   Map<String, dynamic>? get _currentDeptObj {
@@ -207,12 +229,27 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   bool get _isGateman {
-    return _currentDesigObj?['name'] == 'Gateman';
+    final name = (_currentDesigObj?['name'] ?? _selectedDesignation ?? '').toString().toLowerCase();
+    return name.contains('gateman') || name.contains('gatekeeper');
   }
 
   bool get _isRestkeeper {
-    final name = _currentDesigObj?['name']?.toString().toLowerCase() ?? '';
+    final name = (_currentDesigObj?['name'] ?? _selectedDesignation ?? '').toString().toLowerCase();
     return name.contains('restkeeper') || name.contains('rest keeper');
+  }
+
+  bool get _isPwiOrCpwi {
+    final name = (_currentDesigObj?['name'] ?? _selectedDesignation ?? '').toString().toLowerCase();
+    return name.contains('pwi') || name.contains('cpwi') || name.contains('sse/p.way') || name.contains('je/p.way') || name.contains('engineering supervisor');
+  }
+
+  bool get _isDivisionalOfficer {
+    final name = (_currentDesigObj?['name'] ?? _selectedDesignation ?? '').toString().toLowerCase();
+    return name.contains('den') || name.contains('dom') || name.contains('drm') || name.contains('adrm');
+  }
+
+  bool get _needsGateSelection {
+    return _isGateman || _isRestkeeper || _isPwiOrCpwi || _isStationLevel;
   }
 
   bool get _needsRailwayMedicalAndCourse {
@@ -609,21 +646,28 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
 
-    if (_isStationLevel) {
+    if (_isGateman) {
+      if (_selectedStationId == null) {
+        AppFeedback.showWarning(context, 'Station selection is mandatory for Gateman.');
+        return;
+      }
+      if (_selectedGateIds.length != 1) {
+        AppFeedback.showWarning(context, 'A Gateman must select strictly ONE Level Crossing Gate.');
+        return;
+      }
+    } else if (_isRestkeeper || _isPwiOrCpwi) {
+      if (_selectedStationIds.isEmpty && _selectedStationId == null) {
+        AppFeedback.showWarning(context, 'Please select at least one Railway Station under your section.');
+        return;
+      }
+      if (_selectedGateIds.isEmpty) {
+        AppFeedback.showWarning(context, 'Please select the Level Crossing Gate(s) under your supervision.');
+        return;
+      }
+    } else if (_isStationLevel) {
       if (_selectedStationId == null) {
         AppFeedback.showWarning(context, 'Station selection is mandatory for $_selectedDesignation.');
         return;
-      }
-      if (_isGateman) {
-        if (_selectedGateIds.length != 1) {
-          AppFeedback.showWarning(context, 'A Gateman must select exactly ONE Level Crossing Gate.');
-          return;
-        }
-      } else {
-        if (_selectedGateIds.isEmpty) {
-          AppFeedback.showWarning(context, 'Please select at least one Level Crossing Gate under this station.');
-          return;
-        }
       }
     }
 
@@ -643,6 +687,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
       final url = Uri.parse('$baseUrl/auth/register');
       final request = http.MultipartRequest('POST', url);
 
+      final effectiveStationIds = _selectedStationIds.isNotEmpty
+          ? _selectedStationIds.toList()
+          : (_selectedStationId != null ? [_selectedStationId!] : <int>[]);
+      final primaryStationId = effectiveStationIds.isNotEmpty ? effectiveStationIds[0] : null;
+
       final registrationData = <String, dynamic>{
         'fullName': name,
         'mobile': mobile,
@@ -653,7 +702,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
         'designation': _selectedDesignation,
         'zone': _selectedZone,
         'division': _selectedDivision,
-        'stationId': _selectedStationId,
+        'stationId': primaryStationId,
+        'stationIds': effectiveStationIds,
         'gateIds': _selectedGateIds.toList(),
         'declarationConfirmed': true,
         if (_pmeDate != null) 'pmeDate': _formatDate(_pmeDate!),
@@ -669,7 +719,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       if (_selectedDesignation != null) request.fields['designation'] = _selectedDesignation!;
       if (_selectedZone != null) request.fields['zone'] = _selectedZone!;
       if (_selectedDivision != null) request.fields['division'] = _selectedDivision!;
-      if (_selectedStationId != null) request.fields['stationId'] = _selectedStationId.toString();
+      if (primaryStationId != null) request.fields['stationId'] = primaryStationId.toString();
       request.fields['declarationConfirmed'] = 'true';
       request.fields['formId'] = '1';
 
@@ -1268,8 +1318,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       ),
                       const SizedBox(height: 16),
 
-                      // 4. Conditional Station & LC Gate Selection (Station/Gate Level)
-                      if (_isStationLevel) ...[
+                      // 4. Station & Assigned LC Gate(s)
+                      if (_needsGateSelection) ...[
                         Card(
                           elevation: 1,
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -1278,49 +1328,131 @@ class _RegisterScreenState extends State<RegisterScreen> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Row(
+                                Row(
                                   children: [
-                                    Icon(Icons.fence_outlined, color: AppColors.primary, size: 18),
-                                    SizedBox(width: 8),
-                                    Text('4. Station & Assigned LC Gate(s)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                    const Icon(Icons.fence_outlined, color: AppColors.primary, size: 18),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      _isGateman
+                                          ? '4. Station & Assigned LC Gate'
+                                          : (_isRestkeeper
+                                              ? '4. Section Stations & Gate Rounds'
+                                              : '4. Supervised Section Stations & Gates'),
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                    ),
                                   ],
                                 ),
-                                const SizedBox(height: 12),
-
-                                // Station Dropdown
-                                DropdownButtonFormField<int>(
-                                  value: _availableStations.any((s) => s['id'] == _selectedStationId) ? _selectedStationId : null,
-                                  isExpanded: true,
-                                  decoration: const InputDecoration(labelText: 'Station with LC Gates *', isDense: true, border: OutlineInputBorder()),
-                                  items: _availableStations.map((s) {
-                                    final stId = s['id'] as int?;
-                                    final stName = s['name'].toString();
-                                    final gatesCount = ((s['gates'] as List?) ?? []).length;
-                                    return DropdownMenuItem<int>(
-                                      value: stId,
-                                      child: Text('$stName ($gatesCount LC Gates)', style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis),
-                                    );
-                                  }).toList(),
-                                  onChanged: (val) {
-                                    setState(() {
-                                      _selectedStationId = val;
-                                      _selectedGateIds.clear();
-                                    });
-                                  },
+                                const SizedBox(height: 6),
+                                Text(
+                                  _isGateman
+                                      ? 'Select your assigned railway station and the single level crossing gate where you perform duty.'
+                                      : (_isRestkeeper
+                                          ? 'A Restkeeper covers relief rounds across adjacent stations in a section. Select stations and their LC gates below.'
+                                          : 'Select the railway stations and LC gates under your section jurisdiction.'),
+                                  style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
                                 ),
                                 const SizedBox(height: 12),
 
+                                if (_isGateman) ...[
+                                  // Gateman Single Station Dropdown
+                                  DropdownButtonFormField<int>(
+                                    value: _availableStations.any((s) => s['id'] == _selectedStationId) ? _selectedStationId : null,
+                                    isExpanded: true,
+                                    decoration: const InputDecoration(labelText: 'Station with LC Gates *', isDense: true, border: OutlineInputBorder()),
+                                    items: _availableStations.map((s) {
+                                      final stId = s['id'] as int?;
+                                      final stName = s['name'].toString();
+                                      final gatesCount = ((s['gates'] as List?) ?? []).length;
+                                      return DropdownMenuItem<int>(
+                                        value: stId,
+                                        child: Text('$stName ($gatesCount LC Gates)', style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis),
+                                      );
+                                    }).toList(),
+                                    onChanged: (val) {
+                                      setState(() {
+                                        _selectedStationId = val;
+                                        _selectedStationIds.clear();
+                                        if (val != null) _selectedStationIds.add(val);
+                                        _selectedGateIds.clear();
+                                      });
+                                    },
+                                  ),
+                                ] else ...[
+                                  // Restkeeper / PWI / CPWI Multi-Station Selection
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      const Text(
+                                        'Select Station(s) in Section *:',
+                                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF334155)),
+                                      ),
+                                      if (_availableStations.isNotEmpty)
+                                        TextButton(
+                                          style: TextButton.styleFrom(visualDensity: VisualDensity.compact, padding: EdgeInsets.zero),
+                                          onPressed: () {
+                                            setState(() {
+                                              if (_selectedStationIds.length == _availableStations.length) {
+                                                _selectedStationIds.clear();
+                                                _selectedStationId = null;
+                                              } else {
+                                                _selectedStationIds.clear();
+                                                for (var s in _availableStations) {
+                                                  if (s['id'] is int) _selectedStationIds.add(s['id'] as int);
+                                                }
+                                                if (_selectedStationIds.isNotEmpty) _selectedStationId = _selectedStationIds.first;
+                                              }
+                                              _selectedGateIds.clear();
+                                            });
+                                          },
+                                          child: Text(
+                                            _selectedStationIds.length == _availableStations.length ? 'Deselect All' : 'Select All Stations',
+                                            style: const TextStyle(fontSize: 11),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Wrap(
+                                    spacing: 6,
+                                    runSpacing: 4,
+                                    children: _availableStations.map((s) {
+                                      final sId = s['id'] as int;
+                                      final sName = s['name'].toString();
+                                      final sCode = s['code']?.toString() ?? '';
+                                      final isSelected = _selectedStationIds.contains(sId);
+                                      return FilterChip(
+                                        selected: isSelected,
+                                        label: Text('$sName ($sCode)', style: TextStyle(fontSize: 11.5, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+                                        selectedColor: const Color(0xFFDCFCE7),
+                                        checkmarkColor: const Color(0xFF15803D),
+                                        onSelected: (selected) {
+                                          setState(() {
+                                            if (selected) {
+                                              _selectedStationIds.add(sId);
+                                              _selectedStationId = _selectedStationIds.first;
+                                            } else {
+                                              _selectedStationIds.remove(sId);
+                                              _selectedStationId = _selectedStationIds.isNotEmpty ? _selectedStationIds.first : null;
+                                            }
+                                            final validGates = _availableGates.map((g) => g['id'] as int).toSet();
+                                            _selectedGateIds.removeWhere((id) => !validGates.contains(id));
+                                          });
+                                        },
+                                      );
+                                    }).toList(),
+                                  ),
+                                ],
+                                const SizedBox(height: 14),
+
                                 // Gates List
-                                if (_selectedStationId != null) ...[
+                                if (_isGateman ? _selectedStationId != null : (_selectedStationIds.isNotEmpty || _selectedStationId != null)) ...[
                                   Row(
                                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
                                       Text(
                                         _isGateman
                                             ? 'Select Exactly ONE Assigned LC Gate *'
-                                            : (_isRestkeeper
-                                                ? 'Station Gates for Rounds & Roster *'
-                                                : 'Select Assigned LC Gate(s) *'),
+                                            : 'Select Assigned LC Gate(s) (${_selectedGateIds.length} Selected) *',
                                         style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF334155)),
                                       ),
                                       if (!_isGateman && _availableGates.isNotEmpty)
@@ -1353,7 +1485,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                   ),
                                   const SizedBox(height: 6),
                                   if (_availableGates.isEmpty)
-                                    const Text('No configured LC Gates under this station.', style: TextStyle(fontSize: 11.5, color: Colors.grey, fontStyle: FontStyle.italic))
+                                    const Text('No configured LC Gates under selected station(s).', style: TextStyle(fontSize: 11.5, color: Colors.grey, fontStyle: FontStyle.italic))
                                   else
                                     ..._availableGates.map((gate) {
                                       final gId = gate['id'] as int;
@@ -1390,6 +1522,42 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                       );
                                     }),
                                 ],
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ] else if (_isDivisionalOfficer) ...[
+                        Card(
+                          elevation: 1,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(color: const Color(0xFFEFF6FF), borderRadius: BorderRadius.circular(8)),
+                                  child: const Icon(Icons.shield_outlined, color: AppColors.primary, size: 22),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'Divisional Officer Jurisdiction',
+                                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Color(0xFF1E3A8A)),
+                                      ),
+                                      const SizedBox(height: 3),
+                                      Text(
+                                        'As an officer of $_selectedDivision Division ($_selectedZone Zone), your jurisdiction automatically covers all stations and level crossings across the division.',
+                                        style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700, height: 1.35),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               ],
                             ),
                           ),

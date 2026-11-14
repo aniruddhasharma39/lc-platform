@@ -152,6 +152,13 @@ router.get('/', requireModule('manage-users'), async (req: any, res, next) => {
       // Resolve gate details for requested gate IDs
       const requestedGates = (r.gateIds || []).map(gid => gateMap.get(gid)).filter(Boolean);
 
+      let reqStationIds: number[] = [];
+      if (Array.isArray(reqData.stationIds)) {
+        reqStationIds = reqData.stationIds.map(Number).filter((n: number) => !isNaN(n));
+      } else if (r.stationId) {
+        reqStationIds = [r.stationId];
+      }
+
       visiblePendingRequests.push({
         ...r,
         department: r.department || reqData.department,
@@ -159,6 +166,7 @@ router.get('/', requireModule('manage-users'), async (req: any, res, next) => {
         zone: r.zone || reqData.zone,
         division: r.division || reqData.division,
         stationId: r.stationId || (reqData.stationId ? parseInt(reqData.stationId, 10) : null),
+        stationIds: reqStationIds,
         idCardUrl: r.idCardUrl || reqData.idCard || reqData.idCardUrl || reqData.identityCard,
         requestedGates,
         requestedRoleId: resolvedRoleId,
@@ -201,6 +209,7 @@ const approveSchema = z.object({
     (val) => (val === '' || val === null || val === undefined ? null : Number(val)),
     z.number().int().optional().nullable()
   ),
+  stationIds: z.array(z.number().int()).optional(),
   gateIds: z.array(z.number().int()).optional(),
 });
 
@@ -365,10 +374,38 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
       ? data.gateIds.map(Number).filter((id: number) => !isNaN(id) && id > 0)
       : (Array.isArray(request.gateIds) ? (request.gateIds as any[]).map(Number).filter((id: number) => !isNaN(id) && id > 0) : []);
 
+    // Enforce Gateman strictly ONE gate rule
+    const isTargetGateman = (reqDesig && reqDesig.trim().toLowerCase() === 'gateman') ||
+      (targetRole && targetRole.name.trim().toLowerCase() === 'gateman');
+    if (isTargetGateman && gateIdsToAssign.length !== 1) {
+      return res.status(400).json({ error: 'A Gateman must be assigned to strictly ONE Level Crossing Gate.' });
+    }
+
+    // Resolve primary stationId
+    let primaryStationId: number | null = null;
+    if (data.stationId !== undefined && data.stationId !== null) {
+      primaryStationId = data.stationId;
+    } else if (Array.isArray(data.stationIds) && data.stationIds.length > 0) {
+      primaryStationId = data.stationIds[0];
+    } else if (request.stationId) {
+      primaryStationId = request.stationId;
+    }
+
+    if (!primaryStationId && gateIdsToAssign.length > 0) {
+      const firstGate = await prisma.lCGate.findUnique({
+        where: { id: gateIdsToAssign[0] },
+        select: { stationId: true }
+      });
+      if (firstGate?.stationId) primaryStationId = firstGate.stationId;
+    }
+
     mappedMetadata['gateIds'] = gateIdsToAssign;
     mappedMetadata['gateids'] = gateIdsToAssign;
-    if (data.stationId !== undefined && data.stationId !== null) {
-      mappedMetadata['stationId'] = data.stationId;
+    if (primaryStationId) {
+      mappedMetadata['stationId'] = primaryStationId;
+    }
+    if (Array.isArray(data.stationIds) && data.stationIds.length > 0) {
+      mappedMetadata['stationIds'] = data.stationIds;
     }
 
     // Create the actual user with relation to role included
@@ -386,9 +423,7 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
           roleId: finalRoleId,
           zone: request.zone || data.zone || null,
           division: request.division || data.division || null,
-          stationId: (data.stationId !== undefined && data.stationId !== null)
-            ? data.stationId
-            : (request.stationId || null),
+          stationId: primaryStationId,
           idCardUrl: request.idCardUrl || formData.idCard || formData.idCardUrl || null,
           passwordHash: (formData.password && formData.password.trim().length > 0)
             ? (formData.password.trim().startsWith('$2')

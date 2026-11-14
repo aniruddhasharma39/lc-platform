@@ -460,7 +460,7 @@ router.post('/register', upload.any(), async (req, res, next) => {
     const zone = (parsedData.zone || req.body.zone || '').trim();
     const division = (parsedData.division || req.body.division || '').trim();
     const stationIdRaw = parsedData.stationId !== undefined ? parsedData.stationId : req.body.stationId;
-    const stationId = (stationIdRaw !== null && stationIdRaw !== undefined && stationIdRaw !== '') ? parseInt(stationIdRaw, 10) : null;
+    let stationId = (stationIdRaw !== null && stationIdRaw !== undefined && stationIdRaw !== '') ? parseInt(stationIdRaw, 10) : null;
     
     let gateIds: number[] = [];
     if (parsedData.gateIds) {
@@ -486,8 +486,17 @@ router.post('/register', upload.any(), async (req, res, next) => {
         return res.status(400).json({ error: `Designation "${designation}" belongs to ${desigCfg.department} department, not ${department}.` });
       }
 
+      // Resolve stationId from first gate if gateIds provided
+      if (!stationId && Array.isArray(gateIds) && gateIds.length > 0) {
+        const firstGate = await prisma.lCGate.findUnique({
+          where: { id: gateIds[0] },
+          select: { stationId: true }
+        });
+        if (firstGate?.stationId) stationId = firstGate.stationId;
+      }
+
       // Enforce station requirement for station/gate level roles
-      if ((desigCfg.level === 'STATION' || desigCfg.level === 'GATE') && !stationId) {
+      if ((desigCfg.level === 'STATION' || desigCfg.level === 'GATE') && !stationId && (!gateIds || gateIds.length === 0)) {
         return res.status(400).json({ error: `Station selection is mandatory for ${designation}.` });
       }
 
@@ -495,6 +504,13 @@ router.post('/register', upload.any(), async (req, res, next) => {
       if (desigCfg.name === 'Gateman') {
         if (!Array.isArray(gateIds) || gateIds.length !== 1) {
           return res.status(400).json({ error: 'A Gateman must be assigned to exactly ONE Level Crossing Gate.' });
+        }
+      }
+
+      // Enforce Restkeeper multiple gates requirement
+      if (desigCfg.name === 'Restkeeper') {
+        if (!Array.isArray(gateIds) || gateIds.length === 0) {
+          return res.status(400).json({ error: 'At least one Level Crossing Gate must be selected for Restkeeper.' });
         }
       }
 

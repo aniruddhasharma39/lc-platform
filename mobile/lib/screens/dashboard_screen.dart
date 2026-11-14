@@ -1121,6 +1121,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final List<dynamic> requestedGates = req['requestedGates'] is List ? req['requestedGates'] : [];
 
     final isGateman = assignedRoleName.toLowerCase().contains('gateman') && !assignedRoleName.toLowerCase().contains('restkeeper');
+    final isRestkeeper = assignedRoleName.toLowerCase().contains('restkeeper');
+
+    // Pre-populate chosenStationIds with requested station(s)
+    final Set<int> chosenStationIds = {};
+    if (req['stationIds'] is List) {
+      for (var sid in req['stationIds']) {
+        final sId = sid is int ? sid : int.tryParse(sid.toString());
+        if (sId != null) chosenStationIds.add(sId);
+      }
+    }
+    if (chosenStationId != null) {
+      chosenStationIds.add(chosenStationId);
+    }
+    for (var rg in requestedGates) {
+      if (rg is Map) {
+        final sId = rg['stationId'] ?? rg['station']?['id'];
+        final parsed = sId is int ? sId : int.tryParse(sId?.toString() ?? '');
+        if (parsed != null) chosenStationIds.add(parsed);
+      }
+    }
 
     // Pre-populate selectedGateIds with requested gates if any
     final Set<int> selectedGateIds = {};
@@ -1326,39 +1346,146 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ),
                           const SizedBox(height: 16),
 
-                          // Station Dropdown
-                          const Text(
-                            'Station Assignment / Headquarters:',
-                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
-                          ),
-                          const SizedBox(height: 6),
-                          DropdownButtonFormField<int?>(
-                            value: divisionStations.any((s) => s['id'] == chosenStationId) ? chosenStationId : null,
-                            isExpanded: true,
-                            decoration: InputDecoration(
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                              hintText: 'Select Base Station (Optional)',
+                          // Station Assignment Section
+                          if (isGateman) ...[
+                            // Gateman: Single Station Dropdown
+                            const Text(
+                              'Station Assignment (Single Station Only):',
+                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
                             ),
-                            items: [
-                              const DropdownMenuItem<int?>(
-                                value: null,
-                                child: Text('No Specific Station / Section-wide Jurisdiction', style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey)),
+                            const SizedBox(height: 6),
+                            DropdownButtonFormField<int?>(
+                              value: divisionStations.any((s) => s['id'] == chosenStationId) ? chosenStationId : null,
+                              isExpanded: true,
+                              decoration: InputDecoration(
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                hintText: 'Select Base Station',
                               ),
-                              ...divisionStations.map((st) {
-                                final sId = st['id'] is int ? st['id'] as int : int.tryParse(st['id'].toString());
-                                final sName = st['name'] ?? '';
-                                final sCode = st['code'] ?? '';
-                                return DropdownMenuItem<int?>(
-                                  value: sId,
-                                  child: Text('$sName ($sCode)', overflow: TextOverflow.ellipsis),
-                                );
-                              }),
-                            ],
-                            onChanged: (val) {
-                              setModalState(() => chosenStationId = val);
-                            },
-                          ),
+                              items: [
+                                const DropdownMenuItem<int?>(
+                                  value: null,
+                                  child: Text('Auto-resolve from Selected Gate', style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey)),
+                                ),
+                                ...divisionStations.map((st) {
+                                  final sId = st['id'] is int ? st['id'] as int : int.tryParse(st['id'].toString());
+                                  final sName = st['name'] ?? '';
+                                  final sCode = st['code'] ?? '';
+                                  return DropdownMenuItem<int?>(
+                                    value: sId,
+                                    child: Text('$sName ($sCode)', overflow: TextOverflow.ellipsis),
+                                  );
+                                }),
+                              ],
+                              onChanged: (val) {
+                                setModalState(() {
+                                  chosenStationId = val;
+                                  chosenStationIds.clear();
+                                  if (val != null) chosenStationIds.add(val);
+                                });
+                              },
+                            ),
+                          ] else ...[
+                            // Multi-Station Selection for Restkeeper, PWI, CPWI, etc.
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  'Assigned Stations (${chosenStationIds.length} Selected):',
+                                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                                ),
+                                Row(
+                                  children: [
+                                    TextButton(
+                                      style: TextButton.styleFrom(
+                                        padding: EdgeInsets.zero,
+                                        minimumSize: Size.zero,
+                                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                      ),
+                                      onPressed: () {
+                                        setModalState(() {
+                                          for (var s in divisionStations) {
+                                            final sId = s['id'] is int ? s['id'] as int : int.tryParse(s['id'].toString());
+                                            if (sId != null) chosenStationIds.add(sId);
+                                          }
+                                        });
+                                      },
+                                      child: const Text('All Stations', style: TextStyle(fontSize: 12, color: Color(0xFF1D4ED8), fontWeight: FontWeight.bold)),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    TextButton(
+                                      style: TextButton.styleFrom(
+                                        padding: EdgeInsets.zero,
+                                        minimumSize: Size.zero,
+                                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                      ),
+                                      onPressed: () {
+                                        setModalState(() => chosenStationIds.clear());
+                                      },
+                                      child: const Text('Clear', style: TextStyle(fontSize: 12, color: AppColors.danger)),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            if (divisionStations.isEmpty)
+                              const Text('No stations available in candidate division.', style: TextStyle(fontSize: 12, color: Colors.grey, fontStyle: FontStyle.italic))
+                            else
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF8FAFC),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: Colors.grey.shade200),
+                                ),
+                                constraints: const BoxConstraints(maxHeight: 120),
+                                child: SingleChildScrollView(
+                                  child: Wrap(
+                                    spacing: 6,
+                                    runSpacing: 6,
+                                    children: divisionStations.map((st) {
+                                      final sId = st['id'] is int ? st['id'] as int : int.tryParse(st['id'].toString());
+                                      if (sId == null) return const SizedBox.shrink();
+                                      final isSelected = chosenStationIds.contains(sId);
+                                      final sName = st['name'] ?? '';
+                                      final sCode = st['code'] ?? '';
+                                      return FilterChip(
+                                        selected: isSelected,
+                                        label: Text(
+                                          '$sName ($sCode)',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                            color: isSelected ? Colors.white : const Color(0xFF1E293B),
+                                          ),
+                                        ),
+                                        selectedColor: const Color(0xFF1D4ED8),
+                                        checkmarkColor: Colors.white,
+                                        backgroundColor: Colors.white,
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(6),
+                                          side: BorderSide(
+                                            color: isSelected ? const Color(0xFF1D4ED8) : Colors.grey.shade300,
+                                          ),
+                                        ),
+                                        visualDensity: VisualDensity.compact,
+                                        onSelected: (selected) {
+                                          setModalState(() {
+                                            if (selected) {
+                                              chosenStationIds.add(sId);
+                                            } else {
+                                              chosenStationIds.remove(sId);
+                                            }
+                                          });
+                                        },
+                                      );
+                                    }).toList(),
+                                  ),
+                                ),
+                              ),
+                          ],
                           const SizedBox(height: 16),
 
                           // LC Gate Assignment Header
@@ -1393,21 +1520,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               spacing: 8,
                               runSpacing: 6,
                               children: [
-                                if (chosenStationId != null)
-                                  ActionChip(
-                                    avatar: const Icon(Icons.add, size: 16, color: Color(0xFF1D4ED8)),
-                                    label: const Text('All Station Gates', style: TextStyle(fontSize: 11.5)),
-                                    onPressed: () {
-                                      setModalState(() {
-                                        for (var g in divisionGates) {
-                                          if (g is Map && g['stationId'] == chosenStationId && g['id'] != null) {
-                                            final gId = g['id'] is int ? g['id'] as int : int.tryParse(g['id'].toString());
-                                            if (gId != null) selectedGateIds.add(gId);
+                                ActionChip(
+                                  avatar: const Icon(Icons.add, size: 16, color: Color(0xFF1D4ED8)),
+                                  label: Text(
+                                    chosenStationIds.isNotEmpty
+                                        ? 'Gates for Selected Stations'
+                                        : 'All Station Gates',
+                                    style: const TextStyle(fontSize: 11.5),
+                                  ),
+                                  onPressed: () {
+                                    setModalState(() {
+                                      for (var g in divisionGates) {
+                                        if (g is Map && g['id'] != null) {
+                                          final gId = g['id'] is int ? g['id'] as int : int.tryParse(g['id'].toString());
+                                          final gStationId = g['stationId'] ?? g['station']?['id'];
+                                          final gSId = gStationId is int ? gStationId : int.tryParse(gStationId?.toString() ?? '');
+                                          if (gId != null && (chosenStationIds.isEmpty || (gSId != null && chosenStationIds.contains(gSId)))) {
+                                            selectedGateIds.add(gId);
                                           }
                                         }
-                                      });
-                                    },
-                                  ),
+                                      }
+                                    });
+                                  },
+                                ),
                                 ActionChip(
                                   avatar: const Icon(Icons.select_all, size: 16, color: Color(0xFF1D4ED8)),
                                   label: const Text('All Section Gates', style: TextStyle(fontSize: 11.5)),
@@ -1637,12 +1772,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
 
     if (confirmed == true) {
+      if (!mounted) return;
+      if (isGateman && selectedGateIds.length != 1) {
+        AppFeedback.showWarning(context, 'A Gateman must be assigned to strictly ONE Level Crossing Gate.');
+        return;
+      }
+      if (isRestkeeper && selectedGateIds.isEmpty) {
+        AppFeedback.showWarning(context, 'A Restkeeper must be assigned to at least one Level Crossing Gate in their section.');
+        return;
+      }
+
       final body = <String, dynamic>{};
       if (targetRoleId != null) {
         body['roleId'] = targetRoleId;
       }
-      if (chosenStationId != null) {
-        body['stationId'] = chosenStationId;
+      if (isGateman) {
+        if (chosenStationId != null) {
+          body['stationId'] = chosenStationId;
+        }
+      } else {
+        if (chosenStationIds.isNotEmpty) {
+          body['stationIds'] = chosenStationIds.toList();
+          body['stationId'] = chosenStationId ?? chosenStationIds.first;
+        } else if (chosenStationId != null) {
+          body['stationId'] = chosenStationId;
+        }
       }
       // Strictly send whatever the approver selected:
       body['gateIds'] = selectedGateIds.toList();
