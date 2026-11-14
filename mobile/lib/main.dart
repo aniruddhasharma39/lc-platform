@@ -15,6 +15,7 @@ import 'utils/user_utils.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await initDynamicConfig();
   await PushNotificationService.initialize();
   runApp(const MyApp());
 }
