@@ -99,20 +99,52 @@ router.get('/', async (req: any, res, next) => {
     }
 
     if (!station) {
-      // Find first available station in viewer's division (strictly division-scoped, never unconstrained)
+      // 1. Try first station in viewer's division that HAS active LC gates
       station = await prisma.station.findFirst({
-        where: stationWhere,
+        where: {
+          ...stationWhere,
+          gates: { some: {} }
+        },
         select: { id: true, code: true, name: true, division: true, zone: true },
         orderBy: { name: 'asc' }
       });
+
+      // 2. Fallback to any station in viewer's division
+      if (!station) {
+        station = await prisma.station.findFirst({
+          where: stationWhere,
+          select: { id: true, code: true, name: true, division: true, zone: true },
+          orderBy: { name: 'asc' }
+        });
+      }
+
+      // 3. Fallback to any station system-wide that HAS active LC gates
+      if (!station) {
+        station = await prisma.station.findFirst({
+          where: { gates: { some: {} } },
+          select: { id: true, code: true, name: true, division: true, zone: true },
+          orderBy: { name: 'asc' }
+        });
+      }
+
       if (station) stationId = station.id;
     }
 
-    // Fetch all stations in user's jurisdiction for switcher dropdown
+    // Fetch all stations in user's jurisdiction for switcher dropdown (stations with gates first)
     const stations = await prisma.station.findMany({
       where: stationWhere,
-      select: { id: true, code: true, name: true, division: true, zone: true },
-      orderBy: { name: 'asc' }
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        division: true,
+        zone: true,
+        _count: { select: { gates: true } }
+      },
+      orderBy: [
+        { gates: { _count: 'desc' } },
+        { name: 'asc' }
+      ]
     });
 
     // Fetch LC gates: for PWI / CPWI / Supervisor, restrict to their station or division

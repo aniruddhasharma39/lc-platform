@@ -397,9 +397,16 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                               shrinkWrap: true,
                               itemCount: filteredStations.length,
                               separatorBuilder: (context, index) => const Divider(height: 1),
-                              itemBuilder: (_, idx) {
+                              itemBuilder: (context, idx) {
                                 final st = filteredStations[idx];
                                 final isSelected = st['id'] == _stationId;
+                                final gatesCount = (st['_count'] is Map && st['_count']['gates'] != null)
+                                    ? st['_count']['gates'] as int
+                                    : ((st['gates'] is List) ? (st['gates'] as List).length : null);
+                                final subtitleText = gatesCount != null && gatesCount > 0
+                                    ? '${st['division'] ?? 'Division'} • $gatesCount LC Gate${gatesCount == 1 ? '' : 's'}'
+                                    : '${st['division'] ?? 'Division'} • 0 LC Gates';
+
                                 return ListTile(
                                   contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                                   leading: Container(
@@ -419,10 +426,29 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                                     ),
                                   ),
                                   subtitle: Text(
-                                    '${st['division'] ?? 'Division'} • ${st['zone'] ?? 'Zone'}',
+                                    subtitleText,
                                     style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
                                   ),
-                                  trailing: isSelected ? const Icon(Icons.check_circle, color: AppColors.primary, size: 20) : null,
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (gatesCount != null && gatesCount > 0)
+                                        Container(
+                                          margin: const EdgeInsets.only(right: 6),
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFDCFCE7),
+                                            borderRadius: BorderRadius.circular(4),
+                                            border: Border.all(color: const Color(0xFF86EFAC)),
+                                          ),
+                                          child: Text(
+                                            '$gatesCount Gate${gatesCount == 1 ? '' : 's'}',
+                                            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF166534)),
+                                          ),
+                                        ),
+                                      if (isSelected) const Icon(Icons.check_circle, color: AppColors.primary, size: 20),
+                                    ],
+                                  ),
                                   onTap: () {
                                     Navigator.pop(ctx);
                                     if (st['id'] != _stationId) {
@@ -1992,13 +2018,75 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
           if (_gates.isEmpty)
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10)),
-              child: const Column(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 26),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: Column(
                 children: [
-                  Icon(Icons.fence_outlined, size: 36, color: Colors.grey),
-                  SizedBox(height: 10),
-                  Text('No LC Gates under this station.', style: TextStyle(fontSize: 13, color: Colors.grey)),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.fence_outlined, size: 36, color: Color(0xFF64748B)),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'No LC Gates under ${_stationData != null ? '${_stationData!['name']} (${_stationData!['code']})' : 'this station'}.',
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'This station does not have any Level Crossing Gates registered under it in the database.',
+                    style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 16),
+                  if (_stations.any((s) => (s['_count']?['gates'] ?? 0) > 0)) ...[
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.swap_horiz_rounded, size: 18),
+                      label: const Text('Switch to Station with Active Gates'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      onPressed: () {
+                        final stationWithGates = _stations.firstWhere(
+                          (s) => (s['_count']?['gates'] ?? 0) > 0,
+                          orElse: () => null,
+                        );
+                        if (stationWithGates != null) {
+                          setState(() {
+                            _stationId = stationWithGates['id'];
+                            _stationData = stationWithGates;
+                            _selectedWeeklyGateId = null;
+                            _gates.clear();
+                          });
+                          _loadRosterData().then((_) {
+                            if (_gates.isNotEmpty) {
+                              _selectedWeeklyGateId = _gates[0]['id'] as int;
+                              _loadWeeklyRosterData();
+                            }
+                          });
+                        } else {
+                          _openStationSelectionDialog();
+                        }
+                      },
+                    ),
+                  ] else if (_stations.length > 1) ...[
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.location_on_outlined, size: 18),
+                      label: const Text('Select Another Station'),
+                      onPressed: _openStationSelectionDialog,
+                    ),
+                  ],
                 ],
               ),
             )
