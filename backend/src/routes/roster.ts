@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { sendDutyRosterEmail } from '../lib/emailService';
 import { DEFAULT_3_SHIFT_CONFIG } from './shifts';
+import { isDeveloperUser } from '../lib/railwayHierarchy';
 
 const router = Router();
 router.use(authenticate);
@@ -88,10 +89,17 @@ router.get('/', async (req: any, res, next) => {
       if (station) stationId = station.id;
     }
 
-    // Fetch LC gates: for PWI / CPWI / Admin without a stationId query, fetch all section gates
+    // Fetch LC gates: for PWI / CPWI / Supervisor, restrict to their division and zone
     let gateWhere: any = {};
     if (req.query.stationId) {
       gateWhere = { stationId: parseInt(req.query.stationId as string, 10) };
+    } else if (req.user.division && !isDeveloperUser(req.user)) {
+      gateWhere = {
+        OR: [
+          { division: { equals: req.user.division, mode: 'insensitive' } },
+          { station: { division: { equals: req.user.division, mode: 'insensitive' } } }
+        ]
+      };
     } else if (!isRosterAuthor(req.user) && stationId) {
       gateWhere = { stationId };
     }
@@ -160,17 +168,30 @@ router.get('/', async (req: any, res, next) => {
         })
       : [];
 
-    // Fetch active Gatemen and Restkeepers for duty allocation
-    const gatemenUsers = await prisma.user.findMany({
-      where: {
-        status: 'APPROVED',
+    // Fetch active Gatemen and Restkeepers for duty allocation (scoped to supervisor's division)
+    const gatemenConditions: any[] = [
+      { status: 'APPROVED' },
+      {
         OR: [
           { role: { name: 'Gateman' } },
           { role: { name: 'Restkeeper' } },
           { designation: { contains: 'Gateman', mode: 'insensitive' } },
           { designation: { contains: 'Restkeeper', mode: 'insensitive' } },
         ]
-      },
+      }
+    ];
+
+    if (req.user.division && !isDeveloperUser(req.user)) {
+      gatemenConditions.push({
+        OR: [
+          { division: { equals: req.user.division, mode: 'insensitive' } },
+          { station: { division: { equals: req.user.division, mode: 'insensitive' } } }
+        ]
+      });
+    }
+
+    const gatemenUsers = await prisma.user.findMany({
+      where: { AND: gatemenConditions },
       select: {
         id: true,
         fullName: true,
@@ -550,16 +571,26 @@ router.get('/weekly', async (req: any, res, next) => {
       staffList = [...staffList, ...additionalStaff];
     }
 
-    if (staffList.length < 3) {
+    const gateDivision = gate.division || gate.station?.division || req.user.division;
+
+    if (staffList.length < 3 && gateDivision) {
       const additionalStaff = await prisma.user.findMany({
         where: {
           status: 'APPROVED',
           OR: [
-            { role: { name: { in: ['Gateman', 'Restkeeper'] } } },
-            { designation: { contains: 'Gateman', mode: 'insensitive' } },
-            { designation: { contains: 'Restkeeper', mode: 'insensitive' } },
+            { division: { equals: gateDivision, mode: 'insensitive' } },
+            { station: { division: { equals: gateDivision, mode: 'insensitive' } } },
           ],
-          id: { notIn: staffList.map(s => s.id) },
+          AND: [
+            {
+              OR: [
+                { role: { name: { in: ['Gateman', 'Restkeeper'] } } },
+                { designation: { contains: 'Gateman', mode: 'insensitive' } },
+                { designation: { contains: 'Restkeeper', mode: 'insensitive' } },
+              ],
+            },
+            { id: { notIn: staffList.map(s => s.id) } },
+          ],
         },
         select: {
           id: true,

@@ -476,12 +476,25 @@ export async function buildUserManagementWhereClause(viewer: any, prisma: Prisma
   ];
 
   // Geographical jurisdiction filtering
-  if (viewerCfg.level === 'DIVISIONAL') {
-    if (effectiveViewer.division) {
-      baseConditions.push({ division: { equals: effectiveViewer.division, mode: 'insensitive' } });
+  if (viewerCfg.level === 'DIVISIONAL' || viewerCfg.level === 'SECTION') {
+    const viewerDivision = effectiveViewer.division || effectiveViewer.station?.division;
+    const viewerZone = effectiveViewer.zone || effectiveViewer.station?.zone;
+
+    if (viewerDivision) {
+      baseConditions.push({
+        OR: [
+          { division: { equals: viewerDivision, mode: 'insensitive' } },
+          { station: { division: { equals: viewerDivision, mode: 'insensitive' } } }
+        ]
+      });
     }
-    if (effectiveViewer.zone) {
-      baseConditions.push({ zone: { equals: effectiveViewer.zone, mode: 'insensitive' } });
+    if (viewerZone) {
+      baseConditions.push({
+        OR: [
+          { zone: { equals: viewerZone, mode: 'insensitive' } },
+          { station: { zone: { equals: viewerZone, mode: 'insensitive' } } }
+        ]
+      });
     }
   } else if (viewerCfg.level === 'STATION') {
     // Station/Section supervisor: can only see subordinates assigned to their station or supervised gates
@@ -589,13 +602,25 @@ export async function buildUserGateWhereClause(user: any, prisma: PrismaClient):
     return { id: -1 };
   }
 
-  // 3. Divisional officers (Senior DOM, DOM, ADOM, Senior DEN, DEN, ADEN):
-  if (desig?.level === 'DIVISIONAL') {
-    if (effectiveUser.division) {
-      return { division: { equals: effectiveUser.division, mode: 'insensitive' } };
+  // 3. Section supervisors (PWI, CPWI) & Divisional officers (Senior DOM, DOM, ADOM, Senior DEN, DEN, ADEN):
+  if (desig?.level === 'SECTION' || desig?.level === 'DIVISIONAL') {
+    const userDivision = effectiveUser.division || effectiveUser.station?.division;
+    const userZone = effectiveUser.zone || effectiveUser.station?.zone;
+    if (userDivision) {
+      return {
+        OR: [
+          { division: { equals: userDivision, mode: 'insensitive' } },
+          { station: { division: { equals: userDivision, mode: 'insensitive' } } }
+        ]
+      };
     }
-    if (effectiveUser.zone) {
-      return { zone: { equals: effectiveUser.zone, mode: 'insensitive' } };
+    if (userZone) {
+      return {
+        OR: [
+          { zone: { equals: userZone, mode: 'insensitive' } },
+          { station: { zone: { equals: userZone, mode: 'insensitive' } } }
+        ]
+      };
     }
     return { id: -1 };
   }
