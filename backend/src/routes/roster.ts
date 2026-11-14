@@ -88,14 +88,19 @@ router.get('/', async (req: any, res, next) => {
       if (station) stationId = station.id;
     }
 
-    // Fetch LC gates under this station
-    const gates = stationId
-      ? await prisma.lCGate.findMany({
-          where: { stationId },
-          select: { id: true, lcNumber: true, locationName: true, stationId: true },
-          orderBy: { lcNumber: 'asc' }
-        })
-      : [];
+    // Fetch LC gates: for PWI / CPWI / Admin without a stationId query, fetch all section gates
+    let gateWhere: any = {};
+    if (req.query.stationId) {
+      gateWhere = { stationId: parseInt(req.query.stationId as string, 10) };
+    } else if (!isRosterAuthor(req.user) && stationId) {
+      gateWhere = { stationId };
+    }
+
+    const gates = await prisma.lCGate.findMany({
+      where: gateWhere,
+      select: { id: true, lcNumber: true, locationName: true, stationId: true },
+      orderBy: { lcNumber: 'asc' }
+    });
 
     const gateIds = gates.map(g => g.id);
 
@@ -155,13 +160,15 @@ router.get('/', async (req: any, res, next) => {
         })
       : [];
 
-    // Fetch active Gatemen for duty allocation (scoped to station or department)
+    // Fetch active Gatemen and Restkeepers for duty allocation
     const gatemenUsers = await prisma.user.findMany({
       where: {
         status: 'APPROVED',
         OR: [
           { role: { name: 'Gateman' } },
-          { designation: { contains: 'Gateman', mode: 'insensitive' } }
+          { role: { name: 'Restkeeper' } },
+          { designation: { contains: 'Gateman', mode: 'insensitive' } },
+          { designation: { contains: 'Restkeeper', mode: 'insensitive' } },
         ]
       },
       select: {
@@ -420,16 +427,16 @@ const publishWeeklySchema = z.object({
   assignments: z.array(z.object({
     gatemanId: z.number().int().optional(),
     gatemanUserId: z.number().int().optional(),
-    dayOfWeek: z.enum(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']),
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    shiftCode: z.string().min(1), // "07-19", "19-24", "00-07", "W/R", "N/R", "-"
-    startTime: z.string().default('07:00'),
-    endTime: z.string().default('19:00'),
+    dayOfWeek: z.enum(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']).optional(),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    shiftCode: z.string().optional(), // "07-19", "19-24", "00-07", "W/R", "N/R", "-"
+    startTime: z.string().default('07:00').optional(),
+    endTime: z.string().default('19:00').optional(),
     shiftName: z.string().optional(),
     isSplitShift: z.boolean().optional().default(false),
     secondaryStart: z.string().optional().nullable(),
     secondaryEnd: z.string().optional().nullable(),
-  })).min(1, 'At least one shift assignment is required'),
+  })).optional().default([]),
 });
 
 /**
@@ -481,9 +488,19 @@ router.get('/weekly', async (req: any, res, next) => {
 
     const weekDates = weekDays.map(w => w.date);
 
-    // Fetch assigned Gatemen and Restkeepers for this gate
+    // Fetch assigned Gatemen and Restkeepers for this gate (exclude supervisors, PWI, station masters)
     const assignedUserGates = await prisma.userGate.findMany({
-      where: { gateId },
+      where: {
+        gateId,
+        user: {
+          status: 'APPROVED',
+          OR: [
+            { role: { name: { in: ['Gateman', 'Restkeeper'] } } },
+            { designation: { contains: 'Gateman', mode: 'insensitive' } },
+            { designation: { contains: 'Restkeeper', mode: 'insensitive' } },
+          ],
+        },
+      },
       include: {
         user: {
           select: {
@@ -504,15 +521,14 @@ router.get('/weekly', async (req: any, res, next) => {
 
     let staffList = assignedUserGates.map(ug => ug.user);
 
-    // If fewer than 3 staff members assigned, fetch additional available Gatemen/Restkeepers from station
+    // If fewer than 3 staff members assigned, fetch additional available Gatemen/Restkeepers from station or division
     if (staffList.length < 3 && gate.stationId) {
       const additionalStaff = await prisma.user.findMany({
         where: {
           stationId: gate.stationId,
           status: 'APPROVED',
           OR: [
-            { role: { name: 'Gateman' } },
-            { role: { name: 'Restkeeper' } },
+            { role: { name: { in: ['Gateman', 'Restkeeper'] } } },
             { designation: { contains: 'Gateman', mode: 'insensitive' } },
             { designation: { contains: 'Restkeeper', mode: 'insensitive' } },
           ],
@@ -529,7 +545,34 @@ router.get('/weekly', async (req: any, res, next) => {
           rcExpiryDate: true,
           role: { select: { name: true } },
         },
-        take: 5,
+        take: 3 - staffList.length,
+      });
+      staffList = [...staffList, ...additionalStaff];
+    }
+
+    if (staffList.length < 3) {
+      const additionalStaff = await prisma.user.findMany({
+        where: {
+          status: 'APPROVED',
+          OR: [
+            { role: { name: { in: ['Gateman', 'Restkeeper'] } } },
+            { designation: { contains: 'Gateman', mode: 'insensitive' } },
+            { designation: { contains: 'Restkeeper', mode: 'insensitive' } },
+          ],
+          id: { notIn: staffList.map(s => s.id) },
+        },
+        select: {
+          id: true,
+          fullName: true,
+          employeeId: true,
+          mobile: true,
+          email: true,
+          designation: true,
+          pmeExpiryDate: true,
+          rcExpiryDate: true,
+          role: { select: { name: true } },
+        },
+        take: 3 - staffList.length,
       });
       staffList = [...staffList, ...additionalStaff];
     }
@@ -732,6 +775,14 @@ router.post('/publish-weekly', async (req: any, res, next) => {
     // MODE: PERMANENT (Sets 52-week recurring Master Cycle)
     // -------------------------------------------------------------
     if (mode === 'PERMANENT') {
+      // Clear old permanent entries for this gate so new master cycle cleanly replaces it
+      await prisma.gateDutyRoster.deleteMany({
+        where: {
+          gateId: data.gateId,
+          isPermanent: true,
+        },
+      });
+
       for (const item of data.assignments) {
         if (item.shiftCode === '-') continue;
 
@@ -740,35 +791,14 @@ router.post('/publish-weekly', async (req: any, res, next) => {
 
         const permShiftName = `${item.dayOfWeek}_${targetUserId}`;
 
-        const permEntry = await prisma.gateDutyRoster.upsert({
-          where: {
-            gateId_date_shiftName: {
-              gateId: data.gateId,
-              date: 'PERMANENT',
-              shiftName: permShiftName,
-            },
-          },
-          update: {
-            startTime: item.startTime,
-            endTime: item.endTime,
-            gatemanUserId: targetUserId,
-            createdById: req.user.id,
-            stationId,
-            weekStartDate: 'PERMANENT',
-            dayOfWeek: item.dayOfWeek,
-            shiftCode: item.shiftCode,
-            isPermanent: true,
-            isSplitShift: item.isSplitShift || false,
-            secondaryStart: item.secondaryStart || null,
-            secondaryEnd: item.secondaryEnd || null,
-          },
-          create: {
+        const permEntry = await prisma.gateDutyRoster.create({
+          data: {
             gateId: data.gateId,
             stationId,
             date: 'PERMANENT',
             shiftName: permShiftName,
-            startTime: item.startTime,
-            endTime: item.endTime,
+            startTime: item.startTime || '07:00',
+            endTime: item.endTime || '19:00',
             gatemanUserId: targetUserId,
             createdById: req.user.id,
             weekStartDate: 'PERMANENT',
@@ -813,6 +843,15 @@ router.post('/publish-weekly', async (req: any, res, next) => {
     // -------------------------------------------------------------
     // MODE: SPECIFIC_WEEK (Creates temporary overrides for this week only)
     // -------------------------------------------------------------
+    // First clear existing specific overrides for this week to avoid duplicate or orphaned shift entries
+    await prisma.gateDutyRoster.deleteMany({
+      where: {
+        gateId: data.gateId,
+        date: { in: weekDates },
+        isPermanent: false,
+      },
+    });
+
     for (const item of data.assignments) {
       if (item.shiftCode === '-') continue;
 
@@ -826,35 +865,14 @@ router.post('/publish-weekly', async (req: any, res, next) => {
          item.shiftCode === 'W/R' ? 'Weekly Rest (W/R)' :
          item.shiftCode === 'N/R' ? 'Night Rest (N/R)' : `Shift ${item.shiftCode}`);
 
-      const entry = await prisma.gateDutyRoster.upsert({
-        where: {
-          gateId_date_shiftName: {
-            gateId: data.gateId,
-            date: item.date,
-            shiftName: resolvedShiftName,
-          },
-        },
-        update: {
-          startTime: item.startTime,
-          endTime: item.endTime,
-          gatemanUserId: targetUserId,
-          createdById: req.user.id,
-          stationId,
-          weekStartDate: data.weekStartDate,
-          dayOfWeek: item.dayOfWeek,
-          shiftCode: item.shiftCode,
-          isPermanent: false,
-          isSplitShift: item.isSplitShift || false,
-          secondaryStart: item.secondaryStart || null,
-          secondaryEnd: item.secondaryEnd || null,
-        },
-        create: {
+      const entry = await prisma.gateDutyRoster.create({
+        data: {
           gateId: data.gateId,
           stationId,
-          date: item.date,
+          date: item.date || weekDates[0],
           shiftName: resolvedShiftName,
-          startTime: item.startTime,
-          endTime: item.endTime,
+          startTime: item.startTime || '07:00',
+          endTime: item.endTime || '19:00',
           gatemanUserId: targetUserId,
           createdById: req.user.id,
           weekStartDate: data.weekStartDate,

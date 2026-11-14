@@ -68,6 +68,23 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
         desig.contains('je/p.way');
   }
 
+  String get _weeklyGateNumber {
+    final gate = _weeklyRosterData?['gate'];
+    if (gate != null && gate['lcNumber'] != null && gate['lcNumber'].toString().isNotEmpty) {
+      return gate['lcNumber'].toString();
+    }
+    if (_selectedWeeklyGateId != null && _gates.isNotEmpty) {
+      final matching = _gates.firstWhere(
+        (g) => g['id'] == _selectedWeeklyGateId,
+        orElse: () => {},
+      );
+      if (matching['lcNumber'] != null && matching['lcNumber'].toString().isNotEmpty) {
+        return matching['lcNumber'].toString();
+      }
+    }
+    return '';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -89,7 +106,9 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
 
     _loadRosterData().then((_) {
       if (_gates.isNotEmpty) {
-        _selectedWeeklyGateId = _gates[0]['id'];
+        if (_selectedWeeklyGateId == null || !_gates.any((g) => g['id'] == _selectedWeeklyGateId)) {
+          _selectedWeeklyGateId = _gates[0]['id'] as int;
+        }
         _loadWeeklyRosterData();
       }
     });
@@ -917,51 +936,53 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
 
     final assignments = <Map<String, dynamic>>[];
 
-    for (final staff in matrix) {
-      final uid = staff['userId'];
-      for (final d in days) {
-        final dayOfWeek = d['dayOfWeek'].toString();
-        final dateStr = d['date'].toString();
-        final code = _weeklyDraft['${uid}_$dayOfWeek'] ?? '-';
+    if (mode != 'RESET') {
+      for (final staff in matrix) {
+        final uid = staff['userId'];
+        for (final d in days) {
+          final dayOfWeek = d['dayOfWeek'].toString();
+          final dateStr = d['date'].toString();
+          final code = _weeklyDraft['${uid}_$dayOfWeek'] ?? '-';
 
-        String startTime = '07:00';
-        String endTime = '19:00';
-        bool isSplit = false;
-        String? secStart;
-        String? secEnd;
+          String startTime = '07:00';
+          String endTime = '19:00';
+          bool isSplit = false;
+          String? secStart;
+          String? secEnd;
 
-        if (code == '07-19') {
-          startTime = '07:00';
-          endTime = '19:00';
-        } else if (code == '19-24') {
-          startTime = '19:00';
-          endTime = '24:00';
-        } else if (code == '00-07') {
-          startTime = '00:00';
-          endTime = '07:00';
-        } else if (code.contains('00-07') && code.contains('19-24')) {
-          startTime = '00:00';
-          endTime = '07:00';
-          isSplit = true;
-          secStart = '19:00';
-          secEnd = '24:00';
-        } else if (code == 'W/R' || code == 'N/R' || code == '-') {
-          startTime = '00:00';
-          endTime = '00:00';
+          if (code == '07-19') {
+            startTime = '07:00';
+            endTime = '19:00';
+          } else if (code == '19-24') {
+            startTime = '19:00';
+            endTime = '24:00';
+          } else if (code == '00-07') {
+            startTime = '00:00';
+            endTime = '07:00';
+          } else if (code.contains('00-07') && code.contains('19-24')) {
+            startTime = '00:00';
+            endTime = '07:00';
+            isSplit = true;
+            secStart = '19:00';
+            secEnd = '24:00';
+          } else if (code == 'W/R' || code == 'N/R' || code == '-') {
+            startTime = '00:00';
+            endTime = '00:00';
+          }
+
+          assignments.add({
+            'gatemanId': uid,
+            'gatemanUserId': uid,
+            'date': dateStr,
+            'dayOfWeek': dayOfWeek,
+            'shiftCode': code,
+            'startTime': startTime,
+            'endTime': endTime,
+            'isSplitShift': isSplit,
+            'secondaryStart': secStart,
+            'secondaryEnd': secEnd,
+          });
         }
-
-        assignments.add({
-          'gatemanId': uid,
-          'gatemanUserId': uid,
-          'date': dateStr,
-          'dayOfWeek': dayOfWeek,
-          'shiftCode': code,
-          'startTime': startTime,
-          'endTime': endTime,
-          'isSplitShift': isSplit,
-          'secondaryStart': secStart,
-          'secondaryEnd': secEnd,
-        });
       }
     }
 
@@ -972,7 +993,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
         'gateId': _selectedWeeklyGateId,
         'weekStartDate': _weeklyRosterData!['weekStartDate'],
         'mode': mode,
-        'assignments': assignments,
+        if (mode != 'RESET') 'assignments': assignments,
       };
 
       final res = await http.post(
@@ -1007,7 +1028,6 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
     final gate = _weeklyRosterData?['gate'] ?? {};
     final days = (_weeklyRosterData?['days'] as List?) ?? [];
     final matrix = (_weeklyRosterData?['matrix'] as List?) ?? [];
-    final signOff = _weeklyRosterData?['signOff'] ?? {};
 
     final weekStartDateStr = _weeklyRosterData?['weekStartDate'] ?? _formatDate(_weeklyStartDate);
     final weekEndDateStr = _weeklyRosterData?['weekEndDate'] ?? '';
@@ -1037,29 +1057,34 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                         Text('Select LC Gate:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                       ],
                     ),
-                    if (_gates.isNotEmpty)
-                      DropdownButton<int>(
-                        value: _selectedWeeklyGateId,
-                        isDense: true,
-                        underline: const SizedBox(),
-                        items: _gates.map<DropdownMenuItem<int>>((g) {
-                          final num = g['lcNumber'] ?? 'LC';
-                          final loc = g['locationName'] ?? '';
-                          return DropdownMenuItem<int>(
-                            value: g['id'] as int,
-                            child: Text(
-                              loc.isNotEmpty ? '$num ($loc)' : num,
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.primary),
-                            ),
-                          );
-                        }).toList(),
-                        onChanged: (val) {
-                          if (val != null) {
-                            setState(() => _selectedWeeklyGateId = val);
-                            _loadWeeklyRosterData(gateId: val);
-                          }
-                        },
-                      ),
+                    if (_gates.isNotEmpty) ...[
+                      Builder(builder: (context) {
+                        final hasMatch = _gates.any((g) => g['id'] == _selectedWeeklyGateId);
+                        final validId = hasMatch ? _selectedWeeklyGateId : (_gates[0]['id'] as int);
+                        return DropdownButton<int>(
+                          value: validId,
+                          isDense: true,
+                          underline: const SizedBox(),
+                          items: _gates.map<DropdownMenuItem<int>>((g) {
+                            final num = g['lcNumber'] ?? 'LC';
+                            final loc = g['locationName'] ?? '';
+                            return DropdownMenuItem<int>(
+                              value: g['id'] as int,
+                              child: Text(
+                                loc.isNotEmpty ? '$num ($loc)' : num,
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.primary),
+                              ),
+                            );
+                          }).toList(),
+                          onChanged: (val) {
+                            if (val != null) {
+                              setState(() => _selectedWeeklyGateId = val);
+                              _loadWeeklyRosterData(gateId: val);
+                            }
+                          },
+                        );
+                      }),
+                    ],
                   ],
                 ),
                 const Divider(height: 16),
@@ -1233,7 +1258,11 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                                         borderRadius: BorderRadius.circular(4),
                                       ),
                                       child: Text(
-                                        isRestkeeper ? 'Restkeeper' : 'Gateman',
+                                        (staff['designation'] != null && staff['designation'].toString().isNotEmpty)
+                                            ? staff['designation'].toString()
+                                            : ((staff['role'] is Map && staff['role']['name'] != null)
+                                                ? staff['role']['name'].toString()
+                                                : (isRestkeeper ? 'Restkeeper' : 'Gateman')),
                                         style: TextStyle(
                                           fontSize: 9.5,
                                           fontWeight: FontWeight.bold,
@@ -1328,128 +1357,6 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                 ),
               ),
             ),
-          const SizedBox(height: 14),
-
-          // 4. Shift Legend Card
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF8FAFC),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: const Color(0xFFE2E8F0)),
-            ),
-            child: const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Standard Shift Codes (24h Safety Coverage):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11.5, color: Color(0xFF334155))),
-                SizedBox(height: 6),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 4,
-                  children: [
-                    Text('07-19: Day Shift (12h)', style: TextStyle(fontSize: 10.5, color: Color(0xFF15803D), fontWeight: FontWeight.w600)),
-                    Text('19-24: Night Part 1 (5h)', style: TextStyle(fontSize: 10.5, color: Color(0xFF4338CA), fontWeight: FontWeight.w600)),
-                    Text('00-07: Night Part 2 (7h)', style: TextStyle(fontSize: 10.5, color: Color(0xFF0369A1), fontWeight: FontWeight.w600)),
-                    Text('W/R: Weekly Rest (30h)', style: TextStyle(fontSize: 10.5, color: Color(0xFFB45309), fontWeight: FontWeight.bold)),
-                    Text('N/R: Night Rest', style: TextStyle(fontSize: 10.5, color: Color(0xFFC2410C), fontWeight: FontWeight.bold)),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 14),
-
-          // 5. Official Stamps Footer (Matching Official Document)
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: const Color(0xFFCBD5E1)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Row(
-                  children: [
-                    Icon(Icons.verified, size: 16, color: Color(0xFF1E3A8A)),
-                    SizedBox(width: 6),
-                    Text('Official Indian Railways Sign-Off & Approvals', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF0F172A))),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Prepared By (PWI / SSE)
-                    Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFEFF6FF),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: const Color(0xFF93C5FD)),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'वरिष्ठ सेक्शन इंजीनियर (रेलपथ-प्रभारी)',
-                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Color(0xFF1E3A8A)),
-                            ),
-                            const Text(
-                              '(SSE/P.WAY/INCHARGE/KRD)',
-                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Color(0xFF1E3A8A)),
-                            ),
-                            const Text('CENTRAL RAILWAY (मध्य रेल)', style: TextStyle(fontSize: 9, color: Color(0xFF1E3A8A))),
-                            const SizedBox(height: 6),
-                            Text(
-                              signOff['preparedByName'] ?? 'SSE / P.WAY Incharge',
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF0F172A)),
-                            ),
-                            const Text('Primary Author', style: TextStyle(fontSize: 9.5, color: Color(0xFF2563EB), fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-
-                    // Approved By (CPWI / ADEN Satara)
-                    Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFFAF5FF),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: const Color(0xFFD8B4FE)),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'सहायक मंडल इंजीनियर सातारा',
-                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Color(0xFF6B21A8)),
-                            ),
-                            const Text(
-                              'Assistant Divisional Engineer STR',
-                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Color(0xFF6B21A8)),
-                            ),
-                            const Text('Central Railway STR (मध्य रेल)', style: TextStyle(fontSize: 9, color: Color(0xFF6B21A8))),
-                            const SizedBox(height: 6),
-                            Text(
-                              signOff['approvedByName'] ?? 'ADEN / CPWI Section Incharge',
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF0F172A)),
-                            ),
-                            const Text('Section Incharge (Countersigned)', style: TextStyle(fontSize: 9.5, color: Color(0xFF9333EA), fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
           const SizedBox(height: 80),
         ],
       ),
@@ -1543,7 +1450,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                   const Tab(text: 'Weekly Gate Roster (Official)'),
                 ]
               : [
-                  const Tab(text: 'Weekly Gate Roster (LC-91)'),
+                  Tab(text: 'Weekly Gate Roster (${_weeklyGateNumber.isNotEmpty ? _weeklyGateNumber : 'LC Gate'})'),
                   const Tab(text: 'Daily Station Matrix'),
                 ],
         ),
