@@ -13,8 +13,9 @@ import '../widgets/roster_ai_review_dialog.dart';
 
 class DutyRosterScreen extends StatefulWidget {
   final Map<String, dynamic> user;
+  final VoidCallback? onBack;
 
-  const DutyRosterScreen({super.key, required this.user});
+  const DutyRosterScreen({super.key, required this.user, this.onBack});
 
   @override
   State<DutyRosterScreen> createState() => _DutyRosterScreenState();
@@ -2153,10 +2154,31 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        title: Column(
+    return PopScope(
+      canPop: widget.onBack == null && Navigator.canPop(context),
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (widget.onBack != null) {
+          widget.onBack!();
+        } else if (Navigator.canPop(context)) {
+          Navigator.pop(context);
+        }
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back, color: Colors.white),
+            tooltip: 'Back',
+            onPressed: () {
+              if (widget.onBack != null) {
+                widget.onBack!();
+              } else if (Navigator.canPop(context)) {
+                Navigator.pop(context);
+              }
+            },
+          ),
+          title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
@@ -2247,6 +2269,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
       bottomNavigationBar: _canManageRoster && !_isDutyStaff
           ? (_tabController.index == 0 ? _buildWeeklyPublishActionBar() : _buildPublishActionBar())
           : null,
+      ),
     );
   }
 
@@ -2576,7 +2599,21 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                                     value: null,
                                     child: Text('— Unassigned / Open Slot —', style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: Colors.grey)),
                                   ),
-                                  ..._gatemen.map((gm) {
+                                  ..._gatemen.where((gm) {
+                                    // If gateman has assignedGates, check if they are assigned to this gate
+                                    final rawAssignedGates = gm['assignedGates'];
+                                    if (rawAssignedGates is List && rawAssignedGates.isNotEmpty) {
+                                      final assignedGateIds = rawAssignedGates
+                                          .map((ag) => ag is Map ? ag['gateId'] : null)
+                                          .whereType<int>()
+                                          .toSet();
+                                      if (assignedGateIds.isNotEmpty && !assignedGateIds.contains(gateId)) {
+                                        // Gateman is assigned to a different LC gate, exclude from this gate's dropdown
+                                        return false;
+                                      }
+                                    }
+                                    return true;
+                                  }).map((gm) {
                                     final gmId = gm['id'] as int;
                                     final gmName = gm['fullName']?.toString() ?? 'Gateman';
                                     final gmPme = gm['pmeStatus']?.toString() ?? 'NOT_SET';

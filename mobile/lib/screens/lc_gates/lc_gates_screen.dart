@@ -15,12 +15,14 @@ class LCGatesScreen extends StatefulWidget {
   final Map<String, dynamic> user;
   final int? initialGateId;
   final String? initialTab;
+  final VoidCallback? onBack;
 
   const LCGatesScreen({
     super.key,
     required this.user,
     this.initialGateId,
     this.initialTab,
+    this.onBack,
   });
 
   @override
@@ -834,41 +836,58 @@ class _LCGatesScreenState extends State<LCGatesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      body: (_isLoading && _gates.isEmpty)
-          ? const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(color: AppColors.primary),
-                  SizedBox(height: 16),
-                  Text('Loading LC Gates directory...', style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF1E293B))),
-                ],
-              ),
-            )
-          : RefreshIndicator(
-              onRefresh: () => _fetchData(isManual: true),
-              color: AppColors.primary,
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(14, 12, 14, 24),
+    return PopScope(
+      canPop: _viewMode == 'folder' && _breadcrumbs.length <= 1 && widget.onBack == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (_viewMode == 'detail') {
+          _disconnectTelemetryWs();
+          setState(() {
+            _viewMode = 'folder';
+            _selectedGate = null;
+          });
+        } else if (_breadcrumbs.length > 1) {
+          _jumpBreadcrumb(_breadcrumbs.length - 2);
+        } else if (widget.onBack != null) {
+          widget.onBack!();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        body: (_isLoading && _gates.isEmpty)
+            ? const Center(
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    // 1. Navigation Toolbar (Breadcrumb + Search + Refresh)
-                    _buildNavigationToolbar(),
-                    const SizedBox(height: 14),
-
-                    // 2. Main Views (Detail drilldown or Minimalist Directory)
-                    if (_viewMode == 'detail' && _selectedGate != null)
-                      _buildDetailView()
-                    else
-                      _buildDirectoryView(),
+                    CircularProgressIndicator(color: AppColors.primary),
+                    SizedBox(height: 16),
+                    Text('Loading LC Gates directory...', style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF1E293B))),
                   ],
                 ),
+              )
+            : RefreshIndicator(
+                onRefresh: () => _fetchData(isManual: true),
+                color: AppColors.primary,
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // 1. Navigation Toolbar (Breadcrumb + Search + Refresh)
+                      _buildNavigationToolbar(),
+                      const SizedBox(height: 14),
+
+                      // 2. Main Views (Detail drilldown or Minimalist Directory)
+                      if (_viewMode == 'detail' && _selectedGate != null)
+                        _buildDetailView()
+                      else
+                        _buildDirectoryView(),
+                    ],
+                  ),
+                ),
               ),
-            ),
+      ),
     );
   }
 

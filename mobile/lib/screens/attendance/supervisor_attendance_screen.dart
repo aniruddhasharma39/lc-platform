@@ -215,19 +215,30 @@ class _SupervisorAttendanceScreenState extends State<SupervisorAttendanceScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        title: const Text('Gate Staffing & Attendance', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
-        backgroundColor: const Color(0xFF0D47A1),
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh Matrix',
-            onPressed: _fetchAllData,
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        Navigator.of(context).pop();
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: 'Back',
+            onPressed: () => Navigator.of(context).pop(),
           ),
-        ],
+          title: const Text('Gate Staffing & Attendance', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+          backgroundColor: const Color(0xFF0D47A1),
+          foregroundColor: Colors.white,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh Matrix',
+              onPressed: _fetchAllData,
+            ),
+          ],
         bottom: TabBar(
           controller: _tabController,
           indicatorColor: const Color(0xFF00E5FF),
@@ -270,6 +281,7 @@ class _SupervisorAttendanceScreenState extends State<SupervisorAttendanceScreen>
                 if (_canApproveReenrollment) _buildPendingReenrollmentsTab(),
               ],
             ),
+      ),
     );
   }
 

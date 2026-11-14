@@ -99,6 +99,7 @@ List<dynamic> _sortModules(List<dynamic> rawModules) {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
+  final List<String> _viewHistory = [];
   List<dynamic> _users = [];
   List<dynamic> _roles = [];
   List<dynamic> _systemModules = _sortModules(_defaultModules);
@@ -791,9 +792,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     _dismissNotification(itemId);
                                     Navigator.pop(sheetContext);
                                     if (item['targetModule'] != null || item['link'] != null) {
-                                      setState(() {
-                                        _currentView = item['targetModule'] ?? item['link'];
-                                      });
+                                      _switchView(item['targetModule'] ?? item['link']);
                                     }
                                   },
                                   borderRadius: BorderRadius.circular(10),
@@ -1001,7 +1000,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return '${time.day}/${time.month} ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
   }
 
+  void _switchView(String newView) {
+    if (_currentView == newView) return;
+    _viewHistory.add(_currentView);
+    setState(() => _currentView = newView);
+  }
+
+  void _handleBack() {
+    if (_viewHistory.isNotEmpty) {
+      final prev = _viewHistory.removeLast();
+      setState(() => _currentView = prev);
+    } else if (_currentView != 'home') {
+      setState(() => _currentView = 'home');
+    }
+  }
+
   void _navigateToGate(int gateId, [String tab = 'about']) {
+    _viewHistory.add(_currentView);
     setState(() {
       _targetGateId = gateId;
       _targetGateTab = tab;
@@ -2065,12 +2080,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     return PopScope(
-      canPop: _currentView == 'home',
+      canPop: _currentView == 'home' && _viewHistory.isEmpty,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
-        if (_currentView != 'home') {
-          setState(() => _currentView = 'home');
-        }
+        _handleBack();
       },
       child: Scaffold(
         appBar: AppBar(
@@ -2286,7 +2299,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     color: _currentView == 'home' ? Colors.white : const Color(0xFF64748B),
                   ),
                   onTap: () {
-                    setState(() { _currentView = 'home'; });
+                    _switchView('home');
                     Navigator.pop(context);
                   },
                 ),
@@ -2312,7 +2325,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   color: _currentView == 'duty-roster' ? Colors.white : const Color(0xFF64748B),
                 ),
                 onTap: () {
-                  setState(() { _currentView = 'duty-roster'; });
+                  _switchView('duty-roster');
                   Navigator.pop(context);
                 },
               ),
@@ -2460,7 +2473,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     color: isSelected ? Colors.white : const Color(0xFF64748B),
                   ),
                   onTap: () {
-                    setState(() { _currentView = m['slug']; });
+                    _switchView(m['slug']);
                     Navigator.pop(context);
                   },
                 ),
@@ -2488,19 +2501,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildBody() {
     if (_currentView == 'home') return _buildUserDashboard();
     if (_currentView == 'duty-roster' || _currentView == 'roster') {
-      return DutyRosterScreen(user: widget.user);
+      return DutyRosterScreen(user: widget.user, onBack: _handleBack);
     }
     if (_currentView == 'lc-gates') {
       return LCGatesScreen(
         user: widget.user,
         initialGateId: _targetGateId,
         initialTab: _targetGateTab,
+        onBack: _handleBack,
       );
     }
     if (_currentView == 'reports') {
       return ReportsScreen(
         user: widget.user,
-        onBack: () => setState(() => _currentView = 'home'),
+        onBack: _handleBack,
       );
     }
     if (_currentView == 'manage-users') return _buildAdminDashboard();

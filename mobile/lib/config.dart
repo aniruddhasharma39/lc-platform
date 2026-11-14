@@ -73,3 +73,33 @@ Future<void> initDynamicConfig() async {
   }
 }
 
+/// Resolves the API base URL based on build configuration and environment overrides.
+String resolveApiBaseUrl({
+  String apiUrlOverride = '',
+  bool isReleaseMode = false,
+  bool useLocalBackend = false,
+  bool isWeb = false,
+  bool isDebugAndroid = false,
+  TargetPlatform platform = TargetPlatform.android,
+  String? webHost,
+}) {
+  final trimmed = apiUrlOverride.trim();
+  if (trimmed.isNotEmpty) {
+    return trimmed.endsWith('/') ? trimmed.substring(0, trimmed.length - 1) : trimmed;
+  }
+  if (!isReleaseMode && useLocalBackend) {
+    if (isWeb) {
+      final host = (webHost != null && webHost.isNotEmpty && webHost != '0.0.0.0')
+          ? webHost
+          : 'localhost';
+      return 'http://$host:5001/api/v1';
+    }
+    if (isDebugAndroid && platform == TargetPlatform.android) {
+      return 'http://10.0.2.2:5001/api/v1';
+    }
+    return 'http://localhost:5001/api/v1';
+  }
+  return _defaultEc2BaseUrl;
+}
+
+
