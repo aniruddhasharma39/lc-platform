@@ -2,14 +2,18 @@ import { prisma } from './prisma';
 import { formatISTDateDisplay, getISTDateString } from './timeUtils';
 
 export interface AttendanceReportFilter {
-  startDate: string; // YYYY-MM-DD
-  endDate: string; // YYYY-MM-DD
+  startDate?: string; // YYYY-MM-DD
+  endDate?: string; // YYYY-MM-DD
   stationId?: number;
   gateId?: number;
   userId?: number;
   designation?: string;
   search?: string;
   statusFilter?: string; // 'ALL' | 'PRESENT' | 'LATE' | 'COMPLETED' | 'ON_DUTY'
+  severity?: string;
+  type?: string;
+  shiftCode?: string;
+  status?: string;
   page?: number;
   limit?: number;
 }
@@ -146,7 +150,10 @@ function formatMinutesHuman(minutes: number): string {
  * Scope enforcement helper for Indian Railways hierarchy
  */
 export function buildHierarchyWhereClause(requestingUser: any, baseWhere: any = {}) {
-  const role = (requestingUser?.role || '').toLowerCase();
+  const roleName = typeof requestingUser?.role === 'string'
+    ? requestingUser.role
+    : (requestingUser?.role?.name || '');
+  const role = roleName.toLowerCase();
   const desig = (requestingUser?.designation || '').toLowerCase();
 
   // 1. Gateman / Restkeeper: Self Only
@@ -182,7 +189,7 @@ export async function getAttendanceReportData(
   filter: AttendanceReportFilter,
   requestingUser: any
 ): Promise<AttendanceReportResult> {
-  const startDateStr = filter.startDate || getISTDateString();
+  const startDateStr = filter.startDate || getISTDateString(new Date());
   const endDateStr = filter.endDate || startDateStr;
 
   // Build query where clause
@@ -218,7 +225,7 @@ export async function getAttendanceReportData(
           station: { select: { id: true, name: true, code: true, division: true, zone: true } },
         },
       },
-      dutyRoster: {
+      roster: {
         select: {
           id: true,
           shiftName: true,
@@ -298,9 +305,9 @@ export async function getAttendanceReportData(
       primary.user?.role?.name === 'Restkeeper' ||
       (primary.user?.designation || '').toLowerCase().includes('restkeeper');
 
-    const scheduledStart = primary.dutyRoster?.startTime || '07:00';
-    const scheduledEnd = primary.dutyRoster?.endTime || '19:00';
-    const shiftCode = primary.dutyRoster?.shiftCode || `${scheduledStart.slice(0, 2)}-${scheduledEnd.slice(0, 2)}`;
+    const scheduledStart = primary.roster?.startTime || '07:00';
+    const scheduledEnd = primary.roster?.endTime || '19:00';
+    const shiftCode = primary.roster?.shiftCode || `${scheduledStart.slice(0, 2)}-${scheduledEnd.slice(0, 2)}`;
 
     // Time formatters in IST
     const checkInTimeStr = checkIn
@@ -336,7 +343,7 @@ export async function getAttendanceReportData(
         code: shiftCode,
         scheduledStart,
         scheduledEnd,
-        isSplitShift: primary.dutyRoster?.isSplitShift || false,
+        isSplitShift: primary.roster?.isSplitShift || false,
       },
       checkIn: checkIn ? {
         timestamp: checkIn.timestamp,

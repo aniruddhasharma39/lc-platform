@@ -418,7 +418,8 @@ const publishWeeklySchema = z.object({
   weekStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'weekStartDate must be YYYY-MM-DD'),
   mode: z.enum(['PERMANENT', 'SPECIFIC_WEEK', 'RESET']).optional().default('SPECIFIC_WEEK'),
   assignments: z.array(z.object({
-    gatemanId: z.number().int(),
+    gatemanId: z.number().int().optional(),
+    gatemanUserId: z.number().int().optional(),
     dayOfWeek: z.enum(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']),
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     shiftCode: z.string().min(1), // "07-19", "19-24", "00-07", "W/R", "N/R", "-"
@@ -734,7 +735,10 @@ router.post('/publish-weekly', async (req: any, res, next) => {
       for (const item of data.assignments) {
         if (item.shiftCode === '-') continue;
 
-        const permShiftName = `${item.dayOfWeek}_${item.gatemanId}`;
+        const targetUserId = item.gatemanId ?? item.gatemanUserId ?? 0;
+        if (!targetUserId) continue;
+
+        const permShiftName = `${item.dayOfWeek}_${targetUserId}`;
 
         const permEntry = await prisma.gateDutyRoster.upsert({
           where: {
@@ -747,7 +751,7 @@ router.post('/publish-weekly', async (req: any, res, next) => {
           update: {
             startTime: item.startTime,
             endTime: item.endTime,
-            gatemanUserId: item.gatemanId,
+            gatemanUserId: targetUserId,
             createdById: req.user.id,
             stationId,
             weekStartDate: 'PERMANENT',
@@ -765,7 +769,7 @@ router.post('/publish-weekly', async (req: any, res, next) => {
             shiftName: permShiftName,
             startTime: item.startTime,
             endTime: item.endTime,
-            gatemanUserId: item.gatemanId,
+            gatemanUserId: targetUserId,
             createdById: req.user.id,
             weekStartDate: 'PERMANENT',
             dayOfWeek: item.dayOfWeek,
@@ -812,6 +816,9 @@ router.post('/publish-weekly', async (req: any, res, next) => {
     for (const item of data.assignments) {
       if (item.shiftCode === '-') continue;
 
+      const targetUserId = item.gatemanId ?? item.gatemanUserId ?? 0;
+      if (!targetUserId) continue;
+
       const resolvedShiftName = item.shiftName ||
         (item.shiftCode === '07-19' ? 'Day Shift (07:00 - 19:00)' :
          item.shiftCode === '19-24' ? 'Evening Shift (19:00 - 24:00)' :
@@ -830,7 +837,7 @@ router.post('/publish-weekly', async (req: any, res, next) => {
         update: {
           startTime: item.startTime,
           endTime: item.endTime,
-          gatemanUserId: item.gatemanId,
+          gatemanUserId: targetUserId,
           createdById: req.user.id,
           stationId,
           weekStartDate: data.weekStartDate,
@@ -848,7 +855,7 @@ router.post('/publish-weekly', async (req: any, res, next) => {
           shiftName: resolvedShiftName,
           startTime: item.startTime,
           endTime: item.endTime,
-          gatemanUserId: item.gatemanId,
+          gatemanUserId: targetUserId,
           createdById: req.user.id,
           weekStartDate: data.weekStartDate,
           dayOfWeek: item.dayOfWeek,

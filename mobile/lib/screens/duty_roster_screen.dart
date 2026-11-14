@@ -951,6 +951,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
         }
 
         assignments.add({
+          'gatemanId': uid,
           'gatemanUserId': uid,
           'date': dateStr,
           'dayOfWeek': dayOfWeek,
