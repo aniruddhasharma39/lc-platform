@@ -7,3 +7,5 @@ uploads/
 *.db
 *.db-journal
 *.sqlite
+firebase-service-account.json
+*firebase-adminsdk*.json
