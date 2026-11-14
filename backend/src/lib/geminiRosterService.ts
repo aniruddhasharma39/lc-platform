@@ -193,7 +193,8 @@ export async function analyzeRosterChartWithGemini(
     weekStartDate?: string;
   } = {}
 ): Promise<ReconciledRosterResult> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const rawKey = process.env.GEMINI_API_KEY || '';
+  const apiKey = rawKey.trim().replace(/^["'\s\\]+|["'\s\\]+$/g, '').trim();
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY environment variable is not set.');
   }
