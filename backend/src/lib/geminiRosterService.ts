@@ -2,7 +2,10 @@ import { prisma } from './prisma';
 import { getExamCompliance } from '../routes/roster';
 
 const GEMINI_MODELS = [
-  'gemini-3.5-flash'
+  'gemini-3.5-flash',
+  'gemini-3.8-flash',
+  'gemini-2.5-flash',
+  'gemini-flash-latest'
 ];
 
 /**
