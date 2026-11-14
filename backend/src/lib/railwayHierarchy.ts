@@ -18,8 +18,8 @@ export interface DesignationConfig {
 export const DEPARTMENTS: DepartmentType[] = ['Operations', 'Engineering'];
 
 /**
- * Canonical Developer role check across all backend routes and authorization helpers.
- * Avoids brittle `roleId === 1`, `id === 1`, or `.includes('admin')` bypasses.
+ * Canonical Developer & Administrator governance check across all backend routes and authorization helpers.
+ * Grants top-level governance authority to Developer, Admin, and Administrator accounts.
  */
 export function isDeveloperUser(user: any): boolean {
   if (!user) return false;
@@ -27,7 +27,19 @@ export function isDeveloperUser(user: any): boolean {
     typeof user.role === 'string'
       ? user.role
       : user.role?.name || '';
-  return roleName.trim().toLowerCase() === 'developer';
+  const designation = user.designation || '';
+  const r = roleName.trim().toLowerCase();
+  const d = designation.trim().toLowerCase();
+  return (
+    r === 'developer' ||
+    r === 'admin' ||
+    r === 'administrator' ||
+    r === 'system admin' ||
+    d === 'developer' ||
+    d === 'admin' ||
+    d === 'administrator' ||
+    d === 'system admin'
+  );
 }
 
 export const DESIGNATIONS: Record<string, DesignationConfig> = {

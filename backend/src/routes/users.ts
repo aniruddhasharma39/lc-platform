@@ -44,7 +44,7 @@ router.get('/', requireModule('manage-users'), async (req: any, res, next) => {
     // Build role hierarchy filter for existing users
     const userWhereClause = await buildUserManagementWhereClause(viewer, prisma);
 
-    const [users, allPendingRequests, roles, allGates] = await Promise.all([
+    const [users, allPendingRequests, roles, allGates, allStations] = await Promise.all([
       prisma.user.findMany({
         where: userWhereClause,
         include: {
@@ -69,7 +69,21 @@ router.get('/', requireModule('manage-users'), async (req: any, res, next) => {
       }),
       prisma.role.findMany(),
       prisma.lCGate.findMany({
-        select: { id: true, lcNumber: true, locationName: true, name: true, stationId: true }
+        select: {
+          id: true,
+          lcNumber: true,
+          locationName: true,
+          name: true,
+          stationId: true,
+          division: true,
+          zone: true,
+          station: { select: { id: true, code: true, name: true, division: true, zone: true } }
+        },
+        orderBy: { lcNumber: 'asc' }
+      }),
+      prisma.station.findMany({
+        select: { id: true, code: true, name: true, division: true, zone: true },
+        orderBy: { name: 'asc' }
       })
     ]);
 
@@ -168,7 +182,12 @@ router.get('/', requireModule('manage-users'), async (req: any, res, next) => {
       rcStatus: getExamCompliance(u.rcExpiryDate),
     }));
 
-    res.json({ users: enrichedUsers, pendingRequests: visiblePendingRequests });
+    res.json({
+      users: enrichedUsers,
+      pendingRequests: visiblePendingRequests,
+      gates: allGates,
+      stations: allStations
+    });
   } catch (error) {
     next(error);
   }
@@ -356,10 +375,14 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
           roleId: finalRoleId,
           zone: request.zone || data.zone || null,
           division: request.division || data.division || null,
-          stationId: request.stationId || data.stationId || null,
+          stationId: (data.stationId !== undefined && data.stationId !== null)
+            ? data.stationId
+            : (request.stationId || null),
           idCardUrl: request.idCardUrl || formData.idCard || formData.idCardUrl || null,
           passwordHash: (formData.password && formData.password.trim().length > 0)
-            ? await bcrypt.hash(formData.password.trim(), 10)
+            ? (formData.password.trim().startsWith('$2')
+                ? formData.password.trim()
+                : await bcrypt.hash(formData.password.trim(), 10))
             : await bcrypt.hash('123456', 10),
           status: 'APPROVED',
           pmeDate: request.pmeDate || (formData.pmeDate ? new Date(formData.pmeDate) : null),
@@ -379,9 +402,14 @@ router.put('/request/:id/approve', requireModule('manage-users'), async (req: an
       });
 
       // Link explicitly assigned LC Gates in UserGate table (Section 9)
-      const gateIdsToAssign: number[] = (data.gateIds && Array.isArray(data.gateIds) && data.gateIds.length > 0)
-        ? data.gateIds
-        : (Array.isArray(request.gateIds) ? request.gateIds : []);
+      const gateIdsToAssign: number[] = (data.gateIds !== undefined && Array.isArray(data.gateIds))
+        ? data.gateIds.map(Number).filter((id: number) => !isNaN(id) && id > 0)
+        : (Array.isArray(request.gateIds) ? (request.gateIds as any[]).map(Number).filter((id: number) => !isNaN(id) && id > 0) : []);
+
+      // Synchronize with approver's exact gate assignments
+      await prisma.userGate.deleteMany({
+        where: { userId: user.id }
+      });
       for (const gId of gateIdsToAssign) {
         await prisma.userGate.upsert({
           where: { userId_gateId: { userId: user.id, gateId: gId } },

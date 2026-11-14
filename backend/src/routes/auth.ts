@@ -871,8 +871,9 @@ router.post('/login', async (req, res, next) => {
 
     if (!validPassword) {
       const attempts = user.failedLoginAttempts + 1;
+      const MAX_ATTEMPTS = 7;
       let lockoutUntil = null;
-      if (attempts >= 5) {
+      if (attempts >= MAX_ATTEMPTS) {
         lockoutUntil = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes lockout
       }
       
@@ -881,7 +882,16 @@ router.post('/login', async (req, res, next) => {
         data: { failedLoginAttempts: attempts, lockoutUntil },
       });
 
-      return res.status(401).json({ error: 'Invalid credentials' });
+      if (lockoutUntil) {
+        return res.status(403).json({
+          error: 'Account locked out after repeated failures. Please try again after 15 minutes.'
+        });
+      }
+
+      const remaining = Math.max(0, MAX_ATTEMPTS - attempts);
+      return res.status(401).json({
+        error: `Invalid credentials. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining before account lockout.`
+      });
     }
 
     await prisma.user.update({

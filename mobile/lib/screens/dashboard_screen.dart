@@ -122,6 +122,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _userStatusFilter = 'ALL';
   String _userDepartmentFilter = 'ALL';
   List<dynamic> _allGates = [];
+  List<dynamic> _allStations = [];
   final Map<int, int> _pendingRoleSelections = {};
   final Map<int, String> _requestApprovalStates = {}; // 'PENDING' | 'APPROVING' | 'APPROVED' | 'REJECTING'
 
@@ -271,11 +272,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _isDeveloper ||
       ((widget.user['allowedModules'] as List?)?.contains('manage-users') ?? false);
 
-  bool get _isDeveloper =>
-      (widget.user['role'] ?? '').toString().trim().toLowerCase() == 'developer';
+  bool get _isDeveloper {
+    final r = (widget.user['role'] ?? '').toString().trim().toLowerCase();
+    final d = (widget.user['designation'] ?? '').toString().trim().toLowerCase();
+    return r == 'developer' || r == 'admin' || r == 'administrator' || r == 'system admin' ||
+           d == 'developer' || d == 'admin' || d == 'administrator' || d == 'system admin';
+  }
 
-  String get _cleanedRole =>
-      (widget.user['role'] ?? '').toString().trim().toLowerCase();
+  String get _cleanedRole {
+    final r = (widget.user['role'] ?? '').toString().trim().toLowerCase();
+    if (r.isNotEmpty) return r;
+    return (widget.user['designation'] ?? '').toString().trim().toLowerCase();
+  }
 
   // Field staff who punch biometric attendance (Gateman & Restkeeper)
   bool get _isAttendanceStaff =>
@@ -1041,6 +1049,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           } else if (_allGates.isEmpty && _dashboardSummary?['gates'] != null && _dashboardSummary!['gates'] is List) {
             _allGates = _dashboardSummary!['gates'];
           }
+          if (data is Map && data['stations'] != null && data['stations'] is List) {
+            _allStations = data['stations'];
+          }
         } catch (_) {}
         
         try {
@@ -1109,19 +1120,65 @@ class _DashboardScreenState extends State<DashboardScreen> {
     int? chosenStationId = req['stationId'] ?? (reqStation is Map ? reqStation['id'] : null);
     final List<dynamic> requestedGates = req['requestedGates'] is List ? req['requestedGates'] : [];
 
-    int? chosenGateId;
-    if (requestedGates.isNotEmpty && requestedGates[0] is Map && requestedGates[0]['id'] != null) {
-      chosenGateId = requestedGates[0]['id'] is int
-          ? requestedGates[0]['id'] as int
-          : int.tryParse(requestedGates[0]['id'].toString());
+    // Pre-populate selectedGateIds with requested gates if any
+    final Set<int> selectedGateIds = {};
+    for (var rg in requestedGates) {
+      if (rg is Map && rg['id'] != null) {
+        final gId = rg['id'] is int ? rg['id'] as int : int.tryParse(rg['id'].toString());
+        if (gId != null) selectedGateIds.add(gId);
+      } else if (rg is int) {
+        selectedGateIds.add(rg);
+      }
+    }
+    if (req['gateIds'] is List) {
+      for (var id in req['gateIds']) {
+        final gId = id is int ? id : int.tryParse(id.toString());
+        if (gId != null) selectedGateIds.add(gId);
+      }
     }
 
+    // Build unified list of available gates
     final availableGates = List<dynamic>.from(_allGates);
     for (var rg in requestedGates) {
       if (rg is Map && rg['id'] != null && !availableGates.any((g) => g['id']?.toString() == rg['id']?.toString())) {
         availableGates.add(rg);
       }
     }
+
+    // Build unified list of available stations
+    final availableStations = List<dynamic>.from(_allStations);
+    if (reqStation is Map && reqStation['id'] != null && !availableStations.any((s) => s['id']?.toString() == reqStation['id']?.toString())) {
+      availableStations.add(reqStation);
+    }
+    for (var g in availableGates) {
+      if (g is Map && g['station'] is Map && g['station']['id'] != null) {
+        final st = g['station'];
+        if (!availableStations.any((s) => s['id']?.toString() == st['id']?.toString())) {
+          availableStations.add(st);
+        }
+      }
+    }
+
+    // Filter available gates by candidate's division if specified
+    final reqDiv = (req['division'] ?? '').toString().trim().toLowerCase();
+    final divisionGates = reqDiv.isNotEmpty
+        ? availableGates.where((g) {
+            if (g is! Map) return true;
+            final gDiv = (g['division'] ?? g['station']?['division'] ?? '').toString().trim().toLowerCase();
+            return gDiv.isEmpty || gDiv == reqDiv;
+          }).toList()
+        : availableGates;
+
+    // Filter stations by candidate's division if specified
+    final divisionStations = reqDiv.isNotEmpty
+        ? availableStations.where((s) {
+            if (s is! Map) return true;
+            final sDiv = (s['division'] ?? '').toString().trim().toLowerCase();
+            return sDiv.isEmpty || sDiv == reqDiv;
+          }).toList()
+        : availableStations;
+
+    String gateSearch = '';
 
     final confirmed = await showModalBottomSheet<bool>(
       context: context,
@@ -1133,17 +1190,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
-            return Padding(
+            // Filter gates by search query
+            final displayedGates = divisionGates.where((g) {
+              if (g is! Map) return true;
+              if (gateSearch.trim().isNotEmpty) {
+                final query = gateSearch.trim().toLowerCase();
+                final clean = _cleanLcNumber(g).toLowerCase();
+                final loc = (g['locationName'] ?? '').toString().toLowerCase();
+                final st = (g['station']?['name'] ?? '').toString().toLowerCase();
+                if (!clean.contains(query) && !loc.contains(query) && !st.contains(query)) {
+                  return false;
+                }
+              }
+              return true;
+            }).toList();
+
+            return Container(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(ctx).size.height * 0.88,
+              ),
               padding: EdgeInsets.only(
                 left: 20,
                 right: 20,
                 top: 20,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Title row
                   Row(
                     children: [
                       Container(
@@ -1161,74 +1237,325 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
                         ),
                       ),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 20, color: Colors.grey),
+                        onPressed: () => Navigator.pop(ctx, false),
+                      ),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF8FAFC),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.grey.shade200),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Candidate: $displayName', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                        const SizedBox(height: 4),
-                        Text('Role to Assign: $assignedRoleName', style: const TextStyle(fontSize: 13, color: Color(0xFF1D4ED8), fontWeight: FontWeight.w600)),
-                        if (reqStation != null && reqStation is Map) ...[
-                          const SizedBox(height: 4),
-                          Text('Station: ${reqStation['name'] ?? ''} (${reqStation['code'] ?? ''})', style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
-                        ],
-                        if (req['pmeExpiryDate'] != null || req['rcExpiryDate'] != null) ...[
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 6,
-                            runSpacing: 4,
+                  const SizedBox(height: 12),
+
+                  // Scrollable body
+                  Expanded(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Candidate overview card
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF8FAFC),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.grey.shade200),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        'Candidate: $displayName',
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFEFF6FF),
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(color: const Color(0xFFBFDBFE)),
+                                      ),
+                                      child: Text(
+                                        assignedRoleName,
+                                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8)),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                if (req['division'] != null || req['zone'] != null) ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Jurisdiction: ${req['division'] ?? ''}${req['zone'] != null ? ' (${req['zone']})' : ''}',
+                                    style: TextStyle(fontSize: 12.5, color: Colors.grey.shade700),
+                                  ),
+                                ],
+                                if (reqStation != null && reqStation is Map) ...[
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Requested Station: ${reqStation['name'] ?? ''} (${reqStation['code'] ?? ''})',
+                                    style: TextStyle(fontSize: 12.5, color: Colors.grey.shade700),
+                                  ),
+                                ],
+                                if (req['pmeExpiryDate'] != null || req['rcExpiryDate'] != null) ...[
+                                  const SizedBox(height: 8),
+                                  Wrap(
+                                    spacing: 6,
+                                    runSpacing: 4,
+                                    children: [
+                                      _buildExamChip('PME', req['pmeExpiryDate']?.toString(), req['pmeStatus']?.toString()),
+                                      _buildExamChip('RC', req['rcExpiryDate']?.toString(), req['rcStatus']?.toString()),
+                                    ],
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+
+                          // Station Dropdown
+                          const Text(
+                            'Station Assignment / Headquarters:',
+                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                          ),
+                          const SizedBox(height: 6),
+                          DropdownButtonFormField<int?>(
+                            value: divisionStations.any((s) => s['id'] == chosenStationId) ? chosenStationId : null,
+                            isExpanded: true,
+                            decoration: InputDecoration(
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              hintText: 'Select Base Station (Optional)',
+                            ),
+                            items: [
+                              const DropdownMenuItem<int?>(
+                                value: null,
+                                child: Text('No Specific Station / Section-wide Jurisdiction', style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey)),
+                              ),
+                              ...divisionStations.map((st) {
+                                final sId = st['id'] is int ? st['id'] as int : int.tryParse(st['id'].toString());
+                                final sName = st['name'] ?? '';
+                                final sCode = st['code'] ?? '';
+                                return DropdownMenuItem<int?>(
+                                  value: sId,
+                                  child: Text('$sName ($sCode)', overflow: TextOverflow.ellipsis),
+                                );
+                              }),
+                            ],
+                            onChanged: (val) {
+                              setModalState(() => chosenStationId = val);
+                            },
+                          ),
+                          const SizedBox(height: 16),
+
+                          // LC Gate Multi-Assignment Header
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              _buildExamChip('PME', req['pmeExpiryDate']?.toString(), req['pmeStatus']?.toString()),
-                              _buildExamChip('RC', req['rcExpiryDate']?.toString(), req['rcStatus']?.toString()),
+                              Text(
+                                'Assigned LC Gate(s): (${selectedGateIds.length})',
+                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                              ),
+                              if (selectedGateIds.isNotEmpty)
+                                TextButton(
+                                  style: TextButton.styleFrom(
+                                    padding: EdgeInsets.zero,
+                                    minimumSize: Size.zero,
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                  onPressed: () {
+                                    setModalState(() => selectedGateIds.clear());
+                                  },
+                                  child: const Text('Clear All', style: TextStyle(fontSize: 12, color: AppColors.danger)),
+                                ),
                             ],
                           ),
+                          const SizedBox(height: 6),
+
+                          // Quick selection shortcuts
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 6,
+                            children: [
+                              if (chosenStationId != null)
+                                ActionChip(
+                                  avatar: const Icon(Icons.add, size: 16, color: Color(0xFF1D4ED8)),
+                                  label: const Text('All Station Gates', style: TextStyle(fontSize: 11.5)),
+                                  onPressed: () {
+                                    setModalState(() {
+                                      for (var g in divisionGates) {
+                                        if (g is Map && g['stationId'] == chosenStationId && g['id'] != null) {
+                                          final gId = g['id'] is int ? g['id'] as int : int.tryParse(g['id'].toString());
+                                          if (gId != null) selectedGateIds.add(gId);
+                                        }
+                                      }
+                                    });
+                                  },
+                                ),
+                              ActionChip(
+                                avatar: const Icon(Icons.select_all, size: 16, color: Color(0xFF1D4ED8)),
+                                label: const Text('All Section Gates', style: TextStyle(fontSize: 11.5)),
+                                onPressed: () {
+                                  setModalState(() {
+                                    for (var g in divisionGates) {
+                                      if (g is Map && g['id'] != null) {
+                                        final gId = g['id'] is int ? g['id'] as int : int.tryParse(g['id'].toString());
+                                        if (gId != null) selectedGateIds.add(gId);
+                                      }
+                                    }
+                                  });
+                                },
+                              ),
+                              ActionChip(
+                                avatar: const Icon(Icons.clear, size: 16, color: Colors.grey),
+                                label: const Text('Divisional (0 Gates)', style: TextStyle(fontSize: 11.5)),
+                                onPressed: () {
+                                  setModalState(() => selectedGateIds.clear());
+                                },
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+
+                          // Selected Gates Chips
+                          if (selectedGateIds.isNotEmpty) ...[
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF1F5F9),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Wrap(
+                                spacing: 6,
+                                runSpacing: 4,
+                                children: selectedGateIds.map((gId) {
+                                  final gMatch = divisionGates.firstWhere(
+                                    (g) => g is Map && g['id'] == gId,
+                                    orElse: () => null,
+                                  );
+                                  final label = gMatch != null ? _cleanLcNumber(gMatch) : 'Gate #$gId';
+                                  return Chip(
+                                    labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+                                    visualDensity: VisualDensity.compact,
+                                    backgroundColor: const Color(0xFFE0E7FF),
+                                    deleteIcon: const Icon(Icons.close, size: 14),
+                                    onDeleted: () {
+                                      setModalState(() => selectedGateIds.remove(gId));
+                                    },
+                                    label: Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1E1B4B))),
+                                  );
+                                }).toList(),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                          ],
+
+                          // Search Filter
+                          TextField(
+                            decoration: InputDecoration(
+                              prefixIcon: const Icon(Icons.search, size: 18),
+                              hintText: 'Search LC Gates...',
+                              hintStyle: const TextStyle(fontSize: 12),
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            onChanged: (val) {
+                              setModalState(() => gateSearch = val);
+                            },
+                          ),
+                          const SizedBox(height: 8),
+
+                          // Checkbox List of Gates
+                          Container(
+                            decoration: BoxDecoration(
+                              border: Border.all(color: Colors.grey.shade300),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            constraints: const BoxConstraints(maxHeight: 200),
+                            child: displayedGates.isEmpty
+                                ? const Padding(
+                                    padding: EdgeInsets.all(16),
+                                    child: Center(
+                                      child: Text(
+                                        'No matching gates found',
+                                        style: TextStyle(color: Colors.grey, fontSize: 12, fontStyle: FontStyle.italic),
+                                      ),
+                                    ),
+                                  )
+                                : ListView.separated(
+                                    shrinkWrap: true,
+                                    itemCount: displayedGates.length,
+                                    separatorBuilder: (c, i) => Divider(height: 1, color: Colors.grey.shade200),
+                                    itemBuilder: (ctx, idx) {
+                                      final g = displayedGates[idx];
+                                      if (g is! Map) return const SizedBox.shrink();
+                                      final gId = g['id'] is int ? g['id'] as int : int.tryParse(g['id'].toString());
+                                      if (gId == null) return const SizedBox.shrink();
+                                      final clean = _cleanLcNumber(g);
+                                      final loc = (g['locationName'] != null && g['locationName'].toString().isNotEmpty)
+                                          ? g['locationName'].toString()
+                                          : '';
+                                      final stName = (g['station'] != null && g['station']['name'] != null)
+                                          ? g['station']['name'].toString()
+                                          : '';
+                                      final isReq = requestedGates.any((rg) => rg['id']?.toString() == gId.toString());
+                                      final isChecked = selectedGateIds.contains(gId);
+
+                                      return CheckboxListTile(
+                                        dense: true,
+                                        visualDensity: VisualDensity.compact,
+                                        contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                                        value: isChecked,
+                                        activeColor: const Color(0xFF1D4ED8),
+                                        title: Row(
+                                          children: [
+                                            Text(clean, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                            if (isReq) ...[
+                                              const SizedBox(width: 6),
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                                decoration: BoxDecoration(
+                                                  color: const Color(0xFFDCFCE7),
+                                                  borderRadius: BorderRadius.circular(4),
+                                                  border: Border.all(color: const Color(0xFF86EFAC)),
+                                                ),
+                                                child: const Text('Requested', style: TextStyle(fontSize: 10, color: Color(0xFF166534), fontWeight: FontWeight.bold)),
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                        subtitle: Text(
+                                          '$loc${stName.isNotEmpty ? ' • $stName' : ''}',
+                                          style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        onChanged: (val) {
+                                          setModalState(() {
+                                            if (val == true) {
+                                              selectedGateIds.add(gId);
+                                            } else {
+                                              selectedGateIds.remove(gId);
+                                            }
+                                          });
+                                        },
+                                      );
+                                    },
+                                  ),
+                          ),
                         ],
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text('LC Gate Assignment:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 6),
-                  DropdownButtonFormField<int?>(
-                    value: chosenGateId,
-                    decoration: InputDecoration(
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                      hintText: 'Select LC Gate',
-                    ),
-                    items: [
-                      const DropdownMenuItem<int?>(
-                        value: null,
-                        child: Text('No Gate / Divisional Jurisdiction', style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey)),
                       ),
-                      ...availableGates.map((g) {
-                        final clean = _cleanLcNumber(g);
-                        final loc = (g['locationName'] != null && g['locationName'].toString().isNotEmpty)
-                            ? ' - ${g['locationName']}'
-                            : '';
-                        final isReq = requestedGates.any((rg) => rg['id']?.toString() == g['id']?.toString());
-                        final gId = g['id'] is int ? g['id'] as int : int.tryParse(g['id'].toString());
-                        return DropdownMenuItem<int?>(
-                          value: gId,
-                          child: Text('$clean$loc${isReq ? ' (Requested)' : ''}', overflow: TextOverflow.ellipsis),
-                        );
-                      }),
-                    ],
-                    onChanged: (val) {
-                      setModalState(() => chosenGateId = val);
-                    },
+                    ),
                   ),
-                  const SizedBox(height: 20),
+
+                  // Bottom Action Buttons
+                  const SizedBox(height: 16),
                   Row(
                     children: [
                       Expanded(
@@ -1247,7 +1574,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                           ),
                           onPressed: () => Navigator.pop(ctx, true),
-                          child: const Text('Approve & Assign', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                          child: Text(
+                            selectedGateIds.isEmpty
+                                ? 'Approve & Assign (Divisional)'
+                                : 'Approve & Assign (${selectedGateIds.length} Gate${selectedGateIds.length == 1 ? '' : 's'})',
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       ),
                     ],
@@ -1268,18 +1601,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (chosenStationId != null) {
         body['stationId'] = chosenStationId;
       }
-      if (assignedRoleName.toLowerCase().contains('restkeeper')) {
-        final reqGateIds = (req['gateIds'] as List?)?.map((id) => int.tryParse(id.toString())).whereType<int>().toList() ?? [];
-        if (reqGateIds.isNotEmpty) {
-          body['gateIds'] = reqGateIds;
-        } else if (requestedGates.isNotEmpty) {
-          body['gateIds'] = requestedGates.map((g) => g is Map ? g['id'] : g).whereType<int>().toList();
-        } else if (chosenGateId != null) {
-          body['gateIds'] = [chosenGateId];
-        }
-      } else if (chosenGateId != null) {
-        body['gateIds'] = [chosenGateId];
-      }
+      // Strictly send whatever the approver selected:
+      body['gateIds'] = selectedGateIds.toList();
+
       _actionUser(req['id'], 'approve', body, true, displayName, assignedRoleName);
     }
   }
