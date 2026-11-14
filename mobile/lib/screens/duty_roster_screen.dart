@@ -1176,7 +1176,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  'LC NO. - ${gate['lcNumber'] ?? '91'}',
+                  'LC NO. - ${(gate['lcNumber']?.toString() ?? '91').replaceAll(RegExp(r'^(?:LC\s*[-–—:]?\s*)+', caseSensitive: false), '').trim()}',
                   style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF1E3A8A)),
                 ),
                 if (gate['locationName'] != null)
@@ -1653,7 +1653,10 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text('Gate LC-$lcNum', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5, color: Color(0xFF0F172A))),
+                                Text(
+                                  'Gate ${lcNum.toUpperCase().startsWith('LC-') ? lcNum : 'LC-$lcNum'}',
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5, color: Color(0xFF0F172A)),
+                                ),
                                 if (locName.isNotEmpty)
                                   Text(locName, style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600)),
                               ],

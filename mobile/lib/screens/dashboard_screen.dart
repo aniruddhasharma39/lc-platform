@@ -200,6 +200,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     cleaned = cleaned.replaceAll(RegExp(r'\s*-\s*Km.*$', caseSensitive: false), '');
     // Replace 'Level Crossing 30' or 'Level Crossing-30' with 'LC-30'
     cleaned = cleaned.replaceAll(RegExp(r'^Level Crossing\s*-?\s*', caseSensitive: false), 'LC-');
+    // Replace duplicate 'LC-LC-' or repetitive 'LC-' prefixes with a single clean 'LC-'
+    cleaned = cleaned.replaceAll(RegExp(r'^(?:LC\s*[-–—:]?\s*)+', caseSensitive: false), 'LC-');
     cleaned = cleaned.trim();
 
     return cleaned.isNotEmpty ? cleaned : raw;

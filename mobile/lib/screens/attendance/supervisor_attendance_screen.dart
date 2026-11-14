@@ -360,9 +360,17 @@ class _SupervisorAttendanceScreenState extends State<SupervisorAttendanceScreen>
     );
   }
 
+  String _formatLcNumber(dynamic raw) {
+    if (raw == null) return 'LC Gate';
+    final s = raw.toString().trim();
+    if (s.isEmpty) return 'LC Gate';
+    final stripped = s.replaceAll(RegExp(r'^(?:LC\s*[-–—:]?\s*)+', caseSensitive: false), '').trim();
+    return stripped.isNotEmpty ? 'LC-$stripped' : 'LC Gate';
+  }
+
   Widget _buildGateMatrixCard(dynamic gate) {
     final status = (gate['currentStatus'] ?? 'UNSTAFFED').toString();
-    final lcNumber = gate['lcNumber'] ?? '';
+    final lcNumber = _formatLcNumber(gate['lcNumber']);
     final locationName = gate['locationName'] ?? '';
     final gateman = gate['assignedGateman'] ?? 'Unassigned';
     final shift = gate['shiftName'] ?? 'No Shift';
@@ -431,7 +439,7 @@ class _SupervisorAttendanceScreenState extends State<SupervisorAttendanceScreen>
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
-                      'LC-$lcNumber',
+                      lcNumber,
                       style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0D47A1)),
                     ),
                   ),
@@ -589,7 +597,7 @@ class _SupervisorAttendanceScreenState extends State<SupervisorAttendanceScreen>
                     const Icon(Icons.meeting_room_outlined, size: 16, color: Color(0xFF0D47A1)),
                     const SizedBox(width: 6),
                     Text(
-                      'Gate: LC-${gate['lcNumber'] ?? 'Assigned'} (${gate['locationName'] ?? 'Station'})',
+                      'Gate: ${_formatLcNumber(gate['lcNumber'])} (${gate['locationName'] ?? 'Station'})',
                       style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: Color(0xFF1E293B)),
                     ),
                   ],
