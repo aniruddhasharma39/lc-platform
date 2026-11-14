@@ -1,13 +1,20 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import multer from 'multer';
 import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { sendDutyRosterEmail } from '../lib/emailService';
 import { DEFAULT_3_SHIFT_CONFIG } from './shifts';
 import { isDeveloperUser } from '../lib/railwayHierarchy';
+import { analyzeRosterChartWithGemini } from '../lib/geminiRosterService';
 
 const router = Router();
 router.use(authenticate);
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB limit for high-res duty roster photos
+});
 
 export function getExamCompliance(expiryDate: Date | null): 'VALID' | 'DUE_SOON' | 'EXPIRED' | 'NOT_SET' {
   if (!expiryDate) return 'NOT_SET';
@@ -1034,6 +1041,52 @@ router.post('/publish-weekly', async (req: any, res, next) => {
     });
   } catch (error) {
     next(error);
+  }
+});
+
+/**
+ * POST /api/v1/roster/scan-chart
+ * Multimodal OCR endpoint using Google Gemini Vision API to extract weekly duty roster charts
+ * from camera photos or scanned documents prepared by PWI and countersigned by CPWI.
+ */
+router.post('/scan-chart', upload.single('image'), async (req: any, res, next) => {
+  try {
+    if (!isRosterAuthor(req.user)) {
+      return res.status(403).json({
+        error: 'Forbidden: Roster charts can only be prepared by PWI primarily or CPWI.',
+      });
+    }
+
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({
+        error: 'No image file uploaded. Please provide a clear photo of the roster chart in the "image" field.',
+      });
+    }
+
+    const hintGateId = req.body.gateId ? parseInt(req.body.gateId, 10) : undefined;
+    const hintStationId = req.body.stationId ? parseInt(req.body.stationId, 10) : undefined;
+    const weekStartDate = req.body.weekStartDate as string | undefined;
+
+    const result = await analyzeRosterChartWithGemini(
+      req.file.buffer,
+      req.file.mimetype || 'image/jpeg',
+      {
+        division: req.user.division,
+        hintGateId,
+        hintStationId,
+        weekStartDate,
+      }
+    );
+
+    return res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    console.error('[RosterScan] Error processing chart:', error);
+    return res.status(500).json({
+      error: error.message || 'Failed to process duty roster chart image with Gemini Vision.',
+    });
   }
 });
 

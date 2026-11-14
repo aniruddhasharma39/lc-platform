@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:io';
+import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config.dart';
 import '../main.dart';
 import '../utils/app_feedback.dart';
+import '../widgets/roster_ai_review_dialog.dart';
 
 class DutyRosterScreen extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -37,6 +40,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
   bool _isLoadingWeekly = false;
   bool _isPublishingWeekly = false;
   final Map<String, String> _weeklyDraft = {};
+  final ImagePicker _imagePicker = ImagePicker();
 
   // Local allocations map: key is "${gateId}_${shiftName}", value is gatemanUserId
   final Map<String, int?> _selectedAssignments = {};
@@ -1107,7 +1111,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
                       padding: const EdgeInsets.symmetric(vertical: 4),
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
-                        color: color.withOpacity(0.12),
+                        color: color.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(6),
                         border: Border.all(color: color, width: 1.5),
                       ),
@@ -1390,7 +1394,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
       final token = await _getToken();
       final body = {
         'gateId': _selectedWeeklyGateId,
-        'weekStartDate': _weeklyRosterData!['weekStartDate'],
+        'weekStartDate': _weeklyRosterData?['weekStartDate'] ?? _formatDate(_weeklyStartDate),
         'mode': mode,
         if (mode != 'RESET') 'assignments': assignments,
       };
@@ -1416,6 +1420,278 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
       if (mounted) AppFeedback.showError(context, 'Network error publishing weekly roster: $e');
     } finally {
       if (mounted) setState(() => _isPublishingWeekly = false);
+    }
+  }
+
+  Future<void> _openRosterScanPicker() async {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(Icons.document_scanner_rounded, color: Color(0xFF10B981), size: 22),
+                    ),
+                    const SizedBox(width: 10),
+                    const Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Scan Physical Roster Sheet',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Color(0xFF0F172A)),
+                        ),
+                        Text(
+                          'Google Gemini 3.5 Flash Vision OCR',
+                          style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.camera_alt_rounded, color: AppColors.primary),
+                  ),
+                  title: const Text('Take Photo with Camera', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+                  subtitle: const Text('Capture live physical duty chart or register', style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                  trailing: const Icon(Icons.chevron_right_rounded, color: Color(0xFF94A3B8)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _pickAndScanRoster(ImageSource.camera);
+                  },
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF8B5CF6).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.photo_library_rounded, color: Color(0xFF8B5CF6)),
+                  ),
+                  title: const Text('Upload from Gallery / Files', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+                  subtitle: const Text('Pick scanned chart or saved photo', style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                  trailing: const Icon(Icons.chevron_right_rounded, color: Color(0xFF94A3B8)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _pickAndScanRoster(ImageSource.gallery);
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _pickAndScanRoster(ImageSource source) async {
+    try {
+      final picked = await _imagePicker.pickImage(source: source, imageQuality: 90);
+      if (picked == null || !mounted) return;
+
+      final imageFile = File(picked.path);
+
+      // Show Progress Dialog
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          content: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: CircularProgressIndicator(strokeWidth: 3, color: AppColors.primary),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Scanning Duty Roster...',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Gemini AI reading gate, shifts & staff allocations...',
+                        style: TextStyle(fontSize: 11.5, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      final token = await _getToken();
+      final uri = Uri.parse('$baseUrl/roster/scan-chart');
+      final request = http.MultipartRequest('POST', uri);
+      request.headers['Authorization'] = 'Bearer $token';
+
+      if (_selectedWeeklyGateId != null) {
+        request.fields['gateId'] = _selectedWeeklyGateId.toString();
+      }
+      if (_stationId != null) {
+        request.fields['stationId'] = _stationId.toString();
+      }
+      request.fields['weekStartDate'] = _formatDate(_weeklyStartDate);
+      request.files.add(await http.MultipartFile.fromPath('image', imageFile.path));
+
+      final streamedResponse = await request.send();
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop(); // dismiss loading dialog
+      }
+
+      if (response.statusCode == 200) {
+        final resJson = json.decode(response.body);
+        final scanResult = (resJson['data'] as Map<String, dynamic>?) ?? {};
+
+        if (mounted) {
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => RosterAiReviewDialog(
+              imageFile: imageFile,
+              scanResult: scanResult,
+              onApply: (reconciledData, publishNow) {
+                _applyReconciledAiRoster(reconciledData, publishNow: publishNow);
+              },
+            ),
+          );
+        }
+      } else {
+        String errMsg = 'Failed to analyze roster chart.';
+        try {
+          final errJson = json.decode(response.body);
+          if (errJson['error'] != null) errMsg = errJson['error'];
+        } catch (_) {}
+
+        if (mounted) {
+          AppFeedback.showError(context, errMsg);
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        try {
+          Navigator.of(context, rootNavigator: true).pop();
+        } catch (_) {}
+        AppFeedback.showError(context, 'Scanning error: $e');
+      }
+    }
+  }
+
+  void _applyReconciledAiRoster(Map<String, dynamic> reconciledData, {bool publishNow = false}) {
+    final gate = reconciledData['gate'] as Map<String, dynamic>?;
+    final matchedGateId = gate?['id'] as int?;
+    if (matchedGateId != null && _selectedWeeklyGateId != matchedGateId) {
+      _selectedWeeklyGateId = matchedGateId;
+    }
+
+    final weekStartStr = reconciledData['weekStartDate'] as String?;
+    if (weekStartStr != null) {
+      try {
+        _weeklyStartDate = DateTime.parse(weekStartStr);
+      } catch (_) {}
+    }
+
+    final staffRows = (reconciledData['staffRows'] as List?) ?? [];
+    final days = (reconciledData['days'] as List?) ?? [];
+
+    // Ensure current matrix list exists
+    final currentMatrix = List<Map<String, dynamic>>.from(
+      ((_weeklyRosterData?['matrix'] as List?) ?? []).map((m) => Map<String, dynamic>.from(m as Map))
+    );
+
+    for (final row in staffRows) {
+      final matchedUser = row['matchedUser'] as Map<String, dynamic>?;
+      if (matchedUser == null) continue;
+
+      final userId = matchedUser['id'] as int;
+      final uidStr = userId.toString();
+      final schedule = (row['schedule'] as Map<String, dynamic>?) ?? {};
+
+      // 1. Populate _weeklyDraft for all 7 days
+      schedule.forEach((day, code) {
+        _weeklyDraft['${uidStr}_$day'] = code.toString();
+      });
+
+      // 2. Ensure user is in matrix rows
+      final existingIdx = currentMatrix.indexWhere((m) => m['userId'] == userId);
+      final userScheduleMap = <String, dynamic>{};
+      for (final d in days) {
+        final dayName = d['dayOfWeek'] ?? '';
+        final code = schedule[dayName] ?? '-';
+        userScheduleMap[dayName] = {
+          'shiftCode': code,
+          'date': d['date'],
+          'isOverride': true,
+        };
+      }
+
+      if (existingIdx >= 0) {
+        currentMatrix[existingIdx]['schedule'] = {
+          ...((currentMatrix[existingIdx]['schedule'] as Map<String, dynamic>?) ?? {}),
+          ...userScheduleMap,
+        };
+      } else {
+        currentMatrix.add({
+          'userId': userId,
+          'fullName': matchedUser['fullName'] ?? row['rawName'] ?? 'Gateman',
+          'employeeId': matchedUser['employeeId'] ?? '',
+          'designation': matchedUser['designation'] ?? 'Gateman',
+          'isRestkeeper': (matchedUser['role'] ?? '').toString().toLowerCase().contains('restkeeper'),
+          'pmeStatus': matchedUser['pmeStatus'] ?? 'VALID',
+          'rcStatus': matchedUser['rcStatus'] ?? 'VALID',
+          'schedule': userScheduleMap,
+        });
+      }
+    }
+
+    if (_weeklyRosterData != null) {
+      _weeklyRosterData!['matrix'] = currentMatrix;
+      _weeklyRosterData!['weekStartDate'] = _formatDate(_weeklyStartDate);
+    }
+
+    setState(() {});
+
+    if (publishNow) {
+      _executePublishWeekly(mode: 'SPECIFIC_WEEK');
+    } else {
+      AppFeedback.showSuccess(
+        context,
+        'Physical roster chart applied to weekly matrix. Tap "Publish Roster" to finalize.',
+      );
     }
   }
 
@@ -1520,6 +1796,84 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
           ),
           const SizedBox(height: 14),
 
+          // 2. AI Scan Physical Roster Card (Gemini 3.5 Flash)
+          if (_canManageRoster) ...[
+            Container(
+              margin: const EdgeInsets.only(bottom: 14),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.08),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.document_scanner_rounded, color: Color(0xFF10B981), size: 24),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Text(
+                              'Scan Physical Roster Sheet',
+                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13.5),
+                            ),
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF10B981),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: const Text('Gemini AI', style: TextStyle(color: Colors.white, fontSize: 9.5, fontWeight: FontWeight.w800)),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          'Auto-extract shifts & gatemen from PWI/CPWI duty charts',
+                          style: TextStyle(color: Colors.white.withValues(alpha: 0.75), fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  ElevatedButton.icon(
+                    onPressed: _openRosterScanPicker,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF10B981),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    icon: const Icon(Icons.camera_alt_outlined, size: 15),
+                    label: const Text('Scan', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
           // Temporary Overrides Notice Banner
           if (_weeklyRosterData?['hasOverridesThisWeek'] == true) ...[
             Container(
@@ -1564,7 +1918,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: const Color(0xFF94A3B8)),
               boxShadow: [
-                BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 4, offset: const Offset(0, 2)),
+                BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 4, offset: const Offset(0, 2)),
               ],
             ),
             child: Column(
@@ -1749,7 +2103,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
       decoration: BoxDecoration(
         color: Colors.white,
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 10, offset: const Offset(0, -3)),
+          BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 10, offset: const Offset(0, -3)),
         ],
       ),
       child: SafeArea(
@@ -1827,6 +2181,11 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
             ),
           ],
           if (_canManageRoster) ...[
+            IconButton(
+              icon: const Icon(Icons.document_scanner_rounded, color: Colors.white),
+              tooltip: 'Scan Physical Roster (Gemini AI)',
+              onPressed: _openRosterScanPicker,
+            ),
             IconButton(
               icon: const Icon(Icons.tune_rounded, color: Colors.white),
               tooltip: 'Shift Timings Configurator',
@@ -2195,7 +2554,7 @@ class _DutyRosterScreenState extends State<DutyRosterScreen> with SingleTickerPr
 
                               // Gateman Selector Dropdown
                               DropdownButtonFormField<int?>(
-                                value: assignedGatemanId,
+                                initialValue: assignedGatemanId,
                                 isExpanded: true,
                                 decoration: const InputDecoration(
                                   isDense: true,
